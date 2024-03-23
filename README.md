@@ -3,7 +3,7 @@
 
   # Lapdev
   
-  **Self-hosted remote development enviroment managemnet with ease**
+  **Self-hosted remote development enviroment management with ease**
 </div>
 
 <div align="center">
@@ -19,7 +19,7 @@
 </div>
 <br>
 
-**Lapdev** is a self hosted application that spins up remote development environments on your own servers or clouds. It scales from a single machine in the corner to a global fleet of servers. It uses [Devcontainer open sepcification](https://containers.dev/) for defining your development environment as code. If you’re interested in a deep dive into how Lapdev works, you can read about its [architecture](https://docs.lap.dev/administration/architecture) here.
+**Lapdev** is a self hosted application that spins up remote development environments on your own servers or clouds. It scales from a single machine in the corner to a global fleet of servers. It uses [Devcontainer open specification](https://containers.dev/) for defining your development environment as code. If you’re interested in a deep dive into how Lapdev works, you can read about its [architecture](https://docs.lap.dev/administration/architecture) here.
 
 <br>
 
@@ -33,7 +33,7 @@
 
 - **Horizontal scalability:** With a simple yet powerful [architecture](https://docs.lap.dev/administration/architecture), Lapdev can scale from a single machine to a fleet of servers, so that you can have a development environment management system that can grow with your developer teams.
 
-- **Development Environment as Code:** Using the [Devcontainer open sepcification](https://containers.dev/), Lapdev allows you to define your development environment as code. This empowers you to standardize development environments that can be replicated across different developers, avoiding environment related issues and ensuring a consistent setup for everyone.
+- **Development Environment as Code:** Using the [Devcontainer open specification](https://containers.dev/), Lapdev allows you to define your development environment as code. This empowers you to standardize development environments that can be replicated across different developers, avoiding environment related issues and ensuring a consistent setup for everyone.
 
 - **Save Onboarding Time:** Onboarding developers to new projects don't need hours or days to prepare the environment on their machines. They can start to code instantly.
 

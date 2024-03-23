@@ -1,0 +1,71 @@
+#!/bin/sh
+set -e
+
+LAPDEV_CONF="/etc/lapdev-ws.conf"
+LAPDEV_CONF_PERMS=640
+LAPDEV_HOME="/home/lapdev/"
+LAPDEV_USER="lapdev"
+
+create_user() {
+    if id ${LAPDEV_USER} > /dev/null 2>&1; then return; fi
+    useradd --home-dir ${LAPDEV_HOME} --create-home ${LAPDEV_USER}
+}
+
+create_first_time_configuration() {
+    if [ ! -f "${LAPDEV_CONF}" ]; then
+        cat <<EOT >> ${LAPDEV_CONF}
+bind = "0.0.0.0"
+ws-port = 6123
+inter-ws-port = 6122
+EOT
+
+        # Ensure that the config file has the correct ownership
+        chown ${LAPDEV_USER}:${LAPDEV_USER} ${LAPDEV_CONF}
+        
+        # Ensure that the config file has the correct permissions
+        chmod ${LAPDEV_CONF_PERMS} ${LAPDEV_CONF}
+        
+        mkdir -p /var/lib/lapdev/
+        chown ${LAPDEV_USER}:${LAPDEV_USER} /var/lib/lapdev/
+    fi
+}
+
+create_user_delegate() {
+    if [ ! -f "/etc/systemd/system/user@.service.d/delegate.conf" ]; then
+        mkdir -p /etc/systemd/system/user@.service.d/
+        cat <<EOT >> /etc/systemd/system/user@.service.d/delegate.conf
+[Service]
+Delegate=memory pids cpu cpuset
+EOT
+    fi
+}
+
+containers_config() {
+    if [ ! -f "/home/lapdev/.config/containers/registries.conf" ]; then
+        mkdir -p /home/lapdev/.config/containers/ 
+        cat <<EOT >> /home/lapdev/.config/containers/registries.conf
+unqualified-search-registries = ["docker.io"]
+EOT
+        chown -R ${LAPDEV_USER}:${LAPDEV_USER} /home/lapdev/.config/
+    fi
+    
+    if [ ! -f "/home/lapdev/.config/containers/storage.conf" ]; then
+        mkdir -p /home/lapdev/.config/containers/ 
+        cat <<EOT >> /home/lapdev/.config/containers/storage.conf
+[storage]
+driver = "overlay"
+EOT
+        chown -R ${LAPDEV_USER}:${LAPDEV_USER} /home/lapdev/.config/
+    fi
+}
+
+case "$1" in
+configure)
+    create_user
+    create_first_time_configuration
+    create_user_delegate
+    containers_config
+    ;;
+esac
+
+#DEBHELPER#

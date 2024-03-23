@@ -1,0 +1,9 @@
+#!/bin/bash -e
+# Script based on the RPM %systemd_postun scriptlet. See:
+#   - https://docs.fedoraproject.org/en-US/packaging-guidelines/Scriptlets/#_systemd
+#   - https://cgit.freedesktop.org/systemd/systemd/tree/src/core/macros.systemd.in
+
+systemctl daemon-reload >/dev/null 2>&1 || :
+if [ $1 -ge 1 ] ; then
+    systemctl try-restart lapdev-ws.service >/dev/null 2>&1 || :
+fi

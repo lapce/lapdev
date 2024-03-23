@@ -1,0 +1,29 @@
+[package]
+name = "lapdev-conductor"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+data-encoding.workspace = true
+russh-keys.workspace = true
+itertools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+zstd.workspace = true
+tar.workspace = true
+git2.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+futures.workspace = true
+sqlx.workspace = true
+sea-orm.workspace = true
+tarpc.workspace = true
+uuid.workspace = true
+lapdev-db.workspace = true
+lapdev-rpc.workspace = true
+lapdev-common.workspace = true
+lapdev-enterprise.workspace = true

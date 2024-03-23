@@ -1,0 +1,8 @@
+[package]
+name = "lapdev-guest-agent"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde_json.workspace = true

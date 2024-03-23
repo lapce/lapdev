@@ -1,0 +1,110 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+name: CI
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+jobs:
+  build:
+    name: Rust on ${{ matrix.os }} (${{ join(matrix.features, ',') }})
+    if: github.event.pull_request.draft == false
+    needs: [fmt, clippy]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # - name: Install dependencies on Ubuntu
+      #   if: startsWith(matrix.os, 'ubuntu')
+      #   run: sudo apt-get update && sudo apt-get install clang libxkbcommon-x11-dev pkg-config libvulkan-dev libgtk-3-dev libwayland-dev xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Update toolchain & add llvm-tools
+        run: |
+          rustup update
+          rustup component add llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build guest agent
+        run: cargo build -p lapdev-guest-agent --release --frozen
+        
+      - name: Create lapdev-dashboard/dist folder
+        run: mkdir -p lapdev-dashboard/dist
+
+      - name: Build
+        run: cargo build -p lapdev --frozen
+
+      - name: Build ws
+        run: cargo build -p lapdev-ws --frozen
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Update toolchain & add rustfmt
+        run: |
+          rustup update
+          rustup component add rustfmt
+
+      - name: Run rustfmt
+        run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Update toolchain & add clippy
+        run: |
+          rustup update
+          rustup component add clippy
+
+      # - name: Install dependencies on Ubuntu
+      #   if: startsWith(matrix.os, 'ubuntu')
+      #   run: sudo apt-get update && sudo apt-get install clang libxkbcommon-x11-dev pkg-config libvulkan-dev libwayland-dev xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+        
+      - name: Create lapdev-dashboard/dist folder
+        run: mkdir -p lapdev-dashboard/dist
+        
+      - name: Build lapdev-guest-agent
+        run: cargo build -p lapdev-guest-agent --release --locked
+
+      - name: Run clippy
+        run: cargo clippy -- -D warnings

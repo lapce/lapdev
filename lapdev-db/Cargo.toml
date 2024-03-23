@@ -1,0 +1,19 @@
+[package]
+name = "lapdev-db"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio.workspace = true
+chrono.workspace = true
+base64.workspace = true
+pasetors.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+sqlx.workspace = true
+sea-orm.workspace = true
+sea-orm-migration.workspace = true
+lapdev-common.workspace = true

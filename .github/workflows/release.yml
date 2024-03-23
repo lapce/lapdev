@@ -1,0 +1,103 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      lapdev_version:
+        description: "Lapdev version for release"
+        required: true
+  push:
+    tags:
+      - "v*"
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  linux:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Update toolchain
+        run: |
+          rustup update
+          rustup target add wasm32-unknown-unknown
+      
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --no-default-features
+      
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+        
+      - name: Install trunk
+        run: cargo install --locked trunk
+        
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+        
+      - name: Build wasm
+        run: cd lapdev-dashboard && trunk build --release --public-url /static/
+        
+      - name: Compress static files
+        run: cd lapdev-dashboard/dist/ && gzip -k *
+        
+      - name: Build lapdev-guest-agent
+        run: cargo build -p lapdev-guest-agent --release --locked
+        
+      - name: Build lapdev
+        run: |
+          cargo build -p lapdev --release --locked
+          strip -s target/release/lapdev
+        
+      - name: Build lapdev-ws
+        run: |
+          cargo build -p lapdev-ws --release --locked
+          strip -s target/release/lapdev-ws
+        
+      - name: Build lapdev rpm
+        run: cargo generate-rpm
+        
+      - name: Build lapdev-ws rpm
+        run: cargo generate-rpm -p lapdev-ws
+        
+      - name: Build lapdev deb
+        run: cargo deb -p lapdev
+        
+      - name: Build lapdev-ws deb
+        run: cargo deb -p lapdev-ws
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lapdev-linux
+          path: |
+            ./target/generate-rpm/lapdev-${{ github.event.inputs.lapdev_version }}-1.x86_64.rpm
+            ./target/generate-rpm/lapdev-ws-${{ github.event.inputs.lapdev_version }}-1.x86_64.rpm
+            ./target/debian/lapdev_${{ github.event.inputs.lapdev_version }}-1_amd64.deb
+            ./target/debian/lapdev-ws_${{ github.event.inputs.lapdev_version }}-1_amd64.deb
+            ./pkg/common/install.sh
+            ./pkg/common/install-ws.sh
+          retention-days: 1
+  
+  publish:
+    runs-on: ubuntu-latest
+    needs: [linux]
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPO: ${{ github.repository }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/download-artifact@v4
+      
+      - if: github.event_name == 'workflow_dispatch'
+        run: echo "TAG_NAME=v${{ github.event.inputs.lapdev_version }}" >> $GITHUB_ENV
+        
+      - name: Publish release
+        if: github.event_name != 'pull_request'
+        run: |
+          gh release create $TAG_NAME --title "$TAG_NAME" --target $GITHUB_SHA \
+            lapdev-linux/*/*/*

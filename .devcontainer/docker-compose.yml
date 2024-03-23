@@ -1,0 +1,6 @@
+version: '3'
+services:
+  lapdev:
+    image: mcr.microsoft.com/devcontainers/rust:latest
+  db:
+    image: docker.io/postgres:latest

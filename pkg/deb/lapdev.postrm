@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+LAPDEV_CONF="/etc/lapdev.conf"
+
+case "$1" in
+purge)
+    # Per https://www.debian.org/doc/debian-policy/ch-files.html#behavior
+    # "configuration files must be preserved when the package is removed, and
+    #  only deleted when the package is purged."
+    if [ -f ${LAPDEV_CONF} ]; then
+        rm ${LAPDEV_CONF}
+    fi
+    ;;
+esac
+
+#DEBHELPER#

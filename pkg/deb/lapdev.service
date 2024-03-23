@@ -1,0 +1,11 @@
+[Unit]
+Description=Lapdev
+
+[Service]
+ExecStart=/usr/bin/lapdev
+User=lapdev
+ReadWritePaths=/var/lib/lapdev/
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,98 @@
+#!/bin/bash -e
+# Script based on the RPM %systemd_post scriptlet. See:
+#   - https://docs.fedoraproject.org/en-US/packaging-guidelines/Scriptlets/#_systemd
+#   - https://cgit.freedesktop.org/systemd/systemd/tree/src/core/macros.systemd.in
+
+LAPDEV_USER=lapdev
+LAPDEV_GROUP=${LAPDEV_USER}
+LAPDEV_HOME_DIR="/home/lapdev"
+LAPDEV_HOME_DIR_PERMS=700
+LAPDEV_CONF="/etc/lapdev-ws.conf"
+LAPDEV_CONF_PERMS=640
+
+if [ $EUID -ne 0 ]; then
+    echo >&2 "ERROR: RTRTR postinst script must be run as root"
+    exit 1
+fi
+
+create_user() {
+    if ! id ${LAPDEV_USER} > /dev/null 2>&1; then
+        # According to the CentOS 7 useradd man page:
+        # --user-group causes a group by the same name as the user to be created
+        # --create-home should force creation of a home dir even for a system account.
+        useradd --home-dir ${LAPDEV_HOME_DIR} --create-home ${LAPDEV_USER}
+
+        # Ensure that the home directory has the correct ownership
+        chown -R ${LAPDEV_USER}:${LAPDEV_GROUP} ${LAPDEV_HOME_DIR}
+
+        # Ensure that the home directory has the correct permissions
+        chmod ${LAPDEV_HOME_DIR_PERMS} ${LAPDEV_HOME_DIR}
+    fi
+}
+
+init_systemd_service() {
+    systemctl preset lapdev-ws.service 2>&1 || :
+}
+
+generate_password() {
+    # Tries not to depend on too many other commmands
+    # being installed.
+    date | md5sum | awk '{print $1}'
+}
+
+create_first_time_configuration() {
+    if [ ! -f "${LAPDEV_CONF}" ]; then
+        cat <<EOT >> ${LAPDEV_CONF}
+bind = "0.0.0.0"
+ws-port = 6123
+inter-ws-port = 6122
+EOT
+
+        # Ensure that the config file has the correct ownership
+        chown ${LAPDEV_USER}:${LAPDEV_USER} ${LAPDEV_CONF}
+        
+        # Ensure that the config file has the correct permissions
+        chmod ${LAPDEV_CONF_PERMS} ${LAPDEV_CONF}
+        
+        mkdir -p /var/lib/lapdev/
+        chown ${LAPDEV_USER}:${LAPDEV_USER} /var/lib/lapdev/
+    fi
+}
+
+create_user_delegate() {
+    if [ ! -f "/etc/systemd/system/user@.service.d/delegate.conf" ]; then
+        mkdir -p /etc/systemd/system/user@.service.d/
+        cat <<EOT >> /etc/systemd/system/user@.service.d/delegate.conf
+[Service]
+Delegate=memory pids cpu cpuset
+EOT
+    fi
+}
+
+containers_config() {
+    if [ ! -f "/home/lapdev/.config/containers/registries.conf" ]; then
+        mkdir -p /home/lapdev/.config/containers/ 
+        cat <<EOT >> /home/lapdev/.config/containers/registries.conf
+unqualified-search-registries = ["docker.io"]
+EOT
+        chown -R ${LAPDEV_USER}:${LAPDEV_USER} /home/lapdev/.config/
+    fi
+    
+    if [ ! -f "/home/lapdev/.config/containers/storage.conf" ]; then
+        mkdir -p /home/lapdev/.config/containers/ 
+        cat <<EOT >> /home/lapdev/.config/containers/storage.conf
+[storage]
+driver = "overlay"
+EOT
+        chown -R ${LAPDEV_USER}:${LAPDEV_USER} /home/lapdev/.config/
+    fi
+}
+
+if [ $1 -eq 1 ] ; then
+    # Initial installation
+    create_user
+    init_systemd_service
+    create_first_time_configuration
+    create_user_delegate
+    containers_config
+fi

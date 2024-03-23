@@ -1,0 +1,10 @@
+[Unit]
+Description=Lapdev-ws
+
+[Service]
+ExecStart=/usr/bin/lapdev-ws
+User=root
+ReadWritePaths=/var/lib/lapdev/
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 <div align="center">
-  <img width=120 height=120 src="https://github.com/lapce/lapdev/assets/1169480/3a2acb68-2f4f-4cf0-b3d5-55b249839608"></img>
+  <img width=120 height=120 src="https://github.com/lapce/lapdev/assets/164527084/e8ca611c-6288-4ceb-abdd-55f50b43f2a3"></img>
 
   # Lapdev
   
@@ -10,7 +10,7 @@
   <a href="https://github.com/lapce/lapdev/actions/workflows/ci.yml" target="_blank">
     <img src="https://github.com/lapce/lapdev/actions/workflows/ci.yml/badge.svg" />
   </a>
-  <a href="https://discord.gg/n8tGJ6Rn6D" target="_blank">
+  <a href="https://discord.gg/DTZNfz3Ung" target="_blank">
     <img src="https://img.shields.io/discord/946858761413328946?logo=discord" />
   </a>
   <a href="https://docs.lap.dev" target="_blank">

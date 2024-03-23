@@ -66,7 +66,7 @@ install() {
 install_deb() {
   echo "Installing lapdev-ws package from GitHub."
   sudo apt update
-  curl -sL -o /tmp/lapdev-ws_${VERSION}-1_amd64.deb https://r2.lap.dev/lapdev-ws_${VERSION}-1_amd64.deb
+  curl -sL -o /tmp/lapdev-ws_${VERSION}-1_amd64.deb https://github.com/lapce/lapdev/releases/download/v${VERSION}/lapdev-ws_${VERSION}-1_amd64.deb
   sudo apt install -y /tmp/lapdev-ws_${VERSION}-1_amd64.deb
   echo "Installing podman if it's not"
   sudo apt install -y fuse-overlayfs podman dbus-user-session golang-github-containernetworking-plugin-dnsname
@@ -75,7 +75,7 @@ install_deb() {
 
 install_rpm() {
   echo "Installing lapdev-ws package from GitHub."
-  sudo yum install -y https://r2.lap.dev/lapdev-ws-${VERSION}-1.x86_64.rpm
+  sudo yum install -y https://github.com/lapce/lapdev/releases/download/v${VERSION}/lapdev-ws-${VERSION}-1.x86_64.rpm
   echo "Installing podman if it's not"
   sudo yum install -y fuse-overlayfs podman
   sudo loginctl enable-linger lapdev

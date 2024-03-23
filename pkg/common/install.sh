@@ -66,13 +66,13 @@ install() {
 install_deb() {
   echo "Installing lapdev package from GitHub."
   sudo apt update
-  curl -sL -o /tmp/lapdev_${VERSION}-1_amd64.deb https://r2.lap.dev/lapdev_${VERSION}-1_amd64.deb
+  curl -sL -o /tmp/lapdev_${VERSION}-1_amd64.deb https://github.com/lapce/lapdev/releases/download/v${VERSION}/lapdev_${VERSION}-1_amd64.deb
   sudo apt install -y /tmp/lapdev_${VERSION}-1_amd64.deb
 }
 
 install_rpm() {
   echo "Installing lapdev package from GitHub."
-  sudo yum install -y https://r2.lap.dev/lapdev-${VERSION}-1.x86_64.rpm
+  sudo yum install -y https://github.com/lapce/lapdev/releases/download/v${VERSION}/lapdev-${VERSION}-1.x86_64.rpm
 }
 
 main "$@"

@@ -25,6 +25,8 @@
 
 You can have a quick feel of how Lapdev works by going to our demo installation https://ws.lap.dev/
 
+We don't request `read_repo` scope for Github Oauth, so you can only play with public repositories. 
+
 <br>
 
 ![](https://lap.dev/images/screenshot.png) 

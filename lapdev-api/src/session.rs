@@ -53,7 +53,11 @@ pub(crate) async fn new_session(
 
     let redirect_url =
         format!("{host}/api/private/session/authorize?provider={provider}&next={next}");
-    let (url, csrf) = state.auth.authorize_url(provider, &redirect_url).await?;
+    let oauth_no_read_repo = state.db.oauth_no_read_repo().await.unwrap_or(false);
+    let (url, csrf) = state
+        .auth
+        .authorize_url(provider, &redirect_url, oauth_no_read_repo)
+        .await?;
 
     let mut claims = Claims::new()?;
     claims.add_additional(OAUTH_STATE, csrf.clone())?;

@@ -21,6 +21,10 @@
 
 **Lapdev** is a self hosted application that spins up remote development environments on your own servers or clouds. It scales from a single machine in the corner to a global fleet of servers. It uses [Devcontainer open specification](https://containers.dev/) for defining your development environment as code. If you’re interested in a deep dive into how Lapdev works, you can read about its [architecture](https://docs.lap.dev/administration/architecture) here.
 
+## Demo
+
+You can have a quick feel of how Lapdev works by going to our demo installation https://ws.lap.dev/
+
 <br>
 
 ![](https://lap.dev/images/screenshot.png) 

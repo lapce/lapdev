@@ -25,7 +25,7 @@
 
 You can have a quick feel of how Lapdev works by going to our demo installation https://ws.lap.dev/
 
-We don't request `read_repo` scope for Github Oauth, so you can only play with public repositories. 
+We don't request `read_repo` scope for Github Oauth, so you can only play with public repositories. The machine is hosted on Hetzner Germany so there could be some latency if you live far away. 
 
 <br>
 

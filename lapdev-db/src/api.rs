@@ -24,6 +24,7 @@ use super::entities::workspace;
 
 pub const LAPDEV_CLUSTER_NOT_INITIATED: &str = "lapdev-cluster-not-initiated";
 const LAPDEV_API_AUTH_TOKEN_KEY: &str = "lapdev-api-auth-token-key";
+const LAPDEV_OAUTH_NO_READ_REPO: &str = "lapdev-oauth-no-read-repo";
 
 #[derive(Clone)]
 pub struct DbApi {
@@ -95,6 +96,12 @@ impl DbApi {
         }
 
         self.generate_api_auth_token_key().await
+    }
+
+    pub async fn oauth_no_read_repo(&self) -> Result<bool> {
+        self.get_config(LAPDEV_OAUTH_NO_READ_REPO)
+            .await
+            .map(|v| v == "yes")
     }
 
     async fn get_api_auth_token_key(&self) -> Result<SymmetricKey<V4>> {

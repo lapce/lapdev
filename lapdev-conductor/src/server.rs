@@ -526,14 +526,17 @@ impl Conductor {
 
     fn format_repo_url(&self, repo: &str) -> String {
         let repo = repo.trim();
-        if !repo.starts_with("http://")
+        let repo = if !repo.starts_with("http://")
             && !repo.starts_with("https://")
             && !repo.starts_with("ssh://")
         {
             format!("https://{repo}")
         } else {
             repo.to_string()
-        }
+        };
+        repo.strip_suffix('/')
+            .map(|r| r.to_string())
+            .unwrap_or(repo)
     }
 
     async fn get_raw_repo_details(

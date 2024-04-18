@@ -3,7 +3,7 @@
 
   # Lapdev
   
-  **Self-hosted remote development enviroment management with ease**
+  **Self-hosted remote development environment management with ease**
 </div>
 
 <div align="center">

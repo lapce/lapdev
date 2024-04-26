@@ -19,7 +19,7 @@ use lapdev_db::entities;
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    TransactionTrait,
+    QueryOrder, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -382,8 +382,9 @@ pub async fn get_cluster_users(
     Query(filter_query): Query<FilterQuery>,
 ) -> Result<Json<ClusterUserResult>, ApiError> {
     state.authenticate_cluster_admin(&cookie).await?;
-    let mut query =
-        entities::user::Entity::find().filter(entities::user::Column::DeletedAt.is_null());
+    let mut query = entities::user::Entity::find()
+        .filter(entities::user::Column::DeletedAt.is_null())
+        .order_by_desc(entities::user::Column::CreatedAt);
     if let Some(filter) = filter_query.filter {
         query = query.filter(entities::user::Column::Name.like(format!("%{filter}%")));
     }

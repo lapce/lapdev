@@ -20,7 +20,8 @@ use crate::{
     workspace,
 };
 
-static STATIC_DIR: include_dir::Dir = include_dir::include_dir!("lapdev-dashboard/dist");
+static STATIC_DIR: include_dir::Dir =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/../lapdev-dashboard/dist");
 
 fn private_routes() -> Router<CoreState> {
     Router::new()
@@ -34,8 +35,8 @@ fn private_routes() -> Router<CoreState> {
         )
 }
 
-fn v1_api_routes() -> Router<CoreState> {
-    Router::new()
+fn v1_api_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreState> {
+    let router = Router::new()
         .route("/cluster_info", get(admin::get_cluster_info))
         .route("/auth_providers", get(admin::get_auth_providers))
         .route("/hostnames", get(admin::get_hostnames))
@@ -193,20 +194,28 @@ fn v1_api_routes() -> Router<CoreState> {
             delete(machine_type::delete_machine_type),
         )
         .route("/admin/users", get(admin::get_cluster_users))
-        .route("/admin/users/:user_id", put(admin::update_cluster_user))
+        .route("/admin/users/:user_id", put(admin::update_cluster_user));
+    if let Some(additional) = additional_router {
+        router.merge(additional)
+    } else {
+        router
+    }
 }
 
-fn main_routes() -> Router<CoreState> {
+fn main_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreState> {
     Router::new()
-        .nest("/v1", v1_api_routes())
+        .nest("/v1", v1_api_routes(additional_router))
         .nest("/private", private_routes())
 }
 
-pub async fn build_router(state: CoreState) -> Router<()> {
+pub async fn build_router(
+    state: CoreState,
+    additional_router: Option<Router<CoreState>>,
+) -> Router<()> {
     Router::new()
         .route("/", any(handle_catch_all))
         .route("/*0", any(handle_catch_all))
-        .nest("/api", main_routes())
+        .nest("/api", main_routes(additional_router))
         .with_state(state)
         .layer(SecureClientIpSource::ConnectInfo.into_extension())
 }

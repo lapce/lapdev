@@ -1,7 +1,7 @@
 use anyhow::Result;
 use lapdev_common::{BuildTarget, PrebuildUpdateEvent, RunningWorkspace, WorkspaceUpdateEvent};
 use lapdev_db::entities;
-use lapdev_rpc::{error::ApiError, ConductorService, WorkspaceServiceClient};
+use lapdev_rpc::{error::ApiError, ConductorService};
 use sea_orm::{ActiveModelTrait, ActiveValue};
 use tarpc::context;
 use uuid::Uuid;
@@ -12,7 +12,6 @@ use crate::Conductor;
 pub struct ConductorRpc {
     pub ws_host_id: Uuid,
     pub conductor: Conductor,
-    pub ws_client: WorkspaceServiceClient,
 }
 
 impl ConductorService for ConductorRpc {

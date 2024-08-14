@@ -34,16 +34,9 @@ async fn get_cluster_info() -> Result<ClusterInfo> {
     Ok(info)
 }
 
-#[component]
-pub fn App() -> impl IntoView {
+pub fn set_context() {
     let login_counter = create_rw_signal(0);
     provide_context(login_counter);
-
-    let login = create_local_resource(
-        move || login_counter.get(),
-        |_| async move { get_login().await.ok() },
-    );
-    provide_context(login);
 
     let login = create_local_resource(
         move || login_counter.get(),
@@ -68,7 +61,11 @@ pub fn App() -> impl IntoView {
         account: create_rw_signal(pathname.starts_with("/account")),
     };
     provide_context(nav_expanded);
+}
 
+#[component]
+pub fn App() -> impl IntoView {
+    set_context();
     view! {
         <Router>
             <Routes>

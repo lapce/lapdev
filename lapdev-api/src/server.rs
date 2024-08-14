@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
-use axum::extract::Request;
+use axum::{extract::Request, Router};
 use clap::Parser;
 use futures_util::pin_mut;
 use hyper::body::Incoming;
@@ -37,7 +37,7 @@ struct Cli {
     config_file: Option<PathBuf>,
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(additional_router: Option<Router<CoreState>>) -> Result<()> {
     let cli = Cli::parse();
     let config_file = cli
         .config_file
@@ -72,7 +72,7 @@ pub async fn run() -> Result<()> {
     }
 
     let state = CoreState::new(conductor, ssh_proxy_port).await;
-    let app = router::build_router(state.clone()).await;
+    let app = router::build_router(state.clone(), additional_router).await;
     let certs = state.certs.clone();
 
     {

@@ -2,7 +2,7 @@
 pub async fn main() {
     let _result = setup_log().await;
 
-    if let Err(e) = lapdev_api::server::run().await {
+    if let Err(e) = lapdev_api::server::run(None).await {
         tracing::error!("lapdev api start server error: {e:#}");
     }
 }

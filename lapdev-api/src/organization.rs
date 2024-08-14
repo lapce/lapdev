@@ -104,7 +104,7 @@ pub async fn create_organization(
 
 pub async fn delete_organization(
     TypedHeader(cookie): TypedHeader<Cookie>,
-    Path((_, org_id)): Path<(String, Uuid)>,
+    Path(org_id): Path<Uuid>,
     State(state): State<CoreState>,
     info: RequestInfo,
 ) -> Result<Response, ApiError> {
@@ -169,7 +169,7 @@ pub async fn delete_organization(
 
 pub async fn update_org_name(
     TypedHeader(cookie): TypedHeader<Cookie>,
-    Path((_, org_id)): Path<(String, Uuid)>,
+    Path(org_id): Path<Uuid>,
     State(state): State<CoreState>,
     info: RequestInfo,
     Json(update_org): Json<UpdateOrganizationName>,

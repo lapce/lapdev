@@ -433,7 +433,6 @@ impl Conductor {
 
         let rpc = ConductorRpc {
             ws_host_id: id,
-            ws_client: ws_client.clone(),
             conductor: self.clone(),
         };
 

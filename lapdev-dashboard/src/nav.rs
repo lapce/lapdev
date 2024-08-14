@@ -146,7 +146,57 @@ pub fn TopNav() -> impl IntoView {
 }
 
 #[component]
-pub fn SideNav(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
+pub fn SideNavMain() -> impl IntoView {
+    view! {
+        <ul class="space-y-2">
+            <li>
+                <a href="/workspaces" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                    <span class="ml-3">Workspaces</span>
+                </a>
+            </li>
+            <li>
+                <a href="/projects" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                    <span class="ml-3">Projects</span>
+                </a>
+            </li>
+        </ul>
+    }
+}
+
+#[component]
+pub fn SideNavAccount() -> impl IntoView {
+    let nav_expanded: NavExpanded = expect_context();
+    view! {
+        <li>
+            <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group"
+                on:click=move |_| nav_expanded.account.update(|expanded| *expanded = !*expanded)
+            >
+                <span class="ml-3">User Settings</span>
+                <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 6 10"
+                    class:hidden=move || nav_expanded.account.get()
+                >
+                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 9 4-4-4-4"/>
+                </svg>
+                <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6"
+                    class:hidden=move || !nav_expanded.account.get()
+                >
+                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
+                </svg>
+            </a>
+        </li>
+
+        <li
+            class:hidden=move || !nav_expanded.account.get()
+        >
+            <a href="/account/ssh-keys" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                <span class="ml-8">SSH Keys</span>
+            </a>
+        </li>
+    }
+}
+
+#[component]
+pub fn SideNavOrg() -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
     let nav_expanded: NavExpanded = expect_context();
     let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
@@ -158,164 +208,134 @@ pub fn SideNav(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
         role.unwrap_or(UserRole::Member)
     });
     view! {
+        <li
+            class:hidden=move || {
+                let role = role.get();
+                role != UserRole::Owner && role != UserRole::Admin
+            }
+        >
+            <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group"
+                on:click=move |_| nav_expanded.orgnization.update(|expanded| *expanded = !*expanded)
+            >
+                <span class="ml-3">Organization</span>
+                <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 6 10"
+                    class:hidden=move || nav_expanded.orgnization.get()
+                >
+                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 9 4-4-4-4"/>
+                </svg>
+                <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6"
+                    class:hidden=move || !nav_expanded.orgnization.get()
+                >
+                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
+                </svg>
+            </a>
+        </li>
+        <li
+            class:hidden=move || {
+                let role = role.get();
+                if role != UserRole::Owner && role != UserRole::Admin {
+                    return true;
+                }
+                if !nav_expanded.orgnization.get() {
+                    return true;
+                }
+                if !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false) {
+                    return true;
+                }
+                false
+            }
+        >
+            <a href="/organization/usage" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                <span class="ml-8">Usage</span>
+            </a>
+        </li>
+
+        <li
+            class:hidden=move || {
+                let role = role.get();
+                if role != UserRole::Owner && role != UserRole::Admin {
+                    return true;
+                }
+                if !nav_expanded.orgnization.get() {
+                    return true;
+                }
+                false
+            }
+        >
+            <a href="/organization/members" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                <span class="ml-8">Members</span>
+            </a>
+        </li>
+
+        <li
+            class:hidden=move || {
+                let role = role.get();
+                if role != UserRole::Owner && role != UserRole::Admin {
+                    return true;
+                }
+                if !nav_expanded.orgnization.get() {
+                    return true;
+                }
+                if !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false) {
+                    return true;
+                }
+                false
+            }
+        >
+            <a href="/organization/quota" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                <span class="ml-8">Quota</span>
+            </a>
+        </li>
+
+        <li
+            class:hidden=move || {
+                let role = role.get();
+                if role != UserRole::Owner && role != UserRole::Admin {
+                    return true;
+                }
+                if !nav_expanded.orgnization.get() {
+                    return true;
+                }
+                if !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false) {
+                    return true;
+                }
+                false
+            }
+        >
+            <a href="/organization/audit_log" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                <span class="ml-8">Audit Log</span>
+            </a>
+        </li>
+
+        <li
+            class:hidden=move || {
+                let role = role.get();
+                if role != UserRole::Owner && role != UserRole::Admin {
+                    return true;
+                }
+                if !nav_expanded.orgnization.get() {
+                    return true;
+                }
+                false
+            }
+        >
+            <a href="/organization/settings" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                <span class="ml-8">Settings</span>
+            </a>
+        </li>
+    }
+}
+
+#[component]
+pub fn SideNav(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
+    view! {
         <aside class="top-0 left-0 z-40 w-64 h-full transition-transform -translate-x-full sm:translate-x-0" aria-label="Sidenav">
             <div class="overflow-y-auto py-5 px-3 h-full bg-white border-r border-gray-200 dark:bg-gray-800 dark:border-gray-700">
                 <OrgSelector new_org_modal_hidden />
-                <ul class="space-y-2">
-                    <li>
-                        <a href="/workspaces" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
-                            <span class="ml-3">Workspaces</span>
-                        </a>
-                    </li>
-                    <li>
-                        <a href="/projects" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
-                            <span class="ml-3">Projects</span>
-                        </a>
-                    </li>
-                </ul>
+                <SideNavMain />
                 <ul class="pt-5 mt-5 space-y-2 border-t border-gray-200 dark:border-gray-700">
-                    <li>
-                        <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group"
-                            on:click=move |_| nav_expanded.account.update(|expanded| *expanded = !*expanded)
-                        >
-                            <span class="ml-3">User Settings</span>
-                            <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 6 10"
-                                class:hidden=move || nav_expanded.account.get()
-                            >
-                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 9 4-4-4-4"/>
-                            </svg>
-                            <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6"
-                                class:hidden=move || !nav_expanded.account.get()
-                            >
-                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
-                            </svg>
-                        </a>
-                    </li>
-
-                    <li
-                        class:hidden=move || !nav_expanded.account.get()
-                    >
-                        <a href="/account/ssh-keys" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
-                            <span class="ml-8">SSH Keys</span>
-                        </a>
-                    </li>
-
-                    <li
-                        class:hidden=move || {
-                            let role = role.get();
-                            role != UserRole::Owner && role != UserRole::Admin
-                        }
-                    >
-                        <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group"
-                            on:click=move |_| nav_expanded.orgnization.update(|expanded| *expanded = !*expanded)
-                        >
-                            <span class="ml-3">Organization</span>
-                            <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 6 10"
-                                class:hidden=move || nav_expanded.orgnization.get()
-                            >
-                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 9 4-4-4-4"/>
-                            </svg>
-                            <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6"
-                                class:hidden=move || !nav_expanded.orgnization.get()
-                            >
-                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
-                            </svg>
-                        </a>
-                    </li>
-                    <li
-                        class:hidden=move || {
-                            let role = role.get();
-                            if role != UserRole::Owner && role != UserRole::Admin {
-                                return true;
-                            }
-                            if !nav_expanded.orgnization.get() {
-                                return true;
-                            }
-                            if !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false) {
-                                return true;
-                            }
-                            false
-                        }
-                    >
-                        <a href="/organization/usage" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
-                            <span class="ml-8">Usage</span>
-                        </a>
-                    </li>
-
-                    <li
-                        class:hidden=move || {
-                            let role = role.get();
-                            if role != UserRole::Owner && role != UserRole::Admin {
-                                return true;
-                            }
-                            if !nav_expanded.orgnization.get() {
-                                return true;
-                            }
-                            false
-                        }
-                    >
-                        <a href="/organization/members" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
-                            <span class="ml-8">Members</span>
-                        </a>
-                    </li>
-
-                    <li
-                        class:hidden=move || {
-                            let role = role.get();
-                            if role != UserRole::Owner && role != UserRole::Admin {
-                                return true;
-                            }
-                            if !nav_expanded.orgnization.get() {
-                                return true;
-                            }
-                            if !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false) {
-                                return true;
-                            }
-                            false
-                        }
-                    >
-                        <a href="/organization/quota" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
-                            <span class="ml-8">Quota</span>
-                        </a>
-                    </li>
-
-                    <li
-                        class:hidden=move || {
-                            let role = role.get();
-                            if role != UserRole::Owner && role != UserRole::Admin {
-                                return true;
-                            }
-                            if !nav_expanded.orgnization.get() {
-                                return true;
-                            }
-                            if !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false) {
-                                return true;
-                            }
-                            false
-                        }
-                    >
-                        <a href="/organization/audit_log" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
-                            <span class="ml-8">Audit Log</span>
-                        </a>
-                    </li>
-
-                    <li
-                        class:hidden=move || {
-                            let role = role.get();
-                            if role != UserRole::Owner && role != UserRole::Admin {
-                                return true;
-                            }
-                            if !nav_expanded.orgnization.get() {
-                                return true;
-                            }
-                            false
-                        }
-                    >
-                        <a href="/organization/settings" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
-                            <span class="ml-8">Settings</span>
-                        </a>
-                    </li>
-
+                    <SideNavAccount />
+                    <SideNavOrg />
                 </ul>
             </div>
         </aside>

@@ -1,4 +1,4 @@
-use lapdev_dashboard::App;
+use lapdev_dashboard::app::App;
 use leptos::{mount_to_body, view};
 
 pub fn main() {

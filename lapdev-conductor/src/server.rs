@@ -25,7 +25,7 @@ use lapdev_enterprise::enterprise::Enterprise;
 use lapdev_rpc::{
     error::ApiError, long_running_context, spawn_twoway, ConductorService, WorkspaceServiceClient,
 };
-use russh_keys::{
+use russh::keys::{
     key::{KeyPair, PublicKey, SignatureHash},
     pkcs8, PublicKeyBase64,
 };
@@ -1039,12 +1039,12 @@ impl Conductor {
     fn generate_key_pair(&self) -> Result<(String, String)> {
         let key = KeyPair::generate_rsa(4096, SignatureHash::SHA2_512)
             .ok_or_else(|| anyhow!("can't generate ssh key pair"))?;
-        let id_rsa = encode_pkcs8_pem(&key);
+        let id_rsa = encode_pkcs8_pem(&key)?;
         let public_key = key.clone_public_key()?;
         let public_key = format!(
             "{} {}",
             match public_key {
-                PublicKey::RSA { .. } | PublicKey::P256(_) | PublicKey::P521(_) => "ssh-rsa",
+                PublicKey::RSA { .. } | PublicKey::EC { .. } => "ssh-rsa",
                 PublicKey::Ed25519(_) => "ssh-ed25519",
             },
             public_key.public_key_base64()
@@ -3094,12 +3094,12 @@ impl Conductor {
     }
 }
 
-pub fn encode_pkcs8_pem(key: &KeyPair) -> String {
-    let x = pkcs8::encode_pkcs8(key);
-    format!(
+pub fn encode_pkcs8_pem(key: &KeyPair) -> Result<String> {
+    let x = pkcs8::encode_pkcs8(key)?;
+    Ok(format!(
         "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
         BASE64_MIME.encode(&x)
-    )
+    ))
 }
 
 fn repo_branches(repo: &Repository) -> Result<Vec<GitBranch>> {

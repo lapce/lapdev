@@ -17,7 +17,7 @@ use lapdev_common::{
 };
 use lapdev_db::{api::DbApi, entities};
 use lapdev_rpc::error::ApiError;
-use russh_keys::PublicKeyBase64;
+use russh::keys::PublicKeyBase64;
 use sea_orm::{prelude::Uuid, ActiveModelTrait, ActiveValue};
 
 use crate::state::CoreState;
@@ -176,7 +176,7 @@ pub async fn create_ssh_key(
             ))
         }
     };
-    let parsed_key = russh_keys::parse_public_key_base64(key)
+    let parsed_key = russh::keys::parse_public_key_base64(key)
         .map_err(|_| ApiError::InvalidRequest("The SSH public key is invalid".to_string()))?;
     let parsed_key = parsed_key.public_key_base64();
 

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use russh::keys::key::KeyPair;
 use russh::{Channel, ChannelId, ChannelMsg};
-use russh_keys::key::KeyPair;
 use tracing::debug;
 
 pub struct SshProxyClient {}
@@ -17,10 +17,10 @@ impl russh::client::Handler for SshProxyClient {
     type Error = anyhow::Error;
 
     async fn check_server_key(
-        self,
-        _server_public_key: &russh_keys::key::PublicKey,
-    ) -> Result<(Self, bool), Self::Error> {
-        Ok((self, true))
+        &mut self,
+        _server_public_key: &russh::keys::key::PublicKey,
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
     }
 }
 

@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use anyhow::Result;
 use lapdev_conductor::Conductor;
-use russh::{MethodSet, Preferred};
+use russh::{server::Server, MethodSet, Preferred};
 
-use crate::key::host_keys;
+use crate::{key::host_keys, proxy::SshProxy};
 
 pub async fn run(conductor: Conductor, bind: &str, port: u16) -> Result<()> {
     let keys = host_keys(&conductor.db).await?;
@@ -16,27 +16,23 @@ pub async fn run(conductor: Conductor, bind: &str, port: u16) -> Result<()> {
         methods: MethodSet::NONE | MethodSet::PUBLICKEY,
         keys,
         preferred: Preferred {
-            key: &[
-                russh_keys::key::RSA_SHA2_512,
-                russh_keys::key::RSA_SHA2_256,
-                russh_keys::key::SSH_RSA,
-                russh_keys::key::ED25519,
-            ],
+            key: Cow::Borrowed(&[
+                russh::keys::key::RSA_SHA2_512,
+                russh::keys::key::RSA_SHA2_256,
+                russh::keys::key::SSH_RSA,
+                russh::keys::key::ED25519,
+            ]),
             ..Default::default()
         },
         ..Default::default()
     };
     let config = Arc::new(config);
-    russh::server::run(
-        config,
-        (bind, port),
-        super::proxy::SshProxy {
-            id: 0,
-            db: conductor.db.clone(),
-            conductor: Arc::new(conductor),
-        },
-    )
-    .await?;
+    let mut proxy = SshProxy {
+        id: 0,
+        db: conductor.db.clone(),
+        conductor: Arc::new(conductor),
+    };
+    proxy.run_on_address(config, (bind, port)).await?;
 
     Ok(())
 }

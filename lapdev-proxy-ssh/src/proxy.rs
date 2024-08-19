@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use lapdev_common::WorkspaceStatus;
 use lapdev_conductor::Conductor;
 use lapdev_db::api::DbApi;
+use russh::keys::{decode_secret_key, key::KeyPair, PublicKeyBase64};
 use russh::{
     server::{Auth, Msg, Session},
     Channel, ChannelMsg,
 };
-use russh_keys::{decode_secret_key, key::KeyPair, PublicKeyBase64};
 use tracing::debug;
 
 use crate::client::handle_client_msg;
@@ -52,28 +52,25 @@ impl russh::server::Server for SshProxy {
 impl russh::server::Handler for SshProxyHandler {
     type Error = anyhow::Error;
 
-    async fn auth_none(self, _user: &str) -> Result<(Self, Auth), Self::Error> {
-        Ok((
-            self,
-            Auth::Reject {
-                proceed_with_methods: None,
-            },
-        ))
+    async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+        Ok(Auth::Reject {
+            proceed_with_methods: None,
+        })
     }
 
     async fn auth_publickey_offered(
-        self,
+        &mut self,
         _user: &str,
-        _public_key: &russh_keys::key::PublicKey,
-    ) -> Result<(Self, Auth), Self::Error> {
-        Ok((self, Auth::Accept))
+        _public_key: &russh::keys::key::PublicKey,
+    ) -> Result<Auth, Self::Error> {
+        Ok(Auth::Accept)
     }
 
     async fn auth_publickey(
-        mut self,
+        &mut self,
         user: &str,
-        public_key: &russh_keys::key::PublicKey,
-    ) -> Result<(Self, Auth), Self::Error> {
+        public_key: &russh::keys::key::PublicKey,
+    ) -> Result<Auth, Self::Error> {
         let public_key = public_key.public_key_base64();
         println!("auth public key");
         let ws = self.db.get_workspace_by_name(user).await?;
@@ -119,10 +116,10 @@ impl russh::server::Handler for SshProxyHandler {
             let _ = self.conductor.start_workspace(ws, true, None, None).await;
         }
 
-        Ok((self, Auth::Accept))
+        Ok(Auth::Accept)
     }
 
-    async fn auth_succeeded(mut self, session: Session) -> Result<(Self, Session), Self::Error> {
+    async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
         println!("auth succedded");
         let (addr, port) = self
             .ws_addr
@@ -141,14 +138,14 @@ impl russh::server::Handler for SshProxyHandler {
                 println!("error connection: {e}");
             }
         }
-        Ok((self, session))
+        Ok(())
     }
 
     async fn channel_open_session(
-        mut self,
+        &mut self,
         channel: Channel<Msg>,
-        session: Session,
-    ) -> Result<(Self, bool, Session), Self::Error> {
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
         let ws_session = self
             .ws_session
             .as_mut()
@@ -164,18 +161,18 @@ impl russh::server::Handler for SshProxyHandler {
             let _ = forward_server_client(channel, ws_channel, server_handle).await;
         });
 
-        Ok((self, true, session))
+        Ok(true)
     }
 
     async fn channel_open_direct_tcpip(
-        mut self,
+        &mut self,
         channel: Channel<Msg>,
         host_to_connect: &str,
         port_to_connect: u32,
         originator_address: &str,
         originator_port: u32,
-        session: Session,
-    ) -> Result<(Self, bool, Session), Self::Error> {
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
         let ws_session = self
             .ws_session
             .as_mut()
@@ -196,15 +193,15 @@ impl russh::server::Handler for SshProxyHandler {
             let _ = forward_server_client(channel, ws_channel, server_handle).await;
         });
 
-        Ok((self, true, session))
+        Ok(true)
     }
 
     async fn tcpip_forward(
-        mut self,
+        &mut self,
         address: &str,
         port: &mut u32,
-        mut session: Session,
-    ) -> Result<(Self, bool, Session), Self::Error> {
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
         let address = address.to_string();
         let port = *port;
 
@@ -214,15 +211,15 @@ impl russh::server::Handler for SshProxyHandler {
 
         session.request_success();
 
-        Ok((self, true, session))
+        Ok(true)
     }
 
     async fn cancel_tcpip_forward(
-        mut self,
+        &mut self,
         address: &str,
         port: u32,
-        mut session: Session,
-    ) -> Result<(Self, bool, Session), Self::Error> {
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
         let address = address.to_string();
 
         if let Some(ws_session) = self.ws_session.as_mut() {
@@ -234,7 +231,7 @@ impl russh::server::Handler for SshProxyHandler {
 
         session.request_success();
 
-        Ok((self, true, session))
+        Ok(true)
     }
 }
 

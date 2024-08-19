@@ -41,18 +41,20 @@ async fn connect_db(conn_url: &str) -> Result<sqlx::PgPool> {
 }
 
 impl DbApi {
-    pub async fn new(conn_url: &str) -> Result<Self> {
+    pub async fn new(conn_url: &str, no_migration: bool) -> Result<Self> {
         let pool = connect_db(conn_url).await?;
         let conn = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
         let db = DbApi {
             conn,
             pool: Some(pool),
         };
-        db.init().await?;
+        if !no_migration {
+            db.migrate().await?;
+        }
         Ok(db)
     }
 
-    async fn init(&self) -> Result<()> {
+    async fn migrate(&self) -> Result<()> {
         Migrator::up(&self.conn, None).await?;
         Ok(())
     }

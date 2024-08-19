@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use lapdev_conductor::server::encode_pkcs8_pem;
 use lapdev_db::{api::DbApi, entities};
-use russh_keys::{
+use russh::keys::{
     decode_secret_key,
     key::{KeyPair, SignatureHash},
 };
@@ -20,7 +20,7 @@ pub async fn load_key(kind: &str, db: &DbApi) -> Result<KeyPair> {
                 .ok_or_else(|| anyhow!("can't generate server key"))?,
             _ => return Err(anyhow!("don't support {kind} host key")),
         };
-        let secret = encode_pkcs8_pem(&key);
+        let secret = encode_pkcs8_pem(&key)?;
         entities::config::ActiveModel {
             name: ActiveValue::Set(kind.to_string()),
             value: ActiveValue::Set(secret),

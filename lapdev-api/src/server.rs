@@ -38,6 +38,9 @@ struct Cli {
     /// The folder for putting logs
     #[clap(short, long, action, value_hint = clap::ValueHint::AnyPath)]
     logs_folder: Option<PathBuf>,
+    /// Don't run db migration on startup
+    #[clap(short, long, action)]
+    no_migration: bool,
 }
 
 pub async fn start(additional_router: Option<Router<CoreState>>) {
@@ -64,7 +67,7 @@ async fn run(cli: &Cli, additional_router: Option<Router<CoreState>>) -> Result<
         .db
         .ok_or_else(|| anyhow!("can't find database url in your config file"))?;
 
-    let db = DbApi::new(&db_url).await?;
+    let db = DbApi::new(&db_url, cli.no_migration).await?;
     let conductor = Conductor::new(LAPDEV_VERSION, db.clone()).await?;
 
     let ssh_proxy_port = config.ssh_proxy_port.unwrap_or(2222);

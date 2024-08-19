@@ -107,8 +107,7 @@ sqlx = { version = "0.7.3", default-features = false, features = ["sqlx-postgres
 sea-orm = { version = "0.12.12", features = [ "sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
 sea-orm-migration = { version = "0.12.6", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
-russh = {version = "0.42.0", features = ["vendored-openssl"] }
-russh-keys = { version = "0.42.0", features = ["vendored-openssl"] }
+russh = {version = "0.44.1", features = ["vendored-openssl"] }
 lapdev-api = { path = "./lapdev-api" }
 lapdev-ws = { path = "./lapdev-ws" }
 lapdev-db = { path = "./lapdev-db" }

@@ -157,6 +157,6 @@ pub fn NewSshKey(update_counter: RwSignal<i32>) -> impl IntoView {
         >
             New SSH Key
         </button>
-        <CreationModal title="New SSH Key".to_string() modal_hidden action body is_update=false create_button_hidden=false />
+        <CreationModal title="New SSH Key".to_string() modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) create_button_hidden=false />
     }
 }

@@ -216,6 +216,6 @@ fn QuotaItemView(
                 </div>
             </div>
         </div>
-        <CreationModal title=format!("Update {kind} Quota") modal_hidden=update_modal_hidden action=update_action body=update_modal_body is_update=true create_button_hidden=false />
+        <CreationModal title=format!("Update {kind} Quota") modal_hidden=update_modal_hidden action=update_action body=update_modal_body update_text=None updating_text=None create_button_hidden=false />
     }
 }

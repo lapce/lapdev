@@ -10,7 +10,7 @@ use leptos_router::use_location;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
-use crate::{account::NavUserControl, organization::OrgSelector};
+use crate::{account::NavUserControl, app::AppConfig, organization::OrgSelector};
 
 #[derive(Clone, Copy)]
 pub struct NavExpanded {
@@ -21,6 +21,7 @@ pub struct NavExpanded {
 #[component]
 pub fn TopNav() -> impl IntoView {
     let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
+    let config = use_context::<RwSignal<AppConfig>>().unwrap();
     let user_control_hidden = create_rw_signal(true);
     let toggle_user_control = move |_| {
         if user_control_hidden.get_untracked() {
@@ -105,16 +106,29 @@ pub fn TopNav() -> impl IntoView {
         <div class="flex flex-row items-center">
             <ul
                 class="font-medium flex flex-row space-x-8 mr-8"
-                class:hidden=move || !login.with(|l| l.as_ref().and_then(|l| l.as_ref().map(|l| l.cluster_admin))).unwrap_or(false)
             >
-                <li>
+                <li
+                    class:hidden=move || !config.get().show_lapdev_website
+                >
+                    <a href="https://lap.dev/">Home</a>
+                </li>
+                <li
+                    class:hidden=move || !config.get().show_lapdev_website
+                >
+                    <a href="https://docs.lap.dev/">Docs</a>
+                </li>
+                <li
+                    class:hidden=move || !login.with(|l| l.as_ref().and_then(|l| l.as_ref().map(|l| l.cluster_admin))).unwrap_or(false)
+                >
                     <a href="/admin"
                         class="block"
                         class=("text-blue-700", move || admin_path)
                         class=("dark:text-blue-500", move || !admin_path)
                     >Cluster Admin</a>
                 </li>
-                <li>
+                <li
+                    class:hidden=move || !login.with(|l| l.as_ref().and_then(|l| l.as_ref().map(|l| l.cluster_admin))).unwrap_or(false)
+                >
                     <a href="/"
                         class="block"
                         class=("text-blue-700", move || !admin_path)
@@ -125,7 +139,7 @@ pub fn TopNav() -> impl IntoView {
             <div on:focusout=on_focusout>
             <button
                 type="button"
-                class="flex text-sm bg-gray-800 rounded-full focus:ring-4 focus:ring-gray-300 dark:focus:ring-gray-600"
+                class="flex text-sm rounded-full focus:ring-4 focus:ring-gray-300 dark:focus:ring-gray-600"
                 on:click=toggle_user_control
             >
                 <span class="sr-only">Open user menu</span>

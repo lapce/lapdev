@@ -132,6 +132,8 @@ impl Usage {
             machine_types
         };
 
+        let now = Utc::now().into();
+
         let records = records
             .into_iter()
             .map(|(record, user)| {
@@ -139,23 +141,35 @@ impl Usage {
                     .get(&record.machine_type_id)
                     .map(|m| m.name.clone())
                     .unwrap_or_default();
+
+                let usage_start = record.start;
+                let usage_start = if usage_start < start {
+                    start
+                } else {
+                    usage_start
+                };
+
+                let usage_end = record.end.unwrap_or(now);
+                let usage_end = if usage_end > end { end } else { usage_end };
+                let duration = usage_end - usage_start;
+                let duration = duration.num_seconds().max(0) as usize;
+                let cost = duration * record.cost_per_second.max(0) as usize;
+
                 UsageRecord {
                     id: record.id,
                     start: record.start,
                     resource_kind: record.resource_kind.clone(),
                     resource_name: record.resource_name.clone(),
                     machine_type,
-                    duration: record.duration.unwrap_or(0) as usize,
-                    cost: record.total_cost as usize,
+                    duration,
+                    cost,
                     user: user.clone().and_then(|user| user.name).unwrap_or_default(),
                     avatar: user.and_then(|user| user.avatar_url).unwrap_or_default(),
                 }
             })
             .collect();
 
-        let total_cost = self
-            .get_cost(organization, user, start, end, Utc::now().into())
-            .await?;
+        let total_cost = self.get_cost(organization, user, start, end, now).await?;
         Ok(UsageResult {
             total_items: items_and_pages.number_of_items,
             num_pages: items_and_pages.number_of_pages,

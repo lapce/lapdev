@@ -111,6 +111,7 @@ pub struct Conductor {
     rpcs: Arc<Mutex<HashMap<Uuid, WorkspaceServiceClient>>>,
     ws_hosts: Arc<Mutex<HashMap<Uuid, WorkspaceHostInfo>>>,
     region: Arc<RwLock<String>>,
+    data_folder: PathBuf,
     pub hostnames: Arc<RwLock<HashMap<String, String>>>,
     pub cpu_overcommit: Arc<RwLock<usize>>,
     // updates for a single prebuild, including the image building outputs
@@ -129,10 +130,10 @@ pub struct Conductor {
 }
 
 impl Conductor {
-    pub async fn new(version: &str, db: DbApi) -> Result<Self> {
-        tokio::fs::create_dir_all("/var/lib/lapdev/projects/")
+    pub async fn new(version: &str, db: DbApi, data_folder: PathBuf) -> Result<Self> {
+        tokio::fs::create_dir_all(data_folder.join("projects"))
             .await
-            .with_context(|| "trying to create /var/lib/lapdev/projects/")?;
+            .with_context(|| format!("trying to create {:?}", data_folder.join("projects")))?;
         let cpu_overcommit = db
             .get_config(LAPDEV_CPU_OVERCOMMIT)
             .await
@@ -144,6 +145,7 @@ impl Conductor {
         let enterprise = Arc::new(Enterprise::new(db.clone()).await?);
         let hostnames = enterprise.get_hostnames().await.unwrap_or_default();
         let conductor = Self {
+            data_folder,
             version: version.to_string(),
             rpcs: Default::default(),
             rpc_aborts: Default::default(),
@@ -548,8 +550,9 @@ impl Conductor {
             let local_repo_url = repo_url.to_string();
             let repo_url = repo_url.to_string();
             let auth = auth.clone();
+            let data_folder = self.data_folder.clone();
             tokio::task::spawn_blocking(move || {
-                let repo = git2::Repository::init("/var/lib/lapdev")?;
+                let repo = git2::Repository::init(data_folder)?;
                 let mut remote = repo.remote_anonymous(&repo_url)?;
 
                 let mut cbs = RemoteCallbacks::new();
@@ -680,7 +683,7 @@ impl Conductor {
             .await?;
         txn.commit().await?;
 
-        let path = PathBuf::from(format!("/var/lib/lapdev/projects/{id}"));
+        let path = self.data_folder.join(format!("projects/{id}"));
         let url = repo.url.clone();
         tokio::fs::create_dir_all(&path).await?;
         clone_repo(url, path, repo.auth.clone()).await?;
@@ -700,9 +703,10 @@ impl Conductor {
         user_agent: Option<String>,
     ) -> Result<Vec<GitBranch>, ApiError> {
         let project_id = project.id;
+        let data_folder = self.data_folder.clone();
         let (previous_branches, branches) = tokio::task::spawn_blocking(
             move || -> Result<(Vec<GitBranch>, Vec<GitBranch>), ApiError> {
-                let path = PathBuf::from(format!("/var/lib/lapdev/projects/{project_id}"));
+                let path = data_folder.join(format!("projects/{project_id}"));
                 let repo = git2::Repository::open(path)?;
 
                 let previous_branches = repo_branches(&repo)?;
@@ -1236,7 +1240,10 @@ impl Conductor {
 
     async fn prepare_repo(&self, repo: &RepoDetails, temp_repo_dir: &Path) -> Result<(), ApiError> {
         if let Some(project) = repo.project.as_ref() {
-            let src_repo_dir = format!("/var/lib/lapdev/projects/{}/.", project.id);
+            let src_repo_dir = self.data_folder.join(format!("projects/{}/.", project.id));
+            let src_repo_dir = src_repo_dir
+                .to_str()
+                .ok_or_else(|| anyhow!("can't get repo dir"))?;
             let temp_repo_dir = temp_repo_dir
                 .to_str()
                 .ok_or_else(|| anyhow!("can't get repo dir"))?;
@@ -2836,7 +2843,7 @@ impl Conductor {
             }
         }
 
-        let path = PathBuf::from(format!("/var/lib/lapdev/projects/{}", project.id));
+        let path = self.data_folder.join(format!("projects/{}", project.id));
         tokio::fs::remove_dir_all(path).await?;
 
         Ok(())

@@ -86,7 +86,12 @@ pub fn UsageView() -> impl IntoView {
 
     let error = create_rw_signal(None);
 
+    let counter = create_rw_signal(0);
+
     let get_action = create_action(move |()| async move {
+        counter.update(|c| {
+            *c += 1;
+        });
         error.set(None);
         let result = get_org_usage(
             from_date.get_untracked(),
@@ -228,7 +233,7 @@ pub fn UsageView() -> impl IntoView {
 
         <For
             each=move || usage.get().records.into_iter().enumerate()
-            key=|(_, r)| r.id
+            key=move |(_, r)| (r.id, counter.get_untracked())
             children=move |(i, record)| {
                 view! {
                     <RecordItemView i record />

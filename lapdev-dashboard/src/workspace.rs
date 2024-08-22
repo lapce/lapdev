@@ -893,7 +893,7 @@ pub fn NewWorkspaceModal(
     };
 
     view! {
-        <CreationModal title="Create New Workspace".to_string() modal_hidden action body=create_info_view is_update=false create_button_hidden=false />
+        <CreationModal title="Create New Workspace".to_string() modal_hidden action body=create_info_view update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) create_button_hidden=false />
     }
 }
 

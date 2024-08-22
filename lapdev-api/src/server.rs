@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{anyhow, Context, Result};
 use axum::{extract::Request, Router};
@@ -38,6 +41,9 @@ struct Cli {
     /// The folder for putting logs
     #[clap(short, long, action, value_hint = clap::ValueHint::AnyPath)]
     logs_folder: Option<PathBuf>,
+    /// The folder for putting data
+    #[clap(short, long, action, value_hint = clap::ValueHint::AnyPath)]
+    data_folder: Option<PathBuf>,
     /// Don't run db migration on startup
     #[clap(short, long, action)]
     no_migration: bool,
@@ -45,15 +51,23 @@ struct Cli {
 
 pub async fn start(additional_router: Option<Router<CoreState>>) {
     let cli = Cli::parse();
+    let data_folder = cli
+        .data_folder
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("/var/lib/lapdev"));
 
-    let _result = setup_log(&cli).await;
+    let _result = setup_log(&cli, &data_folder).await;
 
-    if let Err(e) = run(&cli, additional_router).await {
+    if let Err(e) = run(&cli, additional_router, data_folder).await {
         tracing::error!("lapdev api start server error: {e:#}");
     }
 }
 
-async fn run(cli: &Cli, additional_router: Option<Router<CoreState>>) -> Result<()> {
+async fn run(
+    cli: &Cli,
+    additional_router: Option<Router<CoreState>>,
+    data_folder: PathBuf,
+) -> Result<()> {
     let config_file = cli
         .config_file
         .clone()
@@ -68,7 +82,7 @@ async fn run(cli: &Cli, additional_router: Option<Router<CoreState>>) -> Result<
         .ok_or_else(|| anyhow!("can't find database url in your config file"))?;
 
     let db = DbApi::new(&db_url, cli.no_migration).await?;
-    let conductor = Conductor::new(LAPDEV_VERSION, db.clone()).await?;
+    let conductor = Conductor::new(LAPDEV_VERSION, db.clone(), data_folder).await?;
 
     let ssh_proxy_port = config.ssh_proxy_port.unwrap_or(2222);
     {
@@ -164,11 +178,12 @@ async fn run(cli: &Cli, additional_router: Option<Router<CoreState>>) -> Result<
 
 async fn setup_log(
     cli: &Cli,
+    data_folder: &Path,
 ) -> Result<tracing_appender::non_blocking::WorkerGuard, anyhow::Error> {
     let folder = cli
         .logs_folder
         .clone()
-        .unwrap_or_else(|| PathBuf::from("/var/lib/lapdev/logs"));
+        .unwrap_or_else(|| data_folder.join("logs"));
     tokio::fs::create_dir_all(&folder).await?;
     let file_appender = tracing_appender::rolling::Builder::new()
         .max_log_files(30)

@@ -21,6 +21,11 @@ use crate::{
     workspace::{WorkspaceDetails, Workspaces},
 };
 
+#[derive(Clone)]
+pub struct AppConfig {
+    pub show_lapdev_website: bool,
+}
+
 #[component]
 fn Root() -> impl IntoView {
     view! {
@@ -61,6 +66,10 @@ pub fn set_context() {
         account: create_rw_signal(pathname.starts_with("/account")),
     };
     provide_context(nav_expanded);
+
+    provide_context(create_rw_signal(AppConfig {
+        show_lapdev_website: false,
+    }));
 }
 
 #[component]

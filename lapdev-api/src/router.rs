@@ -8,6 +8,7 @@ use axum::{
 };
 use axum_client_ip::SecureClientIpSource;
 use axum_extra::{headers, TypedHeader};
+use hyper::StatusCode;
 use lapdev_db::entities;
 use lapdev_proxy_http::forward::ProxyForward;
 use lapdev_rpc::error::ApiError;
@@ -35,8 +36,14 @@ fn private_routes() -> Router<CoreState> {
         )
 }
 
+async fn not_found() -> impl IntoResponse {
+    StatusCode::NOT_FOUND
+}
+
 fn v1_api_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreState> {
     let router = Router::new()
+        .route("/", any(not_found))
+        .route("/*0", any(not_found))
         .route("/cluster_info", get(admin::get_cluster_info))
         .route("/auth_providers", get(admin::get_auth_providers))
         .route("/hostnames", get(admin::get_hostnames))

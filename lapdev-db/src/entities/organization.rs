@@ -14,6 +14,7 @@ pub struct Model {
     pub auto_stop: Option<i32>,
     pub allow_workspace_change_auto_stop: bool,
     pub last_auto_stop_check: Option<DateTimeWithTimeZone>,
+    pub usage_limit: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

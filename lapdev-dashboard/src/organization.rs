@@ -357,7 +357,7 @@ pub fn DeleteOrgModal(
                             }
                         }
                         <div class="text-left">
-                        <p>{"1. You'll lose all the projects in this organization and this cannot be restored."}</p>
+                        <p>{"1. You'll lose all the projects and workspaces in this organization and this cannot be restored."}</p>
                         <p>{"2. All organization members will lose access to this organization and all the associated workspaces."}</p>
                         </div>
                         <p class="mt-4 text-left">

@@ -49,6 +49,7 @@ pub async fn create_organization(
         auto_stop: ActiveValue::Set(Some(3600)),
         allow_workspace_change_auto_stop: ActiveValue::Set(true),
         last_auto_stop_check: ActiveValue::Set(None),
+        usage_limit: ActiveValue::Set(30 * 60 * 60),
     }
     .insert(&txn)
     .await?;

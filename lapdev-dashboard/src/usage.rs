@@ -7,6 +7,7 @@ use leptos::{
     IntoView, Signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith,
     SignalWithUntracked,
 };
+use rust_decimal::{prelude::FromPrimitive, Decimal};
 
 use crate::{
     datepicker::Datepicker,
@@ -185,7 +186,7 @@ pub fn UsageView() -> impl IntoView {
                 {" of "}
                 <span class="font-semibold text-gray-900 dark:text-white">{move || usage.with(|u| u.total_items)}</span>
             </span>
-            <p><span class="text-gray-500 mr-1">{"Total Cost:"}</span>{move || usage.with(|u| u.total_cost)}</p>
+            <p><span class="text-gray-500 mr-1">{"Total Cost:"}</span>{move || usage.with(|u| format_cost(u.total_cost))}</p>
             <div class="flex flex-row items-center">
                 <p class="mr-2">{"rows per page"}</p>
 
@@ -278,8 +279,8 @@ fn RecordItemView(i: usize, record: UsageRecord) -> impl IntoView {
                 <p><span class="text-gray-500 mr-1">{"Machine Type:"}</span>{record.machine_type}</p>
             </div>
             <div class="w-1/4 flex flex-col">
-                <p>{duration}</p>
-                <p><span class="text-gray-500 mr-1">{"Cost:"}</span>{record.cost}</p>
+                <p><span class="text-gray-500 mr-1">{"Duration:"}</span>{duration}</p>
+                <p><span class="text-gray-500 mr-1">{"Cost:"}</span>{ format_cost(record.cost) }</p>
             </div>
             <div class="w-1/4 flex flex-col">
                 <span class="mb-2 truncate pr-2 text-gray-900 dark:text-white flex flex-row items-center">
@@ -294,4 +295,12 @@ fn RecordItemView(i: usize, record: UsageRecord) -> impl IntoView {
             </div>
         </div>
     }
+}
+
+pub fn format_cost(cost: usize) -> String {
+    let cost = cost as f64 / 60.0 / 60.0;
+    let cost = Decimal::from_f64(cost)
+        .map(|d| d.trunc_with_scale(2).to_string())
+        .unwrap_or_else(|| cost.to_string());
+    format!("{cost} Hours")
 }

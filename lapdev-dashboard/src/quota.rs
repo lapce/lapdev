@@ -184,6 +184,14 @@ fn QuotaItemView(
         .await
     });
 
+    let current_usage = match kind {
+        QuotaKind::Workspace => value.existing.to_string(),
+        QuotaKind::RunningWorkspace => value.existing.to_string(),
+        QuotaKind::Project => value.existing.to_string(),
+        QuotaKind::DailyCost => format!("{} Hours", value.existing),
+        QuotaKind::MonthlyCost => format!("{} Hours", value.existing),
+    };
+
     view! {
         <div
             class="flex items-center w-full px-4 py-2"
@@ -198,7 +206,7 @@ fn QuotaItemView(
             </div>
             <div class="w-1/2 flex flex-row">
                 <div class="w-1/3 flex flex-col">
-                    <p>{value.existing}</p>
+                    <p>{current_usage}</p>
                 </div>
                 <div class="w-2/3 flex flex-row items-center justify-between">
                     <div class="flex flex-row items-center">

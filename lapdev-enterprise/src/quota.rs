@@ -264,11 +264,15 @@ impl Quota {
                 self.usage
                     .get_daily_cost(organization, None, Utc::now().into(), None)
                     .await?
+                    / 60
+                    / 60
             }
             QuotaKind::MonthlyCost => {
                 self.usage
                     .get_monthly_cost(organization, None, Utc::now().into(), None)
                     .await?
+                    / 60
+                    / 60
             }
         };
         Ok(existing)

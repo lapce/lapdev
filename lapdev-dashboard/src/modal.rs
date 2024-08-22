@@ -323,7 +323,7 @@ where
                 match result {
                     Ok(_) => {
                         update_counter.update(|c| *c += 1);
-                        success.set(Some("save successfully"));
+                        success.set(Some("Saved successfully"));
                     }
                     Err(e) => {
                         error.set(Some(e.error.clone()));
@@ -339,26 +339,6 @@ where
                 view!{}.into_view()
             } else {
                 view!{ <h5 class="text-lg font-semibold dark:text-white">{title}</h5> }.into_view()
-            }
-        }
-        { move || if let Some(error) = error.get() {
-                view! {
-                    <div class="my-2 p-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                        <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
-                    </div>
-                }.into_view()
-            } else {
-                view! {}.into_view()
-            }
-        }
-        { move || if let Some(success) = success.get() {
-                view! {
-                    <div class="my-2 p-4 rounded-lg bg-green-50 dark:bg-gray-800 ">
-                        <span class="text-sm font-medium text-green-800 dark:text-green-400">{ success }</span>
-                    </div>
-                }.into_view()
-            } else {
-                view! {}.into_view()
             }
         }
         { body }
@@ -383,6 +363,26 @@ where
                     extra.into_view()
                 } else {
                     view!{}.into_view()
+                }
+            }
+            { move || if let Some(error) = error.get() {
+                    view! {
+                        <div class="ml-4 py-2 px-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
+                            <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                        </div>
+                    }.into_view()
+                } else {
+                    view! {}.into_view()
+                }
+            }
+            { move || if let Some(success) = success.get() {
+                    view! {
+                        <div class="ml-4 py-2 px-4 rounded-lg bg-green-50 dark:bg-gray-800 ">
+                            <span class="text-sm font-medium text-green-800 dark:text-green-400">{ success }</span>
+                        </div>
+                    }.into_view()
+                } else {
+                    view! {}.into_view()
                 }
             }
         </div>

@@ -17,6 +17,7 @@ pub mod m20240228_141013_create_user_invitation_table;
 pub mod m20240311_220708_create_prebuild_replica_table;
 pub mod m20240312_175753_create_table_update_trigger;
 pub mod m20240316_194115_create_workspace_port_table;
+pub mod m20240823_165223_create_oauth_table;
 
 pub struct Migrator;
 
@@ -41,6 +42,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240311_220708_create_prebuild_replica_table::Migration),
             Box::new(m20240312_175753_create_table_update_trigger::Migration),
             Box::new(m20240316_194115_create_workspace_port_table::Migration),
+            Box::new(m20240823_165223_create_oauth_table::Migration),
         ]
     }
 }

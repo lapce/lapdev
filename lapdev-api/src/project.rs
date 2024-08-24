@@ -122,10 +122,14 @@ pub async fn get_project_branches(
     info: RequestInfo,
 ) -> Result<Response, ApiError> {
     let (user, project) = state.get_project(&cookie, org_id, project_id).await?;
-    let auth = if let Ok(Some(user)) = state.db.get_user(project.created_by).await {
-        (user.provider_login, user.access_token)
+    let auth = if let Ok(Some(oauth)) = state.db.get_oauth(project.oauth_id).await {
+        (oauth.provider_login, oauth.access_token)
     } else {
-        (user.provider_login.clone(), user.access_token.clone())
+        let oauth = state
+            .conductor
+            .find_match_oauth_for_repo(&user, &project.repo_url)
+            .await?;
+        (oauth.provider_login, oauth.access_token)
     };
     let branches = state
         .conductor

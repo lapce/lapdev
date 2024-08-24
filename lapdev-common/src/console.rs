@@ -7,7 +7,6 @@ use crate::UserRole;
 #[derive(Serialize, Deserialize)]
 pub struct NewSessionResponse {
     pub url: String,
-    pub state: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -23,7 +22,6 @@ pub struct Organization {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MeUser {
-    pub login: String,
     pub avatar_url: Option<String>,
     pub email: Option<String>,
     pub name: Option<String>,

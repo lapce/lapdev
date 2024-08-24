@@ -3,6 +3,7 @@ pub mod app;
 pub mod audit_log;
 pub mod cluster;
 pub mod datepicker;
+pub mod git_provider;
 pub mod license;
 pub mod modal;
 pub mod nav;

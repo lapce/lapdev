@@ -40,19 +40,10 @@ pub async fn create_organization(
     let now = Utc::now();
     let txn = state.db.conn.begin().await?;
 
-    let org = entities::organization::ActiveModel {
-        id: ActiveValue::Set(Uuid::new_v4()),
-        deleted_at: ActiveValue::Set(None),
-        name: ActiveValue::Set(name.to_string()),
-        auto_start: ActiveValue::Set(true),
-        allow_workspace_change_auto_start: ActiveValue::Set(true),
-        auto_stop: ActiveValue::Set(Some(3600)),
-        allow_workspace_change_auto_stop: ActiveValue::Set(true),
-        last_auto_stop_check: ActiveValue::Set(None),
-        usage_limit: ActiveValue::Set(30 * 60 * 60),
-    }
-    .insert(&txn)
-    .await?;
+    let org = state
+        .db
+        .create_new_organization(&txn, name.to_string())
+        .await?;
 
     entities::organization_member::ActiveModel {
         created_at: ActiveValue::Set(Utc::now().into()),

@@ -206,6 +206,14 @@ pub fn SideNavAccount() -> impl IntoView {
                 <span class="ml-8">SSH Keys</span>
             </a>
         </li>
+
+        <li
+            class:hidden=move || !nav_expanded.account.get()
+        >
+            <a href="/account/git-providers" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                <span class="ml-8">Git Providers</span>
+            </a>
+        </li>
     }
 }
 

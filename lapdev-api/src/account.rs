@@ -1,7 +1,7 @@
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Host, Path, Query, State},
     response::{IntoResponse, Response},
     Json,
 };
@@ -12,15 +12,15 @@ use axum_extra::{
 use chrono::Utc;
 use hyper::StatusCode;
 use lapdev_common::{
-    console::{MeUser, Organization},
-    NewSshKey, SshKey, UserRole,
+    console::{MeUser, NewSessionResponse, Organization},
+    GitProvider, NewSshKey, SshKey, UserRole,
 };
 use lapdev_db::{api::DbApi, entities};
 use lapdev_rpc::error::ApiError;
 use russh::keys::PublicKeyBase64;
 use sea_orm::{prelude::Uuid, ActiveModelTrait, ActiveValue};
 
-use crate::state::CoreState;
+use crate::{session::create_oauth_connection, state::CoreState};
 
 pub async fn me(
     State(state): State<CoreState>,
@@ -32,7 +32,6 @@ pub async fn me(
         .await
         .unwrap_or_default();
     Ok(Json(MeUser {
-        login: user.provider_login,
         avatar_url: user.avatar_url,
         email: user.email,
         name: user.name,
@@ -241,4 +240,131 @@ pub async fn delete_ssh_key(
     .await?;
 
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn get_git_providers(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    State(state): State<CoreState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    let all_oauths = state.db.get_user_all_oauth(user.id).await?;
+
+    let mut git_providers = Vec::new();
+    for (auth_provider, (_, config)) in state.auth.clients.read().await.iter() {
+        let oauth = all_oauths
+            .iter()
+            .find(|o| o.provider == auth_provider.to_string());
+
+        let git_provider = GitProvider {
+            auth_provider: *auth_provider,
+            connected: oauth.is_some(),
+            avatar_url: oauth.as_ref().and_then(|o| o.avatar_url.clone()),
+            email: oauth.as_ref().and_then(|o| o.email.clone()),
+            name: oauth.as_ref().and_then(|o| o.name.clone()),
+            read_repo: oauth.as_ref().map(|o| o.read_repo),
+            scopes: config.scopes.iter().map(|s| s.to_string()).collect(),
+            all_scopes: config
+                .read_repo_scopes
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        };
+        git_providers.push(git_provider);
+    }
+
+    Ok(Json(git_providers))
+}
+
+pub async fn connect_git_provider(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Host(hostname): Host,
+    Query(query): Query<HashMap<String, String>>,
+    State(state): State<CoreState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    let provider_name = query
+        .get("provider")
+        .ok_or_else(|| ApiError::InvalidRequest("no provider in query string".to_string()))?;
+
+    let oauth = state.db.get_user_oauth(user.id, provider_name).await?;
+    if oauth.is_some() {
+        return Err(ApiError::InvalidRequest(
+            "provider already connected".to_string(),
+        ))?;
+    }
+
+    let (headers, url) =
+        create_oauth_connection(&state, Some(user.id), false, &hostname, &query).await?;
+
+    Ok((headers, Json(NewSessionResponse { url })).into_response())
+}
+
+pub async fn update_scope(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Host(hostname): Host,
+    Query(query): Query<HashMap<String, String>>,
+    State(state): State<CoreState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    let all_oauths = state.db.get_user_all_oauth(user.id).await?;
+    let provider_name = query
+        .get("provider")
+        .ok_or_else(|| ApiError::InvalidRequest("no provider in query string".to_string()))?;
+    if !all_oauths.iter().any(|o| &o.provider == provider_name) {
+        return Err(ApiError::InvalidRequest(
+            "provider isn't connected".to_string(),
+        ))?;
+    }
+
+    let read_repo = query
+        .get("read_repo")
+        .ok_or_else(|| ApiError::InvalidRequest("no read_repo in query string".to_string()))?;
+
+    let read_repo = match read_repo.as_str() {
+        "yes" => true,
+        "no" => false,
+        _ => {
+            return Err(ApiError::InvalidRequest(
+                "read_repo should be either yes or no".to_string(),
+            ))
+        }
+    };
+
+    let (headers, url) =
+        create_oauth_connection(&state, Some(user.id), read_repo, &hostname, &query).await?;
+
+    Ok((headers, Json(NewSessionResponse { url })).into_response())
+}
+
+pub async fn disconnect_git_provider(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Query(query): Query<HashMap<String, String>>,
+    State(state): State<CoreState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    let all_oauths = state.db.get_user_all_oauth(user.id).await?;
+    if all_oauths.len() < 2 {
+        return Err(ApiError::InvalidRequest(
+            "You can't disconnect all git providers".to_string(),
+        ))?;
+    }
+
+    let provider_name = query
+        .get("provider")
+        .ok_or_else(|| ApiError::InvalidRequest("no provider in query string".to_string()))?;
+    let oauth = state
+        .db
+        .get_user_oauth(user.id, provider_name)
+        .await?
+        .ok_or_else(|| ApiError::InvalidRequest("provider isn't connected".to_string()))?;
+
+    entities::oauth_connection::ActiveModel {
+        id: ActiveValue::Set(oauth.id),
+        deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+        ..Default::default()
+    }
+    .update(&state.db.conn)
+    .await?;
+
+    Ok(())
 }

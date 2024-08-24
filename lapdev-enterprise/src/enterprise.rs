@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{AuditLogRecord, LAPDEV_BASE_HOSTNAME};
 use lapdev_common::{AuditLogResult, QuotaKind, QuotaResult};
 use lapdev_db::{api::DbApi, entities};
+use lapdev_rpc::error::ApiError;
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseTransaction, EntityTrait, PaginatorTrait,
     QueryFilter, QueryOrder, QuerySelect,
@@ -13,6 +14,9 @@ use uuid::Uuid;
 
 use crate::usage::Usage;
 use crate::{auto_start_stop::AutoStartStop, license::License, quota::Quota};
+
+const LAPDEV_USAGE_LIMIT_ERROR: &str = "lapdev-usage-limit-error";
+const LAPDEV_RUNNING_WORKSPACE_LIMIT_ERROR: &str = "lapdev-running-workspace-limit-error";
 
 pub struct Enterprise {
     pub quota: Quota,
@@ -39,6 +43,49 @@ impl Enterprise {
 
     pub async fn has_valid_license(&self) -> bool {
         self.license.has_valid().await
+    }
+
+    pub async fn check_organization_limit(
+        &self,
+        organization: &entities::organization::Model,
+    ) -> Result<(), ApiError> {
+        if !self.license.has_valid().await {
+            return Ok(());
+        }
+
+        if organization.running_workspace_limit > 0 {
+            let count = self
+                .quota
+                .get_organization_existing(&QuotaKind::RunningWorkspace, organization.id)
+                .await?;
+            if count as i32 >= organization.running_workspace_limit {
+                return Err(ApiError::InvalidRequest(
+                    self.db
+                        .get_config(LAPDEV_RUNNING_WORKSPACE_LIMIT_ERROR)
+                        .await
+                        .unwrap_or_else(|_| {
+                            "You have reached the running workspace limit".to_string()
+                        }),
+                ));
+            }
+        }
+
+        if organization.usage_limit > 0 {
+            let usage = self
+                .usage
+                .get_monthly_cost(organization.id, None, Utc::now().into(), None)
+                .await?;
+            if usage as i64 >= organization.usage_limit {
+                return Err(ApiError::InvalidRequest(
+                    self.db
+                        .get_config(LAPDEV_USAGE_LIMIT_ERROR)
+                        .await
+                        .unwrap_or_else(|_| "You have reached the usage limit".to_string()),
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn check_create_workspace_quota(

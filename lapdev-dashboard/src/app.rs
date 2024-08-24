@@ -11,6 +11,7 @@ use crate::{
     account::{get_login, AccountSettings, JoinView, Login},
     audit_log::AuditLogView,
     cluster::{ClusterSettings, ClusterUsersView, MachineTypeView, WorkspaceHostView},
+    git_provider::GitProviderView,
     license::{LicenseView, SignLicenseView},
     nav::{AdminSideNav, NavExpanded, SideNav, TopNav},
     organization::{NewOrgModal, OrgMembers, OrgSettings},
@@ -91,6 +92,7 @@ pub fn App() -> impl IntoView {
                 <Route path="/account" view=move || view! { <WrappedView element=AccountSettings /> } />
                 <Route path="/join/:id" view=move || view! { <WrappedView element=JoinView /> } />
                 <Route path="/account/ssh-keys" view=move || view! { <WrappedView element=SshKeys /> } />
+                <Route path="/account/git-providers" view=move || view! { <WrappedView element=GitProviderView /> } />
                 <Route path="/admin" view=move || view! { <AdminWrappedView element=WorkspaceHostView /> } />
                 <Route path="/admin/workspace_hosts" view=move || view! { <AdminWrappedView element=WorkspaceHostView /> } />
                 <Route path="/admin/machine_types" view=move || view! { <AdminWrappedView element=MachineTypeView /> } />

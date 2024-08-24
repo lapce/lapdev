@@ -17,6 +17,7 @@ pub struct AuthConfig {
     pub auth_url: &'static str,
     pub token_url: &'static str,
     pub scopes: &'static [&'static str],
+    pub read_repo_scope: &'static str,
     pub read_repo_scopes: &'static [&'static str],
 }
 
@@ -27,6 +28,7 @@ impl AuthConfig {
         auth_url: "https://github.com/login/oauth/authorize",
         token_url: "https://github.com/login/oauth/access_token",
         scopes: &["read:user", "user:email"],
+        read_repo_scope: "repo",
         read_repo_scopes: &["read:user", "user:email", "repo"],
     };
     pub const GITLAB: Self = AuthConfig {
@@ -35,6 +37,7 @@ impl AuthConfig {
         auth_url: "https://gitlab.com/oauth/authorize",
         token_url: "https://gitlab.com/oauth/token",
         scopes: &["read_user"],
+        read_repo_scope: "read_repository",
         read_repo_scopes: &["read_user", "read_repository"],
     };
 }
@@ -88,17 +91,17 @@ impl Auth {
         &self,
         provider: AuthProvider,
         redirect_url: &str,
-        no_read_repo: bool,
+        read_repo: bool,
     ) -> Result<(String, String)> {
         let clients = self.clients.read().await;
         let (client, config) = clients
             .get(&provider)
             .ok_or_else(|| anyhow::anyhow!("can't find provider"))?;
         let mut client = client.authorize_url(oauth2::CsrfToken::new_random);
-        for scope in if no_read_repo {
-            config.scopes
-        } else {
+        for scope in if read_repo {
             config.read_repo_scopes
+        } else {
+            config.scopes
         } {
             client = client.add_scope(oauth2::Scope::new(scope.to_string()));
         }

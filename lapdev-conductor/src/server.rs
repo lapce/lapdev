@@ -12,12 +12,12 @@ use data_encoding::BASE64_MIME;
 use futures::{channel::mpsc::UnboundedReceiver, stream::AbortHandle, SinkExt, StreamExt};
 use git2::{Cred, FetchOptions, FetchPrune, RemoteCallbacks, Repository};
 use lapdev_common::{
-    utils::rand_string, AuditAction, AuditResourceKind, BuildTarget, CreateWorkspaceRequest,
-    DeleteWorkspaceRequest, GitBranch, NewProject, NewProjectResponse, NewWorkspace,
-    NewWorkspaceResponse, PrebuildInfo, PrebuildStatus, PrebuildUpdateEvent, RepoBuildInfo,
-    RepoBuildOutput, RepoContent, RepoContentPosition, RepoSource, StartWorkspaceRequest,
-    StopWorkspaceRequest, UsageResourceKind, WorkspaceStatus, WorkspaceUpdateEvent,
-    LAPDEV_DEFAULT_OSUSER,
+    utils::rand_string, AuditAction, AuditResourceKind, AuthProvider, BuildTarget,
+    CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch, NewProject, NewProjectResponse,
+    NewWorkspace, NewWorkspaceResponse, PrebuildInfo, PrebuildStatus, PrebuildUpdateEvent,
+    RepoBuildInfo, RepoBuildOutput, RepoContent, RepoContentPosition, RepoSource,
+    StartWorkspaceRequest, StopWorkspaceRequest, UsageResourceKind, WorkspaceStatus,
+    WorkspaceUpdateEvent, LAPDEV_DEFAULT_OSUSER,
 };
 use lapdev_common::{PrebuildReplicaStatus, WorkspaceHostStatus};
 use lapdev_db::{api::DbApi, entities};
@@ -626,6 +626,35 @@ impl Conductor {
         })
     }
 
+    pub async fn find_match_oauth_for_repo(
+        &self,
+        user: &entities::user::Model,
+        repo: &str,
+    ) -> Result<entities::oauth_connection::Model> {
+        let oauths = self.db.get_user_all_oauth(user.id).await?;
+
+        let repo = repo.to_lowercase();
+
+        if let Some(oauth) = if repo.contains("github.com") {
+            oauths
+                .iter()
+                .find(|o| o.provider == AuthProvider::Github.to_string())
+        } else if repo.contains("gitlab.com") {
+            oauths
+                .iter()
+                .find(|o| o.provider == AuthProvider::Gitlab.to_string())
+        } else {
+            None
+        } {
+            return Ok(oauth.clone());
+        }
+
+        let oauth = oauths
+            .first()
+            .ok_or_else(|| anyhow!("user doesn't have any oauth connections"))?;
+        Ok(oauth.to_owned())
+    }
+
     pub async fn create_project(
         &self,
         user: entities::user::Model,
@@ -635,11 +664,14 @@ impl Conductor {
         user_agent: Option<String>,
     ) -> Result<NewProjectResponse, ApiError> {
         let repo = self.format_repo_url(&project.repo);
+
+        let oauth = self.find_match_oauth_for_repo(&user, &repo).await?;
+
         let repo = self
             .get_raw_repo_details(
                 &repo,
                 None,
-                (user.provider_login.clone(), user.access_token.clone()),
+                (oauth.provider_login.clone(), oauth.access_token.clone()),
             )
             .await?;
 
@@ -658,12 +690,14 @@ impl Conductor {
             id: ActiveValue::Set(id),
             name: ActiveValue::Set(repo.name.clone()),
             created_at: ActiveValue::Set(now.into()),
+            deleted_at: ActiveValue::Set(None),
             repo_url: ActiveValue::Set(repo.url.clone()),
             repo_name: ActiveValue::Set(repo.name.clone()),
             organization_id: ActiveValue::Set(org_id),
             created_by: ActiveValue::Set(user.id),
+            oauth_id: ActiveValue::Set(oauth.id),
             machine_type_id: ActiveValue::Set(project.machine_type_id),
-            ..Default::default()
+            env: ActiveValue::Set(None),
         };
         let project = project.insert(&txn).await?;
 
@@ -1077,6 +1111,8 @@ impl Conductor {
         let name = format!("{}-{}", repo.name, rand_string(12));
         let (id_rsa, public_key) = self.generate_key_pair()?;
         let osuser = self.get_osuser(user).await;
+
+        self.enterprise.check_organization_limit(org).await?;
 
         let txn = self.db.conn.begin().await?;
         if let Some(quota) = self
@@ -1502,10 +1538,13 @@ impl Conductor {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<RepoDetails, ApiError> {
-        let auth = if let Ok(Some(user)) = self.db.get_user(project.created_by).await {
-            (user.provider_login, user.access_token)
+        let auth = if let Ok(Some(oauth)) = self.db.get_oauth(project.oauth_id).await {
+            (oauth.provider_login, oauth.access_token)
         } else {
-            (user.provider_login.clone(), user.access_token.clone())
+            let oauth = self
+                .find_match_oauth_for_repo(user, &project.repo_url)
+                .await?;
+            (oauth.provider_login.clone(), oauth.access_token.clone())
         };
         let branches = self
             .project_branches(user.id, project, auth.clone(), ip, user_agent)
@@ -1557,11 +1596,12 @@ impl Conductor {
                 if let Some(project) = project {
                     project
                 } else {
+                    let oauth = self.find_match_oauth_for_repo(user, &repo).await?;
                     return self
                         .get_raw_repo_details(
                             &repo,
                             branch,
-                            (user.provider_login.clone(), user.access_token.clone()),
+                            (oauth.provider_login.clone(), oauth.access_token.clone()),
                         )
                         .await;
                 }
@@ -2424,6 +2464,9 @@ impl Conductor {
                 "You can't start a compose service workspace. You can only start the main workspace".to_string(),
             ));
         }
+
+        let org = self.db.get_organization(workspace.organization_id).await?;
+        self.enterprise.check_organization_limit(&org).await?;
 
         let txn = self.db.conn.begin().await?;
         if let Some(quota) = self

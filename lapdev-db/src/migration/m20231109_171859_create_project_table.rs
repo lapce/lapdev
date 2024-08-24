@@ -23,6 +23,7 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Project::Name).string().not_null())
                     .col(ColumnDef::new(Project::OrganizationId).uuid().not_null())
                     .col(ColumnDef::new(Project::CreatedBy).uuid().not_null())
+                    .col(ColumnDef::new(Project::OauthId).uuid().not_null())
                     .col(ColumnDef::new(Project::RepoUrl).string().not_null())
                     .col(ColumnDef::new(Project::RepoName).string().not_null())
                     .col(ColumnDef::new(Project::MachineTypeId).uuid().not_null())
@@ -62,6 +63,7 @@ pub enum Project {
     Name,
     OrganizationId,
     CreatedBy,
+    OauthId,
     RepoUrl,
     RepoName,
     MachineTypeId,

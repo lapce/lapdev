@@ -242,7 +242,16 @@ pub enum WorkspaceHostStatus {
 }
 
 #[derive(
-    Hash, EnumString, strum_macros::Display, PartialEq, Eq, Debug, Deserialize, Serialize, Clone,
+    Hash,
+    EnumString,
+    strum_macros::Display,
+    PartialEq,
+    Eq,
+    Debug,
+    Deserialize,
+    Serialize,
+    Clone,
+    Copy,
 )]
 pub enum AuthProvider {
     Github,
@@ -275,15 +284,6 @@ pub enum WorkspaceStatus {
     DeleteFailed,
     Deleting,
     Deleted,
-}
-
-impl WorkspaceStatus {
-    pub const RUNNING: &'static [WorkspaceStatus] = &[
-        WorkspaceStatus::New,
-        WorkspaceStatus::PrebuildBuilding,
-        WorkspaceStatus::Building,
-        WorkspaceStatus::Running,
-    ];
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
@@ -753,4 +753,16 @@ pub struct ClusterUser {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateClusterUser {
     pub cluster_admin: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GitProvider {
+    pub auth_provider: AuthProvider,
+    pub avatar_url: Option<String>,
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub connected: bool,
+    pub read_repo: Option<bool>,
+    pub scopes: Vec<String>,
+    pub all_scopes: Vec<String>,
 }

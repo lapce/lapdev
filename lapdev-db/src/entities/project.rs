@@ -12,6 +12,7 @@ pub struct Model {
     pub name: String,
     pub organization_id: Uuid,
     pub created_by: Uuid,
+    pub oauth_id: Uuid,
     pub repo_url: String,
     pub repo_name: String,
     pub machine_type_id: Uuid,

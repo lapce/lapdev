@@ -24,7 +24,8 @@ use super::entities::workspace;
 
 pub const LAPDEV_CLUSTER_NOT_INITIATED: &str = "lapdev-cluster-not-initiated";
 const LAPDEV_API_AUTH_TOKEN_KEY: &str = "lapdev-api-auth-token-key";
-const LAPDEV_OAUTH_NO_READ_REPO: &str = "lapdev-oauth-no-read-repo";
+const LAPDEV_DEFAULT_USAGE_LIMIT: &str = "lapdev-default-org-usage-limit";
+const LAPDEV_DEFAULT_RUNNING_WORKSPACE_LIMIT: &str = "lapdev-default-org-running-workspace-limit";
 
 #[derive(Clone)]
 pub struct DbApi {
@@ -100,12 +101,6 @@ impl DbApi {
         self.generate_api_auth_token_key().await
     }
 
-    pub async fn oauth_no_read_repo(&self) -> Result<bool> {
-        self.get_config(LAPDEV_OAUTH_NO_READ_REPO)
-            .await
-            .map(|v| v == "yes")
-    }
-
     async fn get_api_auth_token_key(&self) -> Result<SymmetricKey<V4>> {
         let key = self.get_config(LAPDEV_API_AUTH_TOKEN_KEY).await?;
         let key = STANDARD.decode(key)?;
@@ -132,6 +127,15 @@ impl DbApi {
         let model = entities::config::Entity::find()
             .filter(entities::config::Column::Name.eq(name))
             .one(&self.conn)
+            .await?
+            .ok_or_else(|| anyhow!("no config found"))?;
+        Ok(model.value)
+    }
+
+    async fn get_config_in_txn(&self, txn: &DatabaseTransaction, name: &str) -> Result<String> {
+        let model = entities::config::Entity::find()
+            .filter(entities::config::Column::Name.eq(name))
+            .one(txn)
             .await?
             .ok_or_else(|| anyhow!("no config found"))?;
         Ok(model.value)
@@ -254,6 +258,42 @@ impl DbApi {
         Ok(models)
     }
 
+    pub async fn create_new_organization(
+        &self,
+        txn: &DatabaseTransaction,
+        name: String,
+    ) -> Result<entities::organization::Model> {
+        let default_usage_limit = self
+            .get_config_in_txn(txn, LAPDEV_DEFAULT_USAGE_LIMIT)
+            .await
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        let default_running_workspace_limit = self
+            .get_config_in_txn(txn, LAPDEV_DEFAULT_RUNNING_WORKSPACE_LIMIT)
+            .await
+            .ok()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0);
+
+        let org = entities::organization::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            deleted_at: ActiveValue::Set(None),
+            name: ActiveValue::Set(name.to_string()),
+            auto_start: ActiveValue::Set(true),
+            allow_workspace_change_auto_start: ActiveValue::Set(true),
+            auto_stop: ActiveValue::Set(Some(3600)),
+            allow_workspace_change_auto_stop: ActiveValue::Set(true),
+            last_auto_stop_check: ActiveValue::Set(None),
+            usage_limit: ActiveValue::Set(default_usage_limit),
+            running_workspace_limit: ActiveValue::Set(default_running_workspace_limit),
+        }
+        .insert(txn)
+        .await?;
+
+        Ok(org)
+    }
+
     pub async fn create_new_user(
         &self,
         txn: &DatabaseTransaction,
@@ -274,23 +314,30 @@ impl DbApi {
         };
 
         let now = Utc::now();
-        let org = entities::organization::ActiveModel {
-            id: ActiveValue::Set(uuid::Uuid::new_v4()),
-            name: ActiveValue::Set("Personal".to_string()),
-            auto_start: ActiveValue::Set(true),
-            auto_stop: ActiveValue::Set(Some(3600)),
-            allow_workspace_change_auto_start: ActiveValue::Set(true),
-            allow_workspace_change_auto_stop: ActiveValue::Set(true),
-            ..Default::default()
-        }
-        .insert(txn)
-        .await?;
+        let org = self
+            .create_new_organization(txn, "Personal".to_string())
+            .await?;
 
         let user = entities::user::ActiveModel {
             id: ActiveValue::Set(Uuid::new_v4()),
             created_at: ActiveValue::Set(now.into()),
             deleted_at: ActiveValue::Set(None),
+            provider: ActiveValue::Set(provider.to_string()),
             osuser: ActiveValue::Set(format!("{provider}_{}", provider_user.login)),
+            avatar_url: ActiveValue::Set(provider_user.avatar_url.clone()),
+            email: ActiveValue::Set(provider_user.email.clone()),
+            name: ActiveValue::Set(provider_user.name.clone()),
+            current_organization: ActiveValue::Set(org.id),
+            cluster_admin: ActiveValue::Set(cluster_admin),
+        }
+        .insert(txn)
+        .await?;
+
+        entities::oauth_connection::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            user_id: ActiveValue::Set(user.id),
+            created_at: ActiveValue::Set(now.into()),
+            deleted_at: ActiveValue::Set(None),
             provider: ActiveValue::Set(provider.to_string()),
             provider_id: ActiveValue::Set(provider_user.id),
             provider_login: ActiveValue::Set(provider_user.login),
@@ -298,8 +345,7 @@ impl DbApi {
             avatar_url: ActiveValue::Set(provider_user.avatar_url),
             email: ActiveValue::Set(provider_user.email),
             name: ActiveValue::Set(provider_user.name),
-            current_organization: ActiveValue::Set(org.id),
-            cluster_admin: ActiveValue::Set(cluster_admin),
+            read_repo: ActiveValue::Set(false),
         }
         .insert(txn)
         .await?;
@@ -321,6 +367,41 @@ impl DbApi {
         let model = entities::user::Entity::find()
             .filter(entities::user::Column::Id.eq(user_id))
             .filter(entities::user::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
+    pub async fn get_oauth(&self, id: Uuid) -> Result<Option<entities::oauth_connection::Model>> {
+        let model = entities::oauth_connection::Entity::find()
+            .filter(entities::oauth_connection::Column::Id.eq(id))
+            .filter(entities::oauth_connection::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
+    pub async fn get_user_all_oauth(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<entities::oauth_connection::Model>> {
+        let model = entities::oauth_connection::Entity::find()
+            .filter(entities::oauth_connection::Column::UserId.eq(user_id))
+            .filter(entities::oauth_connection::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
+    pub async fn get_user_oauth(
+        &self,
+        user_id: Uuid,
+        provider_name: &str,
+    ) -> Result<Option<entities::oauth_connection::Model>> {
+        let model = entities::oauth_connection::Entity::find()
+            .filter(entities::oauth_connection::Column::UserId.eq(user_id))
+            .filter(entities::oauth_connection::Column::Provider.eq(provider_name))
+            .filter(entities::oauth_connection::Column::DeletedAt.is_null())
             .one(&self.conn)
             .await?;
         Ok(model)

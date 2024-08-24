@@ -165,6 +165,19 @@ fn v1_api_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreSta
         .route("/account/ssh_keys", post(account::create_ssh_key))
         .route("/account/ssh_keys", get(account::all_ssh_keys))
         .route("/account/ssh_keys/:key_id", delete(account::delete_ssh_key))
+        .route("/account/git_providers", get(account::get_git_providers))
+        .route(
+            "/account/git_providers/connect",
+            put(account::connect_git_provider),
+        )
+        .route(
+            "/account/git_providers/disconnect",
+            put(account::disconnect_git_provider),
+        )
+        .route(
+            "/account/git_providers/update_scope",
+            put(account::update_scope),
+        )
         .route("/admin/workspace_hosts", get(admin::get_workspace_hosts))
         .route("/admin/workspace_hosts", post(admin::create_workspace_host))
         .route(

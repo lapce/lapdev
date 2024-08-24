@@ -5,6 +5,7 @@ pub mod prelude;
 pub mod audit_log;
 pub mod config;
 pub mod machine_type;
+pub mod oauth_connection;
 pub mod organization;
 pub mod organization_member;
 pub mod prebuild;

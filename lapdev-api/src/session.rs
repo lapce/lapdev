@@ -20,11 +20,15 @@ use sea_orm::{
     TransactionTrait,
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::state::{CoreState, RequestInfo, TOKEN_COOKIE_NAME};
 
-const OAUTH_STATE: &str = "oauth_state";
-const REDIRECT_URL: &str = "redirect_url";
+pub const OAUTH_STATE: &str = "oauth_state";
+pub const OAUTH_STATE_COOKIE: &str = "state";
+pub const REDIRECT_URL: &str = "redirect_url";
+pub const CONNECT_USER: &str = "connect_user";
+pub const READ_REPO: &str = "read_repo";
 
 #[derive(Debug, Deserialize)]
 pub struct AuthRequest {
@@ -32,38 +36,50 @@ pub struct AuthRequest {
     state: String,
     provider: AuthProvider,
     next: Option<String>,
+    connect_provider: Option<String>,
 }
 
-pub(crate) async fn new_session(
-    Host(hostname): Host,
-    Query(query): Query<HashMap<String, String>>,
-    State(state): State<CoreState>,
-) -> Result<Response, ApiError> {
-    let next = query
-        .get("next")
-        .ok_or_else(|| ApiError::InvalidRequest("no next url in query string".to_string()))?;
+pub async fn create_oauth_connection(
+    state: &CoreState,
+    connect_user_id: Option<Uuid>,
+    read_repo: bool,
+    hostname: &str,
+    query: &HashMap<String, String>,
+) -> Result<(HeaderMap, String), ApiError> {
     let host = query
         .get("host")
         .ok_or_else(|| ApiError::InvalidRequest("no host in query string".to_string()))?;
+    let next = query
+        .get("next")
+        .ok_or_else(|| ApiError::InvalidRequest("no next url in query string".to_string()))?;
     let provider = query
         .get("provider")
         .ok_or_else(|| ApiError::InvalidRequest("no provider in query string".to_string()))?;
+    let redirect_url = format!(
+        "{host}/api/private/session/authorize?provider={provider}{}&next={next}",
+        if connect_user_id.is_some() {
+            "&connect_provider=yes"
+        } else {
+            ""
+        }
+    );
+
     let provider = AuthProvider::from_str(provider)
         .map_err(|_| ApiError::InvalidRequest(format!("provider {provider} is invalid")))?;
-
-    let redirect_url =
-        format!("{host}/api/private/session/authorize?provider={provider}&next={next}");
-    let oauth_no_read_repo = state.db.oauth_no_read_repo().await.unwrap_or(false);
     let (url, csrf) = state
         .auth
-        .authorize_url(provider, &redirect_url, oauth_no_read_repo)
+        .authorize_url(provider, &redirect_url, read_repo)
         .await?;
 
     let mut claims = Claims::new()?;
     claims.add_additional(OAUTH_STATE, csrf.clone())?;
     claims.add_additional(REDIRECT_URL, redirect_url.clone())?;
+    claims.add_additional(READ_REPO, read_repo)?;
+    if let Some(id) = connect_user_id {
+        claims.add_additional(CONNECT_USER, id.to_string())?;
+    }
     let token = pasetors::local::encrypt(&state.auth_token_key, &claims, None, None)?;
-    let cookie = format!("{TOKEN_COOKIE_NAME}={token}; Path=/");
+    let cookie = format!("{OAUTH_STATE_COOKIE}={token}; Path=/");
     let cookie = if let Some(hostname) = hostname.split(':').next() {
         if hostname.parse::<IpAddr>().is_err() {
             format!("{cookie}; Domain=.{hostname}")
@@ -75,8 +91,16 @@ pub(crate) async fn new_session(
     };
     let mut headers = HeaderMap::new();
     headers.insert(SET_COOKIE, cookie.parse()?);
+    Ok((headers, url))
+}
 
-    Ok((headers, Json(NewSessionResponse { url, state: csrf })).into_response())
+pub(crate) async fn new_session(
+    Host(hostname): Host,
+    Query(query): Query<HashMap<String, String>>,
+    State(state): State<CoreState>,
+) -> Result<Response, ApiError> {
+    let (headers, url) = create_oauth_connection(&state, None, false, &hostname, &query).await?;
+    Ok((headers, Json(NewSessionResponse { url })).into_response())
 }
 
 pub(crate) async fn session_authorize(
@@ -86,7 +110,7 @@ pub(crate) async fn session_authorize(
     info: RequestInfo,
     TypedHeader(cookie): TypedHeader<headers::Cookie>,
 ) -> Result<Response, ApiError> {
-    let token = state.token(&cookie)?;
+    let token = state.auth_state_token(&cookie)?;
     let claims = token.payload_claims().ok_or(ApiError::InvalidAuthToken)?;
 
     let redirect_url = claims
@@ -145,18 +169,88 @@ pub(crate) async fn session_authorize(
         }
     };
 
-    let user = match entities::user::Entity::find()
-        .filter(entities::user::Column::Provider.eq(query.provider.to_string()))
-        .filter(entities::user::Column::ProviderId.eq(provider_user.id))
-        .filter(entities::user::Column::DeletedAt.is_null())
+    if query.connect_provider.as_deref() == Some("yes") {
+        let now = Utc::now();
+
+        let connect_user = claims
+            .get_claim(CONNECT_USER)
+            .ok_or_else(|| ApiError::InvalidRequest("doens't have connect user".to_string()))?;
+        let connect_user: String = serde_json::from_value(connect_user.to_owned())
+            .map_err(|_| ApiError::InvalidRequest("invalid connect user".to_string()))?;
+        let user_id = Uuid::from_str(&connect_user)?;
+
+        let read_repo = claims
+            .get_claim(READ_REPO)
+            .ok_or_else(|| ApiError::InvalidRequest("doens't have read repo".to_string()))?;
+        let read_repo: bool = serde_json::from_value(read_repo.to_owned())
+            .map_err(|_| ApiError::InvalidRequest("invalid read repo".to_string()))?;
+
+        match entities::oauth_connection::Entity::find()
+            .filter(entities::oauth_connection::Column::Provider.eq(query.provider.to_string()))
+            .filter(entities::oauth_connection::Column::UserId.eq(user_id))
+            .filter(entities::oauth_connection::Column::DeletedAt.is_null())
+            .one(&state.db.conn)
+            .await?
+        {
+            Some(c) => {
+                entities::oauth_connection::ActiveModel {
+                    id: ActiveValue::Set(c.id),
+                    provider_login: ActiveValue::Set(provider_user.login),
+                    access_token: ActiveValue::Set(token.secret().to_string()),
+                    avatar_url: ActiveValue::Set(provider_user.avatar_url.clone()),
+                    email: ActiveValue::Set(provider_user.email.clone()),
+                    name: ActiveValue::Set(provider_user.name.clone()),
+                    read_repo: ActiveValue::Set(read_repo),
+                    ..Default::default()
+                }
+                .update(&state.db.conn)
+                .await?;
+            }
+            None => {
+                entities::oauth_connection::ActiveModel {
+                    id: ActiveValue::Set(Uuid::new_v4()),
+                    user_id: ActiveValue::Set(user_id),
+                    created_at: ActiveValue::Set(now.into()),
+                    deleted_at: ActiveValue::Set(None),
+                    provider: ActiveValue::Set(query.provider.to_string()),
+                    provider_id: ActiveValue::Set(provider_user.id),
+                    provider_login: ActiveValue::Set(provider_user.login),
+                    access_token: ActiveValue::Set(token.secret().to_string()),
+                    avatar_url: ActiveValue::Set(provider_user.avatar_url),
+                    email: ActiveValue::Set(provider_user.email),
+                    name: ActiveValue::Set(provider_user.name),
+                    read_repo: ActiveValue::Set(read_repo),
+                }
+                .insert(&state.db.conn)
+                .await?;
+            }
+        }
+
+        return Ok(Redirect::temporary(query.next.as_deref().unwrap_or("/")).into_response());
+    }
+
+    let user = match entities::oauth_connection::Entity::find()
+        .filter(entities::oauth_connection::Column::Provider.eq(query.provider.to_string()))
+        .filter(entities::oauth_connection::Column::ProviderId.eq(provider_user.id))
+        .filter(entities::oauth_connection::Column::DeletedAt.is_null())
         .one(&state.db.conn)
         .await?
     {
-        Some(user) => {
-            entities::user::ActiveModel {
-                id: ActiveValue::Set(user.id),
+        Some(conn) => {
+            let conn = entities::oauth_connection::ActiveModel {
+                id: ActiveValue::Set(conn.id),
                 provider_login: ActiveValue::Set(provider_user.login),
                 access_token: ActiveValue::Set(token.secret().to_string()),
+                avatar_url: ActiveValue::Set(provider_user.avatar_url.clone()),
+                email: ActiveValue::Set(provider_user.email.clone()),
+                name: ActiveValue::Set(provider_user.name.clone()),
+                ..Default::default()
+            }
+            .update(&state.db.conn)
+            .await?;
+
+            entities::user::ActiveModel {
+                id: ActiveValue::Set(conn.user_id),
                 avatar_url: ActiveValue::Set(provider_user.avatar_url),
                 email: ActiveValue::Set(provider_user.email),
                 name: ActiveValue::Set(provider_user.name),

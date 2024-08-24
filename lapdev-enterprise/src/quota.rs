@@ -209,8 +209,9 @@ impl Quota {
                     .filter(entities::workspace::Column::UserId.eq(user))
                     .filter(
                         entities::workspace::Column::Status
-                            .is_in(WorkspaceStatus::RUNNING.iter().map(|s| s.to_string())),
+                            .ne(WorkspaceStatus::Stopped.to_string()),
                     )
+                    .filter(entities::workspace::Column::ComposeParent.is_null())
                     .count(&self.db.conn)
                     .await? as usize
             }
@@ -229,7 +230,7 @@ impl Quota {
         Ok(existing)
     }
 
-    async fn get_organization_existing(
+    pub async fn get_organization_existing(
         &self,
         kind: &QuotaKind,
         organization: Uuid,
@@ -248,8 +249,9 @@ impl Quota {
                     .filter(entities::workspace::Column::OrganizationId.eq(organization))
                     .filter(
                         entities::workspace::Column::Status
-                            .is_in(WorkspaceStatus::RUNNING.iter().map(|s| s.to_string())),
+                            .ne(WorkspaceStatus::Stopped.to_string()),
                     )
+                    .filter(entities::workspace::Column::ComposeParent.is_null())
                     .count(&self.db.conn)
                     .await? as usize
             }

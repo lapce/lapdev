@@ -31,6 +31,7 @@ use crate::{
     auth::{Auth, AuthConfig},
     cert::{load_cert, CertStore},
     github::GithubClient,
+    session::OAUTH_STATE_COOKIE,
 };
 
 pub const TOKEN_COOKIE_NAME: &str = "token";
@@ -157,8 +158,8 @@ impl CoreState {
         Ok(())
     }
 
-    pub fn token(&self, cookie: &headers::Cookie) -> Result<TrustedToken, ApiError> {
-        let token = cookie.get(TOKEN_COOKIE_NAME).ok_or(ApiError::NoAuthToken)?;
+    fn cookie_token(&self, cookie: &headers::Cookie, name: &str) -> Result<TrustedToken, ApiError> {
+        let token = cookie.get(name).ok_or(ApiError::NoAuthToken)?;
         let untrusted_token =
             UntrustedToken::try_from(token).map_err(|_| ApiError::InvalidAuthToken)?;
         let token = pasetors::local::decrypt(
@@ -170,6 +171,14 @@ impl CoreState {
         )
         .map_err(|_| ApiError::InvalidAuthToken)?;
         Ok(token)
+    }
+
+    pub fn auth_state_token(&self, cookie: &headers::Cookie) -> Result<TrustedToken, ApiError> {
+        self.cookie_token(cookie, OAUTH_STATE_COOKIE)
+    }
+
+    pub fn token(&self, cookie: &headers::Cookie) -> Result<TrustedToken, ApiError> {
+        self.cookie_token(cookie, TOKEN_COOKIE_NAME)
     }
 
     pub async fn require_enterprise(&self) -> Result<(), ApiError> {

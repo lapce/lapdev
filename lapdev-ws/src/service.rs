@@ -10,7 +10,7 @@ use docker_compose_types::AdvancedBuildStep;
 use http_body_util::{BodyExt, Full};
 use hyperlocal::Uri;
 use lapdev_common::{
-    BuildTarget, Container, ContainerInfo, CreateWorkspaceRequest, DeleteWorkspaceRequest,
+    BuildTarget, Container, ContainerInfo, CpuCore, CreateWorkspaceRequest, DeleteWorkspaceRequest,
     NewContainer, NewContainerEndpointSettings, NewContainerHostConfig, NewContainerNetwork,
     NewContainerNetworkingConfig, PrebuildInfo, RepoBuildInfo, RepoBuildOutput, RepoContent,
     RepoContentPosition, StartWorkspaceRequest, StopWorkspaceRequest,
@@ -20,7 +20,7 @@ use lapdev_rpc::{
     error::ApiError, ConductorServiceClient, InterWorkspaceService, InterWorkspaceServiceClient,
     WorkspaceService,
 };
-use tarpc::{context, tokio_serde::formats::Bincode};
+use tarpc::{context, tokio_serde::formats::Json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -153,7 +153,8 @@ impl WorkspaceService for WorkspaceRpcService {
         let mut exposed_ports = image_info.config.exposed_ports.unwrap_or_default();
         exposed_ports.insert("22/tcp".to_string(), HashMap::new());
         exposed_ports.insert("30000/tcp".to_string(), HashMap::new());
-        let body = serde_json::to_string(&NewContainer {
+
+        let mut body = NewContainer {
             hostname: ws_req.workspace_name.clone(),
             user: "root".to_string(),
             image: ws_req.image.clone(),
@@ -168,12 +169,9 @@ impl WorkspaceService for WorkspaceRpcService {
                     self.server
                         .workspace_folder(&ws_req.osuser, &ws_req.volume_name,)
                 )],
-                cpuset_cpus: ws_req
-                    .cpus
-                    .into_iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<String>>()
-                    .join(","),
+                cpu_period: None,
+                cpu_quota: None,
+                cpuset_cpus: None,
                 memory: ws_req.memory * 1024 * 1024 * 1024,
                 network_mode: ws_req.network_name.clone(),
                 cap_add: vec!["NET_RAW".to_string()],
@@ -194,7 +192,25 @@ impl WorkspaceService for WorkspaceRpcService {
                     HashMap::new()
                 },
             },
-        })?;
+        };
+
+        match &ws_req.cpus {
+            CpuCore::Dedicated(cores) => {
+                body.host_config.cpuset_cpus = Some(
+                    cores
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<String>>()
+                        .join(","),
+                );
+            }
+            CpuCore::Shared(n) => {
+                body.host_config.cpu_period = Some(100000);
+                body.host_config.cpu_quota = Some(*n as i64 * 100000);
+            }
+        }
+
+        let body = serde_json::to_string(&body)?;
         let req = hyper::Request::builder()
             .method(hyper::Method::POST)
             .uri(url)
@@ -651,7 +667,7 @@ impl WorkspaceService for WorkspaceRpcService {
         dst_port: u16,
     ) -> Result<(), ApiError> {
         let conn =
-            tarpc::serde_transport::tcp::connect((dst_host.clone(), dst_port), Bincode::default)
+            tarpc::serde_transport::tcp::connect((dst_host.clone(), dst_port), Json::default)
                 .await
                 .with_context(|| {
                     format!("ws service trying to connect to {dst_host}:{dst_port} failed")

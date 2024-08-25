@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use itertools::Itertools;
-use lapdev_common::{PrebuildStatus, WorkspaceHostStatus};
+use lapdev_common::{CpuCore, PrebuildStatus, WorkspaceHostStatus};
 use lapdev_db::{entities, links};
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseTransaction, EntityTrait, QueryFilter,
@@ -56,7 +56,7 @@ pub async fn pick_workspce_host(
     disk: usize,
     region: String,
     cpu_overcommit: usize,
-) -> Result<(entities::workspace_host::Model, Vec<usize>)> {
+) -> Result<(entities::workspace_host::Model, CpuCore)> {
     let workspace_host = decide_workspace_host(
         txn,
         prebuild_workspace_host,
@@ -71,18 +71,18 @@ pub async fn pick_workspce_host(
 
     let existing = get_existing_resource(txn, &workspace_host).await?;
 
-    let available = available_cores(workspace_host.cpu as usize, cpu_overcommit, &existing.cores);
-    let cores: Vec<usize> = if !shared {
+    let cores = if !shared {
+        let available =
+            available_cores(workspace_host.cpu as usize, cpu_overcommit, &existing.cores);
         let available = available.dedicated();
-        available.into_iter().take(cpu).collect()
+        let cores: Vec<usize> = available.into_iter().take(cpu).collect();
+        if cores.len() != cpu {
+            return Err(anyhow::anyhow!("can't allocate the number of cpus"));
+        }
+        CpuCore::Dedicated(cores)
     } else {
-        let available = available.sorted();
-        tracing::debug!("available cores are {available:?}");
-        available.into_iter().map(|(k, _)| k).take(cpu).collect()
+        CpuCore::Shared(cpu)
     };
-    if cores.len() != cpu {
-        return Err(anyhow::anyhow!("can't allocate the number of cpus"));
-    }
 
     Ok((workspace_host, cores))
 }
@@ -218,9 +218,11 @@ async fn get_existing_resource(
 
     for (workspace, machine_type) in models {
         if let Some(machine_type) = machine_type {
-            let cores: Vec<usize> = serde_json::from_str(&workspace.cores)?;
-            let cores: HashSet<usize> = HashSet::from_iter(cores.into_iter());
-            existing.cores.push((cores, machine_type.shared));
+            let cores: CpuCore = serde_json::from_str(&workspace.cores)?;
+            if let CpuCore::Dedicated(cores) = cores {
+                let cores: HashSet<usize> = HashSet::from_iter(cores.into_iter());
+                existing.cores.push((cores, false));
+            }
             existing.memory += machine_type.memory.max(0) as usize;
             existing.disk += machine_type.disk.max(0) as usize;
         }
@@ -236,9 +238,11 @@ async fn get_existing_resource(
         .await?;
     for (prebuild, machine_type) in result {
         if let Some(machine_type) = machine_type {
-            let cores: Vec<usize> = serde_json::from_str(&prebuild.cores)?;
-            let cores: HashSet<usize> = HashSet::from_iter(cores.into_iter());
-            existing.cores.push((cores, machine_type.shared));
+            let cores: CpuCore = serde_json::from_str(&prebuild.cores)?;
+            if let CpuCore::Dedicated(cores) = cores {
+                let cores: HashSet<usize> = HashSet::from_iter(cores.into_iter());
+                existing.cores.push((cores, false));
+            }
             existing.memory += machine_type.memory.max(0) as usize;
             existing.disk += machine_type.disk.max(0) as usize;
         }

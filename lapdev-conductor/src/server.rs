@@ -12,7 +12,7 @@ use data_encoding::BASE64_MIME;
 use futures::{channel::mpsc::UnboundedReceiver, stream::AbortHandle, SinkExt, StreamExt};
 use git2::{Cred, FetchOptions, FetchPrune, RemoteCallbacks, Repository};
 use lapdev_common::{
-    utils::rand_string, AuditAction, AuditResourceKind, AuthProvider, BuildTarget,
+    utils::rand_string, AuditAction, AuditResourceKind, AuthProvider, BuildTarget, CpuCore,
     CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch, NewProject, NewProjectResponse,
     NewWorkspace, NewWorkspaceResponse, PrebuildInfo, PrebuildStatus, PrebuildUpdateEvent,
     RepoBuildInfo, RepoBuildOutput, RepoContent, RepoContentPosition, RepoSource,
@@ -38,7 +38,6 @@ use sqlx::postgres::PgNotification;
 use tarpc::{
     context,
     server::{BaseChannel, Channel},
-    tokio_serde::formats::Bincode,
 };
 use tokio::{
     io::AsyncReadExt,
@@ -401,7 +400,11 @@ impl Conductor {
 
     async fn connect_workspace_host_once(&self, id: Uuid, host: &str, port: u16) -> Result<()> {
         tracing::debug!("start to connect to workspace host {host}:{port}");
-        let conn = tarpc::serde_transport::tcp::connect((host, port), Bincode::default).await?;
+        let conn = tarpc::serde_transport::tcp::connect(
+            (host, port),
+            tarpc::tokio_serde::formats::Json::default,
+        )
+        .await?;
         let (server_chan, client_chan, abort_handle) = spawn_twoway(conn);
         let ws_client =
             WorkspaceServiceClient::new(tarpc::client::Config::default(), client_chan).spawn();
@@ -907,7 +910,7 @@ impl Conductor {
         let (host_id, cores, host) = if let Some(ws) = ws {
             // if the prebuild initiated by creating a workspace
             // we'll use the resource of the workspace
-            let cores: Vec<usize> = serde_json::from_str(&ws.cores)?;
+            let cores: CpuCore = serde_json::from_str(&ws.cores)?;
             (ws.host_id, cores, None)
         } else {
             let shared_cpu = if self.enterprise.has_valid_license().await {
@@ -1168,7 +1171,10 @@ impl Conductor {
             self.cpu_overcommit().await,
         )
         .await
-        .map_err(|_| ApiError::NoAvailableWorkspaceHost)?;
+        .map_err(|e| {
+            tracing::error!("pick workspace host error: {e}");
+            ApiError::NoAvailableWorkspaceHost
+        })?;
         let workspace_id = Uuid::new_v4();
         let now = Utc::now();
         let ws = entities::workspace::ActiveModel {
@@ -1873,7 +1879,7 @@ impl Conductor {
 
         let build_output = serde_json::to_string(&output)?;
 
-        let cores: Vec<usize> = serde_json::from_str(&ws.cores)?;
+        let cores: CpuCore = serde_json::from_str(&ws.cores)?;
         for (i, (service, tag, image_env)) in images.into_iter().enumerate() {
             let workspace_name = if let Some(service) = service.clone() {
                 if i > 0 {

@@ -87,6 +87,13 @@ pub struct MachineType {
     pub cost_per_second: usize,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[serde(untagged)]
+pub enum CpuCore {
+    Shared(usize),
+    Dedicated(Vec<usize>),
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateMachineType {
     pub name: String,
@@ -159,7 +166,7 @@ pub struct RepoBuildInfo {
     pub repo_name: String,
     pub env: Vec<(String, String)>,
     // the cpu cores that this build will use
-    pub cpus: Vec<usize>,
+    pub cpus: CpuCore,
     // the memory limit that this build will use
     pub memory: usize,
 }
@@ -341,7 +348,7 @@ pub struct CreateWorkspaceRequest {
     pub ssh_public_key: String,
     pub repo_name: String,
     pub env: Vec<(String, String)>,
-    pub cpus: Vec<usize>,
+    pub cpus: CpuCore,
     pub memory: usize,
     pub disk: usize,
 }
@@ -440,8 +447,12 @@ pub struct NewContainerHostConfig {
     pub publish_all_ports: bool,
     #[serde(rename = "Binds")]
     pub binds: Vec<String>,
+    #[serde(rename = "CpuPeriod")]
+    pub cpu_period: Option<i64>,
+    #[serde(rename = "CpuQuota")]
+    pub cpu_quota: Option<i64>,
     #[serde(rename = "CpusetCpus")]
-    pub cpuset_cpus: String,
+    pub cpuset_cpus: Option<String>,
     #[serde(rename = "Memory")]
     pub memory: usize,
     #[serde(rename = "NetworkMode")]

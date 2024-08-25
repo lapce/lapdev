@@ -18,7 +18,7 @@ use lapdev_common::{
     devcontainer::{
         DevContainerCmd, DevContainerConfig, DevContainerCwd, DevContainerLifeCycleCmd,
     },
-    BuildTarget, ContainerImageInfo, RepoBuildInfo, RepoBuildOutput, RepoComposeService,
+    BuildTarget, ContainerImageInfo, CpuCore, RepoBuildInfo, RepoBuildOutput, RepoComposeService,
 };
 use lapdev_rpc::{
     error::ApiError, spawn_twoway, ConductorServiceClient, InterWorkspaceService, WorkspaceService,
@@ -28,7 +28,7 @@ use serde::Deserialize;
 use tarpc::{
     context::current,
     server::{BaseChannel, Channel},
-    tokio_serde::formats::Bincode,
+    tokio_serde::formats::Json,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -58,6 +58,9 @@ struct Cli {
     /// The config file path
     #[clap(short, long, action, value_hint = clap::ValueHint::AnyPath)]
     config_file: Option<PathBuf>,
+    /// The folder for putting data
+    #[clap(short, long, action, value_hint = clap::ValueHint::AnyPath)]
+    data_folder: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -71,10 +74,24 @@ impl Default for WorkspaceServer {
     }
 }
 
-pub async fn run() -> Result<()> {
+pub async fn start() {
     let cli = Cli::parse();
+    let data_folder = cli
+        .data_folder
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("/var/lib/lapdev"));
+
+    let _result = setup_log(&data_folder).await;
+
+    if let Err(e) = run(&cli).await {
+        tracing::error!("lapdev-ws server run error: {e:#}");
+    }
+}
+
+async fn run(cli: &Cli) -> Result<()> {
     let config_file = cli
         .config_file
+        .clone()
         .unwrap_or_else(|| PathBuf::from("/etc/lapdev-ws.conf"));
     let config_content = tokio::fs::read_to_string(&config_file)
         .await
@@ -108,7 +125,7 @@ impl WorkspaceServer {
         }
 
         let mut listener =
-            tarpc::serde_transport::tcp::listen((bind, ws_port), Bincode::default).await?;
+            tarpc::serde_transport::tcp::listen((bind, ws_port), Json::default).await?;
 
         {
             let server = self.clone();
@@ -224,7 +241,7 @@ impl WorkspaceServer {
 
     async fn run_inter_ws_service(&self, bind: &str, inter_ws_port: u16) -> Result<()> {
         let mut listener =
-            tarpc::serde_transport::tcp::listen((bind, inter_ws_port), Bincode::default).await?;
+            tarpc::serde_transport::tcp::listen((bind, inter_ws_port), Json::default).await?;
         listener.config_mut().max_frame_length(usize::MAX);
         listener
             // Ignore accept errors.
@@ -413,13 +430,22 @@ impl WorkspaceServer {
             .arg(&info.osuser)
             .arg("-c")
             .arg(format!(
-                "cd {} && podman build --no-cache {build_args} --cpuset-cpus {} -m {}g -f {} -t {tag} {}",
+                "cd {} && podman build --no-cache {build_args} {} -m {}g -f {} -t {tag} {}",
                 cwd.to_string_lossy(),
-                info.cpus
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<String>>()
-                    .join(","),
+                match &info.cpus {
+                    CpuCore::Dedicated(cpus) => {
+                        format!(
+                            "--cpuset-cpus {}",
+                            cpus.iter()
+                                .map(|c| c.to_string())
+                                .collect::<Vec<String>>()
+                                .join(",")
+                        )
+                    }
+                    CpuCore::Shared(n) => {
+                        format!("--cpus {n}")
+                    }
+                },
                 info.memory,
                 temp.to_string_lossy(),
                 context.to_string_lossy(),
@@ -777,12 +803,21 @@ impl WorkspaceServer {
             .arg(&info.osuser)
             .arg("-c")
             .arg(format!(
-                "podman run --rm --cpuset-cpus {} -m {}g --security-opt label=disable -v {repo_folder}:/workspace -w /workspace --user root --entrypoint \"\" {image} {cmd}",
-                info.cpus
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<String>>()
-                    .join(","),
+                "podman run --rm {} -m {}g --security-opt label=disable -v {repo_folder}:/workspace -w /workspace --user root --entrypoint \"\" {image} {cmd}",
+                match &info.cpus {
+                    CpuCore::Dedicated(cpus) => {
+                        format!(
+                            "--cpuset-cpus {}",
+                            cpus.iter()
+                                .map(|c| c.to_string())
+                                .collect::<Vec<String>>()
+                                .join(",")
+                        )
+                    }
+                    CpuCore::Shared(n) => {
+                        format!("--cpus {n}")
+                    }
+                },
                 info.memory,
             ))
             .stdout(Stdio::piped())
@@ -917,4 +952,34 @@ async fn spawn(fut: impl futures::Future<Output = ()> + Send + 'static) {
 pub fn unix_client(
 ) -> hyper_util::client::legacy::Client<UnixConnector, http_body_util::Full<hyper::body::Bytes>> {
     hyper_util::client::legacy::Client::unix()
+}
+
+async fn setup_log(
+    data_folder: &Path,
+) -> Result<tracing_appender::non_blocking::WorkerGuard, anyhow::Error> {
+    let folder = data_folder.join("logs");
+    if !tokio::fs::try_exists(&folder).await.unwrap_or(false) {
+        tokio::fs::create_dir_all(&folder).await?;
+        let _ = tokio::process::Command::new("chown")
+            .arg("-R")
+            .arg("/var/lib/lapdev/")
+            .output()
+            .await;
+    }
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .max_log_files(30)
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("lapdev-ws.log")
+        .build(folder)?;
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let filter = tracing_subscriber::EnvFilter::default()
+        .add_directive("lapdev_ws=info".parse()?)
+        .add_directive("lapdev_rpc=info".parse()?)
+        .add_directive("lapdev_common=info".parse()?);
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .with_writer(non_blocking)
+        .init();
+    Ok(guard)
 }

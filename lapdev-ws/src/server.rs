@@ -8,17 +8,19 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use docker_compose_types::{AdvancedBuildStep, BuildStep, Compose};
 use futures::StreamExt;
+use git2::{Cred, FetchOptions, FetchPrune, RemoteCallbacks, Repository};
 use http_body_util::{BodyExt, Full};
 use hyperlocal::{UnixClientExt, UnixConnector, Uri};
 use lapdev_common::{
     devcontainer::{
         DevContainerCmd, DevContainerConfig, DevContainerCwd, DevContainerLifeCycleCmd,
     },
-    BuildTarget, ContainerImageInfo, CpuCore, RepoBuildInfo, RepoBuildOutput, RepoComposeService,
+    BuildTarget, ContainerImageInfo, CpuCore, GitBranch, ProjectRequest, RepoBuildInfo,
+    RepoBuildOutput, RepoComposeService,
 };
 use lapdev_rpc::{
     error::ApiError, spawn_twoway, ConductorServiceClient, InterWorkspaceService, WorkspaceService,
@@ -37,7 +39,10 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::service::{InterWorkspaceRpcService, WorkspaceRpcService};
+use crate::{
+    service::{InterWorkspaceRpcService, WorkspaceRpcService},
+    watcher::FileWatcher,
+};
 
 pub const LAPDEV_WS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL_SCRIPT: &[u8] = include_bytes!("../scripts/install_guest_agent.sh");
@@ -63,25 +68,23 @@ struct Cli {
     data_folder: Option<PathBuf>,
 }
 
-#[derive(Clone)]
-pub struct WorkspaceServer {
-    pub rpcs: Arc<RwLock<Vec<WorkspaceRpcService>>>,
+impl Cli {
+    fn data_folder(&self) -> PathBuf {
+        self.data_folder
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/var/lib/lapdev-ws"))
+    }
 }
 
-impl Default for WorkspaceServer {
-    fn default() -> Self {
-        Self::new()
-    }
+#[derive(Clone)]
+pub struct WorkspaceServer {
+    data_folder: PathBuf,
+    pub rpcs: Arc<RwLock<Vec<WorkspaceRpcService>>>,
 }
 
 pub async fn start() {
     let cli = Cli::parse();
-    let data_folder = cli
-        .data_folder
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("/var/lib/lapdev"));
-
-    let _result = setup_log(&data_folder).await;
+    let _result = setup_log(&cli.data_folder()).await;
 
     if let Err(e) = run(&cli).await {
         tracing::error!("lapdev-ws server run error: {e:#}");
@@ -101,19 +104,38 @@ async fn run(cli: &Cli) -> Result<()> {
     let bind = config.bind.as_deref().unwrap_or("0.0.0.0");
     let ws_port = config.ws_port.unwrap_or(6123);
     let inter_ws_port = config.inter_ws_port.unwrap_or(6122);
-    WorkspaceServer::new()
+    WorkspaceServer::new(cli.data_folder())
         .run(bind, ws_port, inter_ws_port)
         .await
 }
 
 impl WorkspaceServer {
-    fn new() -> Self {
+    fn new(data_folder: PathBuf) -> Self {
         Self {
+            data_folder,
             rpcs: Default::default(),
         }
     }
 
     async fn run(&self, bind: &str, ws_port: u16, inter_ws_port: u16) -> Result<()> {
+        {
+            Command::new("mkdir")
+                .arg("-p")
+                .arg(self.data_folder.join("workspaces"))
+                .status()
+                .await?;
+            Command::new("mkdir")
+                .arg("-p")
+                .arg(self.data_folder.join("prebuilds"))
+                .status()
+                .await?;
+
+            let watcher = FileWatcher::new(&self.data_folder)?;
+            std::thread::spawn(move || {
+                watcher.watch();
+            });
+        }
+
         {
             let server = self.clone();
             let bind = bind.to_string();
@@ -316,12 +338,70 @@ impl WorkspaceServer {
             return Err(anyhow!("can't do useradd {username}").into());
         }
 
+        let workspace_base_folder = self.osuser_workspace_base_folder(username);
+        Command::new("mkdir")
+            .arg("-p")
+            .arg(&workspace_base_folder)
+            .spawn()?
+            .wait()
+            .await?;
+        Command::new("chown")
+            .arg("-R")
+            .arg(format!("{username}:{username}"))
+            .arg(&workspace_base_folder)
+            .output()
+            .await?;
+
+        let prebuild_base_folder = self.osuser_prebuild_base_folder(username);
         Command::new("su")
             .arg("-")
             .arg(username)
             .arg("-c")
-            .arg(format!("mkdir /home/{username}/workspaces/"))
-            .status()
+            .arg(format!("mkdir -p {prebuild_base_folder}"))
+            .spawn()?
+            .wait()
+            .await?;
+
+        let project_base_folder = self.osuser_project_base_folder(username);
+        Command::new("su")
+            .arg("-")
+            .arg(username)
+            .arg("-c")
+            .arg(format!("mkdir -p {project_base_folder}"))
+            .spawn()?
+            .wait()
+            .await?;
+
+        let containers_config_folder = format!("/home/{username}/.config/containers");
+        Command::new("su")
+            .arg("-")
+            .arg(username)
+            .arg("-c")
+            .arg(format!("mkdir -p {containers_config_folder}"))
+            .spawn()?
+            .wait()
+            .await?;
+        tokio::fs::write(
+            format!("{containers_config_folder}/registries.conf"),
+            r#"
+unqualified-search-registries = ["docker.io"]
+"#,
+        )
+        .await?;
+        tokio::fs::write(
+            format!("{containers_config_folder}/storage.conf"),
+            r#"
+[storage]
+driver = "overlay"
+"#,
+        )
+        .await?;
+
+        Command::new("chown")
+            .arg("-R")
+            .arg(format!("{username}:{username}"))
+            .arg(&containers_config_folder)
+            .output()
             .await?;
 
         let uid = self._os_user_uid(username).await?;
@@ -443,7 +523,7 @@ impl WorkspaceServer {
                         )
                     }
                     CpuCore::Shared(n) => {
-                        format!("--cpus {n}")
+                        format!("--cpu-period 100000 --cpu-quota {}", *n * 100000)
                     }
                 },
                 info.memory,
@@ -683,7 +763,7 @@ impl WorkspaceServer {
     pub fn repo_target_image_tag(&self, target: &BuildTarget) -> String {
         match target {
             BuildTarget::Workspace { name, .. } => name.clone(),
-            BuildTarget::Prebuild(id) => id.to_string(),
+            BuildTarget::Prebuild { id, .. } => id.to_string(),
         }
     }
 
@@ -766,23 +846,202 @@ impl WorkspaceServer {
         Ok(())
     }
 
+    pub fn osuser_workspace_base_folder(&self, osuser: &str) -> String {
+        format!(
+            "{}/workspaces/{osuser}",
+            self.data_folder.to_str().unwrap_or_default()
+        )
+    }
+
+    pub fn osuser_prebuild_base_folder(&self, osuser: &str) -> String {
+        format!("/home/{osuser}/prebuilds")
+    }
+
+    pub fn osuser_project_base_folder(&self, osuser: &str) -> String {
+        format!("/home/{osuser}/projects")
+    }
+
     pub fn workspace_folder(&self, osuser: &str, workspace_name: &str) -> String {
-        format!("/home/{osuser}/workspaces/{workspace_name}")
+        format!(
+            "{}/{workspace_name}",
+            self.osuser_workspace_base_folder(osuser)
+        )
     }
 
     pub fn prebuild_folder(&self, osuser: &str, prebuild_id: Uuid) -> String {
-        format!("/home/{osuser}/workspaces/{prebuild_id}")
+        format!("{}/{prebuild_id}", self.osuser_prebuild_base_folder(osuser))
+    }
+
+    pub fn project_folder(&self, osuser: &str, project_id: Uuid) -> String {
+        format!("{}/{project_id}", self.osuser_project_base_folder(osuser))
+    }
+
+    pub fn build_base_folder(&self, info: &RepoBuildInfo) -> String {
+        match &info.target {
+            BuildTarget::Workspace { name, .. } => self.workspace_folder(&info.osuser, name),
+            BuildTarget::Prebuild { id, .. } => self.prebuild_folder(&info.osuser, *id),
+        }
     }
 
     pub fn build_repo_folder(&self, info: &RepoBuildInfo) -> String {
         let target = match &info.target {
-            BuildTarget::Workspace { name, .. } => name.to_string(),
-            BuildTarget::Prebuild(id) => id.to_string(),
+            BuildTarget::Workspace { name, .. } => self.workspace_folder(&info.osuser, name),
+            BuildTarget::Prebuild { id, .. } => self.prebuild_folder(&info.osuser, *id),
         };
-        format!(
-            "/home/{}/workspaces/{target}/{}",
-            info.osuser, info.repo_name
-        )
+        format!("{target}/{}", info.repo_name)
+    }
+
+    pub async fn get_default_image(&self, info: &RepoBuildInfo) -> String {
+        let repo_path = PathBuf::from(self.build_repo_folder(info));
+        if tokio::fs::try_exists(repo_path.join("Cargo.toml"))
+            .await
+            .unwrap_or(false)
+        {
+            return "rust".to_string();
+        }
+
+        if tokio::fs::try_exists(repo_path.join("go.mod"))
+            .await
+            .unwrap_or(false)
+        {
+            return "go".to_string();
+        }
+
+        if tokio::fs::try_exists(repo_path.join("tsconfig.json"))
+            .await
+            .unwrap_or(false)
+        {
+            return "typescript".to_string();
+        }
+
+        if tokio::fs::try_exists(repo_path.join("package.json"))
+            .await
+            .unwrap_or(false)
+        {
+            return "javascript".to_string();
+        }
+
+        if tokio::fs::try_exists(repo_path.join("requirements.txt"))
+            .await
+            .unwrap_or(false)
+            || tokio::fs::try_exists(repo_path.join("setup.py"))
+                .await
+                .unwrap_or(false)
+        {
+            return "python".to_string();
+        }
+
+        "universal".to_string()
+    }
+
+    pub async fn build_repo(
+        &self,
+        info: &RepoBuildInfo,
+        conductor_client: &ConductorServiceClient,
+    ) -> Result<RepoBuildOutput, ApiError> {
+        self.prepare_repo(info).await?;
+        let (cwd, config) = self.get_devcontainer(info).await?.ok_or_else(|| {
+            ApiError::RepositoryInvalid("repo doesn't have devcontainer configured".to_string())
+        })?;
+        let tag = self.repo_target_image_tag(&info.target);
+        let output = if let Some(compose_file) = &config.docker_compose_file {
+            self.build_compose(conductor_client, info, &cwd.join(compose_file), &tag)
+                .await?
+        } else if let Some(build) = config.build.as_ref() {
+            let build = AdvancedBuildStep {
+                context: build.context.clone().unwrap_or(".".to_string()),
+                dockerfile: build.dockerfile.to_owned(),
+                ..Default::default()
+            };
+            self.build_container_image(conductor_client, info, &cwd, &build, &tag)
+                .await?;
+            RepoBuildOutput::Image(tag.clone())
+        } else if let Some(image) = config.image.as_ref() {
+            self.build_container_image_from_base(conductor_client, info, &cwd, image, &tag)
+                .await?;
+            RepoBuildOutput::Image(tag.clone())
+        } else {
+            return Err(ApiError::RepositoryInvalid(
+                "devcontainer doesn't have any image information".to_string(),
+            ));
+        };
+        self.run_lifecycle_commands(conductor_client, info, &output, &config)
+            .await;
+        Ok(output)
+    }
+
+    pub async fn prepare_repo(&self, info: &RepoBuildInfo) -> Result<(), ApiError> {
+        self.os_user_uid(&info.osuser).await?;
+        let build_dir = self.build_base_folder(info);
+        let repo_dir = format!("{build_dir}/{}", info.repo_name);
+        Command::new("su")
+            .arg("-")
+            .arg(&info.osuser)
+            .arg("-c")
+            .arg(format!("mkdir -p {repo_dir}"))
+            .spawn()?
+            .wait()
+            .await?;
+
+        if let BuildTarget::Prebuild { id, project } = &info.target {
+            let src_dir = self.project_folder(&info.osuser, *project);
+            if !tokio::fs::try_exists(&src_dir).await.unwrap_or(false) {
+                self.create_project(
+                    *id,
+                    info.osuser.clone(),
+                    info.repo_url.clone(),
+                    info.auth.clone(),
+                )
+                .await?;
+            }
+            tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("cp -a {src_dir}/. {repo_dir}"))
+                .status()
+                .await?;
+        } else {
+            let auth = info.auth.clone();
+            let repo_url = info.repo_url.clone();
+            let repo_dir = PathBuf::from(repo_dir.clone());
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let mut opt = git2::FetchOptions::new();
+                let mut cbs = RemoteCallbacks::new();
+                cbs.credentials(|_, _, _| Cred::userpass_plaintext(&auth.0, &auth.1));
+                opt.remote_callbacks(cbs);
+                git2::build::RepoBuilder::new()
+                    .fetch_options(opt)
+                    .clone(&repo_url, &repo_dir)?;
+                Ok(())
+            })
+            .await??;
+        }
+
+        if info.head != info.branch {
+            let repo_dir = PathBuf::from(repo_dir.clone());
+            let branch_name = info.branch.clone();
+            tokio::task::spawn_blocking(move || {
+                let repo = git2::Repository::open(repo_dir)?;
+                let object = repo.revparse_single(&format!("origin/{branch_name}"))?;
+                let commit = object
+                    .as_commit()
+                    .ok_or_else(|| anyhow!("branch can't turn into commit"))?;
+                let branch = repo.branch(&branch_name, commit, false)?;
+                let commit = branch.get().peel_to_commit()?;
+                repo.checkout_tree(commit.as_object(), None)?;
+                repo.set_head(&format!("refs/heads/{branch_name}"))?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+        };
+
+        tokio::process::Command::new("chown")
+            .arg("-R")
+            .arg(format!("{}:{}", info.osuser, info.osuser))
+            .arg(&build_dir)
+            .output()
+            .await?;
+
+        Ok(())
     }
 
     async fn run_devcontainer_command(
@@ -815,7 +1074,7 @@ impl WorkspaceServer {
                         )
                     }
                     CpuCore::Shared(n) => {
-                        format!("--cpus {n}")
+                        format!("--cpu-period 100000 --cpu-quota {}", *n * 100000)
                     }
                 },
                 info.memory,
@@ -880,17 +1139,8 @@ impl WorkspaceServer {
         stderr_log
     }
 
-    pub async fn delete_image(&self, osuser: &str, image: &str) -> Result<()> {
-        let uid = {
-            let stdout = Command::new("id")
-                .arg("-u")
-                .arg(osuser)
-                .output()
-                .await?
-                .stdout;
-            String::from_utf8(stdout)?
-        };
-        let uid = uid.trim();
+    pub async fn delete_image(&self, osuser: &str, image: &str) -> Result<(), ApiError> {
+        let uid = self.os_user_uid(osuser).await?;
         let socket = format!("/run/user/{uid}/podman/podman.sock");
 
         let client = unix_client();
@@ -905,24 +1155,17 @@ impl WorkspaceServer {
             if status != 200 && status != 404 {
                 let body = resp.collect().await?.to_bytes();
                 let err = String::from_utf8(body.to_vec())?;
-                return Err(anyhow!("delete image error: {err}"));
+                return Err(ApiError::InternalError(format!(
+                    "delete image error: {err}"
+                )));
             }
         }
 
         Ok(())
     }
 
-    pub async fn delete_network(&self, osuser: &str, network: &str) -> Result<()> {
-        let uid = {
-            let stdout = Command::new("id")
-                .arg("-u")
-                .arg(osuser)
-                .output()
-                .await?
-                .stdout;
-            String::from_utf8(stdout)?
-        };
-        let uid = uid.trim();
+    pub async fn delete_network(&self, osuser: &str, network: &str) -> Result<(), ApiError> {
+        let uid = self.os_user_uid(osuser).await?;
         let socket = format!("/run/user/{uid}/podman/podman.sock");
 
         let client = unix_client();
@@ -937,11 +1180,77 @@ impl WorkspaceServer {
             if status != 204 && status != 404 {
                 let body = resp.collect().await?.to_bytes();
                 let err = String::from_utf8(body.to_vec())?;
-                return Err(anyhow!("delete network error: {err}"));
+                return Err(ApiError::InternalError(format!(
+                    "delete network error: {err}"
+                )));
             }
         }
 
         Ok(())
+    }
+
+    pub async fn create_project(
+        &self,
+        id: Uuid,
+        osuser: String,
+        repo_url: String,
+        auth: (String, String),
+    ) -> Result<(), ApiError> {
+        self.os_user_uid(&osuser).await?;
+        let project_folder = self.project_folder(&osuser, id);
+
+        Command::new("mkdir")
+            .arg("-p")
+            .arg(&project_folder)
+            .spawn()?
+            .wait()
+            .await?;
+
+        {
+            let project_folder = project_folder.clone();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let mut opt = git2::FetchOptions::new();
+                let mut cbs = RemoteCallbacks::new();
+                cbs.credentials(|_, _, _| Cred::userpass_plaintext(&auth.0, &auth.1));
+                opt.remote_callbacks(cbs);
+                git2::build::RepoBuilder::new()
+                    .fetch_options(opt)
+                    .clone(&repo_url, &PathBuf::from(project_folder))?;
+                Ok(())
+            })
+            .await??;
+        }
+
+        Ok(())
+    }
+
+    pub async fn project_branches(&self, req: &ProjectRequest) -> Result<Vec<GitBranch>, ApiError> {
+        let project_folder = self.project_folder(&req.osuser, req.id);
+        let auth = req.auth.clone();
+        let branches = tokio::task::spawn_blocking(move || -> Result<Vec<GitBranch>, ApiError> {
+            let path = PathBuf::from(project_folder);
+            let repo = git2::Repository::open(path)?;
+
+            let head = repo.head()?;
+            let head_branch = head.shorthand().ok_or_else(|| anyhow!("no head branch"))?;
+
+            if let Err(e) = repo_pull(&repo, auth) {
+                let err = if let ApiError::InternalError(e) = e {
+                    e.to_string()
+                } else {
+                    e.to_string()
+                };
+                tracing::debug!("repo pull error: {err}");
+            }
+
+            let mut branches = repo_branches(&repo)?;
+            branches.sort_by_key(|b| (b.name.as_str() == head_branch, b.time));
+            branches.reverse();
+            Ok(branches)
+        })
+        .await??;
+
+        Ok(branches)
     }
 }
 
@@ -982,4 +1291,91 @@ async fn setup_log(
         .with_writer(non_blocking)
         .init();
     Ok(guard)
+}
+
+fn repo_branches(repo: &Repository) -> Result<Vec<GitBranch>> {
+    let mut branches = Vec::new();
+    for (branch, _) in repo.branches(None)?.flatten() {
+        let reference = branch.get();
+        if reference.is_remote() {
+            let commit = reference.peel_to_commit()?;
+            let name = reference.shorthand().unwrap_or("");
+            let name = name.strip_prefix("origin/").unwrap_or(name);
+            let summary = commit.summary().unwrap_or("");
+            let time = DateTime::from_timestamp(commit.time().seconds(), 0)
+                .ok_or_else(|| anyhow!("invalid timestamp"))?;
+            if name != "HEAD" {
+                branches.push(GitBranch {
+                    name: name.to_string(),
+                    summary: summary.to_string(),
+                    commit: commit.id().to_string(),
+                    time: time.into(),
+                });
+            }
+        }
+    }
+    Ok(branches)
+}
+
+fn repo_pull(repo: &Repository, auth: (String, String)) -> Result<(), ApiError> {
+    let mut remote = repo
+        .find_remote("origin")
+        .or_else(|_| repo.remote_anonymous("origin"))?;
+    let mut fetch_options = FetchOptions::new();
+    let mut cbs = RemoteCallbacks::new();
+    cbs.credentials(|_, _, _| Cred::userpass_plaintext(&auth.0, &auth.1));
+    fetch_options.prune(FetchPrune::On);
+    fetch_options.remote_callbacks(cbs);
+    remote.fetch(&[] as &[&str], Some(&mut fetch_options), None)?;
+
+    let head = repo.head()?;
+    let head_branch = head.shorthand().ok_or_else(|| anyhow!("no head branch"))?;
+
+    let fetch_head = repo.find_reference("FETCH_HEAD")?;
+    let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
+    let analysis = repo.merge_analysis(&[&fetch_commit])?;
+    if analysis.0.is_fast_forward() {
+        let refname = format!("refs/heads/{}", head_branch);
+        match repo.find_reference(&refname) {
+            Ok(mut r) => {
+                let name = match r.name() {
+                    Some(s) => s.to_string(),
+                    None => String::from_utf8_lossy(r.name_bytes()).to_string(),
+                };
+                let msg = format!(
+                    "Fast-Forward: Setting {} to id: {}",
+                    name,
+                    fetch_commit.id()
+                );
+                r.set_target(fetch_commit.id(), &msg)?;
+                repo.set_head(&name)?;
+                repo.checkout_head(Some(
+                    git2::build::CheckoutBuilder::default()
+                        // For some reason the force is required to make the working directory actually get updated
+                        // I suspect we should be adding some logic to handle dirty working directory states
+                        // but this is just an example so maybe not.
+                        .force(),
+                ))?;
+            }
+            Err(_) => {
+                // The branch doesn't exist so just set the reference to the
+                // commit directly. Usually this is because you are pulling
+                // into an empty repository.
+                repo.reference(
+                    &refname,
+                    fetch_commit.id(),
+                    true,
+                    &format!("Setting {} to {}", head_branch, fetch_commit.id()),
+                )?;
+                repo.set_head(&refname)?;
+                repo.checkout_head(Some(
+                    git2::build::CheckoutBuilder::default()
+                        .allow_conflicts(true)
+                        .conflict_style_merge(true)
+                        .force(),
+                ))?;
+            }
+        };
+    }
+    Ok(())
 }

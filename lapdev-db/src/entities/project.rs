@@ -16,6 +16,8 @@ pub struct Model {
     pub repo_url: String,
     pub repo_name: String,
     pub machine_type_id: Uuid,
+    pub osuser: String,
+    pub host_id: Uuid,
     pub env: Option<String>,
 }
 

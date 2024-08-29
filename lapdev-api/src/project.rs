@@ -119,7 +119,6 @@ pub async fn get_project_branches(
     TypedHeader(cookie): TypedHeader<Cookie>,
     Path((org_id, project_id)): Path<(Uuid, Uuid)>,
     State(state): State<CoreState>,
-    info: RequestInfo,
 ) -> Result<Response, ApiError> {
     let (user, project) = state.get_project(&cookie, org_id, project_id).await?;
     let auth = if let Ok(Some(oauth)) = state.db.get_oauth(project.oauth_id).await {
@@ -131,10 +130,7 @@ pub async fn get_project_branches(
             .await?;
         (oauth.provider_login, oauth.access_token)
     };
-    let branches = state
-        .conductor
-        .project_branches(user.id, &project, auth, info.ip, info.user_agent)
-        .await?;
+    let branches = state.conductor.project_branches(&project, auth).await?;
     Ok(Json(branches).into_response())
 }
 
@@ -171,13 +167,7 @@ pub async fn create_project_prebuild(
     let (user, project) = state.get_project(&cookie, org_id, project_id).await?;
     let repo = state
         .conductor
-        .get_project_repo_details(
-            &user,
-            &project,
-            Some(&prebuild.branch),
-            info.ip.clone(),
-            info.user_agent.clone(),
-        )
+        .get_project_repo_details(&user, &project, Some(&prebuild.branch))
         .await?;
     let prebuild = state
         .conductor

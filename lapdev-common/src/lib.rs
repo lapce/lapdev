@@ -156,7 +156,7 @@ pub struct RepoComposeService {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum BuildTarget {
     Workspace { id: Uuid, name: String },
-    Prebuild(Uuid),
+    Prebuild { id: Uuid, project: Uuid },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -164,6 +164,10 @@ pub struct RepoBuildInfo {
     pub target: BuildTarget,
     pub osuser: String,
     pub repo_name: String,
+    pub repo_url: String,
+    pub head: String,
+    pub branch: String,
+    pub auth: (String, String),
     pub env: Vec<(String, String)>,
     // the cpu cores that this build will use
     pub cpus: CpuCore,
@@ -357,6 +361,14 @@ pub struct CreateWorkspaceRequest {
 pub struct StartWorkspaceRequest {
     pub osuser: String,
     pub workspace_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProjectRequest {
+    pub id: Uuid,
+    pub osuser: String,
+    pub repo_url: String,
+    pub auth: (String, String),
 }
 
 #[derive(Serialize, Deserialize, Debug)]

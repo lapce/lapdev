@@ -13,9 +13,9 @@ use futures::{
     Sink, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt,
 };
 use lapdev_common::{
-    BuildTarget, ContainerInfo, CreateWorkspaceRequest, DeleteWorkspaceRequest, PrebuildInfo,
-    RepoBuildInfo, RepoBuildOutput, RepoContent, RunningWorkspace, StartWorkspaceRequest,
-    StopWorkspaceRequest,
+    BuildTarget, ContainerInfo, CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch,
+    PrebuildInfo, ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoContent, RunningWorkspace,
+    StartWorkspaceRequest, StopWorkspaceRequest,
 };
 use serde::{Deserialize, Serialize};
 use tarpc::transport::channel::UnboundedChannel;
@@ -133,11 +133,15 @@ pub trait WorkspaceService {
 
     async fn stop_workspace(req: StopWorkspaceRequest) -> Result<(), ApiError>;
 
+    async fn create_project(req: ProjectRequest) -> Result<(), ApiError>;
+
+    async fn get_project_branches(req: ProjectRequest) -> Result<Vec<GitBranch>, ApiError>;
+
     async fn transfer_repo(info: RepoBuildInfo, repo: RepoContent) -> Result<(), ApiError>;
 
     async fn unarchive_repo(info: RepoBuildInfo) -> Result<(), ApiError>;
 
-    async fn build_repo(info: RepoBuildInfo) -> Result<RepoBuildOutput, ApiError>;
+    async fn build_repo(info: RepoBuildInfo) -> RepoBuildOutput;
 
     async fn create_prebuild_archive(
         output: RepoBuildOutput,

@@ -1,23 +1,16 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use data_encoding::BASE64_MIME;
 use futures::{channel::mpsc::UnboundedReceiver, stream::AbortHandle, SinkExt, StreamExt};
-use git2::{Cred, FetchOptions, FetchPrune, RemoteCallbacks, Repository};
+use git2::{Cred, RemoteCallbacks};
 use lapdev_common::{
     utils::rand_string, AuditAction, AuditResourceKind, AuthProvider, BuildTarget, CpuCore,
     CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch, NewProject, NewProjectResponse,
     NewWorkspace, NewWorkspaceResponse, PrebuildInfo, PrebuildStatus, PrebuildUpdateEvent,
-    RepoBuildInfo, RepoBuildOutput, RepoContent, RepoContentPosition, RepoSource,
-    StartWorkspaceRequest, StopWorkspaceRequest, UsageResourceKind, WorkspaceStatus,
-    WorkspaceUpdateEvent, LAPDEV_DEFAULT_OSUSER,
+    ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoSource, StartWorkspaceRequest,
+    StopWorkspaceRequest, UsageResourceKind, WorkspaceStatus, WorkspaceUpdateEvent,
 };
 use lapdev_common::{PrebuildReplicaStatus, WorkspaceHostStatus};
 use lapdev_db::{api::DbApi, entities};
@@ -39,10 +32,7 @@ use tarpc::{
     context,
     server::{BaseChannel, Channel},
 };
-use tokio::{
-    io::AsyncReadExt,
-    sync::{Mutex, RwLock},
-};
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::{
@@ -590,7 +580,7 @@ impl Conductor {
                 };
                 tracing::warn!("can't open repo {local_repo_url}: {err}");
                 ApiError::RepositoryInvalid(
-                    "Repository URL invalid or we don't have access to it".to_string(),
+                    "Repository URL invalid or we don't have access to it. If it's a private repo, you can try to update the permission in User Settings -> Git Providers.".to_string(),
                 )
             })?
         };
@@ -678,6 +668,12 @@ impl Conductor {
             )
             .await?;
 
+        let machine_type = self
+            .db
+            .get_machine_type(project.machine_type_id)
+            .await?
+            .ok_or_else(|| ApiError::InternalError("Can't find machine type".to_string()))?;
+
         let txn = self.db.conn.begin().await?;
         if let Some(quota) = self
             .enterprise
@@ -687,7 +683,45 @@ impl Conductor {
             return Err(ApiError::QuotaReached(quota));
         }
 
+        let shared_cpu = if self.enterprise.has_valid_license().await {
+            machine_type.shared
+        } else {
+            // only enterprise support shared cpu
+            false
+        };
+
+        let (host, _) = scheduler::pick_workspce_host(
+            &txn,
+            None,
+            Vec::new(),
+            shared_cpu,
+            machine_type.cpu as usize,
+            machine_type.memory as usize,
+            machine_type.disk as usize,
+            self.region().await,
+            self.cpu_overcommit().await,
+        )
+        .await
+        .map_err(|_| ApiError::NoAvailableWorkspaceHost)?;
+        txn.commit().await?;
+
+        let osuser = org_id.to_string().replace('-', "");
         let id = uuid::Uuid::new_v4();
+        let ws_client = { self.rpcs.lock().await.get(&host.id).cloned() }
+            .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
+        ws_client
+            .create_project(
+                long_running_context(),
+                ProjectRequest {
+                    id,
+                    osuser: osuser.clone(),
+                    repo_url: repo.url.clone(),
+                    auth: repo.auth.clone(),
+                },
+            )
+            .await??;
+
+        let txn = self.db.conn.begin().await?;
         let now = Utc::now();
         let project = entities::project::ActiveModel {
             id: ActiveValue::Set(id),
@@ -701,6 +735,8 @@ impl Conductor {
             oauth_id: ActiveValue::Set(oauth.id),
             machine_type_id: ActiveValue::Set(project.machine_type_id),
             env: ActiveValue::Set(None),
+            osuser: ActiveValue::Set(osuser),
+            host_id: ActiveValue::Set(host.id),
         };
         let project = project.insert(&txn).await?;
 
@@ -720,11 +756,6 @@ impl Conductor {
             .await?;
         txn.commit().await?;
 
-        let path = self.data_folder.join(format!("projects/{id}"));
-        let url = repo.url.clone();
-        tokio::fs::create_dir_all(&path).await?;
-        clone_repo(url, path, repo.auth.clone()).await?;
-
         Ok(NewProjectResponse {
             id: project.id,
             name: project.name,
@@ -733,70 +764,22 @@ impl Conductor {
 
     pub async fn project_branches(
         &self,
-        user_id: Uuid,
         project: &entities::project::Model,
         auth: (String, String),
-        ip: Option<String>,
-        user_agent: Option<String>,
     ) -> Result<Vec<GitBranch>, ApiError> {
-        let project_id = project.id;
-        let data_folder = self.data_folder.clone();
-        let (previous_branches, branches) = tokio::task::spawn_blocking(
-            move || -> Result<(Vec<GitBranch>, Vec<GitBranch>), ApiError> {
-                let path = data_folder.join(format!("projects/{project_id}"));
-                let repo = git2::Repository::open(path)?;
-
-                let previous_branches = repo_branches(&repo)?;
-
-                let head = repo.head()?;
-                let head_branch = head.shorthand().ok_or_else(|| anyhow!("no head branch"))?;
-
-                if let Err(e) = repo_pull(&repo, auth) {
-                    let err = if let ApiError::InternalError(e) = e {
-                        e.to_string()
-                    } else {
-                        e.to_string()
-                    };
-                    tracing::debug!("repo pull error: {err}");
-                }
-
-                let mut branches = repo_branches(&repo)?;
-                branches.sort_by_key(|b| (b.name.as_str() == head_branch, b.time));
-                branches.reverse();
-                Ok((previous_branches, branches))
-            },
-        )
-        .await??;
-
-        // find deleted branches
-        {
-            let mut deleted_branches = Vec::new();
-            let branches: HashMap<String, String> = branches
-                .iter()
-                .map(|b| (b.name.clone(), b.name.clone()))
-                .collect();
-            for p in previous_branches {
-                if !branches.contains_key(&p.name) {
-                    deleted_branches.push(p.name.clone());
-                }
-            }
-            if !deleted_branches.is_empty() {
-                let conductor = self.clone();
-                let project = project.to_owned();
-                tokio::spawn(async move {
-                    conductor
-                        .check_deleted_project_branchs(
-                            user_id,
-                            &project,
-                            deleted_branches,
-                            ip,
-                            user_agent,
-                        )
-                        .await;
-                });
-            }
-        }
-
+        let ws_client = { self.rpcs.lock().await.get(&project.host_id).cloned() }
+            .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
+        let branches = ws_client
+            .get_project_branches(
+                long_running_context(),
+                ProjectRequest {
+                    id: project.id,
+                    repo_url: project.repo_url.clone(),
+                    osuser: project.osuser.clone(),
+                    auth: auth.clone(),
+                },
+            )
+            .await??;
         Ok(branches)
     }
 
@@ -840,9 +823,6 @@ impl Conductor {
             });
         }
 
-        let temp_repo_dir = tempfile::tempdir()?;
-        self.prepare_repo(&repo, temp_repo_dir.path()).await?;
-
         let ws_client = { self.rpcs.lock().await.get(&prebuild.host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the prebuild host rpc client"))?;
         let env = repo
@@ -852,18 +832,23 @@ impl Conductor {
             .and_then(|env| serde_json::from_str::<Vec<(String, String)>>(env).ok())
             .unwrap_or_default();
         let info = RepoBuildInfo {
-            target: BuildTarget::Prebuild(prebuild.id),
+            target: BuildTarget::Prebuild {
+                id: prebuild.id,
+                project: project.id,
+            },
             repo_name: repo.name.clone(),
+            repo_url: repo.url.clone(),
+            auth: repo.auth.clone(),
+            branch: repo.branch.clone(),
+            head: repo.head.clone(),
             env,
             osuser: prebuild.osuser.clone(),
             cpus: serde_json::from_str(&prebuild.cores)?,
             memory: machine_type.memory as usize,
         };
-        self.transfer_repo(&ws_client, temp_repo_dir.path(), info.clone())
+        let output = ws_client
+            .build_repo(long_running_context(), info.clone())
             .await?;
-        let output = self
-            .build_repo(&ws_client, info.clone(), temp_repo_dir.path())
-            .await;
         ws_client
             .create_prebuild_archive(
                 long_running_context(),
@@ -889,11 +874,7 @@ impl Conductor {
     ) -> Result<entities::prebuild::Model, ApiError> {
         let id = uuid::Uuid::new_v4();
 
-        let osuser = if self.db.is_container_isolated().await.unwrap_or(false) {
-            format!("org-{}", project.organization_id)
-        } else {
-            LAPDEV_DEFAULT_OSUSER.to_string()
-        };
+        let osuser = project.organization_id.to_string().replace('-', "");
 
         let machine_type_id = ws
             .map(|ws| ws.machine_type_id)
@@ -1040,7 +1021,7 @@ impl Conductor {
                     } else {
                         e.to_string()
                     };
-                    tracing::error!("create prebuild filed: {err}");
+                    tracing::error!("create prebuild failed: {err}");
                     PrebuildStatus::Failed
                 }
             };
@@ -1067,14 +1048,6 @@ impl Conductor {
         });
 
         Ok(local_prebuild)
-    }
-
-    fn archive_repo(repo_path: &Path, archive_path: &Path) -> Result<(), ApiError> {
-        let archive = std::fs::File::create(archive_path)?;
-        let encoder = zstd::Encoder::new(archive, 0)?.auto_finish();
-        let mut tar = tar::Builder::new(encoder);
-        tar.append_dir_all(".", repo_path)?;
-        Ok(())
     }
 
     fn generate_key_pair(&self) -> Result<(String, String)> {
@@ -1113,7 +1086,7 @@ impl Conductor {
     ) -> Result<entities::workspace::Model, ApiError> {
         let name = format!("{}-{}", repo.name, rand_string(12));
         let (id_rsa, public_key) = self.generate_key_pair()?;
-        let osuser = self.get_osuser(user).await;
+        let osuser = org.id.to_string().replace('-', "");
 
         self.enterprise.check_organization_limit(org).await?;
 
@@ -1229,96 +1202,6 @@ impl Conductor {
 
         txn.commit().await?;
         Ok(ws)
-    }
-
-    async fn transfer_repo(
-        &self,
-        ws_client: &WorkspaceServiceClient,
-        temp_repo_dir: &Path,
-        info: RepoBuildInfo,
-    ) -> Result<(), ApiError> {
-        let archive_dir = tempfile::tempdir()?;
-        let archive_path = archive_dir.path().join("repo.tar.zst");
-        {
-            let temp_repo_dir = temp_repo_dir.to_path_buf();
-            let archive_path = archive_path.clone();
-            tokio::task::spawn_blocking(move || Self::archive_repo(&temp_repo_dir, &archive_path))
-                .await??;
-        }
-
-        let mut buf = vec![0u8; 1024 * 1024];
-        let mut file = tokio::fs::File::open(&archive_path).await?;
-        let mut initial = true;
-
-        tracing::debug!("now start to transfer repo");
-        while let Ok(n) = file.read(&mut buf).await {
-            if n == 0 {
-                break;
-            }
-            ws_client
-                .transfer_repo(
-                    context::current(),
-                    info.clone(),
-                    RepoContent {
-                        content: buf[..n].to_vec(),
-                        position: if initial {
-                            RepoContentPosition::Initial
-                        } else {
-                            RepoContentPosition::Append
-                        },
-                    },
-                )
-                .await??;
-            initial = false;
-        }
-
-        tracing::debug!("transfer repo is done, now unarchive it");
-        ws_client
-            .unarchive_repo(context::current(), info.clone())
-            .await??;
-
-        Ok(())
-    }
-
-    async fn prepare_repo(&self, repo: &RepoDetails, temp_repo_dir: &Path) -> Result<(), ApiError> {
-        if let Some(project) = repo.project.as_ref() {
-            let src_repo_dir = self.data_folder.join(format!("projects/{}/.", project.id));
-            let src_repo_dir = src_repo_dir
-                .to_str()
-                .ok_or_else(|| anyhow!("can't get repo dir"))?;
-            let temp_repo_dir = temp_repo_dir
-                .to_str()
-                .ok_or_else(|| anyhow!("can't get repo dir"))?;
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("cp -a {src_repo_dir} {temp_repo_dir}"))
-                .status()
-                .await?;
-        } else {
-            let temp_repo_dir = temp_repo_dir.to_path_buf();
-            let repo_url = repo.url.clone();
-            clone_repo(repo_url, temp_repo_dir, repo.auth.clone()).await?;
-        };
-
-        if repo.head != repo.branch {
-            let temp_repo_dir = temp_repo_dir.to_path_buf();
-            let branch_name = repo.branch.clone();
-            tokio::task::spawn_blocking(move || {
-                let repo = git2::Repository::open(temp_repo_dir)?;
-                let object = repo.revparse_single(&format!("origin/{branch_name}"))?;
-                let commit = object
-                    .as_commit()
-                    .ok_or_else(|| anyhow!("branch can't turn into commit"))?;
-                let branch = repo.branch(&branch_name, commit, false)?;
-                let commit = branch.get().peel_to_commit()?;
-                repo.checkout_tree(commit.as_object(), None)?;
-                repo.set_head(&format!("refs/heads/{branch_name}"))?;
-                Ok::<(), anyhow::Error>(())
-            })
-            .await??;
-        };
-
-        Ok(())
     }
 
     // copy the prebuild repo content from the prebuild folder to workspace folder
@@ -1541,8 +1424,6 @@ impl Conductor {
         user: &entities::user::Model,
         project: &entities::project::Model,
         branch: Option<&str>,
-        ip: Option<String>,
-        user_agent: Option<String>,
     ) -> Result<RepoDetails, ApiError> {
         let auth = if let Ok(Some(oauth)) = self.db.get_oauth(project.oauth_id).await {
             (oauth.provider_login, oauth.access_token)
@@ -1552,9 +1433,8 @@ impl Conductor {
                 .await?;
             (oauth.provider_login.clone(), oauth.access_token.clone())
         };
-        let branches = self
-            .project_branches(user.id, project, auth.clone(), ip, user_agent)
-            .await?;
+
+        let branches = self.project_branches(project, auth.clone()).await?;
         let head = branches
             .first()
             .map(|b| b.name.clone())
@@ -1592,8 +1472,6 @@ impl Conductor {
         user: &entities::user::Model,
         source: &RepoSource,
         branch: Option<&str>,
-        ip: Option<String>,
-        user_agent: Option<String>,
     ) -> Result<RepoDetails, ApiError> {
         let project = match source {
             RepoSource::Url(repo) => {
@@ -1624,8 +1502,7 @@ impl Conductor {
             }
         };
 
-        self.get_project_repo_details(user, &project, branch, ip, user_agent)
-            .await
+        self.get_project_repo_details(user, &project, branch).await
     }
 
     async fn prepare_prebuild(
@@ -1747,6 +1624,10 @@ impl Conductor {
             },
             env,
             repo_name: ws.repo_name.clone(),
+            repo_url: repo.url.clone(),
+            auth: repo.auth.clone(),
+            branch: repo.branch.clone(),
+            head: repo.head.clone(),
             osuser: ws.osuser.clone(),
             cpus: serde_json::from_str(&ws.cores)?,
             memory: machine_type.memory as usize,
@@ -1775,86 +1656,13 @@ impl Conductor {
             }
         }
 
-        let temp_repo_dir = tempfile::tempdir()?;
-        tracing::debug!("workspace temp repo dir {:?}", temp_repo_dir.path());
-        self.prepare_repo(repo, temp_repo_dir.path()).await?;
-        self.transfer_repo(ws_client, temp_repo_dir.path(), info.clone())
-            .await?;
         let _ = self
             .update_workspace_status(ws, WorkspaceStatus::Building)
             .await;
         tracing::debug!("start to build repo");
-        let output = self.build_repo(ws_client, info, temp_repo_dir.path()).await;
+        let output = ws_client.build_repo(long_running_context(), info).await?;
 
         Ok((None, output))
-    }
-
-    async fn build_repo(
-        &self,
-        ws_client: &WorkspaceServiceClient,
-        info: RepoBuildInfo,
-        repo_path: &Path,
-    ) -> RepoBuildOutput {
-        tracing::info!("start to build repo {info:?}");
-        let result = ws_client
-            .build_repo(long_running_context(), info.clone())
-            .await;
-        match result {
-            Ok(Ok(result)) => return result,
-            Ok(Err(e)) => {
-                tracing::error!("build repo {info:?} error: {e}");
-            }
-            Err(e) => {
-                tracing::error!("build repo {info:?} rpc error: {e}");
-            }
-        };
-
-        let image_name = self.get_repo_default_image(repo_path).await;
-        let image = format!("ghcr.io/lapce/lapdev-devcontainer-{image_name}:latest");
-        tracing::debug!("build repo pick default image {image_name}");
-        RepoBuildOutput::Image(image)
-    }
-
-    async fn get_repo_default_image(&self, repo_path: &Path) -> String {
-        if tokio::fs::try_exists(repo_path.join("Cargo.toml"))
-            .await
-            .unwrap_or(false)
-        {
-            return "rust".to_string();
-        }
-
-        if tokio::fs::try_exists(repo_path.join("go.mod"))
-            .await
-            .unwrap_or(false)
-        {
-            return "go".to_string();
-        }
-
-        if tokio::fs::try_exists(repo_path.join("tsconfig.json"))
-            .await
-            .unwrap_or(false)
-        {
-            return "typescript".to_string();
-        }
-
-        if tokio::fs::try_exists(repo_path.join("package.json"))
-            .await
-            .unwrap_or(false)
-        {
-            return "javascript".to_string();
-        }
-
-        if tokio::fs::try_exists(repo_path.join("requirements.txt"))
-            .await
-            .unwrap_or(false)
-            || tokio::fs::try_exists(repo_path.join("setup.py"))
-                .await
-                .unwrap_or(false)
-        {
-            return "python".to_string();
-        }
-
-        "universal".to_string()
     }
 
     async fn create_workspace_from_output(
@@ -2087,15 +1895,6 @@ impl Conductor {
         Ok(())
     }
 
-    async fn get_osuser(&self, user: &entities::user::Model) -> String {
-        let container_isolated = self.db.is_container_isolated().await.unwrap_or(false);
-        if container_isolated {
-            user.osuser.clone()
-        } else {
-            LAPDEV_DEFAULT_OSUSER.to_string()
-        }
-    }
-
     pub async fn create_workspace(
         &self,
         user: entities::user::Model,
@@ -2110,8 +1909,6 @@ impl Conductor {
                 &user,
                 &workspace.source,
                 workspace.branch.as_deref(),
-                ip.clone(),
-                user_agent.clone(),
             )
             .await?;
 
@@ -3055,13 +2852,7 @@ impl Conductor {
         if prebuild.id == latest.id {
             // if we're latest, check if the branch still exists
             if self
-                .project_branches(
-                    user_id,
-                    &project,
-                    ("".to_string(), "".to_string()),
-                    ip.clone(),
-                    user_agent.clone(),
-                )
+                .project_branches(&project, ("".to_string(), "".to_string()))
                 .await
                 .ok()
                 .map(|branches| branches.iter().any(|b| b.name == prebuild.branch))
@@ -3099,55 +2890,6 @@ impl Conductor {
             .await?;
         Ok(())
     }
-
-    async fn check_deleted_project_branchs(
-        &self,
-        user_id: Uuid,
-        project: &entities::project::Model,
-        deleted_branches: Vec<String>,
-        ip: Option<String>,
-        user_agent: Option<String>,
-    ) {
-        for branch in deleted_branches {
-            let _ = self
-                .check_deleted_project_branch(
-                    user_id,
-                    project,
-                    &branch,
-                    ip.clone(),
-                    user_agent.clone(),
-                )
-                .await;
-        }
-    }
-
-    async fn check_deleted_project_branch(
-        &self,
-        user_id: Uuid,
-        project: &entities::project::Model,
-        branch: &str,
-        ip: Option<String>,
-        user_agent: Option<String>,
-    ) -> Result<(), ApiError> {
-        let prebuilds = entities::prebuild::Entity::find()
-            .filter(entities::prebuild::Column::ProjectId.eq(project.id))
-            .filter(entities::prebuild::Column::Branch.eq(branch))
-            .filter(entities::prebuild::Column::DeletedAt.is_null())
-            .all(&self.db.conn)
-            .await?;
-        for prebuild in prebuilds {
-            self.check_unused_prebuild(
-                project.organization_id,
-                user_id,
-                project,
-                &prebuild,
-                ip.clone(),
-                user_agent.clone(),
-            )
-            .await?;
-        }
-        Ok(())
-    }
 }
 
 pub fn encode_pkcs8_pem(key: &KeyPair) -> Result<String> {
@@ -3156,111 +2898,4 @@ pub fn encode_pkcs8_pem(key: &KeyPair) -> Result<String> {
         "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
         BASE64_MIME.encode(&x)
     ))
-}
-
-fn repo_branches(repo: &Repository) -> Result<Vec<GitBranch>> {
-    let mut branches = Vec::new();
-    for (branch, _) in repo.branches(None)?.flatten() {
-        let reference = branch.get();
-        if reference.is_remote() {
-            let commit = reference.peel_to_commit()?;
-            let name = reference.shorthand().unwrap_or("");
-            let name = name.strip_prefix("origin/").unwrap_or(name);
-            let summary = commit.summary().unwrap_or("");
-            let time = DateTime::from_timestamp(commit.time().seconds(), 0)
-                .ok_or_else(|| anyhow!("invalid timestamp"))?;
-            if name != "HEAD" {
-                branches.push(GitBranch {
-                    name: name.to_string(),
-                    summary: summary.to_string(),
-                    commit: commit.id().to_string(),
-                    time: time.into(),
-                });
-            }
-        }
-    }
-    Ok(branches)
-}
-
-async fn clone_repo(
-    repo_url: String,
-    path: PathBuf,
-    auth: (String, String),
-) -> Result<(), ApiError> {
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        println!("clone repo {repo_url}");
-        let mut opt = git2::FetchOptions::new();
-        let mut cbs = RemoteCallbacks::new();
-        cbs.credentials(|_, _, _| Cred::userpass_plaintext(&auth.0, &auth.1));
-        opt.remote_callbacks(cbs);
-        git2::build::RepoBuilder::new()
-            .fetch_options(opt)
-            .clone(&repo_url, &path)?;
-        Ok(())
-    })
-    .await??;
-    Ok(())
-}
-
-fn repo_pull(repo: &Repository, auth: (String, String)) -> Result<(), ApiError> {
-    let mut remote = repo
-        .find_remote("origin")
-        .or_else(|_| repo.remote_anonymous("origin"))?;
-    let mut fetch_options = FetchOptions::new();
-    let mut cbs = RemoteCallbacks::new();
-    cbs.credentials(|_, _, _| Cred::userpass_plaintext(&auth.0, &auth.1));
-    fetch_options.prune(FetchPrune::On);
-    fetch_options.remote_callbacks(cbs);
-    remote.fetch(&[] as &[&str], Some(&mut fetch_options), None)?;
-
-    let head = repo.head()?;
-    let head_branch = head.shorthand().ok_or_else(|| anyhow!("no head branch"))?;
-
-    let fetch_head = repo.find_reference("FETCH_HEAD")?;
-    let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
-    let analysis = repo.merge_analysis(&[&fetch_commit])?;
-    if analysis.0.is_fast_forward() {
-        let refname = format!("refs/heads/{}", head_branch);
-        match repo.find_reference(&refname) {
-            Ok(mut r) => {
-                let name = match r.name() {
-                    Some(s) => s.to_string(),
-                    None => String::from_utf8_lossy(r.name_bytes()).to_string(),
-                };
-                let msg = format!(
-                    "Fast-Forward: Setting {} to id: {}",
-                    name,
-                    fetch_commit.id()
-                );
-                r.set_target(fetch_commit.id(), &msg)?;
-                repo.set_head(&name)?;
-                repo.checkout_head(Some(
-                    git2::build::CheckoutBuilder::default()
-                        // For some reason the force is required to make the working directory actually get updated
-                        // I suspect we should be adding some logic to handle dirty working directory states
-                        // but this is just an example so maybe not.
-                        .force(),
-                ))?;
-            }
-            Err(_) => {
-                // The branch doesn't exist so just set the reference to the
-                // commit directly. Usually this is because you are pulling
-                // into an empty repository.
-                repo.reference(
-                    &refname,
-                    fetch_commit.id(),
-                    true,
-                    &format!("Setting {} to {}", head_branch, fetch_commit.id()),
-                )?;
-                repo.set_head(&refname)?;
-                repo.checkout_head(Some(
-                    git2::build::CheckoutBuilder::default()
-                        .allow_conflicts(true)
-                        .conflict_style_merge(true)
-                        .force(),
-                ))?;
-            }
-        };
-    }
-    Ok(())
 }

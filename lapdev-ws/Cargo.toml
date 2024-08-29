@@ -7,6 +7,9 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
+crossbeam-channel = "0.5.13"
+notify = "6.1.1"
+git2.workspace = true
 toml.workspace = true
 clap.workspace = true
 uuid.workspace = true

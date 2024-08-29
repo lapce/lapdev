@@ -28,6 +28,8 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Project::RepoName).string().not_null())
                     .col(ColumnDef::new(Project::MachineTypeId).uuid().not_null())
                     .col(ColumnDef::new(Project::Env).string())
+                    .col(ColumnDef::new(Project::HostId).uuid().not_null())
+                    .col(ColumnDef::new(Project::Osuser).string().not_null())
                     .foreign_key(
                         ForeignKey::create()
                             .from_tbl(Project::Table)
@@ -68,4 +70,6 @@ pub enum Project {
     RepoName,
     MachineTypeId,
     Env,
+    Osuser,
+    HostId,
 }

@@ -6,14 +6,13 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use docker_compose_types::AdvancedBuildStep;
 use http_body_util::{BodyExt, Full};
 use hyperlocal::Uri;
 use lapdev_common::{
     BuildTarget, Container, ContainerInfo, CpuCore, CreateWorkspaceRequest, DeleteWorkspaceRequest,
-    NewContainer, NewContainerEndpointSettings, NewContainerHostConfig, NewContainerNetwork,
-    NewContainerNetworkingConfig, PrebuildInfo, RepoBuildInfo, RepoBuildOutput, RepoContent,
-    RepoContentPosition, StartWorkspaceRequest, StopWorkspaceRequest,
+    GitBranch, NewContainer, NewContainerEndpointSettings, NewContainerHostConfig,
+    NewContainerNetwork, NewContainerNetworkingConfig, PrebuildInfo, ProjectRequest, RepoBuildInfo,
+    RepoBuildOutput, RepoContent, RepoContentPosition, StartWorkspaceRequest, StopWorkspaceRequest,
 };
 use lapdev_guest_agent::{LAPDEV_CMDS, LAPDEV_IDE_CMDS, LAPDEV_SSH_PUBLIC_KEY};
 use lapdev_rpc::{
@@ -43,6 +42,24 @@ impl WorkspaceService for WorkspaceRpcService {
 
     async fn version(self, _context: tarpc::context::Context) -> String {
         LAPDEV_WS_VERSION.to_string()
+    }
+
+    async fn get_project_branches(
+        self,
+        _context: tarpc::context::Context,
+        req: ProjectRequest,
+    ) -> Result<Vec<GitBranch>, ApiError> {
+        self.server.project_branches(&req).await
+    }
+
+    async fn create_project(
+        self,
+        _context: tarpc::context::Context,
+        req: ProjectRequest,
+    ) -> Result<(), ApiError> {
+        self.server
+            .create_project(req.id, req.osuser, req.repo_url, req.auth)
+            .await
     }
 
     async fn create_workspace(
@@ -98,8 +115,8 @@ impl WorkspaceService for WorkspaceRpcService {
                 // workround for a bug in unbuntu 22.04
                 // https://bugs.launchpad.net/ubuntu/+source/libpod/+bug/2024394
                 let cni_file = format!(
-                    "/home/lapdev/.config/cni/net.d/{}.conflist",
-                    ws_req.network_name
+                    "/home/{}/.config/cni/net.d/{}.conflist",
+                    ws_req.osuser, ws_req.network_name
                 );
                 if let Ok(content) = tokio::fs::read_to_string(&cni_file).await {
                     if content.contains("\"cniVersion\": \"1.0.0\",") {
@@ -422,43 +439,24 @@ impl WorkspaceService for WorkspaceRpcService {
         Ok(())
     }
 
-    async fn build_repo(
-        self,
-        _context: context::Context,
-        info: RepoBuildInfo,
-    ) -> Result<RepoBuildOutput, ApiError> {
-        let (cwd, config) = self.server.get_devcontainer(&info).await?.ok_or_else(|| {
-            ApiError::RepositoryInvalid("repo doesn't have devcontainer configured".to_string())
-        })?;
-        let tag = self.server.repo_target_image_tag(&info.target);
-        let output = if let Some(compose_file) = &config.docker_compose_file {
-            self.server
-                .build_compose(&self.conductor_client, &info, &cwd.join(compose_file), &tag)
-                .await?
-        } else if let Some(build) = config.build.as_ref() {
-            let build = AdvancedBuildStep {
-                context: build.context.clone().unwrap_or(".".to_string()),
-                dockerfile: build.dockerfile.to_owned(),
-                ..Default::default()
-            };
-            self.server
-                .build_container_image(&self.conductor_client, &info, &cwd, &build, &tag)
-                .await?;
-            RepoBuildOutput::Image(tag.clone())
-        } else if let Some(image) = config.image.as_ref() {
-            self.server
-                .build_container_image_from_base(&self.conductor_client, &info, &cwd, image, &tag)
-                .await?;
-            RepoBuildOutput::Image(tag.clone())
-        } else {
-            return Err(ApiError::RepositoryInvalid(
-                "devcontainer doesn't have any image information".to_string(),
-            ));
+    async fn build_repo(self, _context: context::Context, info: RepoBuildInfo) -> RepoBuildOutput {
+        let result = self.server.build_repo(&info, &self.conductor_client).await;
+
+        match result {
+            Ok(result) => return result,
+            Err(e) => {
+                if let ApiError::InternalError(e) = e {
+                    tracing::error!("build repo {info:?} error: {e}");
+                } else {
+                    tracing::error!("build repo {info:?} error: {e}");
+                }
+            }
         };
-        self.server
-            .run_lifecycle_commands(&self.conductor_client, &info, &output, &config)
-            .await;
-        Ok(output)
+
+        let image_name = self.server.get_default_image(&info).await;
+        let image = format!("ghcr.io/lapce/lapdev-devcontainer-{image_name}:latest");
+        tracing::debug!("build repo pick default image {image_name}");
+        RepoBuildOutput::Image(image)
     }
 
     async fn copy_prebuild_image(
@@ -550,7 +548,7 @@ impl WorkspaceService for WorkspaceRpcService {
     ) -> Result<(), ApiError> {
         let workspace_name = match info.target {
             BuildTarget::Workspace { name, .. } => name,
-            BuildTarget::Prebuild(_) => {
+            BuildTarget::Prebuild { .. } => {
                 return Err(ApiError::InternalError(
                     "copy prebuild content destiantion should be workspace".to_string(),
                 ))

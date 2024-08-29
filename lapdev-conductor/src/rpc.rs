@@ -27,7 +27,7 @@ impl ConductorService for ConductorRpc {
                     .add_workspace_update_event(None, id, WorkspaceUpdateEvent::Stdout(line))
                     .await;
             }
-            BuildTarget::Prebuild(id) => {
+            BuildTarget::Prebuild { id, .. } => {
                 self.conductor
                     .add_prebuild_update_event(id, PrebuildUpdateEvent::Stdout(line))
                     .await;
@@ -62,7 +62,7 @@ impl ConductorService for ConductorRpc {
                     .add_workspace_update_event(None, id, WorkspaceUpdateEvent::Stderr(line))
                     .await;
             }
-            BuildTarget::Prebuild(id) => {
+            BuildTarget::Prebuild { id, .. } => {
                 self.conductor
                     .add_prebuild_update_event(id, PrebuildUpdateEvent::Stderr(line))
                     .await;

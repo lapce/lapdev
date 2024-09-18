@@ -15,7 +15,8 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
-use tracing::error;
+use tracing::{error, instrument::WithSubscriber};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::{cert::tls_config, router, state::CoreState};
 
@@ -96,7 +97,7 @@ async fn run(
             )
             .await
             {
-                error!("ssh proxy error: {e}");
+                error!("ssh proxy error: {e:?}");
             }
         });
     }
@@ -191,16 +192,10 @@ async fn setup_log(
         .filename_prefix("lapdev.log")
         .build(folder)?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-    let filter = tracing_subscriber::EnvFilter::default()
-        .add_directive("lapdev=info".parse()?)
-        .add_directive("lapdev_api=info".parse()?)
-        .add_directive("lapdev_conductor=info".parse()?)
-        .add_directive("lapdev_rpc=info".parse()?)
-        .add_directive("lapdev_common=info".parse()?)
-        .add_directive("lapdev_db=info".parse()?)
-        .add_directive("lapdev_enterprise=info".parse()?)
-        .add_directive("lapdev_proxy_ssh=info".parse()?)
-        .add_directive("lapdev_proxy_http=info".parse()?);
+    let var = std::env::var("RUST_LOG").unwrap_or_default();
+    let var =
+        format!("error,lapdev=info,lapdev_api=info,lapdev_conductor=info,lapdev_rpc=info,lapdev_common=info,lapdev_db=info,lapdev_enterprise=info,lapdev_proxy_ssh=info,lapdev_proxy_http=info,{var}");
+    let filter = tracing_subscriber::EnvFilter::builder().parse_lossy(var);
     tracing_subscriber::fmt()
         .with_ansi(false)
         .with_env_filter(filter)

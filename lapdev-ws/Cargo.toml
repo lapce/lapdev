@@ -7,6 +7,7 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
+parking_lot = "0.12.3"
 crossbeam-channel = "0.5.13"
 notify = "6.1.1"
 git2.workspace = true

@@ -1,13 +1,15 @@
 use std::{borrow::Cow, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use lapdev_conductor::Conductor;
 use russh::{server::Server, MethodSet, Preferred};
 
 use crate::{key::host_keys, proxy::SshProxy};
 
 pub async fn run(conductor: Conductor, bind: &str, port: u16) -> Result<()> {
-    let keys = host_keys(&conductor.db).await?;
+    let keys = host_keys(&conductor.db)
+        .await
+        .with_context(|| "when get host keys")?;
 
     let config = russh::server::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
@@ -32,7 +34,10 @@ pub async fn run(conductor: Conductor, bind: &str, port: u16) -> Result<()> {
         db: conductor.db.clone(),
         conductor: Arc::new(conductor),
     };
-    proxy.run_on_address(config, (bind, port)).await?;
+    proxy
+        .run_on_address(config, (bind, port))
+        .await
+        .with_context(|| "when run proxy on address")?;
 
     Ok(())
 }

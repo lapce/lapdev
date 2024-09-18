@@ -54,6 +54,7 @@ struct LapdevWsConfig {
     bind: Option<String>,
     ws_port: Option<u16>,
     inter_ws_port: Option<u16>,
+    backup_host: Option<String>,
 }
 
 #[derive(Parser)]
@@ -105,7 +106,7 @@ async fn run(cli: &Cli) -> Result<()> {
     let ws_port = config.ws_port.unwrap_or(6123);
     let inter_ws_port = config.inter_ws_port.unwrap_or(6122);
     WorkspaceServer::new(cli.data_folder())
-        .run(bind, ws_port, inter_ws_port)
+        .run(bind, ws_port, inter_ws_port, config.backup_host)
         .await
 }
 
@@ -117,7 +118,13 @@ impl WorkspaceServer {
         }
     }
 
-    async fn run(&self, bind: &str, ws_port: u16, inter_ws_port: u16) -> Result<()> {
+    async fn run(
+        &self,
+        bind: &str,
+        ws_port: u16,
+        inter_ws_port: u16,
+        backup_host: Option<String>,
+    ) -> Result<()> {
         {
             Command::new("mkdir")
                 .arg("-p")
@@ -130,7 +137,7 @@ impl WorkspaceServer {
                 .status()
                 .await?;
 
-            let watcher = FileWatcher::new(&self.data_folder)?;
+            let watcher = FileWatcher::new(&self.data_folder, backup_host)?;
             std::thread::spawn(move || {
                 watcher.watch();
             });
@@ -370,38 +377,6 @@ impl WorkspaceServer {
             .arg(format!("mkdir -p {project_base_folder}"))
             .spawn()?
             .wait()
-            .await?;
-
-        let containers_config_folder = format!("/home/{username}/.config/containers");
-        Command::new("su")
-            .arg("-")
-            .arg(username)
-            .arg("-c")
-            .arg(format!("mkdir -p {containers_config_folder}"))
-            .spawn()?
-            .wait()
-            .await?;
-        tokio::fs::write(
-            format!("{containers_config_folder}/registries.conf"),
-            r#"
-unqualified-search-registries = ["docker.io"]
-"#,
-        )
-        .await?;
-        tokio::fs::write(
-            format!("{containers_config_folder}/storage.conf"),
-            r#"
-[storage]
-driver = "overlay"
-"#,
-        )
-        .await?;
-
-        Command::new("chown")
-            .arg("-R")
-            .arg(format!("{username}:{username}"))
-            .arg(&containers_config_folder)
-            .output()
             .await?;
 
         let uid = self._os_user_uid(username).await?;
@@ -974,11 +949,9 @@ driver = "overlay"
         self.os_user_uid(&info.osuser).await?;
         let build_dir = self.build_base_folder(info);
         let repo_dir = format!("{build_dir}/{}", info.repo_name);
-        Command::new("su")
-            .arg("-")
-            .arg(&info.osuser)
-            .arg("-c")
-            .arg(format!("mkdir -p {repo_dir}"))
+        Command::new("mkdir")
+            .arg("-p")
+            .arg(&repo_dir)
             .spawn()?
             .wait()
             .await?;
@@ -1281,10 +1254,9 @@ async fn setup_log(
         .filename_prefix("lapdev-ws.log")
         .build(folder)?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-    let filter = tracing_subscriber::EnvFilter::default()
-        .add_directive("lapdev_ws=info".parse()?)
-        .add_directive("lapdev_rpc=info".parse()?)
-        .add_directive("lapdev_common=info".parse()?);
+    let var = std::env::var("RUST_LOG").unwrap_or_default();
+    let var = format!("error,lapdev_ws=info,lapdev_rpc=info,lapdev_common=info,{var}");
+    let filter = tracing_subscriber::EnvFilter::builder().parse_lossy(var);
     tracing_subscriber::fmt()
         .with_ansi(false)
         .with_env_filter(filter)

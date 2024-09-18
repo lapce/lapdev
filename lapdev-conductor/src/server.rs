@@ -605,6 +605,10 @@ impl Conductor {
             .split('/')
             .last()
             .ok_or_else(|| ApiError::RepositoryInvalid("invalid repo path".to_string()))?;
+        let path = path
+            .split('?')
+            .next()
+            .ok_or_else(|| ApiError::RepositoryInvalid("invalid repo path".to_string()))?;
         let repo_name = path.strip_suffix(".git").unwrap_or(path).to_string();
 
         Ok(RepoDetails {

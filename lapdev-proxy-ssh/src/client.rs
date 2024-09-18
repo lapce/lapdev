@@ -27,7 +27,8 @@ impl russh::client::Handler for SshProxyClient {
 impl ClientSession {
     pub async fn connect(addr: &str, key: &KeyPair) -> Result<ClientSession> {
         let config = russh::client::Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(5)),
+            inactivity_timeout: Some(std::time::Duration::from_secs(30)),
+            keepalive_interval: Some(std::time::Duration::from_secs(10)),
             ..<_>::default()
         };
         let config = Arc::new(config);

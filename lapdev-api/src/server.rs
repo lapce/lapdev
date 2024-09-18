@@ -15,8 +15,7 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
-use tracing::{error, instrument::WithSubscriber};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing::error;
 
 use crate::{cert::tls_config, router, state::CoreState};
 

@@ -149,6 +149,9 @@ impl WorkspaceService for WorkspaceRpcService {
             "none",
             "--bind-addr",
             "0.0.0.0:30000",
+            "--app-name",
+            "Lapdev",
+            "--disable-workspace-trust",
             &format!("/workspaces/{}", ws_req.repo_name),
         ])?;
 
@@ -194,6 +197,7 @@ impl WorkspaceService for WorkspaceRpcService {
                 cap_add: vec!["NET_RAW".to_string()],
                 security_opt: Some(vec!["label=disable".to_string()]),
                 storage_opt: None,
+                privileged: true,
             },
             networking_config: NewContainerNetworkingConfig {
                 endpoints_config: if let Some(service) = ws_req.service.as_ref() {

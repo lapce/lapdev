@@ -475,6 +475,8 @@ pub struct NewContainerHostConfig {
     pub security_opt: Option<Vec<String>>,
     #[serde(rename = "StorageOpt")]
     pub storage_opt: Option<HashMap<String, String>>,
+    #[serde(rename = "Privileged")]
+    pub privileged: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

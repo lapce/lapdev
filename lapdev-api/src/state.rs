@@ -73,11 +73,20 @@ pub struct CoreState {
     pub auth: Arc<Auth>,
     pub auth_token_key: Arc<SymmetricKey<V4>>,
     pub certs: CertStore,
+    // actuall ssh proxy port
     pub ssh_proxy_port: u16,
+    // ssh proxy port to display in front end
+    pub ssh_proxy_display_port: u16,
+    pub static_dir: Arc<Option<include_dir::Dir<'static>>>,
 }
 
 impl CoreState {
-    pub async fn new(conductor: Conductor, ssh_proxy_port: u16) -> Self {
+    pub async fn new(
+        conductor: Conductor,
+        ssh_proxy_port: u16,
+        ssh_proxy_display_port: u16,
+        static_dir: Option<include_dir::Dir<'static>>,
+    ) -> Self {
         let github_client = GithubClient::new();
         let key = conductor.db.load_api_auth_token_key().await;
         let auth = Auth::new(&conductor.db).await;
@@ -95,7 +104,9 @@ impl CoreState {
             auth_token_key: Arc::new(key),
             certs: Arc::new(std::sync::RwLock::new(Arc::new(certs))),
             ssh_proxy_port,
+            ssh_proxy_display_port,
             hyper_client: Arc::new(hyper_client),
+            static_dir: Arc::new(static_dir),
         };
 
         {

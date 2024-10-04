@@ -37,6 +37,11 @@ impl MigrationTrait for Migration {
                             .big_integer()
                             .not_null(),
                     )
+                    .col(
+                        ColumnDef::new(Organization::RunningWorkspaceLimit)
+                            .integer()
+                            .not_null(),
+                    )
                     .to_owned(),
             )
             .await?;
@@ -68,4 +73,5 @@ enum Organization {
     AllowWorkspaceChangeAutoStop,
     LastAutoStopCheck,
     UsageLimit,
+    RunningWorkspaceLimit,
 }

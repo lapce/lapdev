@@ -883,7 +883,7 @@ fn ProjectInfoView(
                             .into_iter()
                             .find(|m| m.id == info.machine_type)
                     )
-                    .map(|machine_type| format!("{} - {} {}cores, {}GB memory, {}GB disk",machine_type.name, machine_type.cpu, if machine_type.shared { "shared "} else {""}, machine_type.memory, machine_type.disk))
+                    .map(|machine_type| format!("{} - {} vCPUs, {}GB memory, {}GB disk",machine_type.name, machine_type.cpu, machine_type.memory, machine_type.disk))
             }
         </span>
         <span class="mt-2 text-sm inline-flex items-center rounded me-2">
@@ -1247,7 +1247,7 @@ pub fn MachineTypeView(
                                 data-uuid=move || machine_type.id.to_string()
                                 selected=move || Some(machine_type.id) == preferred_machine_type.get()
                             >
-                                {format!("{} - {} {}cores, {}GB memory, {}GB disk",machine_type.name, machine_type.cpu, if machine_type.shared { "shared "} else {""}, machine_type.memory, machine_type.disk)}
+                                {format!("{} - {} vCPUs, {}GB memory, {}GB disk",machine_type.name, machine_type.cpu, machine_type.memory, machine_type.disk)}
                             </option>
                         }
                     }

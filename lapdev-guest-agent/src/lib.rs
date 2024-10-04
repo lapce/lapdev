@@ -55,6 +55,8 @@ fn run_sshd() -> Result<(), LapdevGuestAgentError> {
     fs::create_dir_all("/root/.ssh/")?;
     fs::write("/root/.ssh/authorized_keys", public_key)?;
     Command::new("/usr/sbin/sshd")
+        .arg("-p")
+        .arg("22")
         .arg("-D")
         .arg("-o")
         .arg("AcceptEnv=*")

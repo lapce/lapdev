@@ -13,6 +13,7 @@ pub async fn run(conductor: Conductor, bind: &str, port: u16) -> Result<()> {
 
     let config = russh::server::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
+        keepalive_interval: Some(std::time::Duration::from_secs(10)),
         auth_rejection_time: std::time::Duration::from_secs(3),
         auth_rejection_time_initial: Some(std::time::Duration::from_secs(0)),
         methods: MethodSet::NONE | MethodSet::PUBLICKEY,

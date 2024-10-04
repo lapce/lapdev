@@ -365,7 +365,7 @@ pub async fn get_cluster_info(
         machine_types,
         has_enterprise,
         hostnames: state.conductor.hostnames.read().await.clone(),
-        ssh_proxy_port: state.ssh_proxy_port,
+        ssh_proxy_port: state.ssh_proxy_display_port,
     }))
 }
 

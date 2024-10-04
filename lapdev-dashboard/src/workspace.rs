@@ -220,7 +220,18 @@ fn OpenWorkspaceView(
             let port = cluster_info
                 .with_untracked(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
             let _ =  window()
-                .open_with_url_and_target(&format!("vscode://vscode-remote/ssh-remote+{workspace_name}@{}:{port}/workspaces/{workspace_folder}", workspace_hostname.split(':').next().unwrap_or("")), "_blank");
+                .open_with_url_and_target(
+                &format!(
+                        "vscode://vscode-remote/ssh-remote+{workspace_name}@{}{}/workspaces/{workspace_folder}",
+                        workspace_hostname.split(':').next().unwrap_or(""),
+                        if port == 22 {
+                            "".to_string()
+                        } else {
+                            format!(":{port}") 
+                        }
+                    ),
+                    "_blank"
+                );
         }
     };
 
@@ -1076,7 +1087,17 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                     {
                                         let workspace_name = workspace_name.clone();
                                         let workspace_hostname = workspace_hostname.clone();
-                                        move || format!("ssh {workspace_name}@{} -p {}", workspace_hostname.split(':').next().unwrap_or(""), cluster_info.with(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222)))
+                                        move || {
+                                            let ssh_port = cluster_info.with(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
+                                            format!("ssh {workspace_name}@{}{}",
+                                                workspace_hostname.split(':').next().unwrap_or(""),
+                                                if ssh_port == 22 {
+                                                    "".to_string()
+                                                } else {
+                                                    format!(" -p {ssh_port}")
+                                                }
+                                            )
+                                        }
                                     }
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
@@ -1092,7 +1113,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                                 m.into_iter()
                                                  .find(|m| m.id == info.machine_type)
                                             )
-                                            .map(|machine_type| format!("{} - {} {}cores, {}GB memory, {}GB disk",machine_type.name, machine_type.cpu, if machine_type.shared { "shared "} else {""}, machine_type.memory, machine_type.disk))
+                                            .map(|machine_type| format!("{} - {} vCPUs, {}GB memory, {}GB disk",machine_type.name, machine_type.cpu, machine_type.memory, machine_type.disk))
                                     }
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
@@ -1141,7 +1162,18 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                                         {
                                                             let ws_service_name = ws_service.name.clone();
                                                             let workspace_hostname = workspace_hostname.clone();
-                                                            move || format!("ssh {ws_service_name}@{} -p {}", workspace_hostname.split(':').next().unwrap_or(""), cluster_info.with(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222)))
+                                                            move || {
+                                                                let ssh_proxy_port = cluster_info.with(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
+                                                                format!(
+                                                                    "ssh {ws_service_name}@{}{}",
+                                                                    workspace_hostname.split(':').next().unwrap_or(""),
+                                                                    if ssh_proxy_port == 22 {
+                                                                        "".to_string()
+                                                                    } else {
+                                                                        format!(" -p {ssh_proxy_port}")
+                                                                    },
+                                                                )
+                                                            }
                                                         }
                                                     </span>
 

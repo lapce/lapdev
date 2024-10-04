@@ -29,6 +29,7 @@ struct LapdevConfig {
     http_port: Option<u16>,
     https_port: Option<u16>,
     ssh_proxy_port: Option<u16>,
+    ssh_proxy_display_port: Option<u16>,
 }
 
 #[derive(Parser)]
@@ -49,7 +50,10 @@ struct Cli {
     no_migration: bool,
 }
 
-pub async fn start(additional_router: Option<Router<CoreState>>) {
+pub async fn start(
+    additional_router: Option<Router<CoreState>>,
+    static_dir: Option<include_dir::Dir<'static>>,
+) {
     let cli = Cli::parse();
     let data_folder = cli
         .data_folder
@@ -58,7 +62,7 @@ pub async fn start(additional_router: Option<Router<CoreState>>) {
 
     let _result = setup_log(&cli, &data_folder).await;
 
-    if let Err(e) = run(&cli, additional_router, data_folder).await {
+    if let Err(e) = run(&cli, additional_router, data_folder, static_dir).await {
         tracing::error!("lapdev api start server error: {e:#}");
     }
 }
@@ -67,6 +71,7 @@ async fn run(
     cli: &Cli,
     additional_router: Option<Router<CoreState>>,
     data_folder: PathBuf,
+    static_dir: Option<include_dir::Dir<'static>>,
 ) -> Result<()> {
     let config_file = cli
         .config_file
@@ -85,6 +90,7 @@ async fn run(
     let conductor = Conductor::new(LAPDEV_VERSION, db.clone(), data_folder).await?;
 
     let ssh_proxy_port = config.ssh_proxy_port.unwrap_or(2222);
+    let ssh_proxy_display_port = config.ssh_proxy_display_port.unwrap_or(2222);
     {
         let conductor = conductor.clone();
         let bind = config.bind.clone();
@@ -101,7 +107,13 @@ async fn run(
         });
     }
 
-    let state = CoreState::new(conductor, ssh_proxy_port).await;
+    let state = CoreState::new(
+        conductor,
+        ssh_proxy_port,
+        ssh_proxy_display_port,
+        static_dir,
+    )
+    .await;
     let app = router::build_router(state.clone(), additional_router).await;
     let certs = state.certs.clone();
 

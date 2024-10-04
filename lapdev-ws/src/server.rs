@@ -309,10 +309,10 @@ impl WorkspaceServer {
                     .arg(osuser)
                     .arg("-c")
                     .arg("podman system service --time=0")
-                    .status()
+                    .output()
                     .await;
-                println!("podman system service finished");
             });
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
 
@@ -379,12 +379,43 @@ impl WorkspaceServer {
             .wait()
             .await?;
 
+        let containers_config_folder = format!("/home/{username}/.config/containers");
+        Command::new("su")
+            .arg("-")
+            .arg(username)
+            .arg("-c")
+            .arg(format!("mkdir -p {containers_config_folder}"))
+            .spawn()?
+            .wait()
+            .await?;
+        tokio::fs::write(
+            format!("{containers_config_folder}/registries.conf"),
+            r#"
+unqualified-search-registries = ["docker.io"]
+"#,
+        )
+        .await?;
+        tokio::fs::write(
+            format!("{containers_config_folder}/storage.conf"),
+            r#"
+[storage]
+driver = "overlay"
+"#,
+        )
+        .await?;
+        Command::new("chown")
+            .arg("-R")
+            .arg(format!("{username}:{username}"))
+            .arg(&containers_config_folder)
+            .output()
+            .await?;
+
         let uid = self._os_user_uid(username).await?;
 
         Command::new("loginctl")
             .arg("enable-linger")
             .arg(&uid)
-            .status()
+            .output()
             .await?;
 
         Ok(uid)

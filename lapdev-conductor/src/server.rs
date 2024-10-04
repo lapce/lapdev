@@ -350,7 +350,17 @@ impl Conductor {
                 }
             }
 
-            let _ = self.connect_workspace_host_once(id, &host, port).await;
+            if let Err(e) = self.connect_workspace_host_once(id, &host, port).await {
+                tracing::error!("connect workspace host {host}:{port} failed: {e:?}");
+            }
+
+            let _ = entities::workspace_host::ActiveModel {
+                id: ActiveValue::Set(id),
+                status: ActiveValue::Set(WorkspaceHostStatus::Inactive.to_string()),
+                ..Default::default()
+            }
+            .update(&self.db.conn)
+            .await;
 
             {
                 self.rpcs.lock().await.remove(&id);
@@ -471,14 +481,6 @@ impl Conductor {
 
             let _ = rpc_future.await;
             tracing::debug!("workspace host connection ended");
-
-            entities::workspace_host::ActiveModel {
-                id: ActiveValue::Set(id),
-                status: ActiveValue::Set(WorkspaceHostStatus::Inactive.to_string()),
-                ..Default::default()
-            }
-            .update(&self.db.conn)
-            .await?;
         }
 
         Ok(())

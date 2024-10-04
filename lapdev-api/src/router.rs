@@ -299,7 +299,11 @@ async fn handle_catch_all(
             .and_then(|h| h.to_str().ok())
             .map(|s| s.contains("gzip"))
             .unwrap_or(false);
-        if let Some(file) = STATIC_DIR.get_file(f) {
+        if let Some(file) = if let Some(d) = state.static_dir.as_ref() {
+            d.get_file(f)
+        } else {
+            STATIC_DIR.get_file(f)
+        } {
             let content_type = if f.ends_with(".css") {
                 Some("text/css")
             } else if f.ends_with(".js") {
@@ -311,7 +315,11 @@ async fn handle_catch_all(
             };
             if let Some(content_type) = content_type {
                 if accept_gzip {
-                    if let Some(file) = STATIC_DIR.get_file(format!("{f}.gz")) {
+                    if let Some(file) = if let Some(d) = state.static_dir.as_ref() {
+                        d.get_file(format!("{f}.gz"))
+                    } else {
+                        STATIC_DIR.get_file(format!("{f}.gz"))
+                    } {
                         return Ok((
                             [
                                 (axum::http::header::CONTENT_TYPE, content_type),
@@ -341,7 +349,11 @@ async fn handle_catch_all(
         }
     }
 
-    if let Some(file) = STATIC_DIR.get_file("index.html") {
+    if let Some(file) = if let Some(d) = state.static_dir.as_ref() {
+        d.get_file("index.html")
+    } else {
+        STATIC_DIR.get_file("index.html")
+    } {
         return Ok(axum::response::Html::from(file.contents()).into_response());
     }
 

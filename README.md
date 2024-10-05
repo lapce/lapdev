@@ -23,7 +23,7 @@
 
 ## Cloud
 
-We also have cloud offering of Lapdev using high end Gaming CPU, if you don't want to self host. https://ws.lap.dev/
+If you don't want to self host, we also have cloud offering of Lapdev using high end Gaming CPU: https://ws.lap.dev/
 
 [Read More](https://lap.dev/blog/a-performance-review-of-cloud-dev-envs/) to know how a Gaming CPU can boost the performance.
 

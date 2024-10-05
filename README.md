@@ -21,11 +21,11 @@
 
 **Lapdev** is a self hosted application that spins up remote development environments on your own servers or clouds. It scales from a single machine in the corner to a global fleet of servers. It uses [Devcontainer open specification](https://containers.dev/) for defining your development environment as code. If you’re interested in a deep dive into how Lapdev works, you can read about its [architecture](https://docs.lap.dev/administration/architecture) here.
 
-## Demo
+## Cloud
 
-You can have a quick feel of how Lapdev works by going to our demo installation https://ws.lap.dev/
+We also have cloud offering of Lapdev using high end Gaming CPU, if you don't want to self host. https://ws.lap.dev/
 
-We don't request `read_repo` scope for Github Oauth, so you can only play with public repositories. The machine is hosted on Hetzner Germany so there could be some latency if you live far away. 
+[Read More](https://lap.dev/blog/a-performance-review-of-cloud-dev-envs/) to know how a Gaming CPU can boost the performance.
 
 <br>
 

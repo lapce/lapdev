@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/python:latest
+FROM mcr.microsoft.com/devcontainers/rust:latest
 
 USER root
 COPY ../../../target/release/lapdev-guest-agent /lapdev-guest-agent

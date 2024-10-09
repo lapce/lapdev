@@ -42,7 +42,7 @@ async fn proxy_socket(socket: WebSocket, req: String) -> Result<()> {
 
     let (mut client_sender, mut client_receiver) = socket.split();
 
-    tokio::spawn(async move {
+    let server_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = server_receiver.next().await {
             if let Some(msg) = msg_from_tungstenite(msg) {
                 let _ = client_sender.send(msg).await;
@@ -53,6 +53,9 @@ async fn proxy_socket(socket: WebSocket, req: String) -> Result<()> {
     while let Some(Ok(msg)) = client_receiver.next().await {
         server_sender.send(msg_into_tungstenite(msg)).await?;
     }
+
+    // when client's side is finished, we need to close server side's connection
+    server_task.abort();
 
     Ok(())
 }

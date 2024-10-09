@@ -257,7 +257,7 @@ fn RecordItemView(i: usize, record: UsageRecord) -> impl IntoView {
     let seconds = remaining;
     let duration = format!(
         "{}{}{seconds}s",
-        if hour > 1 {
+        if hour > 0 {
             format!("{hour}h ")
         } else {
             "".to_string()

@@ -755,7 +755,7 @@ impl Conductor {
                 AuditResourceKind::Project.to_string(),
                 project.id,
                 project.name.clone(),
-                AuditAction::PrebuildCreate.to_string(),
+                AuditAction::ProjectCreate.to_string(),
                 ip,
                 user_agent,
             )

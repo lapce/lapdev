@@ -521,7 +521,7 @@ impl Conductor {
     }
 
     fn format_repo_url(&self, repo: &str) -> String {
-        let repo = repo.trim();
+        let repo = repo.trim().to_lowercase();
         let repo = if !repo.starts_with("http://")
             && !repo.starts_with("https://")
             && !repo.starts_with("ssh://")
@@ -1094,7 +1094,9 @@ impl Conductor {
         let (id_rsa, public_key) = self.generate_key_pair()?;
         let osuser = org.id.to_string().replace('-', "");
 
-        self.enterprise.check_organization_limit(org).await?;
+        self.enterprise
+            .check_organization_limit(org, user.id)
+            .await?;
 
         let txn = self.db.conn.begin().await?;
         if let Some(quota) = self
@@ -2275,7 +2277,9 @@ impl Conductor {
         }
 
         let org = self.db.get_organization(workspace.organization_id).await?;
-        self.enterprise.check_organization_limit(&org).await?;
+        self.enterprise
+            .check_organization_limit(&org, workspace.user_id)
+            .await?;
 
         let txn = self.db.conn.begin().await?;
         if let Some(quota) = self

@@ -199,42 +199,6 @@ fn OpenWorkspaceView(
         );
     };
 
-    let open_workspace = {
-        dropdown_hidden.set(true);
-        let workspace_name = workspace_name.clone();
-        let workspace_hostname = workspace_hostname.clone();
-        move |_| {
-            let _ = window().open_with_url_and_target(
-                &format!("http://{workspace_name}.{workspace_hostname}/"),
-                "_blank",
-            );
-        }
-    };
-
-    let open_workspace_in_vscode = {
-        dropdown_hidden.set(true);
-        let workspace_name = workspace_name.clone();
-        let workspace_folder = workspace_folder.clone();
-        let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-        move |_| {
-            let port = cluster_info
-                .with_untracked(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
-            let _ =  window()
-                .open_with_url_and_target(
-                &format!(
-                        "vscode://vscode-remote/ssh-remote+{workspace_name}@{}{}/workspaces/{workspace_folder}",
-                        workspace_hostname.split(':').next().unwrap_or(""),
-                        if port == 22 {
-                            "".to_string()
-                        } else {
-                            format!(":{port}") 
-                        }
-                    ),
-                    "_blank"
-                );
-        }
-    };
-
     let open_button_class = if workspace_status == WorkspaceStatus::Running {
         "bg-green-700 dark:bg-green-600 hover:bg-green-800 dark:hover:bg-green-700"
     } else {
@@ -242,18 +206,23 @@ fn OpenWorkspaceView(
     };
     let open_button_class = format!("{open_button_class} py-2 text-sm font-medium text-white focus:ring-4 focus:ring-green-300 focus:outline-none dark:focus:ring-green-800");
 
+    let workspace_hostname = workspace_hostname.clone();
+    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let port =
+        cluster_info.with_untracked(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
     view! {
         <div
             class="pr-6 relative"
             on:focusout=on_focusout
         >
-            <button
-                class={format!("{open_button_class} px-4 rounded-l-lg")}
+            <a
+                class={format!("{open_button_class} px-4 rounded-l-lg inline-block")}
                 disabled=move || workspace_status != WorkspaceStatus::Running
-                on:click=open_workspace
+                target="_blank"
+                href={format!("http://{workspace_name}.{workspace_hostname}/")}
             >
             Open
-            </button>
+            </a>
             <button
                 class={format!("{open_button_class} h-full absolute right-0 px-2 rounded-r-lg border-l-1")}
                 disabled=move || workspace_status != WorkspaceStatus::Running
@@ -271,9 +240,19 @@ fn OpenWorkspaceView(
                 <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-64 dark:bg-gray-700">
                     <li>
                         <a
-                            href="#"
+                            href={
+                                format!(
+                                        "vscode://vscode-remote/ssh-remote+{workspace_name}@{}{}/workspaces/{workspace_folder}",
+                                        workspace_hostname.split(':').next().unwrap_or(""),
+                                        if port == 22 {
+                                            "".to_string()
+                                        } else {
+                                            format!(":{port}")
+                                        }
+                                    )
+                            }
                             class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
-                            on:click=open_workspace_in_vscode
+                            target="_blank"
                         >
                             Open in VSCode Desktop
                         </a>

@@ -48,6 +48,7 @@ impl Enterprise {
     pub async fn check_organization_limit(
         &self,
         organization: &entities::organization::Model,
+        user_id: Uuid,
     ) -> Result<(), ApiError> {
         if !self.license.has_valid().await {
             return Ok(());
@@ -82,6 +83,30 @@ impl Enterprise {
                         .await
                         .unwrap_or_else(|_| "You have reached the usage limit".to_string()),
                 ));
+            }
+
+            if organization.running_workspace_limit > 0 {
+                let all_orgs = self.db.get_user_organizations(user_id).await?;
+                if all_orgs.len() > 1 {
+                    let mut personal_usage = 0;
+                    for org in all_orgs {
+                        let usage = self
+                            .usage
+                            .get_monthly_cost(
+                                org.organization_id,
+                                Some(user_id),
+                                Utc::now().into(),
+                                None,
+                            )
+                            .await?;
+                        personal_usage += usage;
+                    }
+                    if personal_usage as i64 >= organization.usage_limit {
+                        return Err(ApiError::InvalidRequest(
+                            "You have reached your personal usage limit".to_string(),
+                        ));
+                    }
+                }
             }
         }
 

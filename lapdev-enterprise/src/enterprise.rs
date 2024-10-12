@@ -89,17 +89,21 @@ impl Enterprise {
                 let all_orgs = self.db.get_user_organizations(user_id).await?;
                 if all_orgs.len() > 1 {
                     let mut personal_usage = 0;
-                    for org in all_orgs {
-                        let usage = self
-                            .usage
-                            .get_monthly_cost(
-                                org.organization_id,
-                                Some(user_id),
-                                Utc::now().into(),
-                                None,
-                            )
-                            .await?;
-                        personal_usage += usage;
+                    for member in all_orgs {
+                        if let Ok(org) = self.db.get_organization(member.organization_id).await {
+                            if org.running_workspace_limit > 0 {
+                                let usage = self
+                                    .usage
+                                    .get_monthly_cost(
+                                        org.id,
+                                        Some(user_id),
+                                        Utc::now().into(),
+                                        None,
+                                    )
+                                    .await?;
+                                personal_usage += usage;
+                            }
+                        }
                     }
                     if personal_usage as i64 >= organization.usage_limit {
                         return Err(ApiError::InvalidRequest(

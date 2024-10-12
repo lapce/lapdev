@@ -19,11 +19,15 @@ pub async fn get_login() -> Result<MeUser> {
 
 async fn now_login(provider: AuthProvider) -> Result<()> {
     let location = use_location();
-    let next = format!(
-        "{}{}",
-        location.pathname.get_untracked(),
-        location.search.get_untracked()
-    );
+    let next = format!("{}{}", location.pathname.get_untracked(), {
+        let search = location.search.get_untracked();
+        if search.is_empty() {
+            "".to_string()
+        } else {
+            format!("?{search}")
+        }
+    });
+    let next = urlencoding::encode(&next).to_string();
     let location = window().window().location();
     let resp = Request::get("/api/private/session")
         .query([

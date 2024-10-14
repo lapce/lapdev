@@ -1682,21 +1682,40 @@ impl Conductor {
         ws_client: &WorkspaceServiceClient,
         machine_type: &entities::machine_type::Model,
     ) -> Result<(), ApiError> {
+        let flatten_env = env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>();
         let (is_compose, images) = match &output {
             RepoBuildOutput::Compose(services) => (
                 true,
                 services
                     .iter()
-                    .map(|s| (Some(s.name.clone()), s.image.clone(), s.env.clone()))
+                    .map(|s| {
+                        (
+                            Some(s.name.clone()),
+                            s.image.clone(),
+                            s.info.config.env.clone().unwrap_or_default(),
+                            s.env.clone(),
+                        )
+                    })
                     .collect(),
             ),
-            RepoBuildOutput::Image(tag) => (false, vec![(None, tag.clone(), Vec::new())]),
+            RepoBuildOutput::Image { image, info } => (
+                false,
+                vec![(
+                    None,
+                    image.clone(),
+                    info.config.env.clone().unwrap_or_default(),
+                    vec![],
+                )],
+            ),
         };
 
         let build_output = serde_json::to_string(&output)?;
 
         let cores: CpuCore = serde_json::from_str(&ws.cores)?;
-        for (i, (service, tag, image_env)) in images.into_iter().enumerate() {
+        for (i, (service, tag, image_env, service_env)) in images.into_iter().enumerate() {
             let workspace_name = if let Some(service) = service.clone() {
                 if i > 0 {
                     format!("{}-{service}", ws.name)
@@ -1711,8 +1730,18 @@ impl Conductor {
             } else {
                 self.generate_key_pair()?
             };
-            let mut env = env.clone();
-            env.extend_from_slice(&image_env);
+            let mut ws_env = service_env.clone();
+            ws_env.extend_from_slice(&flatten_env);
+
+            let mut all_env = image_env
+                .iter()
+                .chain(service_env.iter())
+                .filter_map(|env| {
+                    let (key, value) = env.split_once('=')?;
+                    Some((key.to_string(), value.to_string()))
+                })
+                .collect::<Vec<_>>();
+            all_env.extend_from_slice(&env);
             ws_client
                 .create_workspace(
                     long_running_context(),
@@ -1727,7 +1756,7 @@ impl Conductor {
                         image: tag,
                         ssh_public_key: ssh_public_key.clone(),
                         repo_name: ws.repo_name.clone(),
-                        env: env.clone(),
+                        env: ws_env.clone(),
                         cpus: cores.clone(),
                         memory: machine_type.memory as usize,
                         disk: machine_type.disk as usize,
@@ -1796,7 +1825,7 @@ impl Conductor {
                     prebuild_id: ActiveValue::Set(prebuild_id),
                     build_output: ActiveValue::Set(Some(build_output.clone())),
                     is_compose: ActiveValue::Set(is_compose),
-                    env: ActiveValue::Set(serde_json::to_string(&env).ok()),
+                    env: ActiveValue::Set(serde_json::to_string(&all_env).ok()),
                     usage_id: ActiveValue::Set(Some(usage.id)),
                     ..Default::default()
                 }
@@ -1831,7 +1860,7 @@ impl Conductor {
                     last_inactivity: ActiveValue::Set(None),
                     auto_stop: ActiveValue::Set(ws.auto_stop),
                     auto_start: ActiveValue::Set(ws.auto_start),
-                    env: ActiveValue::Set(serde_json::to_string(&env).ok()),
+                    env: ActiveValue::Set(serde_json::to_string(&all_env).ok()),
                     build_output: ActiveValue::Set(Some(build_output.clone())),
                     is_compose: ActiveValue::Set(is_compose),
                     compose_parent: ActiveValue::Set(Some(ws.id)),
@@ -2167,7 +2196,7 @@ impl Conductor {
                     RepoBuildOutput::Compose(services) => {
                         services.into_iter().map(|s| s.image).collect()
                     }
-                    RepoBuildOutput::Image(tag) => vec![tag],
+                    RepoBuildOutput::Image { image, .. } => vec![image],
                 }
             } else {
                 Vec::new()

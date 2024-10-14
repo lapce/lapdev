@@ -9,10 +9,11 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyperlocal::Uri;
 use lapdev_common::{
-    BuildTarget, Container, ContainerInfo, CpuCore, CreateWorkspaceRequest, DeleteWorkspaceRequest,
-    GitBranch, NewContainer, NewContainerEndpointSettings, NewContainerHostConfig,
-    NewContainerNetwork, NewContainerNetworkingConfig, PrebuildInfo, ProjectRequest, RepoBuildInfo,
-    RepoBuildOutput, RepoContent, RepoContentPosition, StartWorkspaceRequest, StopWorkspaceRequest,
+    BuildTarget, Container, ContainerImageInfo, ContainerInfo, CpuCore, CreateWorkspaceRequest,
+    DeleteWorkspaceRequest, GitBranch, NewContainer, NewContainerEndpointSettings,
+    NewContainerHostConfig, NewContainerNetwork, NewContainerNetworkingConfig, PrebuildInfo,
+    ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoContent, RepoContentPosition,
+    StartWorkspaceRequest, StopWorkspaceRequest,
 };
 use lapdev_guest_agent::{LAPDEV_CMDS, LAPDEV_IDE_CMDS, LAPDEV_SSH_PUBLIC_KEY};
 use lapdev_rpc::{
@@ -159,20 +160,30 @@ impl WorkspaceService for WorkspaceRpcService {
             socket,
             &format!("/containers/create?name={}", ws_req.workspace_name),
         );
-        let mut env: Vec<String> = ws_req
-            .env
-            .into_iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect();
+        let mut env = ws_req.env.clone();
         env.extend_from_slice(&[
             format!("{LAPDEV_SSH_PUBLIC_KEY}={}", ws_req.ssh_public_key),
             format!("{LAPDEV_IDE_CMDS}={}", ide_cmds),
             format!("{LAPDEV_CMDS}={}", cmds),
         ]);
 
+        let workspace_folder = self
+            .server
+            .workspace_folder(&ws_req.osuser, &ws_req.volume_name);
+
         let mut exposed_ports = image_info.config.exposed_ports.unwrap_or_default();
         exposed_ports.insert("22/tcp".to_string(), HashMap::new());
         exposed_ports.insert("30000/tcp".to_string(), HashMap::new());
+
+        if let Ok(Some((_, config))) = self
+            .server
+            .get_devcontainer(&PathBuf::from(&workspace_folder).join(&ws_req.repo_name))
+            .await
+        {
+            for port in config.forward_ports {
+                exposed_ports.insert(format!("{port}/tcp"), HashMap::new());
+            }
+        }
 
         let mut body = NewContainer {
             hostname: ws_req.workspace_name.clone(),
@@ -184,11 +195,7 @@ impl WorkspaceService for WorkspaceRpcService {
             working_dir: format!("/workspaces/{}", ws_req.repo_name),
             host_config: NewContainerHostConfig {
                 publish_all_ports: true,
-                binds: vec![format!(
-                    "{}:/workspaces",
-                    self.server
-                        .workspace_folder(&ws_req.osuser, &ws_req.volume_name,)
-                )],
+                binds: vec![format!("{workspace_folder}:/workspaces",)],
                 cpu_period: None,
                 cpu_quota: None,
                 cpuset_cpus: None,
@@ -460,7 +467,10 @@ impl WorkspaceService for WorkspaceRpcService {
         let image_name = self.server.get_default_image(&info).await;
         let image = format!("ghcr.io/lapce/lapdev-devcontainer-{image_name}:latest");
         tracing::debug!("build repo pick default image {image_name}");
-        RepoBuildOutput::Image(image)
+        RepoBuildOutput::Image {
+            image,
+            info: ContainerImageInfo::default(),
+        }
     }
 
     async fn copy_prebuild_image(
@@ -473,7 +483,7 @@ impl WorkspaceService for WorkspaceRpcService {
     ) -> Result<(), ApiError> {
         let images = match output {
             RepoBuildOutput::Compose(services) => services.into_iter().map(|s| s.image).collect(),
-            RepoBuildOutput::Image(tag) => vec![tag],
+            RepoBuildOutput::Image { image, .. } => vec![image],
         };
 
         let prebuild_folder =
@@ -597,7 +607,7 @@ impl WorkspaceService for WorkspaceRpcService {
 
         let images = match output {
             RepoBuildOutput::Compose(services) => services.into_iter().map(|s| s.image).collect(),
-            RepoBuildOutput::Image(tag) => vec![tag],
+            RepoBuildOutput::Image { image, .. } => vec![image],
         };
 
         for image in images {
@@ -645,7 +655,7 @@ impl WorkspaceService for WorkspaceRpcService {
                 RepoBuildOutput::Compose(services) => {
                     services.into_iter().map(|s| s.image).collect()
                 }
-                RepoBuildOutput::Image(tag) => vec![tag],
+                RepoBuildOutput::Image { image, .. } => vec![image],
             };
 
             for image in images {
@@ -680,7 +690,7 @@ impl WorkspaceService for WorkspaceRpcService {
         let mut files = vec!["repo.tar.zst".to_string()];
         let images = match output {
             RepoBuildOutput::Compose(services) => services.into_iter().map(|s| s.image).collect(),
-            RepoBuildOutput::Image(tag) => vec![tag],
+            RepoBuildOutput::Image { image, .. } => vec![image],
         };
         for image in images {
             if image.starts_with("ghcr.io") {

@@ -423,9 +423,8 @@ driver = "overlay"
 
     pub async fn get_devcontainer(
         &self,
-        info: &RepoBuildInfo,
+        folder: &Path,
     ) -> Result<Option<(DevContainerCwd, DevContainerConfig)>, ApiError> {
-        let folder = PathBuf::from(self.build_repo_folder(info));
         let devcontainer_folder_path = folder.join(".devcontainer").join("devcontainer.json");
         let devcontainer_root_path = folder.join(".devcontainer.json");
         let (cwd, file_path) = if tokio::fs::try_exists(&devcontainer_folder_path)
@@ -437,7 +436,7 @@ driver = "overlay"
             .await
             .unwrap_or(false)
         {
-            (folder, devcontainer_root_path)
+            (folder.to_path_buf(), devcontainer_root_path)
         } else {
             return Ok(None);
         };
@@ -455,7 +454,7 @@ driver = "overlay"
         context: &Path,
         dockerfile_content: &str,
         tag: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<ContainerImageInfo, ApiError> {
         let temp = tempfile::NamedTempFile::new()?.into_temp_path();
         {
             let mut temp_docker_file = tokio::fs::File::create(&temp).await?;
@@ -554,7 +553,9 @@ driver = "overlay"
         let _ = tokio::fs::remove_file(&install_script_path).await;
         let _ = tokio::fs::remove_file(&lapdev_guest_agent_path).await;
 
-        Ok(())
+        let image_info = self.container_image_info(&info.osuser, tag).await?;
+
+        Ok(image_info)
     }
 
     pub async fn build_container_image_from_base(
@@ -564,39 +565,9 @@ driver = "overlay"
         cwd: &Path,
         image: &str,
         tag: &str,
-    ) -> Result<(), ApiError> {
-        let _ = self
-            .pull_container_image(conductor_client, &info.osuser, image, &info.target)
-            .await;
-        let image_info = self.container_image_info(&info.osuser, image).await?;
-
+    ) -> Result<ContainerImageInfo, ApiError> {
         let context = cwd.to_path_buf();
-        let mut dockerfile_content = format!("FROM {image}\n");
-        if let Some(entrypoint) = image_info.config.entrypoint {
-            if !entrypoint.is_empty() {
-                if let Ok(entrypoint) = serde_json::to_string(&entrypoint) {
-                    dockerfile_content += "ENTRYPOINT ";
-                    dockerfile_content += &entrypoint;
-                    dockerfile_content += "\n";
-                }
-            }
-        }
-        if let Some(cmd) = image_info.config.cmd {
-            if !cmd.is_empty() {
-                if let Ok(cmd) = serde_json::to_string(&cmd) {
-                    dockerfile_content += "CMD ";
-                    dockerfile_content += &cmd;
-                    dockerfile_content += "\n";
-                }
-            }
-        }
-        if let Some(ports) = image_info.config.exposed_ports {
-            for port in ports.keys() {
-                dockerfile_content += "EXPOSE ";
-                dockerfile_content += port;
-                dockerfile_content += "\n";
-            }
-        }
+        let dockerfile_content = format!("FROM {image}\n");
 
         self.do_build_container_image(
             conductor_client,
@@ -606,8 +577,7 @@ driver = "overlay"
             &dockerfile_content,
             tag,
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     pub async fn pull_container_image(
@@ -662,7 +632,7 @@ driver = "overlay"
         cwd: &Path,
         build: &AdvancedBuildStep,
         tag: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<ContainerImageInfo, ApiError> {
         let context = cwd.join(&build.context);
         let dockerfile = build.dockerfile.as_deref().unwrap_or("Dockerfile");
         let dockerfile = context.join(dockerfile);
@@ -678,29 +648,15 @@ driver = "overlay"
             &dockerfile_content,
             tag,
         )
-        .await?;
-        Ok(())
+        .await
     }
 
-    fn compose_service_env(
-        &self,
-        service: &docker_compose_types::Service,
-    ) -> Vec<(String, String)> {
+    fn compose_service_env(&self, service: &docker_compose_types::Service) -> Vec<String> {
         match &service.environment {
-            docker_compose_types::Environment::List(list) => list
-                .iter()
-                .filter_map(|s| {
-                    let parts: Vec<String> = s.splitn(2, '=').map(|s| s.to_string()).collect();
-                    if parts.len() == 2 {
-                        Some((parts[0].clone(), parts[1].clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
+            docker_compose_types::Environment::List(list) => list.clone(),
             docker_compose_types::Environment::KvPair(pair) => pair
                 .iter()
-                .filter_map(|(key, value)| Some((key.to_string(), format!("{}", value.as_ref()?))))
+                .filter_map(|(key, value)| Some(format!("{key}={}", value.as_ref()?)))
                 .collect(),
         }
     }
@@ -712,7 +668,7 @@ driver = "overlay"
         cwd: &Path,
         service: &docker_compose_types::Service,
         tag: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<ContainerImageInfo, ApiError> {
         if let Some(build) = &service.build_ {
             let build = match build {
                 BuildStep::Simple(context) => AdvancedBuildStep {
@@ -722,16 +678,15 @@ driver = "overlay"
                 BuildStep::Advanced(build) => build.to_owned(),
             };
             self.build_container_image(conductor_client, info, cwd, &build, tag)
-                .await?;
+                .await
         } else if let Some(image) = &service.image {
             self.build_container_image_from_base(conductor_client, info, cwd, image, tag)
-                .await?;
+                .await
         } else {
             return Err(ApiError::RepositoryInvalid(
                 "can't find image or build in this compose service".to_string(),
             ));
         }
-        Ok(())
     }
 
     pub async fn build_compose(
@@ -753,13 +708,15 @@ driver = "overlay"
         for (name, service) in compose.services.0 {
             if let Some(service) = service {
                 let tag = format!("{tag}:{name}");
-                self.build_compose_service(conductor_client, info, cwd, &service, &tag)
+                let info = self
+                    .build_compose_service(conductor_client, info, cwd, &service, &tag)
                     .await?;
                 let env = self.compose_service_env(&service);
                 services.push(RepoComposeService {
                     name,
                     image: tag,
                     env,
+                    info,
                 });
             }
         }
@@ -835,7 +792,7 @@ driver = "overlay"
                     }
                 }
             }
-            RepoBuildOutput::Image(tag) => {
+            RepoBuildOutput::Image { image, .. } => {
                 let cmd = match cmd {
                     DevContainerLifeCycleCmd::Simple(cmd) => {
                         DevContainerCmd::Simple(cmd.to_string())
@@ -845,7 +802,7 @@ driver = "overlay"
                         return Err(anyhow!("can't use object cmd for non compose"))
                     }
                 };
-                self.run_devcontainer_command(conductor_client, repo, tag, &cmd)
+                self.run_devcontainer_command(conductor_client, repo, image, &cmd)
                     .await?;
             }
         }
@@ -946,9 +903,12 @@ driver = "overlay"
         conductor_client: &ConductorServiceClient,
     ) -> Result<RepoBuildOutput, ApiError> {
         self.prepare_repo(info).await?;
-        let (cwd, config) = self.get_devcontainer(info).await?.ok_or_else(|| {
-            ApiError::RepositoryInvalid("repo doesn't have devcontainer configured".to_string())
-        })?;
+        let (cwd, config) = self
+            .get_devcontainer(&PathBuf::from(self.build_repo_folder(info)))
+            .await?
+            .ok_or_else(|| {
+                ApiError::RepositoryInvalid("repo doesn't have devcontainer configured".to_string())
+            })?;
         let tag = self.repo_target_image_tag(&info.target);
         let output = if let Some(compose_file) = &config.docker_compose_file {
             self.build_compose(conductor_client, info, &cwd.join(compose_file), &tag)
@@ -959,13 +919,21 @@ driver = "overlay"
                 dockerfile: build.dockerfile.to_owned(),
                 ..Default::default()
             };
-            self.build_container_image(conductor_client, info, &cwd, &build, &tag)
+            let info = self
+                .build_container_image(conductor_client, info, &cwd, &build, &tag)
                 .await?;
-            RepoBuildOutput::Image(tag.clone())
+            RepoBuildOutput::Image {
+                image: tag.clone(),
+                info,
+            }
         } else if let Some(image) = config.image.as_ref() {
-            self.build_container_image_from_base(conductor_client, info, &cwd, image, &tag)
+            let info = self
+                .build_container_image_from_base(conductor_client, info, &cwd, image, &tag)
                 .await?;
-            RepoBuildOutput::Image(tag.clone())
+            RepoBuildOutput::Image {
+                image: tag.clone(),
+                info,
+            }
         } else {
             return Err(ApiError::RepositoryInvalid(
                 "devcontainer doesn't have any image information".to_string(),

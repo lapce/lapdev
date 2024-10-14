@@ -143,14 +143,18 @@ pub struct RepoContent {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RepoBuildOutput {
     Compose(Vec<RepoComposeService>),
-    Image(String),
+    Image {
+        image: String,
+        info: ContainerImageInfo,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RepoComposeService {
     pub name: String,
     pub image: String,
-    pub env: Vec<(String, String)>,
+    pub env: Vec<String>,
+    pub info: ContainerImageInfo,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -351,7 +355,7 @@ pub struct CreateWorkspaceRequest {
     pub image: String,
     pub ssh_public_key: String,
     pub repo_name: String,
-    pub env: Vec<(String, String)>,
+    pub env: Vec<String>,
     pub cpus: CpuCore,
     pub memory: usize,
     pub disk: usize,
@@ -503,7 +507,7 @@ pub struct Container {
     pub id: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ContainerPortBinding {
     #[serde(rename = "HostIp")]
     pub host_ip: String,
@@ -511,7 +515,7 @@ pub struct ContainerPortBinding {
     pub host_port: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ContainerConfig {
     #[serde(rename = "Hostname")]
     pub hostname: String,
@@ -521,7 +525,7 @@ pub struct ContainerConfig {
     pub env: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ContainerImageConfig {
     #[serde(rename = "Hostname")]
     pub hostname: String,
@@ -531,11 +535,13 @@ pub struct ContainerImageConfig {
     pub entrypoint: Option<Vec<String>>,
     #[serde(rename = "Cmd")]
     pub cmd: Option<Vec<String>>,
+    #[serde(rename = "Env")]
+    pub env: Option<Vec<String>>,
     #[serde(rename = "ExposedPorts")]
     pub exposed_ports: Option<HashMap<String, HashMap<String, String>>>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ContainerHostConfig {
     #[serde(rename = "PortBindings")]
     pub port_bindings: HashMap<String, Vec<ContainerPortBinding>>,
@@ -543,7 +549,7 @@ pub struct ContainerHostConfig {
     pub binds: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ContainerInfo {
     #[serde(rename = "Config")]
     pub config: ContainerConfig,
@@ -551,7 +557,7 @@ pub struct ContainerInfo {
     pub host_config: ContainerHostConfig,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ContainerImageInfo {
     #[serde(rename = "Id")]
     pub id: String,

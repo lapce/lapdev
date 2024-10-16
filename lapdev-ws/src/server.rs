@@ -33,6 +33,7 @@ use tarpc::{
     tokio_serde::formats::Json,
 };
 use tokio::{
+    fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
     sync::{Mutex, RwLock},
@@ -345,6 +346,21 @@ impl WorkspaceServer {
             return Err(anyhow!("can't do useradd {username}").into());
         }
 
+        let _ = tokio::process::Command::new("usermod")
+            .arg("-a")
+            .arg("-G")
+            .arg("video")
+            .arg(username)
+            .output()
+            .await;
+        let _ = tokio::process::Command::new("usermod")
+            .arg("-a")
+            .arg("-G")
+            .arg("render")
+            .arg(username)
+            .output()
+            .await;
+
         let workspace_base_folder = self.osuser_workspace_base_folder(username);
         Command::new("mkdir")
             .arg("-p")
@@ -388,6 +404,14 @@ impl WorkspaceServer {
             .spawn()?
             .wait()
             .await?;
+        tokio::fs::write(
+            format!("{containers_config_folder}/containers.conf"),
+            r#"
+[containers]
+annotations=["run.oci.keep_original_groups=1",]
+"#,
+        )
+        .await?;
         tokio::fs::write(
             format!("{containers_config_folder}/registries.conf"),
             r#"
@@ -446,46 +470,35 @@ driver = "overlay"
         Ok(Some((cwd, config)))
     }
 
-    async fn do_build_container_image(
+    async fn write_extra_dockerfile(
         &self,
-        conductor_client: &ConductorServiceClient,
         info: &RepoBuildInfo,
-        cwd: &Path,
-        context: &Path,
-        dockerfile_content: &str,
-        tag: &str,
-    ) -> Result<ContainerImageInfo, ApiError> {
-        let temp = tempfile::NamedTempFile::new()?.into_temp_path();
-        {
-            let mut temp_docker_file = tokio::fs::File::create(&temp).await?;
-            temp_docker_file
-                .write_all(dockerfile_content.as_bytes())
-                .await?;
-            temp_docker_file.write_all(b"\nUSER root\n").await?;
-            temp_docker_file
-                .write_all(b"COPY lapdev-guest-agent /lapdev-guest-agent\n")
-                .await?;
-            temp_docker_file
-                .write_all(b"RUN chmod +x /lapdev-guest-agent\n")
-                .await?;
-            temp_docker_file
-                .write_all(b"COPY install_guest_agent.sh /install_guest_agent.sh\n")
-                .await?;
-            temp_docker_file
-                .write_all(b"RUN sh /install_guest_agent.sh\n")
-                .await?;
-            temp_docker_file
-                .write_all(b"RUN rm /install_guest_agent.sh\n")
-                .await?;
-        }
+        temp_docker_file: &mut File,
+        install_script_path: &Path,
+        lapdev_guest_agent_path: &Path,
+    ) -> Result<()> {
+        temp_docker_file.write_all(b"\nUSER root\n").await?;
+        temp_docker_file
+            .write_all(b"COPY lapdev-guest-agent /lapdev-guest-agent\n")
+            .await?;
+        temp_docker_file
+            .write_all(b"RUN chmod +x /lapdev-guest-agent\n")
+            .await?;
+        temp_docker_file
+            .write_all(b"COPY install_guest_agent.sh /install_guest_agent.sh\n")
+            .await?;
+        temp_docker_file
+            .write_all(b"RUN sh /install_guest_agent.sh\n")
+            .await?;
+        temp_docker_file
+            .write_all(b"RUN rm /install_guest_agent.sh\n")
+            .await?;
 
-        let install_script_path = context.join("install_guest_agent.sh");
         {
             let mut install_script_file = tokio::fs::File::create(&install_script_path).await?;
             install_script_file.write_all(INSTALL_SCRIPT).await?;
         }
 
-        let lapdev_guest_agent_path = context.join("lapdev-guest-agent");
         {
             let mut file = tokio::fs::File::create(&lapdev_guest_agent_path).await?;
             file.write_all(LAPDEV_GUEST_AGENT).await?;
@@ -494,9 +507,49 @@ driver = "overlay"
 
         tokio::process::Command::new("chown")
             .arg(format!("{}:{}", info.osuser, info.osuser))
-            .arg(&install_script_path)
+            .arg(install_script_path)
             .output()
             .await?;
+
+        tokio::process::Command::new("chown")
+            .arg(format!("{}:{}", info.osuser, info.osuser))
+            .arg(lapdev_guest_agent_path)
+            .output()
+            .await?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn do_build_container_image(
+        &self,
+        conductor_client: &ConductorServiceClient,
+        info: &RepoBuildInfo,
+        cwd: &Path,
+        context: &Path,
+        dockerfile_content: &str,
+        tag: &str,
+        install_extra: bool,
+    ) -> Result<ContainerImageInfo, ApiError> {
+        let install_script_path = context.join("install_guest_agent.sh");
+        let lapdev_guest_agent_path = context.join("lapdev-guest-agent");
+        let temp = tempfile::NamedTempFile::new()?.into_temp_path();
+        {
+            let mut temp_docker_file = tokio::fs::File::create(&temp).await?;
+            temp_docker_file
+                .write_all(dockerfile_content.as_bytes())
+                .await?;
+            if install_extra {
+                self.write_extra_dockerfile(
+                    info,
+                    &mut temp_docker_file,
+                    &install_script_path,
+                    &lapdev_guest_agent_path,
+                )
+                .await?;
+            }
+        }
+
         tokio::process::Command::new("chown")
             .arg(format!("{}:{}", info.osuser, info.osuser))
             .arg(&temp)
@@ -515,7 +568,7 @@ driver = "overlay"
             .arg(&info.osuser)
             .arg("-c")
             .arg(format!(
-                "cd {} && podman build --no-cache {build_args} {} -m {}g -f {} -t {tag} {}",
+                "cd {} && podman build --pull --no-cache {build_args} {} -m {}g -f {} -t {tag} {}",
                 cwd.to_string_lossy(),
                 match &info.cpus {
                     CpuCore::Dedicated(cpus) => {
@@ -550,8 +603,10 @@ driver = "overlay"
             )));
         }
 
-        let _ = tokio::fs::remove_file(&install_script_path).await;
-        let _ = tokio::fs::remove_file(&lapdev_guest_agent_path).await;
+        if install_extra {
+            let _ = tokio::fs::remove_file(&install_script_path).await;
+            let _ = tokio::fs::remove_file(&lapdev_guest_agent_path).await;
+        }
 
         let image_info = self.container_image_info(&info.osuser, tag).await?;
 
@@ -566,6 +621,11 @@ driver = "overlay"
         image: &str,
         tag: &str,
     ) -> Result<ContainerImageInfo, ApiError> {
+        let install_extra = !image
+            .trim()
+            .to_lowercase()
+            .starts_with("ghcr.io/lapce/lapdev-devcontainer-");
+
         let context = cwd.to_path_buf();
         let dockerfile_content = format!("FROM {image}\n");
 
@@ -576,6 +636,7 @@ driver = "overlay"
             &context,
             &dockerfile_content,
             tag,
+            install_extra,
         )
         .await
     }
@@ -647,6 +708,7 @@ driver = "overlay"
             &context,
             &dockerfile_content,
             tag,
+            true,
         )
         .await
     }

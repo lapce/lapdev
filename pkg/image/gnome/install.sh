@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 NOVNC_VERSION="${NOVNCVERSION:-"1.2.0"}" # TODO: Add in a 'latest' auto-detect and swap name to 'version'
+
 VNC_PASSWORD=${PASSWORD:-"vscode"}
 if [ "$VNC_PASSWORD" = "noPassword" ]; then
     unset VNC_PASSWORD
@@ -16,7 +17,6 @@ WEBSOCKETIFY_VERSION=0.10.0
 package_list="
     tigervnc-standalone-server \
     tigervnc-common \
-    fluxbox \
     dbus-x11 \
     x11-utils \
     x11-xserver-utils \
@@ -81,70 +81,6 @@ if [ "${USERNAME}" = "auto" ] || [ "${USERNAME}" = "automatic" ]; then
 elif [ "${USERNAME}" = "none" ] || ! id -u ${USERNAME} > /dev/null 2>&1; then
     USERNAME=root
 fi
-# Add default Fluxbox config files if none are already present
-fluxbox_apps="$(cat \
-<< 'EOF'
-[transient] (role=GtkFileChooserDialog)
-  [Dimensions]	{70% 70%}
-  [Position]	(CENTER)	{0 0}
-[end]
-EOF
-)"
-
-fluxbox_init="$(cat \
-<< 'EOF'
-session.configVersion:	13
-session.menuFile:	~/.fluxbox/menu
-session.keyFile: ~/.fluxbox/keys
-session.styleFile: /usr/share/fluxbox/styles/qnx-photon
-session.screen0.workspaces: 1
-session.screen0.workspacewarping: false
-session.screen0.toolbar.widthPercent: 100
-session.screen0.strftimeFormat: %a %l:%M %p
-session.screen0.toolbar.tools: RootMenu, clock, iconbar, systemtray
-session.screen0.workspaceNames: One,
-EOF
-)"
-
-fluxbox_menu="$(cat \
-<< 'EOF'
-[begin] (  Application Menu  )
-    [exec] (File Manager) { nautilus ~ } <>
-    [exec] (Text Editor) { mousepad } <>
-    [exec] (Terminal) { tilix -w ~ -e $(readlink -f /proc/$$/exe) -il } <>
-    [exec] (Web Browser) { x-www-browser --disable-dev-shm-usage } <>
-    [submenu] (System) {}
-        [exec] (Set Resolution) { tilix -t "Set Resolution" -e bash /usr/local/bin/set-resolution } <>
-        [exec] (Edit Application Menu) { mousepad ~/.fluxbox/menu } <>
-        [exec] (Passwords and Keys) { seahorse } <>
-        [exec] (Top Processes) { tilix -t "Top" -e htop } <>
-        [exec] (Disk Utilization) { tilix -t "Disk Utilization" -e ncdu / } <>
-        [exec] (Editres) {editres} <>
-        [exec] (Xfontsel) {xfontsel} <>
-        [exec] (Xkill) {xkill} <>
-        [exec] (Xrefresh) {xrefresh} <>
-    [end]
-    [config] (Configuration)
-    [workspaces] (Workspaces)
-[end]
-EOF
-)"
-
-# Copy config files if the don't already exist
-copy_fluxbox_config() {
-    local target_dir="$1"
-    mkdir -p "${target_dir}/.fluxbox"
-    touch "${target_dir}/.Xmodmap"
-    if [ ! -e "${target_dir}/.fluxbox/apps" ]; then
-        echo "${fluxbox_apps}" > "${target_dir}/.fluxbox/apps"
-    fi
-    if [ ! -e "${target_dir}/.fluxbox/init" ]; then
-        echo "${fluxbox_init}" > "${target_dir}/.fluxbox/init"
-    fi
-    if [ ! -e "${target_dir}/.fluxbox/menu" ]; then
-        echo "${fluxbox_menu}" > "${target_dir}/.fluxbox/menu"
-    fi
-}
 
 apt_get_update()
 {
@@ -190,7 +126,7 @@ else
     package_list="${package_list} tilix"
 fi
 
-# Install X11, fluxbox and VS Code dependencies
+# Install X11, VS Code dependencies
 check_packages ${package_list}
 
 # if Ubuntu-24.04, noble(numbat) found, then will install libasound2-dev instead of libasound2.
@@ -295,7 +231,7 @@ LOG=/tmp/container-init.log
 
 export DBUS_SESSION_BUS_ADDRESS="\${DBUS_SESSION_BUS_ADDRESS:-"autolaunch:"}"
 export DISPLAY="\${DISPLAY:-:1}"
-export VNC_RESOLUTION="\${VNC_RESOLUTION:-1440x768x32}" 
+export VNC_RESOLUTION="\${VNC_RESOLUTION:-1440x768x16}" 
 export LANG="\${LANG:-"en_US.UTF-8"}"
 export LANGUAGE="\${LANGUAGE:-"en_US.UTF-8"}"
 
@@ -360,17 +296,17 @@ while ! pgrep -x dbus-daemon > /dev/null; do
     sleep 1
 done
 
-# Startup tigervnc server and fluxbox
+# Startup tigervnc server
 sudoIf rm -rf /tmp/.X11-unix /tmp/.X*-lock
 mkdir -p /tmp/.X11-unix
 sudoIf chmod 1777 /tmp/.X11-unix
 sudoIf chown root:\${group_name} /tmp/.X11-unix
-if [ "\$(echo "\${VNC_RESOLUTION}" | tr -cd 'x' | wc -c)" = "1" ]; then VNC_RESOLUTION=\${VNC_RESOLUTION}x32; fi
+if [ "\$(echo "\${VNC_RESOLUTION}" | tr -cd 'x' | wc -c)" = "1" ]; then VNC_RESOLUTION=\${VNC_RESOLUTION}x16; fi
 screen_geometry="\${VNC_RESOLUTION%*x*}"
 screen_depth="\${VNC_RESOLUTION##*x}"
 
 # Check if VNC_PASSWORD is set and use the appropriate command
-common_options="tigervncserver \${DISPLAY} -geometry \${screen_geometry} -rfbport ${VNC_PORT} -localhost -desktop fluxbox -fg"
+common_options="tigervncserver \${DISPLAY} -geometry \${screen_geometry} -depth \${screen_depth} -rfbport ${VNC_PORT} -dpi \${VNC_DPI:-96} -localhost -desktop gnome -fg"
 
 if [ -n "\${VNC_PASSWORD+x}" ]; then
     startInBackgroundIfNotRunning "Xtigervnc" sudoUserIf "\${common_options} -passwd /usr/local/etc/vscode-dev-containers/vnc-passwd"
@@ -400,13 +336,6 @@ if [ -n "${VNC_PASSWORD+x}" ]; then
     echo "${VNC_PASSWORD}" | vncpasswd -f > /usr/local/etc/vscode-dev-containers/vnc-passwd
 fi
 chmod +x /usr/local/share/desktop-init.sh /usr/local/bin/set-resolution
-
-# Set up fluxbox config
-copy_fluxbox_config "/root"
-if [ "${USERNAME}" != "root" ]; then
-    copy_fluxbox_config "/home/${USERNAME}"
-    chown -R ${USERNAME} /home/${USERNAME}/.Xmodmap /home/${USERNAME}/.fluxbox
-fi
 
 # Clean up
 rm -rf /var/lib/apt/lists/*

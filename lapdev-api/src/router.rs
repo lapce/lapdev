@@ -328,6 +328,8 @@ async fn handle_catch_all(
                 Some("text/javascript")
             } else if f.ends_with(".wasm") {
                 Some("application/wasm")
+            } else if f.ends_with(".ico") {
+                Some("image/vnd.microsoft.icon")
             } else {
                 None
             };

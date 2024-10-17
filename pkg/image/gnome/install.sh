@@ -30,6 +30,8 @@ package_list="
     seahorse \
     gnome-icon-theme \
     gnome-keyring \
+    gnome-panel \
+    metacity \
     libx11-dev \
     libxkbfile-dev \
     libsecret-1-dev \
@@ -59,6 +61,26 @@ set -e
 
 # Clean up
 rm -rf /var/lib/apt/lists/*
+
+mkdir /root/.vnc/
+
+cat << EOF > /root/.vnc/xstartup
+#!/bin/sh
+
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+[ -x /etc/vnc/xstartup ] && exec /etc/vnc/xstartup
+[ -r $HOME/.Xresources ] && xrdb $HOME/.Xresources
+xsetroot -solid white
+vncconfig -iconic &
+
+gnome-panel &
+metacity
+
+EOF
+
+chmod +x /root/.vnc/xstartup
 
 if [ "$(id -u)" -ne 0 ]; then
     echo -e 'Script must be run as root. Use sudo, su, or add "USER root" to your Dockerfile before running this script.'
@@ -306,7 +328,7 @@ screen_geometry="\${VNC_RESOLUTION%*x*}"
 screen_depth="\${VNC_RESOLUTION##*x}"
 
 # Check if VNC_PASSWORD is set and use the appropriate command
-common_options="tigervncserver \${DISPLAY} -geometry \${screen_geometry} -depth \${screen_depth} -rfbport ${VNC_PORT} -dpi \${VNC_DPI:-96} -localhost -desktop gnome -fg"
+common_options="tigervncserver \${DISPLAY} -geometry \${screen_geometry} -rfbport ${VNC_PORT} -localhost -desktop gnome -fg"
 
 if [ -n "\${VNC_PASSWORD+x}" ]; then
     startInBackgroundIfNotRunning "Xtigervnc" sudoUserIf "\${common_options} -passwd /usr/local/etc/vscode-dev-containers/vnc-passwd"

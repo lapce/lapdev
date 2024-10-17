@@ -1,4 +1,4 @@
-FROM debian:bullseye
+FROM debian:12
 
 ENV LANG en_US.UTF-8
 
@@ -52,9 +52,17 @@ RUN apt-get update && \
     env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       gnome-shell-extension* && \
     /cleanup
+    
+USER root
+COPY ../../../target/release/lapdev-guest-agent /lapdev-guest-agent
+RUN chmod +x /lapdev-guest-agent
+COPY ../../../lapdev-ws/scripts/install_guest_agent.sh /install_guest_agent.sh
+RUN sh /install_guest_agent.sh
+RUN rm /install_guest_agent.sh
 
 COPY ./pkg/image/gnome/install.sh /tmp/install.sh
 RUN chmod +x /tmp/install.sh
 RUN /tmp/install.sh
+RUN rm /tmp/install.sh
 ENV DISPLAY=:1
-# ENTRYPOINT /usr/local/share/desktop-init.sh
+ENTRYPOINT /usr/local/share/desktop-init.sh

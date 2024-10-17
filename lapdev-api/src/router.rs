@@ -235,10 +235,13 @@ pub async fn build_router(
     Router::new()
         .route("/", any(handle_catch_all))
         .route("/*0", any(handle_catch_all))
+        .route("/health-check", get(health_check))
         .nest("/api", main_routes(additional_router))
         .with_state(state)
         .layer(SecureClientIpSource::ConnectInfo.into_extension())
 }
+
+async fn health_check() {}
 
 async fn handle_catch_all(
     Host(hostname): Host,
@@ -253,34 +256,49 @@ async fn handle_catch_all(
         .path_and_query()
         .map(|v| v.as_str())
         .unwrap_or(path);
-    if let Some((ws, workspace_host, port)) =
-        lapdev_proxy_http::proxy::forward_workspace(hostname, &state.db).await
-    {
-        is_http_foward_allowed(&cookie, &state, &ws, port.as_ref()).await?;
-        let port = port
-            .map(|p| p.host_port as u16)
-            .or_else(|| ws.ide_port.map(|p| p as u16));
-        if let Some(forward) =
-            lapdev_proxy_http::forward::handler(&workspace_host.host, path_query, websocket, port)
-                .await
+    let is_base = state
+        .conductor
+        .hostnames
+        .read()
+        .await
+        .values()
+        .any(|v| v == &hostname);
+    if !is_base {
+        if let Some((ws, workspace_host, port)) =
+            lapdev_proxy_http::proxy::forward_workspace(hostname, &state.db).await
         {
-            match forward {
-                ProxyForward::Resp(resp) => return Ok(resp),
-                ProxyForward::Proxy(uri) => {
-                    // *req.uri_mut() = uri;
-                    let headers = req.headers().clone();
-                    let mut new_req = Request::builder()
-                        .method(req.method())
-                        .uri(uri)
-                        .body(req.into_body())
-                        .unwrap();
-                    *new_req.headers_mut() = headers;
-                    let resp = state.hyper_client.request(new_req).await?;
-                    return Ok(resp.into_response());
+            is_http_foward_allowed(&cookie, &state, &ws, port.as_ref()).await?;
+            let port = port
+                .map(|p| p.host_port as u16)
+                .or_else(|| ws.ide_port.map(|p| p as u16));
+            if let Some(forward) = lapdev_proxy_http::forward::handler(
+                &workspace_host.host,
+                path_query,
+                websocket,
+                port,
+            )
+            .await
+            {
+                match forward {
+                    ProxyForward::Resp(resp) => return Ok(resp),
+                    ProxyForward::Proxy(uri) => {
+                        // *req.uri_mut() = uri;
+                        let headers = req.headers().clone();
+                        let mut new_req = Request::builder()
+                            .method(req.method())
+                            .uri(uri)
+                            .body(req.into_body())
+                            .unwrap();
+                        *new_req.headers_mut() = headers;
+                        let resp = state.hyper_client.request(new_req).await?;
+                        return Ok(resp.into_response());
+                    }
                 }
+            } else {
+                return Err(ApiError::InvalidRequest("can't forward".to_string()));
             }
         } else {
-            return Err(ApiError::InternalError("can't foward http".to_string()));
+            return Err(ApiError::InvalidRequest("Invalid forward".to_string()));
         }
     }
 

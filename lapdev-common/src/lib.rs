@@ -121,6 +121,7 @@ pub struct NewWorkspace {
     pub source: RepoSource,
     pub branch: Option<String>,
     pub machine_type_id: Uuid,
+    pub from_hash: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -316,6 +317,17 @@ pub struct WorkspaceInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
+pub struct WorkspacePort {
+    pub port: u16,
+    pub shared: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
+pub struct UpdateWorkspacePort {
+    pub shared: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
 pub struct WorkspaceService {
     pub name: String,
     pub service: String,
@@ -419,6 +431,7 @@ pub enum AuditAction {
     WorkspaceDelete,
     WorkspaceStart,
     WorkspaceStop,
+    WorkspaceUpdate,
     ProjectCreate,
     ProjectDelete,
     ProjectUpdateEnv,

@@ -194,6 +194,22 @@ impl DbApi {
         Ok(model)
     }
 
+    pub async fn get_workspace_by_url(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        url: &str,
+    ) -> Result<Option<entities::workspace::Model>> {
+        let model = workspace::Entity::find()
+            .filter(entities::workspace::Column::OrganizationId.eq(org_id))
+            .filter(entities::workspace::Column::UserId.eq(user_id))
+            .filter(entities::workspace::Column::DeletedAt.is_null())
+            .filter(entities::workspace::Column::RepoUrl.eq(url))
+            .one(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
     pub async fn get_running_workspaces_on_host(
         &self,
         ws_host_id: Uuid,
@@ -572,6 +588,17 @@ impl DbApi {
             .filter(entities::workspace_port::Column::WorkspaceId.eq(ws_id))
             .filter(entities::workspace_port::Column::Port.eq(port))
             .one(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
+    pub async fn get_workspace_ports(
+        &self,
+        ws_id: Uuid,
+    ) -> Result<Vec<entities::workspace_port::Model>> {
+        let model = entities::workspace_port::Entity::find()
+            .filter(entities::workspace_port::Column::WorkspaceId.eq(ws_id))
+            .all(&self.conn)
             .await?;
         Ok(model)
     }

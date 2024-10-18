@@ -24,13 +24,9 @@ async fn connect_oauth(
     provider: AuthProvider,
     update_read_repo: Option<bool>,
 ) -> Result<(), ErrorResponse> {
-    let location = use_location();
-    let next = format!(
-        "{}{}",
-        location.pathname.get_untracked(),
-        location.search.get_untracked()
-    );
     let location = window().window().location();
+    let next = location.href().unwrap_or_default();
+    let next = urlencoding::encode(&next).to_string();
     let url = if update_read_repo.is_some() {
         "/api/v1/account/git_providers/update_scope"
     } else {

@@ -7,11 +7,17 @@ use axum::{
     Json,
 };
 use axum_extra::{headers::Cookie, TypedHeader};
+use chrono::Utc;
 use hyper::StatusCode;
-use lapdev_common::{NewWorkspace, WorkspaceInfo, WorkspaceService, WorkspaceStatus};
+use lapdev_common::{
+    AuditAction, AuditResourceKind, NewWorkspace, UpdateWorkspacePort, WorkspaceInfo,
+    WorkspacePort, WorkspaceService, WorkspaceStatus,
+};
 use lapdev_db::entities;
 use lapdev_rpc::error::ApiError;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, TransactionTrait,
+};
 use tracing::error;
 use uuid::Uuid;
 
@@ -255,5 +261,94 @@ pub async fn stop_workspace(
         .conductor
         .stop_workspace(ws, info.ip, info.user_agent)
         .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn workspace_ports(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Path((org_id, workspace_name)): Path<(Uuid, String)>,
+    State(state): State<CoreState>,
+) -> Result<Response, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+    let ws = state
+        .db
+        .get_workspace_by_name(&workspace_name)
+        .await
+        .map_err(|_| ApiError::InvalidRequest("workspace name doesn't exist".to_string()))?;
+    if ws.user_id != user.id {
+        return Err(ApiError::Unauthorized);
+    }
+    let ports = state.db.get_workspace_ports(ws.id).await?;
+    Ok(Json(
+        ports
+            .into_iter()
+            .map(|p| WorkspacePort {
+                port: p.port as u16,
+                shared: p.shared,
+            })
+            .collect::<Vec<_>>(),
+    )
+    .into_response())
+}
+
+pub async fn update_workspace_port(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Path((org_id, workspace_name, port)): Path<(Uuid, String, u16)>,
+    State(state): State<CoreState>,
+    info: RequestInfo,
+    Json(update_workspace_port): Json<UpdateWorkspacePort>,
+) -> Result<Response, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+    let ws = state
+        .db
+        .get_workspace_by_name(&workspace_name)
+        .await
+        .map_err(|_| ApiError::InvalidRequest("workspace name doesn't exist".to_string()))?;
+    if ws.user_id != user.id {
+        return Err(ApiError::Unauthorized);
+    }
+    let port = state
+        .db
+        .get_workspace_port(ws.id, port)
+        .await?
+        .ok_or_else(|| ApiError::InvalidRequest(format!("port {port} not found")))?;
+
+    let now = Utc::now();
+    let txn = state.db.conn.begin().await?;
+    state
+        .conductor
+        .enterprise
+        .insert_audit_log(
+            &txn,
+            now.into(),
+            ws.user_id,
+            ws.organization_id,
+            AuditResourceKind::Workspace.to_string(),
+            ws.id,
+            format!("{} port {}", ws.name, port.port),
+            AuditAction::WorkspaceUpdate.to_string(),
+            info.ip.clone(),
+            info.user_agent.clone(),
+        )
+        .await?;
+    entities::workspace_port::ActiveModel {
+        id: ActiveValue::Set(port.id),
+        shared: ActiveValue::Set(update_workspace_port.shared),
+        ..Default::default()
+    }
+    .update(&txn)
+    .await?;
+    txn.commit().await?;
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }

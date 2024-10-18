@@ -162,6 +162,14 @@ fn v1_api_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreSta
             "/organizations/:org_id/workspaces/:workspace_name/stop",
             post(workspace::stop_workspace),
         )
+        .route(
+            "/organizations/:org_id/workspaces/:workspace_name/ports",
+            get(workspace::workspace_ports),
+        )
+        .route(
+            "/organizations/:org_id/workspaces/:workspace_name/ports/:port",
+            put(workspace::update_workspace_port),
+        )
         .route("/account/ssh_keys", post(account::create_ssh_key))
         .route("/account/ssh_keys", get(account::all_ssh_keys))
         .route("/account/ssh_keys/:key_id", delete(account::delete_ssh_key))

@@ -7,7 +7,7 @@ use gloo_net::{
     websocket::{futures::WebSocket, Message},
 };
 use lapdev_common::{
-    console::Organization, ClusterInfo, GitBranch, NewWorkspace, NewWorkspaceResponse,
+    console::Organization, utils, ClusterInfo, GitBranch, NewWorkspace, NewWorkspaceResponse,
     PrebuildStatus, ProjectInfo, ProjectPrebuild, RepoSource, WorkspaceInfo, WorkspaceStatus,
     WorkspaceUpdateEvent,
 };
@@ -18,7 +18,7 @@ use leptos::{
     Signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith,
     SignalWithUntracked,
 };
-use leptos_router::{use_navigate, use_params_map};
+use leptos_router::{use_location, use_navigate, use_params_map};
 use uuid::Uuid;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
@@ -589,7 +589,7 @@ pub fn Workspaces() -> impl IntoView {
         });
     });
 
-    let workspaces = create_local_resource(
+    let workspaces_resource = create_local_resource(
         move || delete_counter.get(),
         |_| async move { all_workspaces().await.unwrap_or_default() },
     );
@@ -597,7 +597,7 @@ pub fn Workspaces() -> impl IntoView {
     let workspace_filter = create_rw_signal(String::new());
 
     let workspaces = Signal::derive(move || {
-        let mut workspaces = workspaces.get().unwrap_or_default();
+        let mut workspaces = workspaces_resource.get().unwrap_or_default();
         let workspace_filter = workspace_filter.get();
         workspaces.retain(|w| w.name.contains(&workspace_filter));
         workspaces
@@ -606,6 +606,46 @@ pub fn Workspaces() -> impl IntoView {
     let new_workspace = move |_| {
         new_workspace_modal_hidden.set(false);
     };
+
+    {
+        let hash = use_location().hash.get_untracked();
+        if let Some(url) = hash.strip_prefix("#") {
+            let url = utils::format_repo_url(url);
+            let action_dispatched = create_rw_signal(false);
+            let current_org = expect_context::<Signal<Option<Organization>>>();
+            let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+            let action = create_action(move |url: &String| {
+                create_workspace(RepoSource::Url(url.clone()), None, None, true)
+            });
+            create_effect(move |_| {
+                let org = current_org.get();
+                if org.is_none() {
+                    return;
+                }
+                let cluster_info = cluster_info.get();
+                if cluster_info.is_none() {
+                    return;
+                }
+                if !action_dispatched.get_untracked() {
+                    action.dispatch(url.clone());
+                    action_dispatched.set(true);
+                }
+            });
+            create_effect(move |_| {
+                action.value().with(|result| {
+                    if let Some(result) = result {
+                        match result {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error.set(Some(e.error.clone()));
+                            }
+                        }
+                    }
+                })
+            });
+        }
+    }
+
     view! {
         <section class="w-full h-full flex items-center flex-col">
             <div class="mx-auto w-full">
@@ -685,6 +725,7 @@ pub async fn create_workspace(
     source: RepoSource,
     branch: Option<String>,
     machine_type: Option<Uuid>,
+    from_hash: bool,
 ) -> Result<(), ErrorResponse> {
     let current_org =
         use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
@@ -704,6 +745,7 @@ pub async fn create_workspace(
             source,
             branch,
             machine_type_id,
+            from_hash,
         })?
         .send()
         .await?;
@@ -784,6 +826,7 @@ pub fn NewWorkspaceModal(
             source,
             current_branch.get_untracked().map(|b| b.name),
             current_machine_type.get_untracked(),
+            false,
         )
     });
 

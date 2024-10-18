@@ -8,7 +8,7 @@ use leptos::{
     component, create_action, create_local_resource, expect_context, use_context, view, window,
     IntoView, Resource, RwSignal, Signal, SignalGet, SignalGetUntracked, SignalSet, SignalWith,
 };
-use leptos_router::{use_location, use_params_map};
+use leptos_router::use_params_map;
 
 use crate::{cluster::OauthSettings, modal::ErrorResponse};
 
@@ -18,17 +18,9 @@ pub async fn get_login() -> Result<MeUser> {
 }
 
 async fn now_login(provider: AuthProvider) -> Result<()> {
-    let location = use_location();
-    let next = format!("{}{}", location.pathname.get_untracked(), {
-        let search = location.search.get_untracked();
-        if search.is_empty() {
-            "".to_string()
-        } else {
-            format!("?{search}")
-        }
-    });
-    let next = urlencoding::encode(&next).to_string();
     let location = window().window().location();
+    let next = location.href().unwrap_or_default();
+    let next = urlencoding::encode(&next).to_string();
     let resp = Request::get("/api/private/session")
         .query([
             ("provider", &provider.to_string()),

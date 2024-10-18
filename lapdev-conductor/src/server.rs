@@ -5,6 +5,7 @@ use chrono::Utc;
 use data_encoding::BASE64_MIME;
 use futures::{channel::mpsc::UnboundedReceiver, stream::AbortHandle, SinkExt, StreamExt};
 use git2::{Cred, RemoteCallbacks};
+use lapdev_common::{utils, PrebuildReplicaStatus, WorkspaceHostStatus};
 use lapdev_common::{
     utils::rand_string, AuditAction, AuditResourceKind, AuthProvider, BuildTarget, CpuCore,
     CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch, NewProject, NewProjectResponse,
@@ -12,7 +13,6 @@ use lapdev_common::{
     ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoSource, StartWorkspaceRequest,
     StopWorkspaceRequest, UsageResourceKind, WorkspaceStatus, WorkspaceUpdateEvent,
 };
-use lapdev_common::{PrebuildReplicaStatus, WorkspaceHostStatus};
 use lapdev_db::{api::DbApi, entities};
 use lapdev_enterprise::enterprise::Enterprise;
 use lapdev_rpc::{
@@ -520,21 +520,6 @@ impl Conductor {
         }
     }
 
-    fn format_repo_url(&self, repo: &str) -> String {
-        let repo = repo.trim().to_lowercase();
-        let repo = if !repo.starts_with("http://")
-            && !repo.starts_with("https://")
-            && !repo.starts_with("ssh://")
-        {
-            format!("https://{repo}")
-        } else {
-            repo.to_string()
-        };
-        repo.strip_suffix('/')
-            .map(|r| r.to_string())
-            .unwrap_or(repo)
-    }
-
     async fn get_raw_repo_details(
         &self,
         repo_url: &str,
@@ -582,7 +567,7 @@ impl Conductor {
                 };
                 tracing::warn!("can't open repo {local_repo_url}: {err}");
                 ApiError::RepositoryInvalid(
-                    "Repository URL invalid or we don't have access to it. If it's a private repo, you can try to update the permission in User Settings -> Git Providers.".to_string(),
+                    format!("Repository {local_repo_url} is invalid or we don't have access to it. If it's a private repo, you can try to update the permission in User Settings -> Git Providers."),
                 )
             })?
         };
@@ -662,7 +647,7 @@ impl Conductor {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<NewProjectResponse, ApiError> {
-        let repo = self.format_repo_url(&project.repo);
+        let repo = utils::format_repo_url(&project.repo);
 
         let oauth = self.find_match_oauth_for_repo(&user, &repo).await?;
 
@@ -1483,7 +1468,7 @@ impl Conductor {
     ) -> Result<RepoDetails, ApiError> {
         let project = match source {
             RepoSource::Url(repo) => {
-                let repo = self.format_repo_url(repo);
+                let repo = utils::format_repo_url(repo);
                 let project = self.db.get_project_by_repo(org_id, &repo).await?;
                 if let Some(project) = project {
                     project
@@ -1948,6 +1933,19 @@ impl Conductor {
                 workspace.branch.as_deref(),
             )
             .await?;
+        if workspace.from_hash {
+            // if the workspace was created from hash
+            // we check if there's existing workspace
+            if let Ok(Some(workspace)) = self
+                .db
+                .get_workspace_by_url(org.id, user.id, &repo.url)
+                .await
+            {
+                return Ok(NewWorkspaceResponse {
+                    name: workspace.name,
+                });
+            }
+        }
 
         let machine_type = self
             .db

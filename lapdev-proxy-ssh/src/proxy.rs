@@ -233,6 +233,31 @@ impl russh::server::Handler for SshProxyHandler {
 
         Ok(true)
     }
+
+    async fn channel_open_x11(
+        &mut self,
+        channel: Channel<Msg>,
+        originator_address: &str,
+        originator_port: u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        let ws_session = self
+            .ws_session
+            .as_mut()
+            .ok_or_else(|| anyhow!("don't have ws session"))?;
+        let ws_channel = ws_session
+            .handle
+            .channel_open_x11(originator_address, originator_port)
+            .await?;
+
+        let server_handle = session.handle();
+
+        tokio::spawn(async move {
+            let _ = forward_server_client(channel, ws_channel, server_handle).await;
+        });
+
+        Ok(true)
+    }
 }
 
 async fn forward_server_client(

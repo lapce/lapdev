@@ -170,9 +170,9 @@ impl CoreState {
     }
 
     fn cookie_token(&self, cookie: &headers::Cookie, name: &str) -> Result<TrustedToken, ApiError> {
-        let token = cookie.get(name).ok_or(ApiError::NoAuthToken)?;
+        let token = cookie.get(name).ok_or(ApiError::Unauthenticated)?;
         let untrusted_token =
-            UntrustedToken::try_from(token).map_err(|_| ApiError::InvalidAuthToken)?;
+            UntrustedToken::try_from(token).map_err(|_| ApiError::Unauthenticated)?;
         let token = pasetors::local::decrypt(
             &self.auth_token_key,
             &untrusted_token,
@@ -180,7 +180,7 @@ impl CoreState {
             None,
             None,
         )
-        .map_err(|_| ApiError::InvalidAuthToken)?;
+        .map_err(|_| ApiError::Unauthenticated)?;
         Ok(token)
     }
 

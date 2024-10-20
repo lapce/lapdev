@@ -10,9 +10,7 @@ pub enum ApiError {
     RepositoryInvalid(String),
     InvalidRequest(String),
     InternalError(String),
-    NoAuthToken,
     NoAvailableWorkspaceHost,
-    InvalidAuthToken,
     QuotaReached(QuotaResult),
 }
 
@@ -30,8 +28,6 @@ impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use ApiError::*;
         let err = match self {
-            NoAuthToken => "No auth token in the request",
-            InvalidAuthToken => "Invalid auth token in the request",
             Unauthenticated => "Not authenticated",
             Unauthorized => "Not authorized",
             EnterpriseInvalid => "Doesn't have enterprise license or enterprise license is invalid",
@@ -61,8 +57,6 @@ impl IntoResponse for ApiError {
             Unauthorized | EnterpriseInvalid => StatusCode::UNAUTHORIZED,
             RepositoryInvalid(_)
             | InvalidRequest(_)
-            | NoAuthToken
-            | InvalidAuthToken
             | QuotaReached(_)
             | NoAvailableWorkspaceHost => StatusCode::BAD_REQUEST,
             InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,

@@ -111,7 +111,7 @@ pub(crate) async fn session_authorize(
     TypedHeader(cookie): TypedHeader<headers::Cookie>,
 ) -> Result<Response, ApiError> {
     let token = state.auth_state_token(&cookie)?;
-    let claims = token.payload_claims().ok_or(ApiError::InvalidAuthToken)?;
+    let claims = token.payload_claims().ok_or(ApiError::Unauthenticated)?;
 
     let redirect_url = claims
         .get_claim(REDIRECT_URL)

@@ -394,6 +394,11 @@ async fn is_http_foward_allowed(
     ws: &entities::workspace::Model,
     port: Option<&entities::workspace_port::Model>,
 ) -> Result<(), ApiError> {
+    if let Some(port) = port {
+        if port.public {
+            return Ok(());
+        }
+    }
     let user = state.authenticate(cookie).await?;
     if ws.user_id == user.id {
         return Ok(());

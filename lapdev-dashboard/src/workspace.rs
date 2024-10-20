@@ -1226,7 +1226,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         />
                                     </div>
                                 </Show>
-                                <WorkspaceTabView name=info.name.clone() workspace_hostname=workspace_name.clone() />
+                                <WorkspaceTabView name=info.name.clone() workspace_hostname=workspace_hostname.clone() />
                                 <DeletionModal resource=info.name.clone() modal_hidden=delete_modal_hidden delete_action />
                             </div>
                         }

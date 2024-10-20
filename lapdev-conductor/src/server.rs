@@ -1862,6 +1862,7 @@ impl Conductor {
                         port: ActiveValue::Set(port as i32),
                         host_port: ActiveValue::Set(host_port as i32),
                         shared: ActiveValue::Set(false),
+                        public: ActiveValue::Set(false),
                     }
                     .insert(&self.db.conn)
                     .await?;

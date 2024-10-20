@@ -290,6 +290,7 @@ pub async fn workspace_ports(
             .map(|p| WorkspacePort {
                 port: p.port as u16,
                 shared: p.shared,
+                public: p.public,
             })
             .collect::<Vec<_>>(),
     )
@@ -344,6 +345,7 @@ pub async fn update_workspace_port(
     entities::workspace_port::ActiveModel {
         id: ActiveValue::Set(port.id),
         shared: ActiveValue::Set(update_workspace_port.shared),
+        public: ActiveValue::Set(update_workspace_port.public),
         ..Default::default()
     }
     .update(&txn)

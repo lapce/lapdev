@@ -8,12 +8,12 @@ use gloo_net::{
 };
 use lapdev_common::{
     console::Organization, utils, ClusterInfo, GitBranch, NewWorkspace, NewWorkspaceResponse,
-    PrebuildStatus, ProjectInfo, ProjectPrebuild, RepoSource, WorkspaceInfo, WorkspaceStatus,
-    WorkspaceUpdateEvent,
+    PrebuildStatus, ProjectInfo, ProjectPrebuild, RepoSource, UpdateWorkspacePort, WorkspaceInfo,
+    WorkspacePort, WorkspaceStatus, WorkspaceUpdateEvent,
 };
 use leptos::{
     component, create_action, create_effect, create_local_resource, create_rw_signal, document,
-    event_target_value, expect_context, on_cleanup, set_timeout, spawn_local,
+    event_target_checked, event_target_value, expect_context, on_cleanup, set_timeout, spawn_local,
     spawn_local_with_current_owner, use_context, view, window, For, IntoView, RwSignal, Show,
     Signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith,
     SignalWithUntracked,
@@ -219,7 +219,7 @@ fn OpenWorkspaceView(
                 class={format!("{open_button_class} px-4 rounded-l-lg inline-block")}
                 disabled=move || workspace_status != WorkspaceStatus::Running
                 target="_blank"
-                href={format!("http://{workspace_name}.{workspace_hostname}/")}
+                href={format!("https://{workspace_name}.{workspace_hostname}/")}
             >
             Open
             </a>
@@ -1226,6 +1226,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         />
                                     </div>
                                 </Show>
+                                <WorkspaceTabView name=info.name.clone() workspace_hostname=workspace_name.clone() />
                                 <DeletionModal resource=info.name.clone() modal_hidden=delete_modal_hidden delete_action />
                             </div>
                         }
@@ -1251,5 +1252,231 @@ pub fn WorkspaceDetails() -> impl IntoView {
         //         }
         //     />
         // </div>
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum TabKind {
+    Port,
+}
+
+#[component]
+pub fn WorkspaceTabView(name: String, workspace_hostname: String) -> impl IntoView {
+    let tab_kind = create_rw_signal(TabKind::Port);
+    let active_class = "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active dark:text-blue-500 dark:border-blue-500";
+    let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300 dark:hover:text-gray-300";
+    let change_tab = move |kind: TabKind| {
+        tab_kind.set(kind);
+    };
+
+    view! {
+        <div class="mt-8 text-sm font-medium text-center text-gray-500 border-b border-gray-200 dark:text-gray-400 dark:border-gray-700">
+            <ul class="flex flex-wrap -mb-px">
+                <li class="me-2">
+                    <a
+                        href="#"
+                        class={ move || if tab_kind.get() == TabKind::Port {active_class} else {inactive_class} }
+                        on:click=move |_| change_tab(TabKind::Port)
+                    >Ports</a>
+                </li>
+            </ul>
+        </div>
+        <div class="pb-12 text-gray-600 dark:text-gray-400">
+            <div class:hidden=move || tab_kind.get() != TabKind::Port>
+                <WorkspacePortsView name=name workspace_hostname=workspace_hostname.clone() />
+            </div>
+        </div>
+    }
+}
+
+async fn workspace_ports(name: &str) -> Result<Vec<WorkspacePort>> {
+    let org =
+        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
+    let org = org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+    let resp = Request::get(&format!(
+        "/api/v1/organizations/{}/workspaces/{name}/ports",
+        org.id
+    ))
+    .send()
+    .await?;
+    let ports: Vec<WorkspacePort> = resp.json().await?;
+    Ok(ports)
+}
+
+async fn update_workspace_port(
+    name: &str,
+    port: u16,
+    shared: bool,
+    public: bool,
+) -> Result<(), ErrorResponse> {
+    let org =
+        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
+    let org = org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+    let resp = Request::put(&format!(
+        "/api/v1/organizations/{}/workspaces/{name}/ports/{port}",
+        org.id
+    ))
+    .json(&UpdateWorkspacePort { shared, public })?
+    .send()
+    .await?;
+    if resp.status() != 204 {
+        let error = resp
+            .json::<ErrorResponse>()
+            .await
+            .unwrap_or_else(|_| ErrorResponse {
+                error: "Internal Server Error".to_string(),
+            });
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[component]
+pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl IntoView {
+    let ports = {
+        let name = name.clone();
+        create_local_resource(
+            || (),
+            move |_| {
+                let name = name.clone();
+                async move { workspace_ports(&name.clone()).await }
+            },
+        )
+    };
+    let ports = Signal::derive(move || {
+        ports
+            .with(|p| p.as_ref().map(|p| p.as_ref().ok().cloned()))
+            .flatten()
+            .unwrap_or_default()
+    });
+
+    let success = create_rw_signal(None);
+    let error = create_rw_signal(None);
+
+    view! {
+        <p class="mt-2 py-2 text-sm text-gray-900 dark:text-gray-400">Exposed ports of your workspace</p>
+        <div class="text-sm text-gray-500">
+            <p>Only you can access the ports by default.</p>
+            <p>If you make the port shared, all members in the same organisation can access it.</p>
+            <p>If you make the port public, everyone who has the url can access it.</p>
+        </div>
+        { move || if let Some(success) = success.get() {
+            view! {
+                <div class="mt-4 p-4 rounded-lg bg-green-50 dark:bg-gray-800 w-full">
+                    <span class="text-sm font-medium text-green-800 dark:text-green-400">{ success }</span>
+                </div>
+            }.into_view()
+        } else {
+            view!{}.into_view()
+        }}
+
+        { move || if let Some(error) = error.get() {
+            view! {
+                <div class="mt-4 p-4 rounded-lg bg-red-50 dark:bg-gray-800 w-full">
+                    <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                </div>
+            }.into_view()
+        } else {
+            view!{}.into_view()
+        }}
+
+        <div class="mt-4 flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
+            <span class="w-1/3 truncate pr-2">Port</span>
+            <div class="w-1/3 truncate flex flex-row items-center">
+                <span class="w-1/2 truncate text-center">shared</span>
+                <span class="w-1/2 truncate text-center">public</span>
+            </div>
+            <span class="w-1/3 truncate"></span>
+        </div>
+
+        <For
+            each=move || ports.get()
+            key=|p| p.clone()
+            children=move |p| {
+                view! {
+                    <WorkspacePortView name=name.clone() p=p workspace_hostname=workspace_hostname.clone() success error />
+                }
+            }
+        />
+    }
+}
+
+#[component]
+fn WorkspacePortView(
+    name: String,
+    p: WorkspacePort,
+    workspace_hostname: String,
+    success: RwSignal<Option<String>>,
+    error: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let shared = create_rw_signal(p.shared);
+    let public = create_rw_signal(p.public);
+    let action = {
+        let name = name.clone();
+        let port = p.port;
+        create_action(move |_| {
+            let name = name.clone();
+            async move {
+                error.set(None);
+                success.set(None);
+                if let Err(e) = update_workspace_port(
+                    &name.clone(),
+                    port,
+                    shared.get_untracked(),
+                    public.get_untracked(),
+                )
+                .await
+                {
+                    error.set(Some(e.error.clone()));
+                } else {
+                    success.set(Some(format!("Port {port} updated successfully")));
+                }
+            }
+        })
+    };
+
+    view! {
+        <div class="flex flex-row items-center w-full px-4 py-2 border-b">
+            <span class="w-1/3 truncate pr-2">{p.port}</span>
+            <div class="w-1/3 truncate flex flex-row items-center">
+                <div class="w-1/2 flex items-center justify-center">
+                    <input
+                        type="checkbox"
+                        value=""
+                        class="w-4 h-4 border border-gray-300 rounded bg-gray-50  focus:ring-0 dark:bg-gray-700 dark:border-gray-600"
+                        prop:checked=p.shared
+                        on:change=move |e| shared.set(event_target_checked(&e))
+                    />
+                </div>
+                <div class="w-1/2 flex items-center justify-center">
+                    <input
+                        type="checkbox"
+                        value=""
+                        class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-0 dark:bg-gray-700 dark:border-gray-600"
+                        prop:checked=p.public
+                        on:change=move |e| public.set(event_target_checked(&e))
+                    />
+                </div>
+            </div>
+            <div class="w-1/3 flex flex-row items-center">
+                <a
+                    href={ format!("https://{}-{name}.{workspace_hostname}/", p.port) }
+                    target="_blank"
+                    class="block px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-none dark:focus:ring-green-800"
+                >
+                    Open
+                </a>
+                <button
+                    class="ml-4 flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    on:click=move |_| action.dispatch(())
+                >
+                    Update
+                </button>
+            </div>
+        </div>
     }
 }

@@ -41,6 +41,7 @@ impl MigrationTrait for Migration {
                     .table(WorkspacePort::Table)
                     .col(WorkspacePort::WorkspaceId)
                     .col(WorkspacePort::Port)
+                    .col(WorkspacePort::Public)
                     .to_owned(),
             )
             .await?;
@@ -57,4 +58,5 @@ enum WorkspacePort {
     Port,
     HostPort,
     Shared,
+    Public,
 }

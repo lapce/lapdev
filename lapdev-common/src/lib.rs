@@ -320,11 +320,13 @@ pub struct WorkspaceInfo {
 pub struct WorkspacePort {
     pub port: u16,
     pub shared: bool,
+    pub public: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
 pub struct UpdateWorkspacePort {
     pub shared: bool,
+    pub public: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]

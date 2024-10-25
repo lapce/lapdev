@@ -12,6 +12,7 @@ pub struct Model {
     pub host_port: i32,
     pub shared: bool,
     pub public: bool,
+    pub label: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, FixedOffset};
+use devcontainer::PortAttribute;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use uuid::Uuid;
@@ -143,10 +144,14 @@ pub struct RepoContent {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RepoBuildOutput {
-    Compose(Vec<RepoComposeService>),
+    Compose {
+        services: Vec<RepoComposeService>,
+        ports_attributes: HashMap<String, PortAttribute>,
+    },
     Image {
         image: String,
         info: ContainerImageInfo,
+        ports_attributes: HashMap<String, PortAttribute>,
     },
 }
 
@@ -321,6 +326,7 @@ pub struct WorkspacePort {
     pub port: u16,
     pub shared: bool,
     pub public: bool,
+    pub label: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]

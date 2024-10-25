@@ -60,7 +60,7 @@ fn run_sshd() -> Result<(), LapdevGuestAgentError> {
         .arg("-D")
         .arg("-o")
         .arg("AcceptEnv=*")
-        .status()?;
+        .output()?;
     Ok(())
 }
 
@@ -82,7 +82,7 @@ fn run_cmd(cmd: Vec<String>) -> Result<(), LapdevGuestAgentError> {
         return Err(LapdevGuestAgentError::Cmds("empty cmd".to_string()));
     }
     thread::spawn(move || {
-        if let Err(e) = Command::new("sh").arg("-c").arg(cmd.join(" ")).status() {
+        if let Err(e) = Command::new("sh").arg("-c").arg(cmd.join(" ")).output() {
             eprintln!("run cmd error: {e:?}");
         }
     });
@@ -97,6 +97,6 @@ fn run_ide_cmds() -> Result<(), LapdevGuestAgentError> {
     if cmds.is_empty() {
         return Err(LapdevGuestAgentError::Cmds("empty cmd".to_string()));
     }
-    Command::new(&cmds[0]).args(&cmds[1..]).status()?;
+    Command::new(&cmds[0]).args(&cmds[1..]).output()?;
     Ok(())
 }

@@ -19,7 +19,7 @@ use lapdev_common::{
     devcontainer::{
         DevContainerCmd, DevContainerConfig, DevContainerCwd, DevContainerLifeCycleCmd,
     },
-    BuildTarget, ContainerImageInfo, CpuCore, GitBranch, ProjectRequest, RepoBuildInfo,
+    utils, BuildTarget, ContainerImageInfo, CpuCore, GitBranch, ProjectRequest, RepoBuildInfo,
     RepoBuildOutput, RepoComposeService,
 };
 use lapdev_rpc::{
@@ -292,29 +292,30 @@ impl WorkspaceServer {
         Ok(())
     }
 
-    fn podman_socket(&self, uid: &str) -> String {
-        format!("/run/user/{uid}/podman/podman.sock")
-    }
+    pub async fn get_podman_socket(&self, osuser: &str) -> Result<PathBuf, ApiError> {
+        let _ = self.os_user_uid(osuser).await?;
+        let name = format!("/tmp/{osuser}-{}.sock", utils::rand_string(10));
+        let _ = Command::new("su")
+            .arg("-")
+            .arg(osuser)
+            .arg("-c")
+            .arg(format!("podman system service --time=60 unix://{name}"))
+            .spawn()?;
 
-    async fn check_podman_socket(&self, osuser: &str, uid: &str) {
-        tracing::debug!("check podman socket");
-        if !tokio::fs::try_exists(self.podman_socket(uid))
-            .await
-            .unwrap_or(false)
-        {
-            tracing::debug!("podman socket doens't exist, start system service");
-            let osuser = osuser.to_string();
-            tokio::spawn(async move {
-                let _ = Command::new("su")
-                    .arg("-")
-                    .arg(osuser)
-                    .arg("-c")
-                    .arg("podman system service --time=0")
-                    .output()
-                    .await;
-            });
-            tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut n = 0;
+        loop {
+            if tokio::fs::try_exists(&name).await.unwrap_or(false) {
+                break;
+            }
+            if n > 10 {
+                return Err(ApiError::InternalError(
+                    "can't get podman socket".to_string(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            n += 1;
         }
+        Ok(PathBuf::from(name))
     }
 
     async fn _os_user_uid(&self, osuser: &str) -> Result<String> {
@@ -322,7 +323,6 @@ impl WorkspaceServer {
         if let Ok(output) = output {
             if output.status.success() {
                 let uid = String::from_utf8(output.stdout)?.trim().to_string();
-                self.check_podman_socket(osuser, &uid).await;
                 return Ok(uid);
             }
         }
@@ -667,8 +667,7 @@ driver = "overlay"
         osuser: &str,
         image: &str,
     ) -> Result<ContainerImageInfo, ApiError> {
-        let uid = self.os_user_uid(osuser).await?;
-        let socket = &format!("/run/user/{uid}/podman/podman.sock");
+        let socket = self.get_podman_socket(osuser).await?;
         let url = Uri::new(socket, &format!("/images/{image}/json"));
         let client = unix_client();
         let req = hyper::Request::builder()
@@ -755,6 +754,7 @@ driver = "overlay"
         &self,
         conductor_client: &ConductorServiceClient,
         info: &RepoBuildInfo,
+        config: &DevContainerConfig,
         compose_file: &Path,
         tag: &str,
     ) -> Result<RepoBuildOutput, ApiError> {
@@ -782,7 +782,10 @@ driver = "overlay"
                 });
             }
         }
-        Ok(RepoBuildOutput::Compose(services))
+        Ok(RepoBuildOutput::Compose {
+            services,
+            ports_attributes: config.ports_attributes.clone(),
+        })
     }
 
     pub fn repo_target_image_tag(&self, target: &BuildTarget) -> String {
@@ -825,7 +828,7 @@ driver = "overlay"
         cmd: &DevContainerLifeCycleCmd,
     ) -> Result<()> {
         match output {
-            RepoBuildOutput::Compose(services) => {
+            RepoBuildOutput::Compose { services, .. } => {
                 let cmd = match cmd {
                     DevContainerLifeCycleCmd::Simple(cmd) => {
                         DevContainerCmd::Simple(cmd.to_string())
@@ -973,8 +976,14 @@ driver = "overlay"
             })?;
         let tag = self.repo_target_image_tag(&info.target);
         let output = if let Some(compose_file) = &config.docker_compose_file {
-            self.build_compose(conductor_client, info, &cwd.join(compose_file), &tag)
-                .await?
+            self.build_compose(
+                conductor_client,
+                info,
+                &config,
+                &cwd.join(compose_file),
+                &tag,
+            )
+            .await?
         } else if let Some(build) = config.build.as_ref() {
             let build = AdvancedBuildStep {
                 context: build.context.clone().unwrap_or(".".to_string()),
@@ -987,6 +996,7 @@ driver = "overlay"
             RepoBuildOutput::Image {
                 image: tag.clone(),
                 info,
+                ports_attributes: config.ports_attributes.clone(),
             }
         } else if let Some(image) = config.image.as_ref() {
             let info = self
@@ -995,6 +1005,7 @@ driver = "overlay"
             RepoBuildOutput::Image {
                 image: tag.clone(),
                 info,
+                ports_attributes: config.ports_attributes.clone(),
             }
         } else {
             return Err(ApiError::RepositoryInvalid(
@@ -1174,8 +1185,7 @@ driver = "overlay"
     }
 
     pub async fn delete_image(&self, osuser: &str, image: &str) -> Result<(), ApiError> {
-        let uid = self.os_user_uid(osuser).await?;
-        let socket = format!("/run/user/{uid}/podman/podman.sock");
+        let socket = self.get_podman_socket(osuser).await?;
 
         let client = unix_client();
         {
@@ -1199,8 +1209,7 @@ driver = "overlay"
     }
 
     pub async fn delete_network(&self, osuser: &str, network: &str) -> Result<(), ApiError> {
-        let uid = self.os_user_uid(osuser).await?;
-        let socket = format!("/run/user/{uid}/podman/podman.sock");
+        let socket = self.get_podman_socket(osuser).await?;
 
         let client = unix_client();
         {

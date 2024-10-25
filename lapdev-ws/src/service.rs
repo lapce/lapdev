@@ -88,10 +88,9 @@ impl WorkspaceService for WorkspaceRpcService {
             .await?;
 
         let client = unix_client();
-        let uid = self.server.os_user_uid(&ws_req.osuser).await?;
-        let socket = &format!("/run/user/{uid}/podman/podman.sock");
+        let socket = self.server.get_podman_socket(&ws_req.osuser).await?;
         if ws_req.create_network {
-            let url = Uri::new(socket, "/networks/create");
+            let url = Uri::new(&socket, "/networks/create");
             let body = serde_json::to_string(&NewContainerNetwork {
                 name: ws_req.network_name.clone(),
             })?;
@@ -157,7 +156,7 @@ impl WorkspaceService for WorkspaceRpcService {
         ])?;
 
         let url = Uri::new(
-            socket,
+            &socket,
             &format!("/containers/create?name={}", ws_req.workspace_name),
         );
         let mut env = ws_req.env.clone();
@@ -266,11 +265,10 @@ impl WorkspaceService for WorkspaceRpcService {
         _context: context::Context,
         ws_req: StartWorkspaceRequest,
     ) -> Result<ContainerInfo, ApiError> {
-        let uid = self.server.os_user_uid(&ws_req.osuser).await?;
-        let socket = &format!("/run/user/{uid}/podman/podman.sock");
+        let socket = self.server.get_podman_socket(&ws_req.osuser).await?;
         let client = unix_client();
         let url = Uri::new(
-            socket,
+            &socket,
             &format!("/containers/{}/start", ws_req.workspace_name),
         );
         let req = hyper::Request::builder()
@@ -286,7 +284,7 @@ impl WorkspaceService for WorkspaceRpcService {
         }
 
         let url = Uri::new(
-            socket,
+            &socket,
             &format!("/containers/{}/json", ws_req.workspace_name),
         );
         let req = hyper::Request::builder()
@@ -309,8 +307,7 @@ impl WorkspaceService for WorkspaceRpcService {
         _context: context::Context,
         req: DeleteWorkspaceRequest,
     ) -> Result<(), ApiError> {
-        let uid = self.server.os_user_uid(&req.osuser).await?;
-        let socket = format!("/run/user/{uid}/podman/podman.sock");
+        let socket = self.server.get_podman_socket(&req.osuser).await?;
 
         let client = unix_client();
         {
@@ -370,8 +367,7 @@ impl WorkspaceService for WorkspaceRpcService {
         _context: context::Context,
         ws_req: StopWorkspaceRequest,
     ) -> Result<(), ApiError> {
-        let uid = self.server.os_user_uid(&ws_req.osuser).await?;
-        let socket = &format!("/run/user/{uid}/podman/podman.sock");
+        let socket = self.server.get_podman_socket(&ws_req.osuser).await?;
         let client = unix_client();
         let url = Uri::new(
             socket,
@@ -470,6 +466,7 @@ impl WorkspaceService for WorkspaceRpcService {
         RepoBuildOutput::Image {
             image,
             info: ContainerImageInfo::default(),
+            ports_attributes: Default::default(),
         }
     }
 
@@ -482,7 +479,9 @@ impl WorkspaceService for WorkspaceRpcService {
         target: BuildTarget,
     ) -> Result<(), ApiError> {
         let images = match output {
-            RepoBuildOutput::Compose(services) => services.into_iter().map(|s| s.image).collect(),
+            RepoBuildOutput::Compose { services, .. } => {
+                services.into_iter().map(|s| s.image).collect()
+            }
             RepoBuildOutput::Image { image, .. } => vec![image],
         };
 
@@ -606,7 +605,9 @@ impl WorkspaceService for WorkspaceRpcService {
         }
 
         let images = match output {
-            RepoBuildOutput::Compose(services) => services.into_iter().map(|s| s.image).collect(),
+            RepoBuildOutput::Compose { services, .. } => {
+                services.into_iter().map(|s| s.image).collect()
+            }
             RepoBuildOutput::Image { image, .. } => vec![image],
         };
 
@@ -652,7 +653,7 @@ impl WorkspaceService for WorkspaceRpcService {
 
         if let Some(output) = output {
             let images = match output {
-                RepoBuildOutput::Compose(services) => {
+                RepoBuildOutput::Compose { services, .. } => {
                     services.into_iter().map(|s| s.image).collect()
                 }
                 RepoBuildOutput::Image { image, .. } => vec![image],
@@ -689,7 +690,9 @@ impl WorkspaceService for WorkspaceRpcService {
 
         let mut files = vec!["repo.tar.zst".to_string()];
         let images = match output {
-            RepoBuildOutput::Compose(services) => services.into_iter().map(|s| s.image).collect(),
+            RepoBuildOutput::Compose { services, .. } => {
+                services.into_iter().map(|s| s.image).collect()
+            }
             RepoBuildOutput::Image { image, .. } => vec![image],
         };
         for image in images {

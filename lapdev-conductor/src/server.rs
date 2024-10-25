@@ -1146,6 +1146,7 @@ impl Conductor {
         let ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(workspace_id),
             deleted_at: ActiveValue::Set(None),
+            updated_at: ActiveValue::Set(None),
             name: ActiveValue::Set(name.clone()),
             created_at: ActiveValue::Set(now.into()),
             status: ActiveValue::Set(WorkspaceStatus::New.to_string()),
@@ -1671,8 +1672,11 @@ impl Conductor {
             .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>();
-        let (is_compose, images) = match &output {
-            RepoBuildOutput::Compose(services) => (
+        let (is_compose, images, ports_attributes) = match &output {
+            RepoBuildOutput::Compose {
+                services,
+                ports_attributes,
+            } => (
                 true,
                 services
                     .iter()
@@ -1685,8 +1689,13 @@ impl Conductor {
                         )
                     })
                     .collect(),
+                ports_attributes,
             ),
-            RepoBuildOutput::Image { image, info } => (
+            RepoBuildOutput::Image {
+                image,
+                info,
+                ports_attributes,
+            } => (
                 false,
                 vec![(
                     None,
@@ -1694,6 +1703,7 @@ impl Conductor {
                     info.config.env.clone().unwrap_or_default(),
                     vec![],
                 )],
+                ports_attributes,
             ),
         };
 
@@ -1822,6 +1832,7 @@ impl Conductor {
                     id: ActiveValue::Set(Uuid::new_v4()),
                     name: ActiveValue::Set(workspace_name),
                     created_at: ActiveValue::Set(Utc::now().into()),
+                    updated_at: ActiveValue::Set(None),
                     deleted_at: ActiveValue::Set(None),
                     status: ActiveValue::Set(WorkspaceStatus::Running.to_string()),
                     repo_url: ActiveValue::Set(ws.repo_url.clone()),
@@ -1863,6 +1874,11 @@ impl Conductor {
                         host_port: ActiveValue::Set(host_port as i32),
                         shared: ActiveValue::Set(false),
                         public: ActiveValue::Set(false),
+                        label: ActiveValue::Set(
+                            ports_attributes
+                                .get(&port.to_string())
+                                .and_then(|a| a.label.clone()),
+                        ),
                     }
                     .insert(&self.db.conn)
                     .await?;
@@ -2192,7 +2208,7 @@ impl Conductor {
 
             if let Some(output) = output {
                 match output {
-                    RepoBuildOutput::Compose(services) => {
+                    RepoBuildOutput::Compose { services, .. } => {
                         services.into_iter().map(|s| s.image).collect()
                     }
                     RepoBuildOutput::Image { image, .. } => vec![image],
@@ -2335,6 +2351,7 @@ impl Conductor {
             .await?;
         let update_ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(workspace.id),
+            updated_at: ActiveValue::Set(Some(now.into())),
             status: ActiveValue::Set(WorkspaceStatus::Starting.to_string()),
             ..Default::default()
         };
@@ -2410,6 +2427,7 @@ impl Conductor {
         let update_ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(workspace.id),
             status: ActiveValue::Set(WorkspaceStatus::Stopping.to_string()),
+            updated_at: ActiveValue::Set(Some(now.into())),
             ..Default::default()
         };
         let ws = update_ws.update(&txn).await?;
@@ -2496,6 +2514,7 @@ impl Conductor {
                     status: ActiveValue::Set(status.to_string()),
                     usage_id: ActiveValue::Set(usage.map(|u| u.id)),
                     last_inactivity: ActiveValue::Set(None),
+                    updated_at: ActiveValue::Set(Some(now.into())),
                     ..Default::default()
                 }
                 .update(&txn)
@@ -2513,6 +2532,7 @@ impl Conductor {
                 let status = WorkspaceStatus::Failed;
                 entities::workspace::ActiveModel {
                     id: ActiveValue::Set(ws.id),
+                    updated_at: ActiveValue::Set(Some(now.into())),
                     status: ActiveValue::Set(WorkspaceStatus::Failed.to_string()),
                     ..Default::default()
                 }
@@ -2553,6 +2573,7 @@ impl Conductor {
                 entities::workspace::ActiveModel {
                     id: ActiveValue::Set(ws.id),
                     status: ActiveValue::Set(status.to_string()),
+                    updated_at: ActiveValue::Set(Some(now.into())),
                     usage_id: ActiveValue::Set(None),
                     ..Default::default()
                 }
@@ -2571,6 +2592,7 @@ impl Conductor {
                 entities::workspace::ActiveModel {
                     id: ActiveValue::Set(ws.id),
                     status: ActiveValue::Set(status.to_string()),
+                    updated_at: ActiveValue::Set(Some(now.into())),
                     ..Default::default()
                 }
                 .update(&self.db.conn)

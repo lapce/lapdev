@@ -291,6 +291,7 @@ pub async fn workspace_ports(
                 port: p.port as u16,
                 shared: p.shared,
                 public: p.public,
+                label: p.label,
             })
             .collect::<Vec<_>>(),
     )

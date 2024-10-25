@@ -218,6 +218,7 @@ pub mod tests {
 
         entities::workspace::ActiveModel {
             id: ActiveValue::Set(Uuid::new_v4()),
+            updated_at: ActiveValue::Set(None),
             deleted_at: ActiveValue::Set(None),
             name: ActiveValue::Set(utils::rand_string(10)),
             created_at: ActiveValue::Set(Utc::now().into()),
@@ -261,6 +262,7 @@ pub mod tests {
 
         let ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(Uuid::new_v4()),
+            updated_at: ActiveValue::Set(None),
             deleted_at: ActiveValue::Set(None),
             name: ActiveValue::Set(utils::rand_string(10)),
             created_at: ActiveValue::Set(Utc::now().into()),

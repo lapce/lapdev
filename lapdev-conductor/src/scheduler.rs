@@ -425,6 +425,7 @@ mod tests {
             compose_parent: ActiveValue::Set(None),
             auto_stop: ActiveValue::Set(None),
             build_output: ActiveValue::Set(None),
+            updated_at: ActiveValue::Set(None),
             deleted_at: ActiveValue::Set(None),
             env: ActiveValue::Set(None),
             last_inactivity: ActiveValue::Set(None),

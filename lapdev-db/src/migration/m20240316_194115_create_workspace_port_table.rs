@@ -23,6 +23,8 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(WorkspacePort::Port).integer().not_null())
                     .col(ColumnDef::new(WorkspacePort::HostPort).integer().not_null())
                     .col(ColumnDef::new(WorkspacePort::Shared).boolean().not_null())
+                    .col(ColumnDef::new(WorkspacePort::Public).boolean().not_null())
+                    .col(ColumnDef::new(WorkspacePort::Label).string())
                     .foreign_key(
                         ForeignKey::create()
                             .from_tbl(WorkspacePort::Table)
@@ -41,7 +43,6 @@ impl MigrationTrait for Migration {
                     .table(WorkspacePort::Table)
                     .col(WorkspacePort::WorkspaceId)
                     .col(WorkspacePort::Port)
-                    .col(WorkspacePort::Public)
                     .to_owned(),
             )
             .await?;
@@ -59,4 +60,5 @@ enum WorkspacePort {
     HostPort,
     Shared,
     Public,
+    Label,
 }

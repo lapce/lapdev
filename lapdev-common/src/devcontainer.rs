@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub type DevContainerCwd = std::path::PathBuf;
 
@@ -18,7 +18,8 @@ pub struct DevContainerConfig {
     #[serde(default)]
     pub run_args: Vec<String>,
     pub docker_compose_file: Option<String>,
-
+    #[serde(default)]
+    pub ports_attributes: HashMap<String, PortAttribute>,
     pub service: Option<String>,
 }
 
@@ -44,4 +45,10 @@ pub struct BuildConfig {
     pub context: Option<String>,
     #[serde(default)]
     pub args: HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PortAttribute {
+    pub label: Option<String>,
 }

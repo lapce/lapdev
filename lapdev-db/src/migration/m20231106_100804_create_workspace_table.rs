@@ -27,6 +27,7 @@ impl MigrationTrait for Migration {
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(Workspace::UpdatedAt).timestamp_with_time_zone())
                     .col(ColumnDef::new(Workspace::DeletedAt).timestamp_with_time_zone())
                     .col(ColumnDef::new(Workspace::OrganizationId).uuid().not_null())
                     .col(ColumnDef::new(Workspace::UserId).uuid().not_null())
@@ -141,6 +142,7 @@ pub enum Workspace {
     Table,
     Id,
     CreatedAt,
+    UpdatedAt,
     DeletedAt,
     OrganizationId,
     UserId,

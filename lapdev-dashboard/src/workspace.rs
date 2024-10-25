@@ -1441,7 +1441,13 @@ fn WorkspacePortView(
 
     view! {
         <div class="flex flex-row items-center w-full px-4 py-2 border-b">
-            <span class="w-1/3 truncate pr-2">{p.port}</span>
+            <span class="w-1/3 truncate pr-2">{
+                if let Some(label) = p.label.as_ref() {
+                    format!("{label} ({})", p.port)
+                } else {
+                    p.port.to_string()
+                }
+            }</span>
             <div class="w-1/3 truncate flex flex-row items-center">
                 <div class="w-1/2 flex items-center justify-center">
                     <input

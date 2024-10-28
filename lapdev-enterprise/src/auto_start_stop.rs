@@ -32,6 +32,9 @@ impl AutoStartStop {
                                 .column(entities::organization::Column::Id)
                                 .from(entities::organization::Entity)
                                 .and_where(entities::organization::Column::DeletedAt.is_null())
+                                .and_where(
+                                    entities::organization::Column::HasRunningWorkspace.eq(true),
+                                )
                                 .cond_where(
                                     Condition::any()
                                         .add(
@@ -59,7 +62,7 @@ impl AutoStartStop {
 
     pub async fn organization_auto_stop_workspaces(
         &self,
-        org: entities::organization::Model,
+        org: &entities::organization::Model,
     ) -> Result<Vec<entities::workspace::Model>> {
         let workspaces = match (org.auto_stop, org.allow_workspace_change_auto_stop) {
             (None, false) => {
@@ -210,7 +213,11 @@ pub mod tests {
             auto_stop: ActiveValue::Set(Some(3600)),
             allow_workspace_change_auto_start: ActiveValue::Set(true),
             allow_workspace_change_auto_stop: ActiveValue::Set(false),
-            ..Default::default()
+            usage_limit: ActiveValue::Set(108000),
+            running_workspace_limit: ActiveValue::Set(3),
+            has_running_workspace: ActiveValue::Set(false),
+            deleted_at: ActiveValue::Set(None),
+            last_auto_stop_check: ActiveValue::Set(None),
         }
         .insert(&db.conn)
         .await
@@ -255,7 +262,7 @@ pub mod tests {
 
         let worksapces = enterprise
             .auto_start_stop
-            .organization_auto_stop_workspaces(org.clone())
+            .organization_auto_stop_workspaces(&org)
             .await
             .unwrap();
         assert!(worksapces.is_empty());
@@ -301,7 +308,7 @@ pub mod tests {
 
         let worksapces = enterprise
             .auto_start_stop
-            .organization_auto_stop_workspaces(org.clone())
+            .organization_auto_stop_workspaces(&org)
             .await
             .unwrap();
         assert_eq!(worksapces.len(), 1);
@@ -317,7 +324,7 @@ pub mod tests {
 
         let worksapces = enterprise
             .auto_start_stop
-            .organization_auto_stop_workspaces(org.clone())
+            .organization_auto_stop_workspaces(&org)
             .await
             .unwrap();
         assert_eq!(worksapces.len(), 0);
@@ -333,7 +340,7 @@ pub mod tests {
 
         let worksapces = enterprise
             .auto_start_stop
-            .organization_auto_stop_workspaces(org.clone())
+            .organization_auto_stop_workspaces(&org)
             .await
             .unwrap();
         assert_eq!(worksapces.len(), 1);

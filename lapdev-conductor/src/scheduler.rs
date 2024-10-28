@@ -441,6 +441,9 @@ mod tests {
             created_by: ActiveValue::Set(Uuid::new_v4()),
             repo_url: ActiveValue::Set("".to_string()),
             repo_name: ActiveValue::Set("".to_string()),
+            oauth_id: ActiveValue::Set(Uuid::new_v4()),
+            host_id: ActiveValue::Set(Uuid::new_v4()),
+            osuser: ActiveValue::Set("".to_string()),
             organization_id: ActiveValue::Set(Uuid::new_v4()),
             machine_type_id: ActiveValue::Set(machine_type.id),
             ..Default::default()
@@ -473,7 +476,7 @@ mod tests {
         txn.commit().await.unwrap();
 
         assert_eq!(workspace_host.available_dedicated_cpu, 9);
-        assert_eq!(workspace_host.available_shared_cpu, 12);
+        assert_eq!(workspace_host.available_shared_cpu, 9);
         assert_eq!(workspace_host.available_memory, 48);
         assert_eq!(workspace_host.available_disk, 980);
     }

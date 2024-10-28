@@ -42,6 +42,11 @@ impl MigrationTrait for Migration {
                             .integer()
                             .not_null(),
                     )
+                    .col(
+                        ColumnDef::new(Organization::HasRunningWorkspace)
+                            .boolean()
+                            .not_null(),
+                    )
                     .to_owned(),
             )
             .await?;
@@ -49,9 +54,10 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("organization_deleted_at_last_auto_stop_check_idx")
+                    .name("organization_deleted_at_has_running_workspace_last_auto_stop_check_idx")
                     .table(Organization::Table)
                     .col(Organization::DeletedAt)
+                    .col(Organization::HasRunningWorkspace)
                     .col(Organization::LastAutoStopCheck)
                     .to_owned(),
             )
@@ -74,4 +80,5 @@ enum Organization {
     LastAutoStopCheck,
     UsageLimit,
     RunningWorkspaceLimit,
+    HasRunningWorkspace,
 }

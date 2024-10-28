@@ -818,3 +818,8 @@ pub struct GitProvider {
     pub scopes: Vec<String>,
     pub all_scopes: Vec<String>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UserCreationWebhook {
+    pub id: Uuid,
+}

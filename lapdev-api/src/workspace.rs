@@ -127,6 +127,17 @@ pub async fn delete_workspace(
     if ws.user_id != user.id {
         return Err(ApiError::Unauthorized);
     }
+
+    if ws.status == WorkspaceStatus::PrebuildBuilding.to_string()
+        || ws.status == WorkspaceStatus::Building.to_string()
+        || ws.status == WorkspaceStatus::PrebuildCopying.to_string()
+        || ws.status == WorkspaceStatus::New.to_string()
+    {
+        return Err(ApiError::InvalidRequest(
+            "Can't delete workspace when it's building".to_string(),
+        ));
+    }
+
     state
         .conductor
         .delete_workspace(ws, info.ip, info.user_agent)

@@ -11,6 +11,7 @@ use chrono::Utc;
 use hyper::StatusCode;
 use lapdev_common::{
     console::NewSessionResponse, AuditAction, AuditResourceKind, AuthProvider, ProviderUser,
+    UserCreationWebhook,
 };
 use lapdev_db::entities;
 use lapdev_rpc::error::ApiError;
@@ -311,6 +312,22 @@ pub(crate) async fn session_authorize(
                 .await?;
 
             txn.commit().await?;
+
+            {
+                let state = state.clone();
+                let id = user.id;
+                tokio::spawn(async move {
+                    let webhook = state.db.get_user_creation_webhook().await?;
+                    reqwest::Client::builder()
+                        .build()?
+                        .post(webhook)
+                        .json(&UserCreationWebhook { id })
+                        .send()
+                        .await?;
+                    anyhow::Ok(())
+                });
+            }
+
             user
         }
     };

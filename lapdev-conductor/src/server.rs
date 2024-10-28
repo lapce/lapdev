@@ -502,18 +502,41 @@ impl Conductor {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             } else {
                 for org in orgs {
-                    let workspaces = self
-                        .enterprise
-                        .auto_start_stop
-                        .organization_auto_stop_workspaces(org)
-                        .await
-                        .unwrap_or_default();
-                    for workspace in workspaces {
-                        tracing::info!(
-                            "stop workspace {} because of auto stop timeout",
-                            workspace.name
-                        );
-                        let _ = self.stop_workspace(workspace, None, None).await;
+                    {
+                        let workspaces = self
+                            .enterprise
+                            .auto_start_stop
+                            .organization_auto_stop_workspaces(&org)
+                            .await
+                            .unwrap_or_default();
+                        for workspace in workspaces {
+                            tracing::info!(
+                                "stop workspace {} because of auto stop timeout",
+                                workspace.name
+                            );
+                            let _ = self.stop_workspace(workspace, None, None).await;
+                        }
+                    }
+
+                    if org.running_workspace_limit > 0 {
+                        let usage = self
+                            .enterprise
+                            .usage
+                            .get_monthly_cost(org.id, None, Utc::now().into(), None)
+                            .await
+                            .unwrap_or(0);
+                        if usage as i64 >= org.usage_limit {
+                            if let Ok(workspaces) = self.db.get_org_running_workspaces(org.id).await
+                            {
+                                for workspace in workspaces {
+                                    tracing::info!(
+                                        "stop workspace {} because of usage limit",
+                                        workspace.name
+                                    );
+                                    let _ = self.stop_workspace(workspace, None, None).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1931,6 +1954,14 @@ impl Conductor {
         )
         .await;
 
+        entities::organization::ActiveModel {
+            id: ActiveValue::Set(ws.organization_id),
+            has_running_workspace: ActiveValue::Set(true),
+            ..Default::default()
+        }
+        .update(&self.db.conn)
+        .await?;
+
         Ok(())
     }
 
@@ -2147,9 +2178,16 @@ impl Conductor {
                 user_agent.clone(),
             )
             .await?;
+        if let Some(usage_id) = workspace.usage_id {
+            self.enterprise
+                .usage
+                .end_usage(&txn, usage_id, now.into())
+                .await?;
+        }
         let update_ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(workspace.id),
             status: ActiveValue::Set(WorkspaceStatus::Deleting.to_string()),
+            usage_id: ActiveValue::Set(None),
             ..Default::default()
         };
         let ws = update_ws.update(&txn).await?;
@@ -2237,13 +2275,6 @@ impl Conductor {
             Ok(_) => {
                 let status = WorkspaceStatus::Deleted;
                 let txn = self.db.conn.begin().await?;
-                if let Some(usage_id) = ws.usage_id {
-                    self.enterprise
-                        .usage
-                        .end_usage(&txn, usage_id, now.into())
-                        .await?;
-                }
-
                 let host = self
                     .db
                     .get_workspace_host_with_lock(&txn, ws.host_id)
@@ -2251,7 +2282,6 @@ impl Conductor {
                 entities::workspace::ActiveModel {
                     id: ActiveValue::Set(ws.id),
                     status: ActiveValue::Set(status.to_string()),
-                    usage_id: ActiveValue::Set(None),
                     deleted_at: ActiveValue::Set(Some(now.into())),
                     ..Default::default()
                 }
@@ -2303,6 +2333,23 @@ impl Conductor {
             }
         };
 
+        self.update_org_has_running_workspace(ws.organization_id)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn update_org_has_running_workspace(&self, org_id: Uuid) -> Result<()> {
+        let ws = self.db.get_org_running_workspace(org_id).await?;
+        if ws.is_none() {
+            entities::organization::ActiveModel {
+                id: ActiveValue::Set(org_id),
+                has_running_workspace: ActiveValue::Set(false),
+                ..Default::default()
+            }
+            .update(&self.db.conn)
+            .await?;
+        }
         Ok(())
     }
 
@@ -2424,10 +2471,17 @@ impl Conductor {
                 user_agent,
             )
             .await?;
+        if let Some(usage_id) = workspace.usage_id {
+            self.enterprise
+                .usage
+                .end_usage(&txn, usage_id, now.into())
+                .await?;
+        }
         let update_ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(workspace.id),
             status: ActiveValue::Set(WorkspaceStatus::Stopping.to_string()),
             updated_at: ActiveValue::Set(Some(now.into())),
+            usage_id: ActiveValue::Set(None),
             ..Default::default()
         };
         let ws = update_ws.update(&txn).await?;
@@ -2520,6 +2574,15 @@ impl Conductor {
                 .update(&txn)
                 .await?;
                 txn.commit().await?;
+
+                entities::organization::ActiveModel {
+                    id: ActiveValue::Set(ws.organization_id),
+                    has_running_workspace: ActiveValue::Set(true),
+                    ..Default::default()
+                }
+                .update(&self.db.conn)
+                .await?;
+
                 status
             }
             Err(e) => {
@@ -2563,23 +2626,14 @@ impl Conductor {
         match result {
             Ok(_) => {
                 let status = WorkspaceStatus::Stopped;
-                let txn = self.db.conn.begin().await?;
-                if let Some(usage_id) = ws.usage_id {
-                    self.enterprise
-                        .usage
-                        .end_usage(&txn, usage_id, now.into())
-                        .await?;
-                }
                 entities::workspace::ActiveModel {
                     id: ActiveValue::Set(ws.id),
                     status: ActiveValue::Set(status.to_string()),
                     updated_at: ActiveValue::Set(Some(now.into())),
-                    usage_id: ActiveValue::Set(None),
                     ..Default::default()
                 }
-                .update(&txn)
+                .update(&self.db.conn)
                 .await?;
-                txn.commit().await?;
             }
             Err(e) => {
                 let e = if let ApiError::InternalError(e) = e {
@@ -2599,6 +2653,9 @@ impl Conductor {
                 .await?;
             }
         };
+
+        self.update_org_has_running_workspace(ws.organization_id)
+            .await?;
 
         Ok(())
     }

@@ -26,6 +26,7 @@ pub const LAPDEV_CLUSTER_NOT_INITIATED: &str = "lapdev-cluster-not-initiated";
 const LAPDEV_API_AUTH_TOKEN_KEY: &str = "lapdev-api-auth-token-key";
 const LAPDEV_DEFAULT_USAGE_LIMIT: &str = "lapdev-default-org-usage-limit";
 const LAPDEV_DEFAULT_RUNNING_WORKSPACE_LIMIT: &str = "lapdev-default-org-running-workspace-limit";
+const LAPDEV_USER_CREATION_WEBHOOK: &str = "lapdev-user-creation-webhook";
 
 #[derive(Clone)]
 pub struct DbApi {
@@ -145,6 +146,10 @@ impl DbApi {
         self.get_config(LAPDEV_BASE_HOSTNAME).await
     }
 
+    pub async fn get_user_creation_webhook(&self) -> Result<String> {
+        self.get_config(LAPDEV_USER_CREATION_WEBHOOK).await
+    }
+
     pub async fn is_container_isolated(&self) -> Result<bool> {
         Ok(entities::config::Entity::find()
             .filter(entities::config::Column::Name.eq(LAPDEV_ISOLATE_CONTAINER))
@@ -216,6 +221,32 @@ impl DbApi {
     ) -> Result<Vec<entities::workspace::Model>> {
         let model = workspace::Entity::find()
             .filter(entities::workspace::Column::HostId.eq(ws_host_id))
+            .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Running.to_string()))
+            .filter(entities::workspace::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
+    pub async fn get_org_running_workspace(
+        &self,
+        org_id: Uuid,
+    ) -> Result<Option<entities::workspace::Model>> {
+        let model = workspace::Entity::find()
+            .filter(entities::workspace::Column::OrganizationId.eq(org_id))
+            .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Running.to_string()))
+            .filter(entities::workspace::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
+    pub async fn get_org_running_workspaces(
+        &self,
+        org_id: Uuid,
+    ) -> Result<Vec<entities::workspace::Model>> {
+        let model = workspace::Entity::find()
+            .filter(entities::workspace::Column::OrganizationId.eq(org_id))
             .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Running.to_string()))
             .filter(entities::workspace::Column::DeletedAt.is_null())
             .all(&self.conn)
@@ -303,6 +334,7 @@ impl DbApi {
             last_auto_stop_check: ActiveValue::Set(None),
             usage_limit: ActiveValue::Set(default_usage_limit),
             running_workspace_limit: ActiveValue::Set(default_running_workspace_limit),
+            has_running_workspace: ActiveValue::Set(false),
         }
         .insert(txn)
         .await?;

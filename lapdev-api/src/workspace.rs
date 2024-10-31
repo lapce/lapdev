@@ -10,8 +10,8 @@ use axum_extra::{headers::Cookie, TypedHeader};
 use chrono::Utc;
 use hyper::StatusCode;
 use lapdev_common::{
-    AuditAction, AuditResourceKind, NewWorkspace, UpdateWorkspacePort, WorkspaceInfo,
-    WorkspacePort, WorkspaceService, WorkspaceStatus,
+    AuditAction, AuditResourceKind, NewWorkspace, RepoBuildResult, UpdateWorkspacePort,
+    WorkspaceInfo, WorkspacePort, WorkspaceService, WorkspaceStatus,
 };
 use lapdev_db::entities;
 use lapdev_rpc::error::ApiError;
@@ -89,6 +89,9 @@ pub async fn all_workspaces(
             };
             let region = host.map(|host| host.region).unwrap_or_default();
             let hostname = hostnames.get(region.trim()).cloned().unwrap_or_default();
+            let build_result = w
+                .build_output
+                .and_then(|o| serde_json::from_str::<RepoBuildResult>(&o).ok());
 
             Some(WorkspaceInfo {
                 name: w.name,
@@ -101,6 +104,7 @@ pub async fn all_workspaces(
                 services,
                 created_at: w.created_at,
                 hostname,
+                build_error: build_result.and_then(|r| r.error),
             })
         })
         .collect();
@@ -126,16 +130,6 @@ pub async fn delete_workspace(
         .map_err(|_| ApiError::InvalidRequest("workspace name doesn't exist".to_string()))?;
     if ws.user_id != user.id {
         return Err(ApiError::Unauthorized);
-    }
-
-    if ws.status == WorkspaceStatus::PrebuildBuilding.to_string()
-        || ws.status == WorkspaceStatus::Building.to_string()
-        || ws.status == WorkspaceStatus::PrebuildCopying.to_string()
-        || ws.status == WorkspaceStatus::New.to_string()
-    {
-        return Err(ApiError::InvalidRequest(
-            "Can't delete workspace when it's building".to_string(),
-        ));
     }
 
     state
@@ -191,6 +185,9 @@ pub async fn get_workspace(
         .get(region.trim())
         .cloned()
         .unwrap_or_default();
+    let build_result = ws
+        .build_output
+        .and_then(|o| serde_json::from_str::<RepoBuildResult>(&o).ok());
 
     let info = WorkspaceInfo {
         name: ws.name,
@@ -203,6 +200,7 @@ pub async fn get_workspace(
         services,
         created_at: ws.created_at,
         hostname,
+        build_error: build_result.and_then(|r| r.error),
     };
     Ok(Json(info))
 }
@@ -271,6 +269,34 @@ pub async fn stop_workspace(
     state
         .conductor
         .stop_workspace(ws, info.ip, info.user_agent)
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn rebuild_workspace(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Path((org_id, workspace_name)): Path<(Uuid, String)>,
+    State(state): State<CoreState>,
+    info: RequestInfo,
+) -> Result<Response, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+    let ws = state
+        .db
+        .get_workspace_by_name(&workspace_name)
+        .await
+        .map_err(|_| ApiError::InvalidRequest("workspace name doesn't exist".to_string()))?;
+    if ws.user_id != user.id {
+        return Err(ApiError::Unauthorized);
+    }
+
+    state
+        .conductor
+        .rebuild_workspace(ws, info.ip, info.user_agent)
         .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

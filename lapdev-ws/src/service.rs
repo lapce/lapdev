@@ -9,11 +9,11 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyperlocal::Uri;
 use lapdev_common::{
-    BuildTarget, Container, ContainerImageInfo, ContainerInfo, CpuCore, CreateWorkspaceRequest,
-    DeleteWorkspaceRequest, GitBranch, NewContainer, NewContainerEndpointSettings,
-    NewContainerHostConfig, NewContainerNetwork, NewContainerNetworkingConfig, PrebuildInfo,
-    ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoContent, RepoContentPosition,
-    StartWorkspaceRequest, StopWorkspaceRequest,
+    BuildTarget, Container, ContainerInfo, CpuCore, CreateWorkspaceRequest, DeleteWorkspaceRequest,
+    GitBranch, NewContainer, NewContainerEndpointSettings, NewContainerHostConfig,
+    NewContainerNetwork, NewContainerNetworkingConfig, PrebuildInfo, ProjectRequest, RepoBuildInfo,
+    RepoBuildOutput, RepoBuildResult, RepoContent, RepoContentPosition, StartWorkspaceRequest,
+    StopWorkspaceRequest,
 };
 use lapdev_guest_agent::{LAPDEV_CMDS, LAPDEV_IDE_CMDS, LAPDEV_SSH_PUBLIC_KEY};
 use lapdev_rpc::{
@@ -340,13 +340,6 @@ impl WorkspaceService for WorkspaceRpcService {
             }
         }
 
-        {
-            let folder = self
-                .server
-                .workspace_folder(&req.osuser, &req.workspace_name);
-            let _ = tokio::fs::remove_dir_all(&folder).await;
-        }
-
         for image in req.images {
             if image.starts_with("ghcr.io") {
                 // we don't need to save the default images
@@ -357,6 +350,13 @@ impl WorkspaceService for WorkspaceRpcService {
 
         if let Some(network) = req.network {
             self.server.delete_network(&req.osuser, &network).await?;
+        }
+
+        if !req.keep_content {
+            let folder = self
+                .server
+                .workspace_folder(&req.osuser, &req.workspace_name);
+            let _ = tokio::fs::remove_dir_all(&folder).await;
         }
 
         Ok(())
@@ -446,28 +446,21 @@ impl WorkspaceService for WorkspaceRpcService {
         Ok(())
     }
 
-    async fn build_repo(self, _context: context::Context, info: RepoBuildInfo) -> RepoBuildOutput {
+    async fn build_repo(self, _context: context::Context, info: RepoBuildInfo) -> RepoBuildResult {
         let result = self.server.build_repo(&info, &self.conductor_client).await;
+        self.server.build_repo_result(&info, result).await
+    }
 
-        match result {
-            Ok(result) => return result,
-            Err(e) => {
-                if let ApiError::InternalError(e) = e {
-                    tracing::error!("build repo {info:?} error: {e}");
-                } else {
-                    tracing::error!("build repo {info:?} error: {e}");
-                }
-            }
-        };
-
-        let image_name = self.server.get_default_image(&info).await;
-        let image = format!("ghcr.io/lapce/lapdev-devcontainer-{image_name}:latest");
-        tracing::debug!("build repo pick default image {image_name}");
-        RepoBuildOutput::Image {
-            image,
-            info: ContainerImageInfo::default(),
-            ports_attributes: Default::default(),
-        }
+    async fn rebuild_repo(
+        self,
+        _context: context::Context,
+        info: RepoBuildInfo,
+    ) -> RepoBuildResult {
+        let result = self
+            .server
+            .do_build_repo(&info, &self.conductor_client)
+            .await;
+        self.server.build_repo_result(&info, result).await
     }
 
     async fn copy_prebuild_image(

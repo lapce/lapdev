@@ -40,6 +40,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
 bytes.workspace = true
+fs4 = { version = "0.10", features = ["tokio"] }
 hyperlocal = { git = "https://github.com/softprops/hyperlocal", rev = "70c0b8e4007b96ed392be7561b21add719d1dbce" }
 
 [package.metadata.deb]

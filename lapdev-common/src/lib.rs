@@ -143,6 +143,18 @@ pub struct RepoContent {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RepobuildError {
+    pub msg: String,
+    pub stderr: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RepoBuildResult {
+    pub error: Option<RepobuildError>,
+    pub output: RepoBuildOutput,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RepoBuildOutput {
     Compose {
         services: Vec<RepoComposeService>,
@@ -307,7 +319,7 @@ pub enum WorkspaceStatus {
     Deleted,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkspaceInfo {
     pub name: String,
     pub repo_url: String,
@@ -319,6 +331,7 @@ pub struct WorkspaceInfo {
     pub services: Vec<WorkspaceService>,
     pub created_at: DateTime<FixedOffset>,
     pub hostname: String,
+    pub build_error: Option<RepobuildError>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
@@ -401,6 +414,7 @@ pub struct DeleteWorkspaceRequest {
     pub workspace_name: String,
     pub network: Option<String>,
     pub images: Vec<String>,
+    pub keep_content: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -439,6 +453,7 @@ pub enum AuditAction {
     WorkspaceDelete,
     WorkspaceStart,
     WorkspaceStop,
+    WorkspaceRebuild,
     WorkspaceUpdate,
     ProjectCreate,
     ProjectDelete,

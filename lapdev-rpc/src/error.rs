@@ -1,5 +1,5 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
-use lapdev_common::QuotaResult;
+use lapdev_common::{QuotaResult, RepobuildError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -7,6 +7,7 @@ pub enum ApiError {
     Unauthenticated,
     Unauthorized,
     EnterpriseInvalid,
+    RepositoryBuildFailure(RepobuildError),
     RepositoryInvalid(String),
     InvalidRequest(String),
     InternalError(String),
@@ -40,6 +41,7 @@ impl std::fmt::Display for ApiError {
                 ))
             }
             NoAvailableWorkspaceHost => "No avaialble workspace host",
+            RepositoryBuildFailure(_) => "Workspace image build failed",
             RepositoryInvalid(reason) => reason,
         };
         f.write_str(err)
@@ -58,7 +60,8 @@ impl IntoResponse for ApiError {
             RepositoryInvalid(_)
             | InvalidRequest(_)
             | QuotaReached(_)
-            | NoAvailableWorkspaceHost => StatusCode::BAD_REQUEST,
+            | NoAvailableWorkspaceHost
+            | RepositoryBuildFailure(_) => StatusCode::BAD_REQUEST,
             InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (

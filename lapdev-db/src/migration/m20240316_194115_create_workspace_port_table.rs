@@ -20,6 +20,7 @@ impl MigrationTrait for Migration {
                             .primary_key(),
                     )
                     .col(ColumnDef::new(WorkspacePort::WorkspaceId).uuid().not_null())
+                    .col(ColumnDef::new(WorkspacePort::DeletedAt).timestamp_with_time_zone())
                     .col(ColumnDef::new(WorkspacePort::Port).integer().not_null())
                     .col(ColumnDef::new(WorkspacePort::HostPort).integer().not_null())
                     .col(ColumnDef::new(WorkspacePort::Shared).boolean().not_null())
@@ -39,9 +40,10 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("workspace_port_workspace_id_port_idx")
+                    .name("workspace_port_workspace_id_deleted_at_port_idx")
                     .table(WorkspacePort::Table)
                     .col(WorkspacePort::WorkspaceId)
+                    .col(WorkspacePort::DeletedAt)
                     .col(WorkspacePort::Port)
                     .to_owned(),
             )
@@ -55,6 +57,7 @@ impl MigrationTrait for Migration {
 enum WorkspacePort {
     Table,
     Id,
+    DeletedAt,
     WorkspaceId,
     Port,
     HostPort,

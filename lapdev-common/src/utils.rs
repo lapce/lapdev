@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use rand::{distributions::Alphanumeric, Rng};
 use sha2::{Digest, Sha256};
 
@@ -28,4 +30,8 @@ pub fn format_repo_url(repo: &str) -> String {
     repo.strip_suffix('/')
         .map(|r| r.to_string())
         .unwrap_or(repo)
+}
+
+pub fn unix_timestamp() -> anyhow::Result<u64> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }

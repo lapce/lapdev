@@ -619,6 +619,7 @@ impl DbApi {
         let model = entities::workspace_port::Entity::find()
             .filter(entities::workspace_port::Column::WorkspaceId.eq(ws_id))
             .filter(entities::workspace_port::Column::Port.eq(port))
+            .filter(entities::workspace_port::Column::DeletedAt.is_null())
             .one(&self.conn)
             .await?;
         Ok(model)
@@ -630,6 +631,7 @@ impl DbApi {
     ) -> Result<Vec<entities::workspace_port::Model>> {
         let model = entities::workspace_port::Entity::find()
             .filter(entities::workspace_port::Column::WorkspaceId.eq(ws_id))
+            .filter(entities::workspace_port::Column::DeletedAt.is_null())
             .all(&self.conn)
             .await?;
         Ok(model)

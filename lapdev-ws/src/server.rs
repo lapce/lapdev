@@ -11,6 +11,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use docker_compose_types::{AdvancedBuildStep, BuildStep, Compose};
+use fs4::tokio::AsyncFileExt;
 use futures::StreamExt;
 use git2::{Cred, FetchOptions, FetchPrune, RemoteCallbacks, Repository};
 use http_body_util::{BodyExt, Full};
@@ -20,7 +21,7 @@ use lapdev_common::{
         DevContainerCmd, DevContainerConfig, DevContainerCwd, DevContainerLifeCycleCmd,
     },
     utils, BuildTarget, ContainerImageInfo, CpuCore, GitBranch, ProjectRequest, RepoBuildInfo,
-    RepoBuildOutput, RepoComposeService,
+    RepoBuildOutput, RepoBuildResult, RepoComposeService, RepobuildError,
 };
 use lapdev_rpc::{
     error::ApiError, spawn_twoway, ConductorServiceClient, InterWorkspaceService, WorkspaceService,
@@ -34,7 +35,7 @@ use tarpc::{
 };
 use tokio::{
     fs::File,
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
     sync::{Mutex, RwLock},
 };
@@ -137,6 +138,11 @@ impl WorkspaceServer {
                 .arg(self.data_folder.join("prebuilds"))
                 .status()
                 .await?;
+            Command::new("mkdir")
+                .arg("-p")
+                .arg(self.data_folder.join("osusers"))
+                .status()
+                .await?;
 
             let watcher = FileWatcher::new(&self.data_folder, backup_host)?;
             std::thread::spawn(move || {
@@ -202,18 +208,16 @@ impl WorkspaceServer {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
-            if let Err(e) = self.run_task().await {
-                let err = if let ApiError::InternalError(e) = e {
-                    e.to_string()
-                } else {
-                    e.to_string()
-                };
-                tracing::error!("run task error: {err}");
+            if let Err(e) = self.run_auto_stop_task().await {
+                tracing::error!("run task error: {e:?}");
+            }
+            if let Err(e) = self.check_inactive_osusers().await {
+                tracing::error!("check inactive osusers: {e:?}");
             }
         }
     }
 
-    async fn run_task(&self) -> Result<(), ApiError> {
+    async fn run_auto_stop_task(&self) -> Result<(), ApiError> {
         let rpc = { self.rpcs.read().await.first().cloned() };
         let rpc = rpc.ok_or_else(|| anyhow!("don't have any conductor connections"))?;
         let workspaces = rpc.conductor_client.running_workspaces(current()).await??;
@@ -265,6 +269,83 @@ impl WorkspaceServer {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    async fn check_inactive_osusers(&self) -> Result<()> {
+        let mut read_dir = tokio::fs::read_dir(&self.osuser_lock_base_path()).await?;
+        while let Some(path) = read_dir.next_entry().await? {
+            let file_name = path.file_name();
+            let osuser = file_name
+                .to_str()
+                .ok_or_else(|| anyhow!("can't convert path to str"))?;
+            if let Err(e) = self.check_inactive_osuser(osuser).await {
+                tracing::error!("check inactive osuser {osuser} error: {e:?}");
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_inactive_osuser(&self, osuser: &str) -> Result<()> {
+        let uid = self._os_user_uid(osuser).await?;
+
+        let osuser_lock_path = self.osuser_lock_path(osuser);
+        let mut f = File::open(&osuser_lock_path).await?;
+        f.lock_exclusive_async().await?;
+        let mut buffer = String::new();
+        f.read_to_string(&mut buffer).await?;
+        let last_activity = buffer.trim().parse::<u64>()?;
+        let now = utils::unix_timestamp()?;
+        if last_activity + 24 * 60 * 60 * 7 > now {
+            return Ok(());
+        }
+
+        let workspace_base_folder = self.osuser_workspace_base_folder(osuser);
+        let is_empty = tokio::fs::read_dir(&workspace_base_folder)
+            .await?
+            .next_entry()
+            .await?
+            .is_none();
+        if !is_empty {
+            return Ok(());
+        }
+
+        let prebuild_base_folder = self.osuser_prebuild_base_folder(osuser);
+        let is_empty = tokio::fs::read_dir(&prebuild_base_folder)
+            .await?
+            .next_entry()
+            .await?
+            .is_none();
+        if !is_empty {
+            return Ok(());
+        }
+
+        let project_base_folder = self.osuser_project_base_folder(osuser);
+        let is_empty = tokio::fs::read_dir(&project_base_folder)
+            .await?
+            .next_entry()
+            .await?
+            .is_none();
+        if !is_empty {
+            return Ok(());
+        }
+
+        tracing::info!("now cleaning up osuser {osuser}");
+
+        Command::new("loginctl")
+            .arg("disable-linger")
+            .arg(&uid)
+            .output()
+            .await?;
+
+        Command::new("userdel").arg(osuser).output().await?;
+
+        tokio::fs::remove_dir(&workspace_base_folder).await?;
+        tokio::fs::remove_dir_all(format!("/home/{osuser}")).await?;
+
+        f.unlock_async().await?;
+        tokio::fs::remove_file(&osuser_lock_path).await?;
 
         Ok(())
     }
@@ -330,6 +411,11 @@ impl WorkspaceServer {
     }
 
     pub async fn os_user_uid(&self, username: &str) -> Result<String, ApiError> {
+        let mut f = File::create(self.osuser_lock_path(username)).await?;
+        f.lock_exclusive_async().await?;
+        let ts = utils::unix_timestamp()?.to_string();
+        f.write_all(ts.as_bytes()).await?;
+
         if let Ok(uid) = self._os_user_uid(username).await {
             return Ok(uid);
         }
@@ -597,10 +683,10 @@ driver = "overlay"
             .await;
         let status = child.wait().await?;
         if !status.success() {
-            return Err(ApiError::RepositoryInvalid(format!(
-                "Container Image build failed: {:?}",
-                stderr_log.lock().await
-            )));
+            return Err(ApiError::RepositoryBuildFailure(RepobuildError {
+                msg: "Workspace image build failed.".to_string(),
+                stderr: stderr_log.lock().await.clone(),
+            }));
         }
 
         if install_extra {
@@ -699,7 +785,7 @@ driver = "overlay"
 
         let dockerfile_content = tokio::fs::read_to_string(dockerfile)
             .await
-            .map_err(|e| ApiError::RepositoryInvalid(format!("can't read dockerfile: {e}")))?;
+            .map_err(|e| ApiError::RepositoryInvalid(format!("Can't read dockerfile: {e}")))?;
         self.do_build_container_image(
             conductor_client,
             info,
@@ -745,7 +831,7 @@ driver = "overlay"
                 .await
         } else {
             return Err(ApiError::RepositoryInvalid(
-                "can't find image or build in this compose service".to_string(),
+                "Can't find image or build in this compose service".to_string(),
             ));
         }
     }
@@ -760,9 +846,9 @@ driver = "overlay"
     ) -> Result<RepoBuildOutput, ApiError> {
         let content = tokio::fs::read_to_string(compose_file)
             .await
-            .map_err(|e| ApiError::RepositoryInvalid(format!("can't read compose file: {e}")))?;
+            .map_err(|e| ApiError::RepositoryInvalid(format!("Can't read compose file: {e}")))?;
         let compose: Compose = serde_yaml::from_str(&content)
-            .map_err(|e| ApiError::RepositoryInvalid(format!("can't parse compose file: {e}")))?;
+            .map_err(|e| ApiError::RepositoryInvalid(format!("Can't parse compose file: {e}")))?;
         let cwd = compose_file
             .parent()
             .ok_or_else(|| anyhow!("compose file doens't have a parent directory"))?;
@@ -874,6 +960,14 @@ driver = "overlay"
         Ok(())
     }
 
+    pub fn osuser_lock_base_path(&self) -> String {
+        format!("{}/osusers", self.data_folder.to_str().unwrap_or_default())
+    }
+
+    pub fn osuser_lock_path(&self, osuser: &str) -> String {
+        format!("{}/{osuser}", self.osuser_lock_base_path())
+    }
+
     pub fn osuser_workspace_base_folder(&self, osuser: &str) -> String {
         format!(
             "{}/workspaces/{osuser}",
@@ -962,17 +1056,70 @@ driver = "overlay"
         "universal".to_string()
     }
 
+    pub async fn build_repo_result(
+        &self,
+        info: &RepoBuildInfo,
+        result: Result<RepoBuildOutput, ApiError>,
+    ) -> RepoBuildResult {
+        let err = match result {
+            Ok(output) => {
+                return RepoBuildResult {
+                    error: None,
+                    output,
+                }
+            }
+            Err(e) => {
+                tracing::error!("build repo {info:?} error: {e:?}");
+                e
+            }
+        };
+
+        let image_name = self.get_default_image(info).await;
+        let image = format!("ghcr.io/lapce/lapdev-devcontainer-{image_name}:latest");
+        tracing::debug!("build repo pick default image {image_name}");
+        let err = match err {
+            ApiError::RepositoryBuildFailure(err) => err,
+            ApiError::RepositoryInvalid(msg) => RepobuildError {
+                msg,
+                stderr: vec![],
+            },
+            _ => RepobuildError {
+                msg: "Internal Server Error".to_string(),
+                stderr: vec![],
+            },
+        };
+        RepoBuildResult {
+            error: Some(err),
+            output: RepoBuildOutput::Image {
+                image,
+                info: ContainerImageInfo::default(),
+                ports_attributes: Default::default(),
+            },
+        }
+    }
+
     pub async fn build_repo(
         &self,
         info: &RepoBuildInfo,
         conductor_client: &ConductorServiceClient,
     ) -> Result<RepoBuildOutput, ApiError> {
         self.prepare_repo(info).await?;
+        self.do_build_repo(info, conductor_client).await
+    }
+
+    pub async fn do_build_repo(
+        &self,
+        info: &RepoBuildInfo,
+        conductor_client: &ConductorServiceClient,
+    ) -> Result<RepoBuildOutput, ApiError> {
         let (cwd, config) = self
             .get_devcontainer(&PathBuf::from(self.build_repo_folder(info)))
             .await?
             .ok_or_else(|| {
-                ApiError::RepositoryInvalid("repo doesn't have devcontainer configured".to_string())
+                ApiError::RepositoryInvalid(
+                    "Repo doesn't have devcontainer configured or invalid devcontainer config."
+                        .to_string(),
+                )
             })?;
         let tag = self.repo_target_image_tag(&info.target);
         let output = if let Some(compose_file) = &config.docker_compose_file {

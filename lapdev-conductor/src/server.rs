@@ -5,7 +5,7 @@ use chrono::Utc;
 use data_encoding::BASE64_MIME;
 use futures::{channel::mpsc::UnboundedReceiver, stream::AbortHandle, SinkExt, StreamExt};
 use git2::{Cred, RemoteCallbacks};
-use lapdev_common::{utils, PrebuildReplicaStatus, WorkspaceHostStatus};
+use lapdev_common::{utils, PrebuildReplicaStatus, RepoBuildResult, WorkspaceHostStatus};
 use lapdev_common::{
     utils::rand_string, AuditAction, AuditResourceKind, AuthProvider, BuildTarget, CpuCore,
     CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch, NewProject, NewProjectResponse,
@@ -808,7 +808,7 @@ impl Conductor {
         machine_type: &entities::machine_type::Model,
         ip: Option<String>,
         user_agent: Option<String>,
-    ) -> Result<RepoBuildOutput, ApiError> {
+    ) -> Result<RepoBuildResult, ApiError> {
         {
             let conductor = self.clone();
             let project = project.to_owned();
@@ -860,13 +860,13 @@ impl Conductor {
             cpus: serde_json::from_str(&prebuild.cores)?,
             memory: machine_type.memory as usize,
         };
-        let output = ws_client
+        let result = ws_client
             .build_repo(long_running_context(), info.clone())
             .await?;
         ws_client
             .create_prebuild_archive(
                 long_running_context(),
-                output.clone(),
+                result.output.clone(),
                 PrebuildInfo {
                     id: prebuild.id,
                     osuser: prebuild.osuser.clone(),
@@ -874,7 +874,7 @@ impl Conductor {
                 repo.name.clone(),
             )
             .await??;
-        Ok(output)
+        Ok(result)
     }
 
     pub async fn create_project_prebuild(
@@ -1530,7 +1530,7 @@ impl Conductor {
         repo: &RepoDetails,
         ip: Option<String>,
         user_agent: Option<String>,
-    ) -> Result<Option<(entities::prebuild::Model, RepoBuildOutput)>, ApiError> {
+    ) -> Result<Option<(entities::prebuild::Model, RepoBuildResult)>, ApiError> {
         let prebuild = if let Some(prebuild_id) = ws.prebuild_id {
             self.db.get_prebuild(prebuild_id).await?
         } else {
@@ -1614,7 +1614,7 @@ impl Conductor {
             .ok_or_else(|| anyhow!("prebuild should exist"))?;
         if prebuild.status == PrebuildStatus::Ready.to_string() {
             if let Some(output) = prebuild.build_output.as_ref() {
-                if let Ok(output) = serde_json::from_str::<RepoBuildOutput>(output) {
+                if let Ok(output) = serde_json::from_str::<RepoBuildResult>(output) {
                     return Ok(Some((prebuild, output)));
                 }
             }
@@ -1633,7 +1633,7 @@ impl Conductor {
         machine_type: &entities::machine_type::Model,
         ip: Option<String>,
         user_agent: Option<String>,
-    ) -> Result<(Option<Uuid>, RepoBuildOutput), ApiError> {
+    ) -> Result<(Option<Uuid>, RepoBuildResult), ApiError> {
         let info = RepoBuildInfo {
             target: BuildTarget::Workspace {
                 id: ws.id,
@@ -1664,7 +1664,7 @@ impl Conductor {
                     .update_workspace_status(ws, WorkspaceStatus::PrebuildCopying)
                     .await;
                 // check if the prebuild is on the workspace host, copy it over if not
-                self.copy_prebuild_image(&prebuild, &output, ws, ws_client)
+                self.copy_prebuild_image(&prebuild, &output.output, ws, ws_client)
                     .await?;
                 // copy the prebuild repo folder to the workspace folder
                 self.copy_prebuild_content(&prebuild, info, ws_client)
@@ -1673,20 +1673,47 @@ impl Conductor {
             }
         }
 
-        let _ = self
-            .update_workspace_status(ws, WorkspaceStatus::Building)
-            .await;
-        tracing::debug!("start to build repo");
-        let output = ws_client.build_repo(long_running_context(), info).await?;
+        let now = Utc::now();
+        let txn = self.db.conn.begin().await?;
+        let usage = self
+            .enterprise
+            .usage
+            .new_usage(
+                &txn,
+                now.into(),
+                ws.organization_id,
+                Some(ws.user_id),
+                UsageResourceKind::Workspace,
+                ws.id,
+                ws.name.clone(),
+                ws.machine_type_id,
+                machine_type.cost_per_second,
+            )
+            .await?;
+        entities::workspace::ActiveModel {
+            id: ActiveValue::Set(ws.id),
+            status: ActiveValue::Set(WorkspaceStatus::Building.to_string()),
+            usage_id: ActiveValue::Set(Some(usage.id)),
+            last_inactivity: ActiveValue::Set(None),
+            updated_at: ActiveValue::Set(Some(now.into())),
+            ..Default::default()
+        }
+        .update(&txn)
+        .await?;
 
-        Ok((None, output))
+        txn.commit().await?;
+
+        tracing::debug!("start to build repo");
+        let result = ws_client.build_repo(long_running_context(), info).await?;
+
+        Ok((None, result))
     }
 
     async fn create_workspace_from_output(
         &self,
         ws: &entities::workspace::Model,
         prebuild_id: Option<Uuid>,
-        output: RepoBuildOutput,
+        output: RepoBuildResult,
         env: Vec<(String, String)>,
         ws_client: &WorkspaceServiceClient,
         machine_type: &entities::machine_type::Model,
@@ -1695,7 +1722,7 @@ impl Conductor {
             .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>();
-        let (is_compose, images, ports_attributes) = match &output {
+        let (is_compose, images, ports_attributes) = match &output.output {
             RepoBuildOutput::Compose {
                 services,
                 ports_attributes,
@@ -1817,23 +1844,29 @@ impl Conductor {
                     }
                 }
             }
-            if i == 0 {
+            let actual_ws_id = if i == 0 {
                 let txn = self.db.conn.begin().await?;
-                let usage = self
-                    .enterprise
-                    .usage
-                    .new_usage(
-                        &txn,
-                        Utc::now().into(),
-                        ws.organization_id,
-                        Some(ws.user_id),
-                        UsageResourceKind::Workspace,
-                        ws.id,
-                        ws.name.clone(),
-                        machine_type.id,
-                        machine_type.cost_per_second,
-                    )
-                    .await?;
+                let usage_id = if let Some(usage_id) = ws.usage_id {
+                    usage_id
+                } else {
+                    let usage = self
+                        .enterprise
+                        .usage
+                        .new_usage(
+                            &txn,
+                            Utc::now().into(),
+                            ws.organization_id,
+                            Some(ws.user_id),
+                            UsageResourceKind::Workspace,
+                            ws.id,
+                            ws.name.clone(),
+                            machine_type.id,
+                            machine_type.cost_per_second,
+                        )
+                        .await?;
+                    usage.id
+                };
+
                 entities::workspace::ActiveModel {
                     id: ActiveValue::Set(ws.id),
                     ssh_port: ActiveValue::Set(ssh_port.map(|port| port as i32)),
@@ -1844,15 +1877,17 @@ impl Conductor {
                     build_output: ActiveValue::Set(Some(build_output.clone())),
                     is_compose: ActiveValue::Set(is_compose),
                     env: ActiveValue::Set(serde_json::to_string(&all_env).ok()),
-                    usage_id: ActiveValue::Set(Some(usage.id)),
+                    usage_id: ActiveValue::Set(Some(usage_id)),
                     ..Default::default()
                 }
                 .update(&self.db.conn)
                 .await?;
                 txn.commit().await?;
+                ws.id
             } else {
+                let service_ws_id = Uuid::new_v4();
                 entities::workspace::ActiveModel {
-                    id: ActiveValue::Set(Uuid::new_v4()),
+                    id: ActiveValue::Set(service_ws_id),
                     name: ActiveValue::Set(workspace_name),
                     created_at: ActiveValue::Set(Utc::now().into()),
                     updated_at: ActiveValue::Set(None),
@@ -1886,13 +1921,15 @@ impl Conductor {
                 }
                 .insert(&self.db.conn)
                 .await?;
-            }
+                service_ws_id
+            };
 
             if !exposed_ports.is_empty() {
                 for (port, host_port) in exposed_ports {
                     entities::workspace_port::ActiveModel {
                         id: ActiveValue::Set(Uuid::new_v4()),
-                        workspace_id: ActiveValue::Set(ws.id),
+                        deleted_at: ActiveValue::Set(None),
+                        workspace_id: ActiveValue::Set(actual_ws_id),
                         port: ActiveValue::Set(port as i32),
                         host_port: ActiveValue::Set(host_port as i32),
                         shared: ActiveValue::Set(false),
@@ -1945,7 +1982,8 @@ impl Conductor {
         tracing::debug!(
             "prepare workspace image done, prebuild: {prebuild_id:?}, output: {output:?}"
         );
-        self.create_workspace_from_output(ws, prebuild_id, output, env, &ws_client, machine_type)
+        let ws = self.db.get_workspace(ws.id).await?;
+        self.create_workspace_from_output(&ws, prebuild_id, output, env, &ws_client, machine_type)
             .await?;
         self.add_workspace_update_event(
             Some(ws.user_id),
@@ -2155,6 +2193,16 @@ impl Conductor {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<(), ApiError> {
+        if workspace.status == WorkspaceStatus::PrebuildBuilding.to_string()
+            || workspace.status == WorkspaceStatus::Building.to_string()
+            || workspace.status == WorkspaceStatus::PrebuildCopying.to_string()
+            || workspace.status == WorkspaceStatus::New.to_string()
+        {
+            return Err(ApiError::InvalidRequest(
+                "Can't delete workspace when it's building".to_string(),
+            ));
+        }
+
         if workspace.is_compose && workspace.compose_parent.is_some() {
             return Err(ApiError::InvalidRequest(
                 "You can't delete a compose service workspace. You can only delete the main workspace".to_string(),
@@ -2266,6 +2314,7 @@ impl Conductor {
                     workspace_name: ws.name.clone(),
                     network,
                     images,
+                    keep_content: false,
                 },
             )
             .await?;
@@ -2514,6 +2563,280 @@ impl Conductor {
                 }
             });
         }
+
+        Ok(())
+    }
+
+    pub async fn rebuild_workspace(
+        &self,
+        workspace: entities::workspace::Model,
+        ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<(), ApiError> {
+        if workspace.status == WorkspaceStatus::PrebuildBuilding.to_string()
+            || workspace.status == WorkspaceStatus::Building.to_string()
+            || workspace.status == WorkspaceStatus::PrebuildCopying.to_string()
+            || workspace.status == WorkspaceStatus::New.to_string()
+        {
+            return Err(ApiError::InvalidRequest(
+                "Can't rebuild workspace when it's building".to_string(),
+            ));
+        }
+
+        if workspace.is_compose && workspace.compose_parent.is_some() {
+            return Err(ApiError::InvalidRequest(
+                "You can't rebuild a compose service workspace. You can only rebuild the main workspace".to_string(),
+            ));
+        }
+
+        let org = self.db.get_organization(workspace.organization_id).await?;
+        self.enterprise
+            .check_organization_limit(&org, workspace.user_id)
+            .await?;
+
+        let txn = self.db.conn.begin().await?;
+        if workspace.status != WorkspaceStatus::Running.to_string() {
+            if let Some(quota) = self
+                .enterprise
+                .check_start_workspace_quota(&txn, workspace.organization_id, workspace.user_id)
+                .await?
+            {
+                return Err(ApiError::QuotaReached(quota));
+            }
+        }
+
+        let machine_type = self
+            .db
+            .get_machine_type(workspace.machine_type_id)
+            .await?
+            .ok_or_else(|| anyhow!("Can't find machine type".to_string()))?;
+
+        let now = Utc::now();
+        self.enterprise
+            .insert_audit_log(
+                &txn,
+                now.into(),
+                workspace.user_id,
+                workspace.organization_id,
+                AuditResourceKind::Workspace.to_string(),
+                workspace.id,
+                workspace.name.clone(),
+                AuditAction::WorkspaceRebuild.to_string(),
+                ip,
+                user_agent,
+            )
+            .await?;
+
+        let usage_id = if let Some(usage_id) = workspace.usage_id {
+            usage_id
+        } else {
+            let usage = self
+                .enterprise
+                .usage
+                .new_usage(
+                    &txn,
+                    now.into(),
+                    workspace.organization_id,
+                    Some(workspace.user_id),
+                    UsageResourceKind::Workspace,
+                    workspace.id,
+                    workspace.name.clone(),
+                    workspace.machine_type_id,
+                    machine_type.cost_per_second,
+                )
+                .await?;
+            usage.id
+        };
+        let ws = entities::workspace::ActiveModel {
+            id: ActiveValue::Set(workspace.id),
+            status: ActiveValue::Set(WorkspaceStatus::Building.to_string()),
+            usage_id: ActiveValue::Set(Some(usage_id)),
+            last_inactivity: ActiveValue::Set(None),
+            updated_at: ActiveValue::Set(Some(now.into())),
+            ..Default::default()
+        }
+        .update(&txn)
+        .await?;
+
+        txn.commit().await?;
+
+        {
+            let conductor = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = conductor.do_rebuild_workspace(&ws, &machine_type).await {
+                    tracing::error!("rebuild workspace {} failed: {e:?}", ws.name);
+
+                    let now = Utc::now();
+                    let txn = conductor.db.conn.begin().await?;
+                    conductor
+                        .enterprise
+                        .usage
+                        .end_usage(&txn, usage_id, now.into())
+                        .await?;
+
+                    entities::workspace::ActiveModel {
+                        id: ActiveValue::Set(workspace.id),
+                        status: ActiveValue::Set(WorkspaceStatus::Failed.to_string()),
+                        updated_at: ActiveValue::Set(Some(now.into())),
+                        ..Default::default()
+                    }
+                    .update(&conductor.db.conn)
+                    .await?;
+
+                    txn.commit().await?;
+                }
+
+                anyhow::Ok(())
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn do_rebuild_workspace(
+        &self,
+        ws: &entities::workspace::Model,
+        machine_type: &entities::machine_type::Model,
+    ) -> Result<(), ApiError> {
+        let ws_client = { self.rpcs.lock().await.get(&ws.host_id).cloned() }
+            .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
+
+        let compose_services = if ws.is_compose {
+            entities::workspace::Entity::find()
+                .filter(entities::workspace::Column::DeletedAt.is_null())
+                .filter(entities::workspace::Column::ComposeParent.eq(ws.id))
+                .all(&self.db.conn)
+                .await?
+        } else {
+            Vec::new()
+        };
+        for service_ws in compose_services {
+            ws_client
+                .delete_workspace(
+                    long_running_context(),
+                    DeleteWorkspaceRequest {
+                        osuser: service_ws.osuser.clone(),
+                        workspace_name: service_ws.name.clone(),
+                        network: None,
+                        images: vec![],
+                        keep_content: true,
+                    },
+                )
+                .await??;
+            let now = Utc::now();
+            entities::workspace::ActiveModel {
+                id: ActiveValue::Set(service_ws.id),
+                status: ActiveValue::Set(WorkspaceStatus::Deleted.to_string()),
+                deleted_at: ActiveValue::Set(Some(now.into())),
+                ..Default::default()
+            }
+            .update(&self.db.conn)
+            .await?;
+        }
+
+        let now = Utc::now();
+        entities::workspace_port::Entity::update_many()
+            .set(entities::workspace_port::ActiveModel {
+                deleted_at: ActiveValue::Set(Some(now.into())),
+                ..Default::default()
+            })
+            .filter(entities::workspace_port::Column::WorkspaceId.eq(ws.id))
+            .filter(entities::workspace_port::Column::DeletedAt.is_null())
+            .exec(&self.db.conn)
+            .await?;
+
+        self.add_workspace_update_event(
+            Some(ws.user_id),
+            ws.id,
+            WorkspaceUpdateEvent::Status(WorkspaceStatus::Building),
+        )
+        .await;
+
+        let images = if ws.prebuild_id.is_none() {
+            let output: Option<RepoBuildOutput> = ws
+                .build_output
+                .as_ref()
+                .and_then(|o| serde_json::from_str(o).ok());
+
+            if let Some(output) = output {
+                match output {
+                    RepoBuildOutput::Compose { services, .. } => {
+                        services.into_iter().map(|s| s.image).collect()
+                    }
+                    RepoBuildOutput::Image { image, .. } => vec![image],
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        ws_client
+            .delete_workspace(
+                long_running_context(),
+                DeleteWorkspaceRequest {
+                    osuser: ws.osuser.clone(),
+                    workspace_name: ws.name.clone(),
+                    network: Some(ws.name.clone()),
+                    images,
+                    keep_content: true,
+                },
+            )
+            .await??;
+
+        let env = if let Some(project_id) = ws.project_id {
+            if let Ok(project) = self.db.get_project(project_id).await {
+                project
+                    .env
+                    .as_ref()
+                    .and_then(|env| serde_json::from_str::<Vec<(String, String)>>(env).ok())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let info = RepoBuildInfo {
+            target: BuildTarget::Workspace {
+                id: ws.id,
+                name: ws.name.clone(),
+            },
+            env: env.clone().unwrap_or_default(),
+            repo_name: ws.repo_name.clone(),
+            repo_url: "".to_string(),
+            auth: ("".to_string(), "".to_string()),
+            branch: "".to_string(),
+            head: "".to_string(),
+            osuser: ws.osuser.clone(),
+            cpus: serde_json::from_str(&ws.cores)?,
+            memory: machine_type.memory as usize,
+        };
+        let output = ws_client.rebuild_repo(long_running_context(), info).await?;
+        self.create_workspace_from_output(
+            ws,
+            None,
+            output,
+            env.unwrap_or_default(),
+            &ws_client,
+            machine_type,
+        )
+        .await?;
+
+        self.add_workspace_update_event(
+            Some(ws.user_id),
+            ws.id,
+            WorkspaceUpdateEvent::Status(WorkspaceStatus::Running),
+        )
+        .await;
+
+        entities::organization::ActiveModel {
+            id: ActiveValue::Set(ws.organization_id),
+            has_running_workspace: ActiveValue::Set(true),
+            ..Default::default()
+        }
+        .update(&self.db.conn)
+        .await?;
 
         Ok(())
     }

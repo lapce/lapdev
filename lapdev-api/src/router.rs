@@ -9,8 +9,8 @@ use axum::{
 use axum_client_ip::SecureClientIpSource;
 use axum_extra::{headers, TypedHeader};
 use hyper::StatusCode;
-use lapdev_db::entities;
-use lapdev_proxy_http::forward::ProxyForward;
+use lapdev_common::WorkspaceStatus;
+use lapdev_proxy_http::{forward::ProxyForward, proxy::WorkspaceForwardError};
 use lapdev_rpc::error::ApiError;
 
 use crate::{
@@ -23,6 +23,11 @@ use crate::{
 
 static STATIC_DIR: include_dir::Dir =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/../lapdev-dashboard/dist");
+const PAGE_NOT_FOUND: &[u8] = include_bytes!("../pages/not_found.html");
+const PAGE_NOT_AUTHORISED: &[u8] = include_bytes!("../pages/not_authorised.html");
+const PAGE_NOT_RUNNING: &[u8] = include_bytes!("../pages/not_running.html");
+const PAGE_NOT_FORWARDED: &[u8] = include_bytes!("../pages/not_forwarded.html");
+const PAGE_CSS: &[u8] = include_bytes!("../pages/main.css");
 
 fn private_routes() -> Router<CoreState> {
     Router::new()
@@ -163,6 +168,10 @@ fn v1_api_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreSta
             post(workspace::stop_workspace),
         )
         .route(
+            "/organizations/:org_id/workspaces/:workspace_name/rebuild",
+            post(workspace::rebuild_workspace),
+        )
+        .route(
             "/organizations/:org_id/workspaces/:workspace_name/ports",
             get(workspace::workspace_ports),
         )
@@ -264,50 +273,86 @@ async fn handle_catch_all(
         .path_and_query()
         .map(|v| v.as_str())
         .unwrap_or(path);
+    let hostname = hostname
+        .split(":")
+        .next()
+        .ok_or_else(|| ApiError::InternalError("can't split : from hostname".to_string()))?;
     let is_base = state
         .conductor
         .hostnames
         .read()
         .await
         .values()
-        .any(|v| v == &hostname);
+        .any(|v| v == hostname);
     if !is_base {
-        if let Some((ws, workspace_host, port)) =
-            lapdev_proxy_http::proxy::forward_workspace(hostname, &state.db).await
-        {
-            is_http_foward_allowed(&cookie, &state, &ws, port.as_ref()).await?;
-            let port = port
-                .map(|p| p.host_port as u16)
-                .or_else(|| ws.ide_port.map(|p| p as u16));
-            if let Some(forward) = lapdev_proxy_http::forward::handler(
-                &workspace_host.host,
-                path_query,
-                websocket,
-                port,
+        if path.starts_with("/error-page/lapdev-main.css") {
+            return Ok((
+                [
+                    (axum::http::header::CONTENT_TYPE, "text/css"),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "public, max-age=31536000",
+                    ),
+                ],
+                PAGE_CSS,
             )
-            .await
-            {
-                match forward {
-                    ProxyForward::Resp(resp) => return Ok(resp),
-                    ProxyForward::Proxy(uri) => {
-                        // *req.uri_mut() = uri;
-                        let headers = req.headers().clone();
-                        let mut new_req = Request::builder()
-                            .method(req.method())
-                            .uri(uri)
-                            .body(req.into_body())
-                            .unwrap();
-                        *new_req.headers_mut() = headers;
-                        let resp = state.hyper_client.request(new_req).await?;
-                        return Ok(resp.into_response());
-                    }
-                }
-            } else {
-                return Err(ApiError::InvalidRequest("can't forward".to_string()));
-            }
-        } else {
-            return Err(ApiError::InvalidRequest("Invalid forward".to_string()));
+                .into_response());
         }
+
+        let user = state.authenticate(&cookie).await.ok();
+        match lapdev_proxy_http::proxy::forward_workspace(hostname, &state.db, user.as_ref()).await
+        {
+            Ok((ws, port)) => {
+                if ws.status != WorkspaceStatus::Running.to_string() {
+                    return Ok(axum::response::Html::from(PAGE_NOT_RUNNING).into_response());
+                }
+
+                let Some(workspace_host) =
+                    state.db.get_workspace_host(ws.host_id).await.ok().flatten()
+                else {
+                    return Ok(axum::response::Html::from(PAGE_NOT_RUNNING).into_response());
+                };
+
+                let port = port
+                    .map(|p| p.host_port as u16)
+                    .or_else(|| ws.ide_port.map(|p| p as u16));
+                if let Some(forward) = lapdev_proxy_http::forward::handler(
+                    &workspace_host.host,
+                    path_query,
+                    websocket,
+                    port,
+                )
+                .await
+                {
+                    match forward {
+                        ProxyForward::Resp(resp) => return Ok(resp),
+                        ProxyForward::Proxy(uri) => {
+                            // *req.uri_mut() = uri;
+                            let headers = req.headers().clone();
+                            let mut new_req = Request::builder()
+                                .method(req.method())
+                                .uri(uri)
+                                .body(req.into_body())
+                                .unwrap();
+                            *new_req.headers_mut() = headers;
+                            let resp = state.hyper_client.request(new_req).await?;
+                            return Ok(resp.into_response());
+                        }
+                    }
+                } else {
+                    return Ok(axum::response::Html::from(PAGE_NOT_FOUND).into_response());
+                }
+            }
+            Err(e) => {
+                let b = match e {
+                    WorkspaceForwardError::WorkspaceNotFound => PAGE_NOT_FOUND,
+                    WorkspaceForwardError::PortNotForwarded => PAGE_NOT_FORWARDED,
+                    WorkspaceForwardError::InvalidHostname => PAGE_NOT_RUNNING,
+                    WorkspaceForwardError::Unauthorised => PAGE_NOT_AUTHORISED,
+                };
+                return Ok(axum::response::Html::from(b).into_response());
+            }
+        };
     }
 
     if let Some(websocket) = websocket {
@@ -386,34 +431,4 @@ async fn handle_catch_all(
     }
 
     Err(ApiError::InvalidRequest("Invalid Request".to_string()))
-}
-
-async fn is_http_foward_allowed(
-    cookie: &headers::Cookie,
-    state: &CoreState,
-    ws: &entities::workspace::Model,
-    port: Option<&entities::workspace_port::Model>,
-) -> Result<(), ApiError> {
-    if let Some(port) = port {
-        if port.public {
-            return Ok(());
-        }
-    }
-    let user = state.authenticate(cookie).await?;
-    if ws.user_id == user.id {
-        return Ok(());
-    }
-    if let Some(port) = port {
-        if port.shared
-            && state
-                .db
-                .get_organization_member(user.id, ws.organization_id)
-                .await
-                .is_ok()
-        {
-            return Ok(());
-        }
-    }
-
-    Err(ApiError::Unauthorized)
 }

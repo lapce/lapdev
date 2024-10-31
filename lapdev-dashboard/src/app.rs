@@ -122,7 +122,7 @@ where
                 <TopNav />
                 <div class="container mx-auto flex flex-row basis-0 grow">
                     <SideNav new_org_modal_hidden />
-                    <div class="px-8 pt-8 w-[calc(100%-16rem)] h-full">
+                    <div class="p-8 w-[calc(100%-16rem)] h-full">
                         {element}
                     </div>
                 </div>

@@ -8,8 +8,8 @@ use gloo_net::{
 };
 use lapdev_common::{
     console::Organization, utils, ClusterInfo, GitBranch, NewWorkspace, NewWorkspaceResponse,
-    PrebuildStatus, ProjectInfo, ProjectPrebuild, RepoSource, UpdateWorkspacePort, WorkspaceInfo,
-    WorkspacePort, WorkspaceStatus, WorkspaceUpdateEvent,
+    PrebuildStatus, ProjectInfo, ProjectPrebuild, RepoSource, RepobuildError, UpdateWorkspacePort,
+    WorkspaceInfo, WorkspacePort, WorkspaceService, WorkspaceStatus, WorkspaceUpdateEvent,
 };
 use leptos::{
     component, create_action, create_effect, create_local_resource, create_rw_signal, document,
@@ -108,6 +108,36 @@ async fn delete_workspace(
     } else {
         use_navigate()("/workspaces", Default::default());
     }
+
+    Ok(())
+}
+
+async fn rebuild_workspace(
+    name: String,
+    rebuild_modal_hidden: RwSignal<bool>,
+) -> Result<(), ErrorResponse> {
+    let org =
+        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
+    let org = org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+    let resp = Request::post(&format!(
+        "/api/v1/organizations/{}/workspaces/{name}/rebuild",
+        org.id
+    ))
+    .send()
+    .await?;
+    if resp.status() != 204 {
+        let error = resp
+            .json::<ErrorResponse>()
+            .await
+            .unwrap_or_else(|_| ErrorResponse {
+                error: "Internal Server Error".to_string(),
+            });
+        return Err(error);
+    }
+
+    rebuild_modal_hidden.set(true);
 
     Ok(())
 }
@@ -269,6 +299,7 @@ fn WorkspaceControl(
     workspace_status: WorkspaceStatus,
     workspace_folder: String,
     workspace_hostname: String,
+    rebuild_modal_hidden: RwSignal<bool>,
     delete_modal_hidden: RwSignal<bool>,
     error: RwSignal<Option<String>>,
     align_right: bool,
@@ -308,6 +339,13 @@ fn WorkspaceControl(
         move |_| {
             dropdown_hidden.set(true);
             delete_modal_hidden.set(false);
+        }
+    };
+
+    let rebuild_workspace = {
+        move |_| {
+            dropdown_hidden.set(true);
+            rebuild_modal_hidden.set(false);
         }
     };
 
@@ -390,6 +428,15 @@ fn WorkspaceControl(
                     <li>
                         <a
                             href="#"
+                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            on:click=rebuild_workspace
+                        >
+                            Rebuild
+                        </a>
+                    </li>
+                    <li>
+                        <a
+                            href="#"
                             class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 text-red-700"
                             on:click=delete_workspace
                         >
@@ -429,11 +476,45 @@ fn workspace_status_class(status: &WorkspaceStatus) -> &str {
 }
 
 #[component]
+fn WorkspaceRebuildModal(
+    workspace_name: String,
+    rebuild_modal_hidden: RwSignal<bool>,
+) -> impl IntoView {
+    let rebuild_action = {
+        let workspace_name = workspace_name.clone();
+        create_action(move |_| rebuild_workspace(workspace_name.clone(), rebuild_modal_hidden))
+    };
+
+    let body = view! {
+        <p>Rebuild your workspace image.</p>
+        <p>It will pick up your devcontainer config changes.</p>
+        <p>
+            All files in
+            <span class="text-semibold mx-1 px-1 text-gray-800 bg-gray-200 rounded">/workspaces</span>
+            folder will persist.
+        </p>
+    };
+
+    view! {
+        <CreationModal
+            title="Rebuild Workspace Image".to_string()
+            modal_hidden=rebuild_modal_hidden
+            action=rebuild_action
+            body
+            update_text=Some("Rebuild".to_string())
+            updating_text=None
+            create_button_hidden=false
+        />
+    }
+}
+
+#[component]
 pub fn WorkspaceItem(
     workspace: WorkspaceInfo,
     error: RwSignal<Option<String>>,
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
+    let rebuild_modal_hidden = create_rw_signal(true);
     let delete_modal_hidden = create_rw_signal(true);
     let workspace_name = workspace.name.clone();
     let workspace_folder = workspace.repo_name.clone();
@@ -498,7 +579,7 @@ pub fn WorkspaceItem(
                     >{ move || workspace.status.to_string() }</span>
                 </div>
                 <div class="md:w-1/6 flex flex-row items-center p-4 justify-center">
-                    <WorkspaceControl workspace_name={workspace_name.clone()} workspace_status={workspace.status} workspace_folder=workspace_folder.clone() workspace_hostname=workspace_hostname.clone() align_right=true delete_modal_hidden error />
+                    <WorkspaceControl workspace_name={workspace_name.clone()} workspace_status={workspace.status} workspace_folder=workspace_folder.clone() workspace_hostname=workspace_hostname.clone() align_right=true delete_modal_hidden rebuild_modal_hidden error />
                 </div>
             </div>
             <For
@@ -537,6 +618,10 @@ pub fn WorkspaceItem(
             />
         </div>
         <DeletionModal resource=workspace_name.clone() modal_hidden=delete_modal_hidden delete_action />
+        <WorkspaceRebuildModal
+            workspace_name=workspace_name.clone()
+            rebuild_modal_hidden
+        />
     }
 }
 
@@ -698,13 +783,11 @@ pub fn Workspaces() -> impl IntoView {
                 view!{}.into_view()
             }}
 
-            // <h1>Workspaces</h1>
-            // <NewWorkspace />
             <div class="relative w-full basis-0 grow">
                 <div class="absolute w-full h-full flex flex-col py-4 overflow-y-auto">
                     <For
                         each=move || workspaces.get()
-                        key=|w|  w.clone()
+                        key=|w|  (w.name.clone(), w.status)
                         children=move |workspace| {
                             view! {
                                 <WorkspaceItem workspace=workspace update_counter=delete_counter error />
@@ -1002,6 +1085,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
     let name = params.with_untracked(|params| params.get("name").cloned().unwrap());
     let local_name = name.clone();
     let workspace_name = name.clone();
+    let rebuild_modal_hidden = create_rw_signal(true);
     let delete_modal_hidden = create_rw_signal(true);
     let delete_action = {
         let workspace_name = workspace_name.clone();
@@ -1146,7 +1230,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                     <DatetimeModal time=info.created_at />
                                 </span>
                                 <div class="mt-4">
-                                    <WorkspaceControl workspace_name=workspace_name.clone() workspace_status=status.get() workspace_folder=info.repo_name.clone() workspace_hostname=workspace_hostname.clone() align_right=false delete_modal_hidden error />
+                                    <WorkspaceControl workspace_name=workspace_name.clone() workspace_status=status.get() workspace_folder=info.repo_name.clone() workspace_hostname=workspace_hostname.clone() align_right=false delete_modal_hidden rebuild_modal_hidden error />
                                 </div>
                                 { move || if let Some(error) = error.get() {
                                     view! {
@@ -1157,56 +1241,6 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                 } else {
                                     view!{}.into_view()
                                 }}
-
-                                <For
-                                    each=move || info.services.clone()
-                                    key=move |s| s.clone()
-                                    children={
-                                        let workspace_folder = info.repo_name.clone();
-                                        let workspace_hostname = workspace_hostname.clone();
-                                        move |ws_service| {
-                                            view! {
-                                                <div class="border-t mt-8">
-                                                    <span class="mt-4 text-sm flex flex-row items-center rounded me-2">
-                                                        <svg class="w-4 h-4 mr-1" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16">
-                                                            <path fill-rule="evenodd" d="M6 3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5v1A1.5 1.5 0 0 1 8.5 6v1H11a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V8h-5v.5a.5.5 0 0 1-1 0v-1A.5.5 0 0 1 5 7h2.5V6A1.5 1.5 0 0 1 6 4.5zM8.5 5a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5zM3 11.5A1.5 1.5 0 0 1 4.5 10h1A1.5 1.5 0 0 1 7 11.5v1A1.5 1.5 0 0 1 5.5 14h-1A1.5 1.5 0 0 1 3 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5zm4.5.5a1.5 1.5 0 0 1 1.5-1.5h1a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-1.5 1.5h-1A1.5 1.5 0 0 1 9 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5z"/>
-                                                        </svg>
-                                                        <span class="mr-1 text-gray-500 dark:text-gray-500">{"Service:"}</span>
-                                                        { ws_service.service.clone() }
-                                                    </span>
-
-                                                    <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
-                                                        <svg class="w-2.5 h-2.5 mr-2" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-                                                            <path d="M6 9a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3A.5.5 0 0 1 6 9M3.854 4.146a.5.5 0 1 0-.708.708L4.793 6.5 3.146 8.146a.5.5 0 1 0 .708.708l2-2a.5.5 0 0 0 0-.708z"/>
-                                                            <path d="M2 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
-                                                        </svg>
-                                                        <span class="mr-1 text-gray-500 dark:text-gray-500">{"SSH Connection:"}</span>
-                                                        {
-                                                            let ws_service_name = ws_service.name.clone();
-                                                            let workspace_hostname = workspace_hostname.clone();
-                                                            move || {
-                                                                let ssh_proxy_port = cluster_info.with(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
-                                                                format!(
-                                                                    "ssh {ws_service_name}@{}{}",
-                                                                    workspace_hostname.split(':').next().unwrap_or(""),
-                                                                    if ssh_proxy_port == 22 {
-                                                                        "".to_string()
-                                                                    } else {
-                                                                        format!(" -p {ssh_proxy_port}")
-                                                                    },
-                                                                )
-                                                            }
-                                                        }
-                                                    </span>
-
-                                                    <div class="mt-4 flex flex-row">
-                                                        <OpenWorkspaceView workspace_name=ws_service.name.clone() workspace_status={status.get()} workspace_folder=workspace_folder.clone() workspace_hostname=workspace_hostname.clone() align_right=false />
-                                                    </div>
-                                                </div>
-                                            }
-                                        }
-                                    }
-                                />
 
                                 <Show
                                     when=move || { let status = status.get(); status == WorkspaceStatus::New || status == WorkspaceStatus::Building || status == WorkspaceStatus::PrebuildBuilding || status == WorkspaceStatus::PrebuildCopying || status == WorkspaceStatus::Failed}
@@ -1226,8 +1260,41 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         />
                                     </div>
                                 </Show>
-                                <WorkspaceTabView name=info.name.clone() workspace_hostname=workspace_hostname.clone() />
+
+                                <div class="flex flex-col">
+                                    <For
+                                        each=move || info.services.clone()
+                                        key=move |s| s.clone()
+                                        children={
+                                            let workspace_folder = info.repo_name.clone();
+                                            let workspace_hostname = workspace_hostname.clone();
+                                            move |ws_service| {
+                                                view! {
+                                                    <WorkspaceServiceView
+                                                        ws_service
+                                                        workspace_hostname=workspace_hostname.clone()
+                                                        workspace_folder=workspace_folder.clone()
+                                                        status
+                                                        cluster_info
+                                                    />
+                                                }
+                                            }
+                                        }
+                                    />
+                                </div>
+
+                                <WorkspaceTabView
+                                    name=info.name.clone()
+                                    workspace_hostname=workspace_hostname.clone()
+                                    show_build_error=true
+                                    build_error=info.build_error.clone()
+                                />
+
                                 <DeletionModal resource=info.name.clone() modal_hidden=delete_modal_hidden delete_action />
+                                <WorkspaceRebuildModal
+                                    workspace_name=workspace_name.clone()
+                                    rebuild_modal_hidden
+                                />
                             </div>
                         }
                     } else {
@@ -1239,29 +1306,130 @@ pub fn WorkspaceDetails() -> impl IntoView {
                 }
             </Show>
         </section>
-        // <p>{ name }</p>
-        // <p>{move || status.get().to_string()}</p>
-        // <div id="build-messages-scroll" class="overflow-y-auto h-32">
-        //     <For
-        //         each=move || build_messages.get().into_iter().enumerate()
-        //         key=|(i, _)| *i
-        //         children=move |(_, msg)| {
-        //             view! {
-        //                 <p>{msg}</p>
-        //             }
-        //         }
-        //     />
-        // </div>
     }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum TabKind {
     Port,
+    BuildOutput,
 }
 
 #[component]
-pub fn WorkspaceTabView(name: String, workspace_hostname: String) -> impl IntoView {
+fn WorkspaceServiceView(
+    ws_service: WorkspaceService,
+    workspace_hostname: String,
+    workspace_folder: String,
+    status: RwSignal<WorkspaceStatus>,
+    cluster_info: Signal<Option<ClusterInfo>>,
+) -> impl IntoView {
+    let expanded = create_rw_signal(false);
+    let toggle_expand_view = move |_| {
+        expanded.update(|e| {
+            *e = !*e;
+        });
+    };
+    view! {
+        <div class="border rounded-lg p-8 mt-8">
+            <div
+                class="flex flex-row flex-wrap justify-between items-center"
+            >
+                <div class="flex flex-row items-center">
+                    <button
+                        class="p-2"
+                        on:click=toggle_expand_view
+                    >
+                        <svg
+                            class:hidden=move || expanded.get()
+                            class="text-gray-600 w-3 h-3 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 6 10"
+                        >
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 9 4-4-4-4"></path>
+                        </svg>
+                        <svg
+                            class:hidden=move || !expanded.get()
+                            class="text-gray-600 w-3 h-3 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6"
+                        >
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
+                        </svg>
+                    </button>
+                    <div class="flex flex-col text-sm">
+                        <div class="flex flex-row items-center">
+                            <svg class="w-4 h-4 mr-1" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16">
+                                <path fill-rule="evenodd" d="M6 3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5v1A1.5 1.5 0 0 1 8.5 6v1H11a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V8h-5v.5a.5.5 0 0 1-1 0v-1A.5.5 0 0 1 5 7h2.5V6A1.5 1.5 0 0 1 6 4.5zM8.5 5a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5zM3 11.5A1.5 1.5 0 0 1 4.5 10h1A1.5 1.5 0 0 1 7 11.5v1A1.5 1.5 0 0 1 5.5 14h-1A1.5 1.5 0 0 1 3 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5zm4.5.5a1.5 1.5 0 0 1 1.5-1.5h1a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-1.5 1.5h-1A1.5 1.5 0 0 1 9 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5z"/>
+                            </svg>
+                            <span class="text-gray-500 dark:text-gray-500">{"Service"}</span>
+                        </div>
+                        { ws_service.service.clone() }
+                    </div>
+                </div>
+                <div class="flex flex-col text-sm">
+                    <div class="flex flex-row items-center">
+                        <svg class="w-2.5 h-2.5 mr-2" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M6 9a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3A.5.5 0 0 1 6 9M3.854 4.146a.5.5 0 1 0-.708.708L4.793 6.5 3.146 8.146a.5.5 0 1 0 .708.708l2-2a.5.5 0 0 0 0-.708z"/>
+                            <path d="M2 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
+                        </svg>
+                        <span class="text-gray-500 dark:text-gray-500">{"SSH Connection"}</span>
+                    </div>
+                    <WorkspaceSSHConnView
+                        name=ws_service.name.clone()
+                        workspace_hostname=workspace_hostname.clone()
+                        cluster_info
+                    />
+                </div>
+                <div class="flex flex-row">
+                    <OpenWorkspaceView workspace_name=ws_service.name.clone() workspace_status={status.get()} workspace_folder=workspace_folder.clone() workspace_hostname=workspace_hostname.clone() align_right=false />
+                </div>
+            </div>
+            <div
+                class="pl-10"
+                class:hidden=move || !expanded.get()
+            >
+                <WorkspaceTabView
+                    name=ws_service.name.clone()
+                    workspace_hostname=workspace_hostname.clone()
+                    show_build_error=false
+                    build_error=None
+                />
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn WorkspaceSSHConnView(
+    name: String,
+    workspace_hostname: String,
+    cluster_info: Signal<Option<ClusterInfo>>,
+) -> impl IntoView {
+    view! {
+        <span>
+        {
+            let ws_service_name = name.clone();
+            let workspace_hostname = workspace_hostname.clone();
+            move || {
+                let ssh_proxy_port = cluster_info.with(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
+                format!(
+                    "ssh {ws_service_name}@{}{}",
+                    workspace_hostname.split(':').next().unwrap_or(""),
+                    if ssh_proxy_port == 22 {
+                        "".to_string()
+                    } else {
+                        format!(" -p {ssh_proxy_port}")
+                    },
+                )
+            }
+        }
+        </span>
+    }
+}
+
+#[component]
+pub fn WorkspaceTabView(
+    name: String,
+    workspace_hostname: String,
+    show_build_error: bool,
+    build_error: Option<RepobuildError>,
+) -> impl IntoView {
     let tab_kind = create_rw_signal(TabKind::Port);
     let active_class = "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active dark:text-blue-500 dark:border-blue-500";
     let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300 dark:hover:text-gray-300";
@@ -1270,7 +1438,9 @@ pub fn WorkspaceTabView(name: String, workspace_hostname: String) -> impl IntoVi
     };
 
     view! {
-        <div class="mt-8 text-sm font-medium text-center text-gray-500 border-b border-gray-200 dark:text-gray-400 dark:border-gray-700">
+        <div
+            class="mt-8 text-sm font-medium text-center text-gray-500 border-b border-gray-200 dark:text-gray-400 dark:border-gray-700"
+        >
             <ul class="flex flex-wrap -mb-px">
                 <li class="me-2">
                     <a
@@ -1279,11 +1449,48 @@ pub fn WorkspaceTabView(name: String, workspace_hostname: String) -> impl IntoVi
                         on:click=move |_| change_tab(TabKind::Port)
                     >Ports</a>
                 </li>
+                <li class="me-2"
+                    class:hidden=move || !show_build_error
+                >
+                    <a
+                        href="#"
+                        class={ move || if tab_kind.get() == TabKind::BuildOutput {active_class} else {inactive_class} }
+                        on:click=move |_| change_tab(TabKind::BuildOutput)
+                    >Build Output</a>
+                </li>
             </ul>
         </div>
-        <div class="pb-12 text-gray-600 dark:text-gray-400">
+        <div
+            class="text-gray-600 dark:text-gray-400"
+            class=("min-h-32", move || show_build_error)
+        >
             <div class:hidden=move || tab_kind.get() != TabKind::Port>
                 <WorkspacePortsView name=name workspace_hostname=workspace_hostname.clone() />
+            </div>
+            <div class:hidden=move || tab_kind.get() != TabKind::BuildOutput>
+                {
+                    if let Some(e) = build_error {
+                        view! {
+                            <p class="mt-4 text-sm text-gray-900">{e.msg}</p>
+                            <p class="text-sm text-gray-500">So the workspace was created with a default image.</p>
+                            <div class="overflow-y-auto p-4 h-48 w-full mt-4 border rounded">
+                                <For
+                                    each=move || e.stderr.clone()
+                                    key=|l| l.clone()
+                                    children=move |line| {
+                                        view! {
+                                            <p class="text-sm text-red-600">{line}</p>
+                                        }
+                                    }
+                                />
+                            </div>
+                        }.into_view()
+                    } else {
+                        view! {
+                            <p class="my-4 text-sm text-gray-900">Workspace image was built successfully</p>
+                        }.into_view()
+                    }
+                }
             </div>
         </div>
     }

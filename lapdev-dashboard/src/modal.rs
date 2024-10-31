@@ -253,28 +253,30 @@ pub fn DatetimeModal(time: DateTime<FixedOffset>) -> impl IntoView {
     let hidden = create_rw_signal(true);
     let duration = chrono::Utc::now() - time.with_timezone(&chrono::Utc);
     let days = duration.num_days();
-    let formatted = if days > 365 {
-        let unit = days / 365;
-        format!("{} year{} ago", unit, if unit > 1 { "s" } else { "" })
-    } else if days > 30 {
-        let unit = days / 30;
-        format!("{} month{} ago", unit, if unit > 1 { "s" } else { "" })
-    } else if days > 7 {
-        let unit = days / 7;
-        format!("{} week{} ago", unit, if unit > 1 { "s" } else { "" })
-    } else if days > 0 {
-        let unit = days;
-        format!("{} day{} ago", unit, if unit > 1 { "s" } else { "" })
-    } else {
-        let hours = duration.num_hours();
-        if hours > 0 {
-            format!("{hours} hour{} ago", if hours > 1 { "s" } else { "" })
+    let formatted = move || {
+        if days > 365 {
+            let unit = days / 365;
+            format!("{} year{} ago", unit, if unit > 1 { "s" } else { "" })
+        } else if days > 30 {
+            let unit = days / 30;
+            format!("{} month{} ago", unit, if unit > 1 { "s" } else { "" })
+        } else if days > 7 {
+            let unit = days / 7;
+            format!("{} week{} ago", unit, if unit > 1 { "s" } else { "" })
+        } else if days > 0 {
+            let unit = days;
+            format!("{} day{} ago", unit, if unit > 1 { "s" } else { "" })
         } else {
-            let minutes = duration.num_minutes();
-            if minutes > 0 {
-                format!("{minutes} minute{} ago", if minutes > 1 { "s" } else { "" })
+            let hours = duration.num_hours();
+            if hours > 0 {
+                format!("{hours} hour{} ago", if hours > 1 { "s" } else { "" })
             } else {
-                format!("{} seconds ago", duration.num_seconds())
+                let minutes = duration.num_minutes();
+                if minutes > 0 {
+                    format!("{minutes} minute{} ago", if minutes > 1 { "s" } else { "" })
+                } else {
+                    format!("{} seconds ago", duration.num_seconds())
+                }
             }
         }
     };

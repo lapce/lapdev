@@ -14,8 +14,8 @@ use futures::{
 };
 use lapdev_common::{
     BuildTarget, ContainerInfo, CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch,
-    PrebuildInfo, ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoBuildResult, RepoContent,
-    RunningWorkspace, StartWorkspaceRequest, StopWorkspaceRequest,
+    HostWorkspace, PrebuildInfo, ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoBuildResult,
+    RepoContent, StartWorkspaceRequest, StopWorkspaceRequest,
 };
 use serde::{Deserialize, Serialize};
 use tarpc::transport::channel::UnboundedChannel;
@@ -111,7 +111,9 @@ pub trait ConductorService {
 
     async fn update_build_repo_stderr(target: BuildTarget, line: String);
 
-    async fn running_workspaces() -> Result<Vec<RunningWorkspace>, ApiError>;
+    async fn running_workspaces_on_host() -> Result<Vec<HostWorkspace>, ApiError>;
+
+    async fn auto_delete_inactive_workspaces();
 }
 
 #[derive(Debug, Serialize, Deserialize)]

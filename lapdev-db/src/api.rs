@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use chrono::Utc;
+use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
@@ -221,8 +221,23 @@ impl DbApi {
     ) -> Result<Vec<entities::workspace::Model>> {
         let model = workspace::Entity::find()
             .filter(entities::workspace::Column::HostId.eq(ws_host_id))
-            .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Running.to_string()))
             .filter(entities::workspace::Column::DeletedAt.is_null())
+            .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Running.to_string()))
+            .all(&self.conn)
+            .await?;
+        Ok(model)
+    }
+
+    pub async fn get_inactive_workspaces_on_host(
+        &self,
+        ws_host_id: Uuid,
+        last_updated_at: DateTime<FixedOffset>,
+    ) -> Result<Vec<entities::workspace::Model>> {
+        let model = workspace::Entity::find()
+            .filter(entities::workspace::Column::HostId.eq(ws_host_id))
+            .filter(entities::workspace::Column::DeletedAt.is_null())
+            .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Stopped.to_string()))
+            .filter(entities::workspace::Column::UpdatedAt.lt(last_updated_at))
             .all(&self.conn)
             .await?;
         Ok(model)
@@ -234,8 +249,8 @@ impl DbApi {
     ) -> Result<Option<entities::workspace::Model>> {
         let model = workspace::Entity::find()
             .filter(entities::workspace::Column::OrganizationId.eq(org_id))
-            .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Running.to_string()))
             .filter(entities::workspace::Column::DeletedAt.is_null())
+            .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Running.to_string()))
             .one(&self.conn)
             .await?;
         Ok(model)

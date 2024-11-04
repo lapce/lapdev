@@ -134,7 +134,7 @@ pub async fn delete_workspace(
 
     state
         .conductor
-        .delete_workspace(ws, info.ip, info.user_agent)
+        .delete_workspace(&ws, info.ip, info.user_agent)
         .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

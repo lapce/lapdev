@@ -1169,9 +1169,9 @@ impl Conductor {
         let ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(workspace_id),
             deleted_at: ActiveValue::Set(None),
-            updated_at: ActiveValue::Set(None),
             name: ActiveValue::Set(name.clone()),
             created_at: ActiveValue::Set(now.into()),
+            updated_at: ActiveValue::Set(Some(now.into())),
             status: ActiveValue::Set(WorkspaceStatus::New.to_string()),
             repo_url: ActiveValue::Set(repo.url.clone()),
             repo_name: ActiveValue::Set(repo.name.clone()),
@@ -2059,15 +2059,27 @@ impl Conductor {
                 .do_create_workspace(&user, &ws, repo, &machine_type, ip, user_agent)
                 .await
             {
-                let err = if let ApiError::InternalError(e) = e {
-                    e
-                } else {
-                    e.to_string()
-                };
-                tracing::error!("create workspace failed: {err}");
-                let _ = conductor
-                    .update_workspace_status(&ws, WorkspaceStatus::Failed)
-                    .await;
+                tracing::error!("create workspace failed: {e:?}");
+                if let Ok(ws) = conductor.db.get_workspace(ws.id).await {
+                    if let Some(usage_id) = ws.usage_id {
+                        let now = Utc::now();
+                        if let Ok(txn) = conductor.db.conn.begin().await {
+                            let _ = conductor
+                                .enterprise
+                                .usage
+                                .end_usage(&txn, usage_id, now.into())
+                                .await;
+                            let _ = txn.commit().await;
+                        }
+                    }
+                }
+                let _ = entities::workspace::ActiveModel {
+                    id: ActiveValue::Set(ws.id),
+                    status: ActiveValue::Set(WorkspaceStatus::Failed.to_string()),
+                    ..Default::default()
+                }
+                .update(&conductor.db.conn)
+                .await;
             }
         });
 
@@ -2189,7 +2201,7 @@ impl Conductor {
 
     pub async fn delete_workspace(
         &self,
-        workspace: entities::workspace::Model,
+        workspace: &entities::workspace::Model,
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<(), ApiError> {
@@ -2235,6 +2247,7 @@ impl Conductor {
         let update_ws = entities::workspace::ActiveModel {
             id: ActiveValue::Set(workspace.id),
             status: ActiveValue::Set(WorkspaceStatus::Deleting.to_string()),
+            updated_at: ActiveValue::Set(Some(now.into())),
             usage_id: ActiveValue::Set(None),
             ..Default::default()
         };
@@ -2332,6 +2345,7 @@ impl Conductor {
                     id: ActiveValue::Set(ws.id),
                     status: ActiveValue::Set(status.to_string()),
                     deleted_at: ActiveValue::Set(Some(now.into())),
+                    updated_at: ActiveValue::Set(Some(now.into())),
                     ..Default::default()
                 }
                 .update(&txn)
@@ -2375,6 +2389,7 @@ impl Conductor {
                 entities::workspace::ActiveModel {
                     id: ActiveValue::Set(ws.id),
                     status: ActiveValue::Set(status.to_string()),
+                    updated_at: ActiveValue::Set(Some(now.into())),
                     ..Default::default()
                 }
                 .update(&self.db.conn)
@@ -3328,6 +3343,32 @@ impl Conductor {
         }
         self.delete_prebuild(org_id, user_id, project, prebuild, ip, user_agent)
             .await?;
+        Ok(())
+    }
+
+    pub async fn auto_delete_inactive_workspaces_on_host(
+        &self,
+        host_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let workspaces = self
+            .db
+            .get_inactive_workspaces_on_host(
+                host_id,
+                (Utc::now() - Duration::from_secs(14 * 24 * 60 * 60)).into(),
+            )
+            .await?;
+        for ws in workspaces {
+            if ws.compose_parent.is_none() {
+                tracing::info!(
+                    "now delete ws {} due to inactivity, last updated at {:?}",
+                    ws.name,
+                    ws.updated_at
+                );
+                if let Err(e) = self.delete_workspace(&ws, None, None).await {
+                    tracing::info!("delete inactive ws {} error: {e:?}", ws.name);
+                }
+            }
+        }
         Ok(())
     }
 }

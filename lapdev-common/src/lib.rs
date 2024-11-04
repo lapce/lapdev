@@ -355,11 +355,13 @@ pub struct WorkspaceService {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RunningWorkspace {
+pub struct HostWorkspace {
     pub id: Uuid,
     pub ssh_port: Option<i32>,
     pub ide_port: Option<i32>,
     pub last_inactivity: Option<DateTime<FixedOffset>>,
+    pub created_at: DateTime<FixedOffset>,
+    pub updated_at: Option<DateTime<FixedOffset>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

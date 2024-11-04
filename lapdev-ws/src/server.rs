@@ -20,8 +20,8 @@ use lapdev_common::{
     devcontainer::{
         DevContainerCmd, DevContainerConfig, DevContainerCwd, DevContainerLifeCycleCmd,
     },
-    utils, BuildTarget, ContainerImageInfo, CpuCore, GitBranch, ProjectRequest, RepoBuildInfo,
-    RepoBuildOutput, RepoBuildResult, RepoComposeService, RepobuildError,
+    utils, BuildTarget, ContainerImageInfo, CpuCore, GitBranch, HostWorkspace, ProjectRequest,
+    RepoBuildInfo, RepoBuildOutput, RepoBuildResult, RepoComposeService, RepobuildError,
 };
 use lapdev_rpc::{
     error::ApiError, spawn_twoway, ConductorServiceClient, InterWorkspaceService, WorkspaceService,
@@ -140,6 +140,11 @@ impl WorkspaceServer {
                 .await?;
             Command::new("mkdir")
                 .arg("-p")
+                .arg(self.data_folder.join("projects"))
+                .status()
+                .await?;
+            Command::new("mkdir")
+                .arg("-p")
                 .arg(self.data_folder.join("osusers"))
                 .status()
                 .await?;
@@ -208,19 +213,33 @@ impl WorkspaceServer {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
-            if let Err(e) = self.run_auto_stop_task().await {
+            if let Err(e) = self.run_auto_stop_delete_task().await {
                 tracing::error!("run task error: {e:?}");
             }
             if let Err(e) = self.check_inactive_osusers().await {
-                tracing::error!("check inactive osusers: {e:?}");
+                tracing::error!("check inactive osusers error: {e:?}");
+            }
+
+            let rpc = { self.rpcs.read().await.first().cloned() };
+            if let Some(rpc) = rpc {
+                if let Err(e) = rpc
+                    .conductor_client
+                    .auto_delete_inactive_workspaces(current())
+                    .await
+                {
+                    tracing::error!("run auto delete inactive workspaces error: {e:?}");
+                }
             }
         }
     }
 
-    async fn run_auto_stop_task(&self) -> Result<(), ApiError> {
+    async fn run_auto_stop_delete_task(&self) -> Result<(), ApiError> {
         let rpc = { self.rpcs.read().await.first().cloned() };
         let rpc = rpc.ok_or_else(|| anyhow!("don't have any conductor connections"))?;
-        let workspaces = rpc.conductor_client.running_workspaces(current()).await??;
+        let workspaces = rpc
+            .conductor_client
+            .running_workspaces_on_host(current())
+            .await??;
 
         let mut active_ports = HashMap::new();
         for si in netstat2::iterate_sockets_info_without_pids(
@@ -237,39 +256,54 @@ impl WorkspaceServer {
         }
 
         for workspace in &workspaces {
-            let mut active = false;
-            if let Some(port) = workspace.ssh_port {
-                active |= active_ports.contains_key(&port);
-            }
-            if let Some(port) = workspace.ide_port {
-                active |= active_ports.contains_key(&port);
-            }
-
-            if active {
-                // we have activity on the workspace, so we set last_inactivity to none
-                // if it's not
-                if workspace.last_inactivity.is_some() {
-                    let _ = rpc
-                        .conductor_client
-                        .update_workspace_last_inactivity(current(), workspace.id, None)
-                        .await;
-                }
-            } else {
-                // we don't have activity, so if last_inactivity is none,
-                // we make the current time as the last_inactivity
-                if workspace.last_inactivity.is_none() {
-                    let _ = rpc
-                        .conductor_client
-                        .update_workspace_last_inactivity(
-                            current(),
-                            workspace.id,
-                            Some(Utc::now().into()),
-                        )
-                        .await;
-                }
+            if let Err(e) = self
+                .run_atuo_stop_on_ws(&rpc, workspace, &active_ports)
+                .await
+            {
+                tracing::error!("run auto stop on ws {workspace:?} error: {e:?}");
             }
         }
 
+        Ok(())
+    }
+
+    async fn run_atuo_stop_on_ws(
+        &self,
+        rpc: &WorkspaceRpcService,
+        workspace: &HostWorkspace,
+        active_ports: &HashMap<i32, i32>,
+    ) -> Result<(), ApiError> {
+        let mut active = false;
+        if let Some(port) = workspace.ssh_port {
+            active |= active_ports.contains_key(&port);
+        }
+        if let Some(port) = workspace.ide_port {
+            active |= active_ports.contains_key(&port);
+        }
+
+        if active {
+            // we have activity on the workspace, so we set last_inactivity to none
+            // if it's not
+            if workspace.last_inactivity.is_some() {
+                let _ = rpc
+                    .conductor_client
+                    .update_workspace_last_inactivity(current(), workspace.id, None)
+                    .await;
+            }
+        } else {
+            // we don't have activity, so if last_inactivity is none,
+            // we make the current time as the last_inactivity
+            if workspace.last_inactivity.is_none() {
+                let _ = rpc
+                    .conductor_client
+                    .update_workspace_last_inactivity(
+                        current(),
+                        workspace.id,
+                        Some(Utc::now().into()),
+                    )
+                    .await;
+            }
+        }
         Ok(())
     }
 
@@ -303,26 +337,6 @@ impl WorkspaceServer {
 
         let workspace_base_folder = self.osuser_workspace_base_folder(osuser);
         let is_empty = tokio::fs::read_dir(&workspace_base_folder)
-            .await?
-            .next_entry()
-            .await?
-            .is_none();
-        if !is_empty {
-            return Ok(());
-        }
-
-        let prebuild_base_folder = self.osuser_prebuild_base_folder(osuser);
-        let is_empty = tokio::fs::read_dir(&prebuild_base_folder)
-            .await?
-            .next_entry()
-            .await?
-            .is_none();
-        if !is_empty {
-            return Ok(());
-        }
-
-        let project_base_folder = self.osuser_project_base_folder(osuser);
-        let is_empty = tokio::fs::read_dir(&project_base_folder)
             .await?
             .next_entry()
             .await?
@@ -462,21 +476,17 @@ impl WorkspaceServer {
             .await?;
 
         let prebuild_base_folder = self.osuser_prebuild_base_folder(username);
-        Command::new("su")
-            .arg("-")
-            .arg(username)
-            .arg("-c")
-            .arg(format!("mkdir -p {prebuild_base_folder}"))
+        Command::new("mkdir")
+            .arg("-p")
+            .arg(&prebuild_base_folder)
             .spawn()?
             .wait()
             .await?;
 
         let project_base_folder = self.osuser_project_base_folder(username);
-        Command::new("su")
-            .arg("-")
-            .arg(username)
-            .arg("-c")
-            .arg(format!("mkdir -p {project_base_folder}"))
+        Command::new("mkdir")
+            .arg("-p")
+            .arg(&project_base_folder)
             .spawn()?
             .wait()
             .await?;
@@ -976,11 +986,17 @@ driver = "overlay"
     }
 
     pub fn osuser_prebuild_base_folder(&self, osuser: &str) -> String {
-        format!("/home/{osuser}/prebuilds")
+        format!(
+            "{}/prebuilds/{osuser}",
+            self.data_folder.to_str().unwrap_or_default()
+        )
     }
 
     pub fn osuser_project_base_folder(&self, osuser: &str) -> String {
-        format!("/home/{osuser}/projects")
+        format!(
+            "{}/projects/{osuser}",
+            self.data_folder.to_str().unwrap_or_default()
+        )
     }
 
     pub fn workspace_folder(&self, osuser: &str, workspace_name: &str) -> String {

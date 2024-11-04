@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lapdev_common::{BuildTarget, PrebuildUpdateEvent, RunningWorkspace, WorkspaceUpdateEvent};
+use lapdev_common::{BuildTarget, HostWorkspace, PrebuildUpdateEvent, WorkspaceUpdateEvent};
 use lapdev_db::entities;
 use lapdev_rpc::{error::ApiError, ConductorService};
 use sea_orm::{ActiveModelTrait, ActiveValue};
@@ -70,10 +70,10 @@ impl ConductorService for ConductorRpc {
         }
     }
 
-    async fn running_workspaces(
+    async fn running_workspaces_on_host(
         self,
         _context: tarpc::context::Context,
-    ) -> Result<Vec<RunningWorkspace>, ApiError> {
+    ) -> Result<Vec<HostWorkspace>, ApiError> {
         let workspaces = self
             .conductor
             .db
@@ -81,13 +81,28 @@ impl ConductorService for ConductorRpc {
             .await?;
         let workspaces = workspaces
             .into_iter()
-            .map(|ws| RunningWorkspace {
+            .map(|ws| HostWorkspace {
                 id: ws.id,
                 ssh_port: ws.ssh_port,
                 ide_port: ws.ide_port,
                 last_inactivity: ws.last_inactivity,
+                created_at: ws.created_at,
+                updated_at: ws.updated_at,
             })
             .collect();
         Ok(workspaces)
+    }
+
+    async fn auto_delete_inactive_workspaces(self, _context: tarpc::context::Context) {
+        let conductor = self.conductor.clone();
+        let host_id = self.ws_host_id;
+        tokio::spawn(async move {
+            if let Err(e) = conductor
+                .auto_delete_inactive_workspaces_on_host(host_id)
+                .await
+            {
+                tracing::error!("auto delete inactive workspaces on host {host_id} error: {e:?}");
+            }
+        });
     }
 }

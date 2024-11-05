@@ -37,6 +37,7 @@ jobs:
         run: |
           rustup update
           rustup component add llvm-tools-preview
+          rustup target add x86_64-unknown-linux-musl
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -45,7 +46,7 @@ jobs:
         run: cargo fetch --locked
 
       - name: Build guest agent
-        run: cargo build -p lapdev-guest-agent --release --frozen
+        run: cargo build -p lapdev-guest-agent --target x86_64-unknown-linux-musl --release --frozen
         
       - name: Create lapdev-dashboard/dist folder
         run: mkdir -p lapdev-dashboard/dist

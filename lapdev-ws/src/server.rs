@@ -20,8 +20,9 @@ use lapdev_common::{
     devcontainer::{
         DevContainerCmd, DevContainerConfig, DevContainerCwd, DevContainerLifeCycleCmd,
     },
-    utils, BuildTarget, ContainerImageInfo, CpuCore, GitBranch, HostWorkspace, ProjectRequest,
-    RepoBuildInfo, RepoBuildOutput, RepoBuildResult, RepoComposeService, RepobuildError,
+    utils, BuildTarget, ContainerImageInfo, ContainerInfo, CpuCore, GitBranch, HostWorkspace,
+    ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoBuildResult, RepoComposeService,
+    RepobuildError, StartWorkspaceRequest,
 };
 use lapdev_rpc::{
     error::ApiError, spawn_twoway, ConductorServiceClient, InterWorkspaceService, WorkspaceService,
@@ -48,7 +49,8 @@ use crate::{
 
 pub const LAPDEV_WS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL_SCRIPT: &[u8] = include_bytes!("../scripts/install_guest_agent.sh");
-const LAPDEV_GUEST_AGENT: &[u8] = include_bytes!("../../target/release/lapdev-guest-agent");
+const LAPDEV_GUEST_AGENT: &[u8] =
+    include_bytes!("../../target/x86_64-unknown-linux-musl/release/lapdev-guest-agent");
 
 #[derive(Clone, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -175,6 +177,7 @@ impl WorkspaceServer {
             });
         }
 
+        let mut startup_task_run = false;
         while let Some(conn) = listener.next().await {
             if let Ok(conn) = conn {
                 let peer_addr = conn.peer_addr();
@@ -203,6 +206,16 @@ impl WorkspaceServer {
                     tracing::info!("incoming conductor connection {peer_addr:?} stopped");
                     rpcs.write().await.retain(|rpc| rpc.id != id);
                 });
+
+                if !startup_task_run {
+                    startup_task_run = true;
+                    let server = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = server.run_startup_task().await {
+                            tracing::error!("run start up task error: {e:?}");
+                        }
+                    });
+                }
             }
         }
 
@@ -231,6 +244,29 @@ impl WorkspaceServer {
                 }
             }
         }
+    }
+
+    async fn run_startup_task(&self) -> Result<(), ApiError> {
+        tracing::info!("run startup task");
+        let rpc = { self.rpcs.read().await.first().cloned() };
+        let rpc = rpc.ok_or_else(|| anyhow!("don't have any conductor connections"))?;
+        let workspaces = rpc
+            .conductor_client
+            .running_workspaces_on_host(current())
+            .await??;
+        for ws in workspaces {
+            if let Err(e) = self
+                .start_workspace(StartWorkspaceRequest {
+                    osuser: ws.osuser,
+                    workspace_name: ws.name.clone(),
+                })
+                .await
+            {
+                tracing::error!("on startup task, start workspace {} error: {e:?}", ws.name);
+            }
+        }
+
+        Ok(())
     }
 
     async fn run_auto_stop_delete_task(&self) -> Result<(), ApiError> {
@@ -1457,6 +1493,47 @@ driver = "overlay"
         .await??;
 
         Ok(branches)
+    }
+
+    pub async fn start_workspace(
+        &self,
+        ws_req: StartWorkspaceRequest,
+    ) -> Result<ContainerInfo, ApiError> {
+        let socket = self.get_podman_socket(&ws_req.osuser).await?;
+        let client = unix_client();
+        let url = Uri::new(
+            &socket,
+            &format!("/containers/{}/start", ws_req.workspace_name),
+        );
+        let req = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(url)
+            .body(Full::<Bytes>::new(Bytes::new()))?;
+        let resp = client.request(req).await?;
+        let status = resp.status();
+        let body = resp.collect().await?.to_bytes();
+        if status != 204 && status != 304 {
+            let err = String::from_utf8(body.to_vec())?;
+            return Err(anyhow!("start container error: {err}").into());
+        }
+
+        let url = Uri::new(
+            &socket,
+            &format!("/containers/{}/json", ws_req.workspace_name),
+        );
+        let req = hyper::Request::builder()
+            .method(hyper::Method::GET)
+            .uri(url)
+            .body(Full::<Bytes>::new(Bytes::new()))?;
+        let resp = client.request(req).await?;
+        let status = resp.status();
+        let body = resp.collect().await?.to_bytes();
+        if status != 200 {
+            let err = String::from_utf8(body.to_vec())?;
+            return Err(anyhow!("get container info error: {err}").into());
+        }
+        let info: ContainerInfo = serde_json::from_slice(&body)?;
+        Ok(info)
     }
 }
 

@@ -410,7 +410,7 @@ fn WorkspaceControl(
                             href="#"
                             class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
                             on:click=stop_workspace
-                            class:hidden=move || workspace_status != WorkspaceStatus::Running && workspace_status != WorkspaceStatus::Stopping
+                            class:hidden=move || workspace_status == WorkspaceStatus::Stopped
                         >
                             Stop
                         </a>

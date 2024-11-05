@@ -357,6 +357,8 @@ pub struct WorkspaceService {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HostWorkspace {
     pub id: Uuid,
+    pub name: String,
+    pub osuser: String,
     pub ssh_port: Option<i32>,
     pub ide_port: Option<i32>,
     pub last_inactivity: Option<DateTime<FixedOffset>>,

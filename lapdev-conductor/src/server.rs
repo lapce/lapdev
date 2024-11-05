@@ -481,6 +481,7 @@ impl Conductor {
 
             let _ = rpc_future.await;
             tracing::debug!("workspace host connection ended");
+            abort_handle.abort();
         }
 
         Ok(())

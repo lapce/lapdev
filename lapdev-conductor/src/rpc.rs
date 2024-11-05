@@ -83,6 +83,8 @@ impl ConductorService for ConductorRpc {
             .into_iter()
             .map(|ws| HostWorkspace {
                 id: ws.id,
+                name: ws.name,
+                osuser: ws.osuser,
                 ssh_port: ws.ssh_port,
                 ide_port: ws.ide_port,
                 last_inactivity: ws.last_inactivity,

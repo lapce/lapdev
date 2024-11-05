@@ -1,4 +1,9 @@
 {
     "dockerComposeFile": "docker-compose.yml",
     "service": "lapdev",
+    "portsAttributes": {
+        "8080": {
+            "label": "dashboard",
+        }
+    }
 }

@@ -265,41 +265,7 @@ impl WorkspaceService for WorkspaceRpcService {
         _context: context::Context,
         ws_req: StartWorkspaceRequest,
     ) -> Result<ContainerInfo, ApiError> {
-        let socket = self.server.get_podman_socket(&ws_req.osuser).await?;
-        let client = unix_client();
-        let url = Uri::new(
-            &socket,
-            &format!("/containers/{}/start", ws_req.workspace_name),
-        );
-        let req = hyper::Request::builder()
-            .method(hyper::Method::POST)
-            .uri(url)
-            .body(Full::<Bytes>::new(Bytes::new()))?;
-        let resp = client.request(req).await?;
-        let status = resp.status();
-        let body = resp.collect().await?.to_bytes();
-        if status != 204 {
-            let err = String::from_utf8(body.to_vec())?;
-            return Err(anyhow!("start container error: {err}").into());
-        }
-
-        let url = Uri::new(
-            &socket,
-            &format!("/containers/{}/json", ws_req.workspace_name),
-        );
-        let req = hyper::Request::builder()
-            .method(hyper::Method::GET)
-            .uri(url)
-            .body(Full::<Bytes>::new(Bytes::new()))?;
-        let resp = client.request(req).await?;
-        let status = resp.status();
-        let body = resp.collect().await?.to_bytes();
-        if status != 200 {
-            let err = String::from_utf8(body.to_vec())?;
-            return Err(anyhow!("get container info error: {err}").into());
-        }
-        let info: ContainerInfo = serde_json::from_slice(&body)?;
-        Ok(info)
+        self.server.start_workspace(ws_req).await
     }
 
     async fn delete_workspace(

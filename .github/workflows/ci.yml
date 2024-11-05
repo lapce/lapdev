@@ -90,6 +90,7 @@ jobs:
         run: |
           rustup update
           rustup component add clippy
+          rustup target add x86_64-unknown-linux-musl
 
       # - name: Install dependencies on Ubuntu
       #   if: startsWith(matrix.os, 'ubuntu')
@@ -105,7 +106,7 @@ jobs:
         run: mkdir -p lapdev-dashboard/dist
         
       - name: Build lapdev-guest-agent
-        run: cargo build -p lapdev-guest-agent --release --locked
+        run: cargo build -p lapdev-guest-agent --target x86_64-unknown-linux-musl --release --locked
 
       - name: Run clippy
         run: cargo clippy -- -D warnings

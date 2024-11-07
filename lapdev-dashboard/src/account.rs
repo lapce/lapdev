@@ -45,7 +45,7 @@ pub fn Login() -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
 
     view! {
-        <section class="bg-gray-50 dark:bg-gray-900">
+        <section class="bg-gray-50">
             <div class="flex flex-col items-center justify-center px-6 py-8 mx-auto h-screen lg:py-0">
                 <a href="#" class="flex items-center mb-6 text-2xl font-semibold text-gray-900 dark:text-white">
                     <svg class="w-10 h-10 mr-4" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 1024 1024">

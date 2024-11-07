@@ -57,14 +57,14 @@ pub fn TopNav() -> impl IntoView {
     let admin_path = pathname.starts_with("/admin");
 
     view! {
-        <nav class="bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700 left-0 right-0 top-0 z-50">
+        <nav class="bg-white border-b border-gray-200 left-0 right-0 top-0 z-50">
             <div class="container mx-auto px-8 py-4 flex flex-wrap justify-between items-center">
                 <div class="flex justify-start items-center">
                     <button
                         data-drawer-target="drawer-navigation"
                         data-drawer-toggle="drawer-navigation"
                         aria-controls="drawer-navigation"
-                        class="p-2 mr-2 text-gray-600 rounded-lg cursor-pointer md:hidden hover:text-gray-900 hover:bg-gray-100 focus:bg-gray-100 dark:focus:bg-gray-700 focus:ring-2 focus:ring-gray-100 dark:focus:ring-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
+                        class="p-2 mr-2 text-gray-600 rounded-lg cursor-pointer md:hidden hover:text-gray-900 hover:bg-gray-100 focus:bg-gray-100 focus:ring-2 focus:ring-gray-100"
                     >
                     <svg
                     aria-hidden="true"
@@ -100,7 +100,7 @@ pub fn TopNav() -> impl IntoView {
                             <path d="M742 403.688C740.062 403.483 738.097 404.438 737.094 406.25C735.756 408.666 736.615 411.694 739.031 413.031L925.719 516.375C928.135 517.712 931.194 516.822 932.531 514.406C933.869 511.99 932.979 508.962 930.562 507.625L743.875 404.281C743.271 403.947 742.646 403.756 742 403.688Z" />
                             <path d="M927.5 507.031C926.856 507.115 926.221 507.339 925.625 507.688L738.938 616.906C736.554 618.301 735.762 621.335 737.156 623.719C738.551 626.102 741.616 626.926 744 625.531L930.688 516.312C933.071 514.918 933.863 511.852 932.469 509.469C931.423 507.681 929.432 506.78 927.5 507.031Z" />
                         </svg>
-                        <span class="self-center text-2xl font-semibold whitespace-nowrap dark:text-white">Lapdev</span>
+                        <span class="self-center text-2xl font-semibold whitespace-nowrap">Lapdev</span>
                     </a>
                 </div>
         <div class="flex flex-row items-center">
@@ -123,7 +123,6 @@ pub fn TopNav() -> impl IntoView {
                     <a href="/admin"
                         class="block"
                         class=("text-blue-700", move || admin_path)
-                        class=("dark:text-blue-500", move || !admin_path)
                     >Cluster Admin</a>
                 </li>
                 <li
@@ -132,14 +131,13 @@ pub fn TopNav() -> impl IntoView {
                     <a href="/"
                         class="block"
                         class=("text-blue-700", move || !admin_path)
-                        class=("dark:text-blue-500", move || !admin_path)
                     >Dashboard</a>
                 </li>
             </ul>
             <div on:focusout=on_focusout>
             <button
                 type="button"
-                class="flex text-sm rounded-full focus:ring-4 focus:ring-gray-300 dark:focus:ring-gray-600"
+                class="flex text-sm rounded-full focus:ring-4 focus:ring-gray-300"
                 on:click=toggle_user_control
             >
                 <span class="sr-only">Open user menu</span>
@@ -164,12 +162,12 @@ pub fn SideNavMain() -> impl IntoView {
     view! {
         <ul class="space-y-2">
             <li>
-                <a href="/workspaces" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                <a href="/workspaces" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                     <span class="ml-3">Workspaces</span>
                 </a>
             </li>
             <li>
-                <a href="/projects" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                <a href="/projects" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                     <span class="ml-3">Projects</span>
                 </a>
             </li>
@@ -182,7 +180,7 @@ pub fn SideNavAccount() -> impl IntoView {
     let nav_expanded: NavExpanded = expect_context();
     view! {
         <li>
-            <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group"
+            <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group"
                 on:click=move |_| nav_expanded.account.update(|expanded| *expanded = !*expanded)
             >
                 <span class="ml-3">User Settings</span>
@@ -202,7 +200,7 @@ pub fn SideNavAccount() -> impl IntoView {
         <li
             class:hidden=move || !nav_expanded.account.get()
         >
-            <a href="/account/ssh-keys" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+            <a href="/account/ssh-keys" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100  group">
                 <span class="ml-8">SSH Keys</span>
             </a>
         </li>
@@ -210,7 +208,7 @@ pub fn SideNavAccount() -> impl IntoView {
         <li
             class:hidden=move || !nav_expanded.account.get()
         >
-            <a href="/account/git-providers" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+            <a href="/account/git-providers" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                 <span class="ml-8">Git Providers</span>
             </a>
         </li>
@@ -236,7 +234,7 @@ pub fn SideNavOrg() -> impl IntoView {
                 role != UserRole::Owner && role != UserRole::Admin
             }
         >
-            <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group"
+            <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group"
                 on:click=move |_| nav_expanded.orgnization.update(|expanded| *expanded = !*expanded)
             >
                 <span class="ml-3">Organization</span>
@@ -267,7 +265,7 @@ pub fn SideNavOrg() -> impl IntoView {
                 false
             }
         >
-            <a href="/organization/usage" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+            <a href="/organization/usage" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                 <span class="ml-8">Usage</span>
             </a>
         </li>
@@ -284,7 +282,7 @@ pub fn SideNavOrg() -> impl IntoView {
                 false
             }
         >
-            <a href="/organization/members" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+            <a href="/organization/members" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                 <span class="ml-8">Members</span>
             </a>
         </li>
@@ -304,7 +302,7 @@ pub fn SideNavOrg() -> impl IntoView {
                 false
             }
         >
-            <a href="/organization/quota" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+            <a href="/organization/quota" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                 <span class="ml-8">Quota</span>
             </a>
         </li>
@@ -324,7 +322,7 @@ pub fn SideNavOrg() -> impl IntoView {
                 false
             }
         >
-            <a href="/organization/audit_log" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+            <a href="/organization/audit_log" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                 <span class="ml-8">Audit Log</span>
             </a>
         </li>
@@ -341,7 +339,7 @@ pub fn SideNavOrg() -> impl IntoView {
                 false
             }
         >
-            <a href="/organization/settings" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+            <a href="/organization/settings" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                 <span class="ml-8">Settings</span>
             </a>
         </li>
@@ -352,10 +350,10 @@ pub fn SideNavOrg() -> impl IntoView {
 pub fn SideNav(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
     view! {
         <aside class="top-0 left-0 z-40 w-64 h-full transition-transform -translate-x-full sm:translate-x-0" aria-label="Sidenav">
-            <div class="overflow-y-auto py-5 px-3 h-full bg-white border-r border-gray-200 dark:bg-gray-800 dark:border-gray-700">
+            <div class="overflow-y-auto py-5 px-3 h-full bg-white border-r border-gray-200">
                 <OrgSelector new_org_modal_hidden />
                 <SideNavMain />
-                <ul class="pt-5 mt-5 space-y-2 border-t border-gray-200 dark:border-gray-700">
+                <ul class="pt-5 mt-5 space-y-2 border-t border-gray-200">
                     <SideNavAccount />
                     <SideNavOrg />
                 </ul>
@@ -368,30 +366,30 @@ pub fn SideNav(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
 pub fn AdminSideNav() -> impl IntoView {
     view! {
         <aside class="top-0 left-0 z-40 w-64 h-full transition-transform -translate-x-full sm:translate-x-0" aria-label="Sidenav">
-            <div class="overflow-y-auto py-5 px-3 h-full bg-white border-r border-gray-200 dark:bg-gray-800 dark:border-gray-700">
+            <div class="overflow-y-auto py-5 px-3 h-full bg-white border-r border-gray-200">
                 <ul class="space-y-2">
                     <li>
-                        <a href="/admin/workspace_hosts" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                        <a href="/admin/workspace_hosts" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                             <span class="ml-3">Workspace Hosts</span>
                         </a>
                     </li>
                     <li>
-                        <a href="/admin/machine_types" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                        <a href="/admin/machine_types" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                             <span class="ml-3">Machine Types</span>
                         </a>
                     </li>
                     <li>
-                        <a href="/admin/users" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                        <a href="/admin/users" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                             <span class="ml-3">Cluster Users</span>
                         </a>
                     </li>
                 </ul>
-                <ul class="pt-5 mt-5 space-y-2 border-t border-gray-200 dark:border-gray-700">
+                <ul class="pt-5 mt-5 space-y-2 border-t border-gray-200">
                     <li>
-                        <a href="/admin/license" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                        <a href="/admin/license" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                             <span class="ml-3">Enterprise License</span>
                         </a>
-                        <a href="/admin/settings" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 dark:hover:bg-gray-700 dark:text-white group">
+                        <a href="/admin/settings" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                             <span class="ml-3">Cluster Settings</span>
                         </a>
                     </li>

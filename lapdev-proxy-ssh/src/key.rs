@@ -13,9 +13,7 @@ pub async fn load_key(kind: &str, db: &DbApi) -> Result<KeyPair> {
         decode_secret_key(&model.value, None)?
     } else {
         let key = match kind {
-            "host-ed25519" => {
-                KeyPair::generate_ed25519().ok_or_else(|| anyhow!("can't generate server key"))?
-            }
+            "host-ed25519" => KeyPair::generate_ed25519(),
             "host-rsa" => KeyPair::generate_rsa(4096, SignatureHash::SHA2_512)
                 .ok_or_else(|| anyhow!("can't generate server key"))?,
             _ => return Err(anyhow!("don't support {kind} host key")),

@@ -27,7 +27,7 @@ use lapdev_common::{
 use lapdev_rpc::{
     error::ApiError, spawn_twoway, ConductorServiceClient, InterWorkspaceService, WorkspaceService,
 };
-use netstat2::TcpState;
+use procfs::net::TcpState;
 use serde::Deserialize;
 use tarpc::{
     context::current,
@@ -278,15 +278,13 @@ impl WorkspaceServer {
             .await??;
 
         let mut active_ports = HashMap::new();
-        for si in netstat2::iterate_sockets_info_without_pids(
-            netstat2::AddressFamilyFlags::IPV4 | netstat2::AddressFamilyFlags::IPV6,
-            netstat2::ProtocolFlags::TCP,
-        )?
-        .flatten()
-        {
-            if let netstat2::ProtocolSocketInfo::Tcp(si) = si.protocol_socket_info {
-                if si.state == TcpState::Established {
-                    active_ports.insert(si.local_port as i32, si.local_port as i32);
+        if let Ok(conns) = procfs::net::tcp() {
+            for conn in conns {
+                if conn.state == TcpState::Established {
+                    active_ports.insert(
+                        conn.local_address.port() as i32,
+                        conn.local_address.port() as i32,
+                    );
                 }
             }
         }

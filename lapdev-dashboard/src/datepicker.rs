@@ -122,11 +122,11 @@ pub fn Datepicker(value: RwSignal<Option<NaiveDate>>) -> impl IntoView {
             on:focusout=on_focusout
         >
             <div class="absolute inset-y-0 start-0 flex items-center ps-3 pointer-events-none">
-                <svg class="w-4 h-4 text-gray-500 dark:text-gray-400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
+                <svg class="w-4 h-4 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                     <path d="M20 4a2 2 0 0 0-2-2h-2V1a1 1 0 0 0-2 0v1h-3V1a1 1 0 0 0-2 0v1H6V1a1 1 0 0 0-2 0v1H2a2 2 0 0 0-2 2v2h20V4ZM0 18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8H0v10Zm5-8h10a1 1 0 0 1 0 2H5a1 1 0 0 1 0-2Z"></path>
                 </svg>
             </div>
-            <input datepicker="" datepicker-buttons="" datepicker-autoselect-today="" type="text" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full ps-10 p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500 datepicker-input" placeholder="Select date"
+            <input datepicker="" datepicker-buttons="" datepicker-autoselect-today="" type="text" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full ps-10 p-2.5 datepicker-input" placeholder="Select date"
                 prop:value=move || show_date_text.get()
                 on:input=move |e| show_date_text.set(event_target_value(&e))
                 on:focus=move |e| open_panel.call(e)
@@ -245,25 +245,25 @@ fn DatePanel(
     };
 
     view! {
-        <div class="datepicker-picker inline-block rounded-lg bg-white dark:bg-gray-700 shadow-lg p-4">
+        <div class="datepicker-picker inline-block rounded-lg bg-white shadow-lg p-4">
             <div class="datepicker-header">
-                <div class="datepicker-title bg-white dark:bg-gray-700 dark:text-white px-2 py-3 text-center font-semibold" style="display: none;">
+                <div class="datepicker-title bg-white px-2 py-3 text-center font-semibold" style="display: none;">
                 </div>
                 <div class="datepicker-controls flex justify-between mb-2">
                     <button
-                        type="button" class="bg-white dark:bg-gray-700 rounded-lg text-gray-500 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-600 hover:text-gray-900 dark:hover:text-white text-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-gray-200 prev-btn"
+                        type="button" class="bg-white rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900 text-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-gray-200 prev-btn"
                         on:click=previous_month
                     >
-                        <svg class="w-4 h-4 rtl:rotate-180 text-gray-800 dark:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 10"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5H1m0 0 4 4M1 5l4-4"></path></svg>
+                        <svg class="w-4 h-4 rtl:rotate-180 text-gray-800" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 10"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5H1m0 0 4 4M1 5l4-4"></path></svg>
                     </button>
-                    <button type="button" class="text-sm rounded-lg text-gray-900 dark:text-white bg-white dark:bg-gray-700 font-semibold py-2.5 px-5 hover:bg-gray-100 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-200 view-switch">
+                    <button type="button" class="text-sm rounded-lg text-gray-900 bg-white font-semibold py-2.5 px-5 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 view-switch">
                         {move || format!("{} {}", Month::try_from(show_date.get().month() as u8).unwrap().name(), show_date.get().year())}
                     </button>
                     <button
-                        type="button" class="bg-white dark:bg-gray-700 rounded-lg text-gray-500 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-600 hover:text-gray-900 dark:hover:text-white text-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-gray-200 next-btn"
+                        type="button" class="bg-white rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900 text-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-gray-200 next-btn"
                         on:click=next_month
                     >
-                        <svg class="w-4 h-4 rtl:rotate-180 text-gray-800 dark:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 10"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M1 5h12m0 0L9 1m4 4L9 9"></path></svg>
+                        <svg class="w-4 h-4 rtl:rotate-180 text-gray-800" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 10"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M1 5h12m0 0L9 1m4 4L9 9"></path></svg>
                     </button>
                 </div>
             </div>
@@ -296,12 +296,12 @@ fn DatePanel(
             </div>
             <div class="datepicker-footer">
                 <div class="datepicker-controls flex space-x-2 rtl:space-x-reverse mt-2">
-                    <button type="button" class="button today-btn text-white bg-blue-700 !bg-primary-700 dark:bg-blue-600 dark:!bg-primary-600 hover:bg-blue-800 hover:!bg-primary-800 dark:hover:bg-blue-700 dark:hover:!bg-primary-700 focus:ring-4 focus:ring-blue-300 focus:!ring-primary-300 font-medium rounded-lg text-sm px-5 py-2 text-center w-1/2"
+                    <button type="button" class="button today-btn text-white bg-blue-700 !bg-primary-700 hover:bg-blue-800 hover:!bg-primary-800 focus:ring-4 focus:ring-blue-300 focus:!ring-primary-300 font-medium rounded-lg text-sm px-5 py-2 text-center w-1/2"
                         on:click=pick_today
                     >
                         Today
                     </button>
-                    <button type="button" class="button clear-btn text-gray-900 dark:text-white bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600 focus:ring-4 focus:ring-blue-300 focus:!ring-primary-300 font-medium rounded-lg text-sm px-5 py-2 text-center w-1/2"
+                    <button type="button" class="button clear-btn text-gray-900 bg-white border border-gray-300 hover:bg-gray-100 focus:ring-4 focus:ring-blue-300 focus:!ring-primary-300 font-medium rounded-lg text-sm px-5 py-2 text-center w-1/2"
                         on:click=move |_| clear_input.call(())
                     >
                         Clear
@@ -331,14 +331,12 @@ fn DatePanelItem(
     };
     view! {
         <button
-            class="datepicker-cell block flex-1 leading-9 border-0 rounded-lg cursor-pointer text-center dark:text-white font-semibold text-sm day prev"
+            class="datepicker-cell block flex-1 leading-9 border-0 rounded-lg cursor-pointer text-center font-semibold text-sm day prev"
             class=("text-gray-400", date.is_other_month())
             class=("text-gray-900", !date.is_other_month())
             class=("bg-blue-700", move || is_selected.get())
-            class=("dark:bg-blue-600", move || is_selected.get())
             class=("text-white", move || is_selected.get())
             class=("hover:bg-gray-100", move || !is_selected.get())
-            class=("dark:hover:bg-gray-600", move || !is_selected.get())
             on:click=on_click
         >
             {date.day()}

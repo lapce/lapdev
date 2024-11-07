@@ -37,6 +37,7 @@ pub struct Model {
     pub auto_stop: Option<i32>,
     pub is_compose: bool,
     pub compose_parent: Option<Uuid>,
+    pub pinned: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

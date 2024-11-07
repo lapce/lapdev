@@ -144,10 +144,10 @@ pub fn AuditLogView() -> impl IntoView {
 
     view! {
         <div class="border-b pb-4 mb-8">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Audit Log
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"View your organization's audit logs"}</p>
+            <p class="text-gray-700">{"View your organization's audit logs"}</p>
         </div>
 
         <div class="pb-8">

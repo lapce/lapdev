@@ -190,6 +190,54 @@ async fn start_workspace(name: String) -> Result<(), ErrorResponse> {
     Ok(())
 }
 
+async fn pin_workspace(name: String) -> Result<(), ErrorResponse> {
+    let org =
+        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
+    let org = org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+    let resp = Request::post(&format!(
+        "/api/v1/organizations/{}/workspaces/{name}/pin",
+        org.id
+    ))
+    .send()
+    .await?;
+    if resp.status() != 204 {
+        let error = resp
+            .json::<ErrorResponse>()
+            .await
+            .unwrap_or_else(|_| ErrorResponse {
+                error: "Internal Server Error".to_string(),
+            });
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn unpin_workspace(name: String) -> Result<(), ErrorResponse> {
+    let org =
+        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
+    let org = org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+    let resp = Request::post(&format!(
+        "/api/v1/organizations/{}/workspaces/{name}/unpin",
+        org.id
+    ))
+    .send()
+    .await?;
+    if resp.status() != 204 {
+        let error = resp
+            .json::<ErrorResponse>()
+            .await
+            .unwrap_or_else(|_| ErrorResponse {
+                error: "Internal Server Error".to_string(),
+            });
+        return Err(error);
+    }
+    Ok(())
+}
+
 #[component]
 fn OpenWorkspaceView(
     workspace_name: String,
@@ -299,6 +347,7 @@ fn WorkspaceControl(
     workspace_status: WorkspaceStatus,
     workspace_folder: String,
     workspace_hostname: String,
+    workspace_pinned: bool,
     rebuild_modal_hidden: RwSignal<bool>,
     delete_modal_hidden: RwSignal<bool>,
     error: RwSignal<Option<String>>,
@@ -383,6 +432,40 @@ fn WorkspaceControl(
         start_action.dispatch(());
     };
 
+    let pin_action = {
+        let workspace_name = workspace_name.clone();
+        create_action(move |_| {
+            let workspace_name = workspace_name.clone();
+            async move {
+                if let Err(e) = pin_workspace(workspace_name.clone()).await {
+                    error.set(Some(e.error));
+                }
+            }
+        })
+    };
+    let pin_workspace = move |_| {
+        dropdown_hidden.set(true);
+        error.set(None);
+        pin_action.dispatch(());
+    };
+
+    let unpin_action = {
+        let workspace_name = workspace_name.clone();
+        create_action(move |_| {
+            let workspace_name = workspace_name.clone();
+            async move {
+                if let Err(e) = unpin_workspace(workspace_name.clone()).await {
+                    error.set(Some(e.error));
+                }
+            }
+        })
+    };
+    let unpin_workspace = move |_| {
+        dropdown_hidden.set(true);
+        error.set(None);
+        unpin_action.dispatch(());
+    };
+
     view! {
         <div class="flex flex-row items-center">
             <OpenWorkspaceView workspace_name workspace_status workspace_folder workspace_hostname align_right />
@@ -423,6 +506,26 @@ fn WorkspaceControl(
                             class:hidden=move || workspace_status != WorkspaceStatus::Stopped
                         >
                             Start
+                        </a>
+                    </li>
+                    <li>
+                        <a
+                            href="#"
+                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            on:click=pin_workspace
+                            class:hidden=move || workspace_pinned
+                        >
+                            Pin
+                        </a>
+                    </li>
+                    <li>
+                        <a
+                            href="#"
+                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            on:click=unpin_workspace
+                            class:hidden=move || !workspace_pinned
+                        >
+                            Unpin
                         </a>
                     </li>
                     <li>
@@ -573,13 +676,29 @@ pub fn WorkspaceItem(
                         </a>
                     </div>
                 </div>
-                <div class="md:w-1/6 flex flex-row items-center p-4 justify-center">
-                    <span
-                        class=status_class
-                    >{ move || workspace.status.to_string() }</span>
-                </div>
-                <div class="md:w-1/6 flex flex-row items-center p-4 justify-center">
-                    <WorkspaceControl workspace_name={workspace_name.clone()} workspace_status={workspace.status} workspace_folder=workspace_folder.clone() workspace_hostname=workspace_hostname.clone() align_right=true delete_modal_hidden rebuild_modal_hidden error />
+                <div class="md:w-1/3 flex flex-row items-center justify-between">
+                    <div class="flex flex-row items-center">
+                        <span
+                            class=status_class
+                        >{ move || workspace.status.to_string() }</span>
+                    </div>
+                    <div class="flex flex-row items-center p-4 justify-center">
+                        <div class="w-4 h-4 mr-4">
+                            <svg
+                                class:hidden = move || !workspace.pinned
+                                class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"
+                            ></path></svg>
+                        </div>
+                        <WorkspaceControl
+                            workspace_name={workspace_name.clone()}
+                            workspace_status={workspace.status}
+                            workspace_folder=workspace_folder.clone()
+                            workspace_hostname=workspace_hostname.clone()
+                            workspace_pinned=workspace.pinned
+                            align_right=true
+                            delete_modal_hidden rebuild_modal_hidden error
+                        />
+                    </div>
                 </div>
             </div>
             <For
@@ -787,7 +906,7 @@ pub fn Workspaces() -> impl IntoView {
                 <div class="absolute w-full h-full flex flex-col py-4 overflow-y-auto">
                     <For
                         each=move || workspaces.get()
-                        key=|w|  (w.name.clone(), w.status)
+                        key=|w|  (w.name.clone(), w.status, w.pinned)
                         children=move |workspace| {
                             view! {
                                 <WorkspaceItem workspace=workspace update_counter=delete_counter error />
@@ -1223,6 +1342,11 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                     }
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
+                                    <svg class="w-2.5 h-2.5 mr-2" xmlns="http://www.w3.org/2000/svg" width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>
+                                    <span class="mr-1 text-gray-500 dark:text-gray-500">{"Pinned:"}</span>
+                                    <span>{ info.pinned }</span>
+                                </span>
+                                <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
                                     <svg class="w-2.5 h-2.5 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                                     <path d="M10 0a10 10 0 1 0 10 10A10.011 10.011 0 0 0 10 0Zm3.982 13.982a1 1 0 0 1-1.414 0l-3.274-3.274A1.012 1.012 0 0 1 9 10V6a1 1 0 0 1 2 0v3.586l2.982 2.982a1 1 0 0 1 0 1.414Z"/>
                                     </svg>
@@ -1230,7 +1354,16 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                     <DatetimeModal time=info.created_at />
                                 </span>
                                 <div class="mt-4">
-                                    <WorkspaceControl workspace_name=workspace_name.clone() workspace_status=status.get() workspace_folder=info.repo_name.clone() workspace_hostname=workspace_hostname.clone() align_right=false delete_modal_hidden rebuild_modal_hidden error />
+                                    <WorkspaceControl
+                                        workspace_name=workspace_name.clone()
+                                        workspace_status=status.get()
+                                        workspace_folder=info.repo_name.clone()
+                                        workspace_hostname=workspace_hostname.clone()
+                                        workspace_pinned=info.pinned
+                                        align_right=false
+                                        delete_modal_hidden
+                                        rebuild_modal_hidden
+                                        error />
                                 </div>
                                 { move || if let Some(error) = error.get() {
                                     view! {
@@ -1583,15 +1716,15 @@ pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl Into
 
         { move || if let Some(error) = error.get() {
             view! {
-                <div class="mt-4 p-4 rounded-lg bg-red-50 dark:bg-gray-800 w-full">
-                    <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                <div class="mt-4 p-4 rounded-lg bg-red-50 w-full">
+                    <span class="text-sm font-medium text-red-800">{ error }</span>
                 </div>
             }.into_view()
         } else {
             view!{}.into_view()
         }}
 
-        <div class="mt-4 flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
+        <div class="mt-4 flex items-center w-full px-4 py-2 text-gray-900 bg-gray-50">
             <span class="w-1/3 truncate pr-2">Port</span>
             <div class="w-1/3 truncate flex flex-row items-center">
                 <span class="w-1/2 truncate text-center">shared</span>
@@ -1660,7 +1793,7 @@ fn WorkspacePortView(
                     <input
                         type="checkbox"
                         value=""
-                        class="w-4 h-4 border border-gray-300 rounded bg-gray-50  focus:ring-0 dark:bg-gray-700 dark:border-gray-600"
+                        class="w-4 h-4 border border-gray-300 rounded bg-gray-50  focus:ring-0"
                         prop:checked=p.shared
                         on:change=move |e| shared.set(event_target_checked(&e))
                     />
@@ -1669,7 +1802,7 @@ fn WorkspacePortView(
                     <input
                         type="checkbox"
                         value=""
-                        class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-0 dark:bg-gray-700 dark:border-gray-600"
+                        class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-0"
                         prop:checked=p.public
                         on:change=move |e| public.set(event_target_checked(&e))
                     />
@@ -1679,7 +1812,7 @@ fn WorkspacePortView(
                 <a
                     href={ format!("https://{}-{name}.{workspace_hostname}/", p.port) }
                     target="_blank"
-                    class="block px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-none dark:focus:ring-green-800"
+                    class="block px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
                 >
                     Open
                 </a>

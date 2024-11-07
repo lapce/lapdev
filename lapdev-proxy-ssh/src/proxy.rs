@@ -10,7 +10,7 @@ use russh::{
     server::{Auth, Msg, Session},
     Channel, ChannelMsg,
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::client::handle_client_msg;
 
@@ -187,6 +187,11 @@ impl russh::server::Handler for SshProxyHandler {
             )
             .await?;
 
+        info!(
+            "channel {} open direct tcpip from {originator_address}:{originator_port} to {host_to_connect}:{port_to_connect}",
+            channel.id()
+        );
+
         let server_handle = session.handle();
 
         tokio::spawn(async move {
@@ -205,6 +210,8 @@ impl russh::server::Handler for SshProxyHandler {
         let address = address.to_string();
         let port = *port;
 
+        info!("channel {} tcpip forward to {address}:{port}", self.id);
+
         if let Some(ws_session) = self.ws_session.as_mut() {
             ws_session.handle.tcpip_forward(address, port).await?;
         }
@@ -221,6 +228,11 @@ impl russh::server::Handler for SshProxyHandler {
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
         let address = address.to_string();
+
+        info!(
+            "channel {} cancel tcpip forward to {address}:{port}",
+            self.id
+        );
 
         if let Some(ws_session) = self.ws_session.as_mut() {
             ws_session
@@ -266,31 +278,61 @@ async fn forward_server_client(
     server_handle: russh::server::Handle,
 ) -> Result<()> {
     let channel_id = channel.id();
-    debug!("proxy connection started {channel_id}");
+    info!("proxy connection started channel {channel_id}");
     let ws_channel_id = ws_channel.id();
+    let mut channel_eof = false;
+    let mut ws_channel_eof = false;
     loop {
         tokio::select! {
             msg = channel.wait() => {
                 if let Some(msg) = msg {
+                    if channel_eof && matches!(msg, ChannelMsg::Data {..} | ChannelMsg::ExtendedData {..}) {
+                        // channel received eof, so we ignore data
+                        continue;
+                    }
                     match msg {
                         ChannelMsg::Close => {
-                            debug!("server received close msg");
+                            info!("channel {channel_id} server received close msg");
+                            ws_channel.close().await?;
                             break;
-                        },
+                        }
+                        ChannelMsg::Eof => {
+                            info!("channel {channel_id} server received eof msg");
+                            ws_channel.eof().await?;
+                            channel_eof = true;
+                        }
                         _ => {
                             handle_server_msg(&ws_channel, msg).await?;
                         }
                     }
                 } else {
-                    debug!("server msg channel closed");
+                    info!("channel {channel_id} server msg channel closed");
                     break;
                 }
             }
             msg = ws_channel.wait() => {
                 if let Some(msg) = msg {
-                    handle_client_msg(ws_channel_id, &mut channel, &server_handle, msg).await?;
+                    if ws_channel_eof && matches!(msg, ChannelMsg::Data {..} | ChannelMsg::ExtendedData {..}) {
+                        // ws_channel received eof, so we ignore data
+                        continue;
+                    }
+                    match msg {
+                        ChannelMsg::Close => {
+                            info!("channel {channel_id} client received close msg");
+                            channel.close().await?;
+                            break;
+                        }
+                        ChannelMsg::Eof => {
+                            info!("channel {channel_id} client received eof msg");
+                            channel.eof().await?;
+                            ws_channel_eof = true;
+                        }
+                        _ => {
+                            handle_client_msg(ws_channel_id, &mut channel, &server_handle, msg).await?;
+                        }
+                    }
                 } else {
-                    debug!("client msg channel closed");
+                    info!("channel {channel_id} client msg channel closed");
                     break;
                 }
             }
@@ -298,7 +340,7 @@ async fn forward_server_client(
     }
     let _ = channel.close().await;
     let _ = ws_channel.close().await;
-    debug!("proxy connection closed {channel_id}");
+    info!("proxy connection closed channel {channel_id}");
     Ok(())
 }
 

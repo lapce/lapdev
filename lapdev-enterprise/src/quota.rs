@@ -429,6 +429,7 @@ pub mod tests {
             build_output: ActiveValue::Set(None),
             is_compose: ActiveValue::Set(false),
             compose_parent: ActiveValue::Set(None),
+            pinned: ActiveValue::Set(false),
         };
         let ws = ws.insert(&db.conn).await?;
         Ok(ws)

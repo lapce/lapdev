@@ -2172,6 +2172,7 @@ dependencies = [
  "hyper 1.2.0",
  "hyper-util",
  "include_dir",
+ "itertools 0.12.0",
  "lapdev-common",
  "lapdev-conductor",
  "lapdev-db",

@@ -169,6 +169,14 @@ fn v1_api_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreSta
             post(workspace::stop_workspace),
         )
         .route(
+            "/organizations/:org_id/workspaces/:workspace_name/pin",
+            post(workspace::pin_workspace),
+        )
+        .route(
+            "/organizations/:org_id/workspaces/:workspace_name/unpin",
+            post(workspace::unpin_workspace),
+        )
+        .route(
             "/organizations/:org_id/workspaces/:workspace_name/rebuild",
             post(workspace::rebuild_workspace),
         )

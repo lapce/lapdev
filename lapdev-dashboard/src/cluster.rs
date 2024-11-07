@@ -50,17 +50,17 @@ pub fn WorkspaceHostView() -> impl IntoView {
     });
     view! {
         <div class="pb-4">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Workspace Hosts
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage the workspace hosts for the cluster"}</p>
+            <p class="text-gray-700">{"Manage the workspace hosts for the cluster"}</p>
             <div class="flex flex-col items-center justify-between py-4 gap-y-3 md:flex-row md:space-y-0 md:space-x-4">
                 <div class="w-full md:w-1/2">
                     <form class="flex items-center">
                         <label for="simple-search" class="sr-only">Filter Workspace Hosts</label>
                         <div class="relative w-full">
                         <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                             </svg>
                         </div>
@@ -68,7 +68,7 @@ pub fn WorkspaceHostView() -> impl IntoView {
                             prop:value={move || host_filter.get()}
                             on:input=move |ev| { host_filter.set(event_target_value(&ev)); }
                             type="text"
-                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="Filter Workspace Hosts"
                         />
                         </div>
@@ -76,7 +76,7 @@ pub fn WorkspaceHostView() -> impl IntoView {
                 </div>
                 <button
                     type="button"
-                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300"
                     on:click=move |_| new_workspace_host_modal_hidden.set(false)
                 >
                     New Workspace Host
@@ -425,7 +425,7 @@ fn WorkspaceHostControl(
             on:focusout=on_focusout
         >
             <button
-                class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center"
                 type="button"
                 on:click=toggle_dropdown
             >
@@ -438,11 +438,11 @@ fn WorkspaceHostControl(
                 class:hidden=move || dropdown_hidden.get()
                 class=("right-0", move || align_right)
             >
-                <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-44 dark:bg-gray-700">
+                <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-44">
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=move |_| {
                                 dropdown_hidden.set(true);
                                 update_workspace_host_modal_hidden.set(false);
@@ -454,7 +454,7 @@ fn WorkspaceHostControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 text-red-700"
+                            class="block px-4 py-2 hover:bg-gray-100 text-red-700"
                             on:click=delete_workspace_host
                         >
                             Delete
@@ -471,10 +471,10 @@ pub fn ClusterSettings() -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
     view! {
         <div class="border-b pb-4 mb-8">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Cluster Settings
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage your cluster settings"}</p>
+            <p class="text-gray-700">{"Manage your cluster settings"}</p>
         </div>
         <div class="mb-8">
             <div class="w-full p-8 border rounded-xl">
@@ -554,7 +554,7 @@ fn CpuOvercommitSetting() -> impl IntoView {
                 on:input=move |ev| {
                     value.set(event_target_value(&ev));
                 }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
             />
         </div>
     };
@@ -625,7 +625,7 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
 
     let body = view! {
         <div class="mt-2">
-            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900 dark:text-white">
+            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900">
                 <svg class="w-4 h-4 me-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M10 .333A9.911 9.911 0 0 0 6.866 19.65c.5.092.678-.215.678-.477 0-.237-.01-1.017-.014-1.845-2.757.6-3.338-1.169-3.338-1.169a2.627 2.627 0 0 0-1.1-1.451c-.9-.615.07-.6.07-.6a2.084 2.084 0 0 1 1.518 1.021 2.11 2.11 0 0 0 2.884.823c.044-.503.268-.973.63-1.325-2.2-.25-4.516-1.1-4.516-4.9A3.832 3.832 0 0 1 4.7 7.068a3.56 3.56 0 0 1 .095-2.623s.832-.266 2.726 1.016a9.409 9.409 0 0 1 4.962 0c1.89-1.282 2.717-1.016 2.717-1.016.366.83.402 1.768.1 2.623a3.827 3.827 0 0 1 1.02 2.659c0 3.807-2.319 4.644-4.525 4.889a2.366 2.366 0 0 1 .673 1.834c0 1.326-.012 2.394-.012 2.72 0 .263.18.572.681.475A9.911 9.911 0 0 0 10 .333Z" clip-rule="evenodd"/>
                 </svg>
@@ -634,11 +634,11 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
             <input
                 prop:value={move || github_client_id.get()}
                 on:input=move |ev| { github_client_id.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
             />
         </div>
         <div class="mt-2">
-            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900 dark:text-white">
+            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900">
                 <svg class="w-4 h-4 me-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M10 .333A9.911 9.911 0 0 0 6.866 19.65c.5.092.678-.215.678-.477 0-.237-.01-1.017-.014-1.845-2.757.6-3.338-1.169-3.338-1.169a2.627 2.627 0 0 0-1.1-1.451c-.9-.615.07-.6.07-.6a2.084 2.084 0 0 1 1.518 1.021 2.11 2.11 0 0 0 2.884.823c.044-.503.268-.973.63-1.325-2.2-.25-4.516-1.1-4.516-4.9A3.832 3.832 0 0 1 4.7 7.068a3.56 3.56 0 0 1 .095-2.623s.832-.266 2.726 1.016a9.409 9.409 0 0 1 4.962 0c1.89-1.282 2.717-1.016 2.717-1.016.366.83.402 1.768.1 2.623a3.827 3.827 0 0 1 1.02 2.659c0 3.807-2.319 4.644-4.525 4.889a2.366 2.366 0 0 1 .673 1.834c0 1.326-.012 2.394-.012 2.72 0 .263.18.572.681.475A9.911 9.911 0 0 0 10 .333Z" clip-rule="evenodd"/>
                 </svg>
@@ -647,29 +647,29 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
             <input
                 prop:value={move || github_client_secret.get()}
                 on:input=move |ev| { github_client_secret.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
             />
         </div>
         <div class="mt-2">
-            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900 dark:text-white">
+            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900">
                 <svg class="w-4 h-4 me-2" viewBox="0 0 25 24" xmlns="http://www.w3.org/2000/svg"><path d="M24.507 9.5l-.034-.09L21.082.562a.896.896 0 00-1.694.091l-2.29 7.01H7.825L5.535.653a.898.898 0 00-1.694-.09L.451 9.411.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 2.56 1.935 1.554 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#E24329"/><path d="M24.507 9.5l-.034-.09a11.44 11.44 0 00-4.56 2.051l-7.447 5.632 4.742 3.584 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#FC6D26"/><path d="M7.707 20.677l2.56 1.935 1.555 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935-4.743-3.584-4.755 3.584z" fill="#FCA326"/><path d="M5.01 11.461a11.43 11.43 0 00-4.56-2.05L.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 4.745-3.584-7.444-5.632z" fill="#FC6D26"/></svg>
                 <span>GitLab Client Id</span>
             </div>
             <input
                 prop:value={move || gitlab_client_id.get()}
                 on:input=move |ev| { gitlab_client_id.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
             />
         </div>
         <div class="mt-2">
-            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900 dark:text-white">
+            <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900">
                 <svg class="w-4 h-4 me-2" viewBox="0 0 25 24" xmlns="http://www.w3.org/2000/svg"><path d="M24.507 9.5l-.034-.09L21.082.562a.896.896 0 00-1.694.091l-2.29 7.01H7.825L5.535.653a.898.898 0 00-1.694-.09L.451 9.411.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 2.56 1.935 1.554 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#E24329"/><path d="M24.507 9.5l-.034-.09a11.44 11.44 0 00-4.56 2.051l-7.447 5.632 4.742 3.584 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#FC6D26"/><path d="M7.707 20.677l2.56 1.935 1.555 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935-4.743-3.584-4.755 3.584z" fill="#FCA326"/><path d="M5.01 11.461a11.43 11.43 0 00-4.56-2.05L.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 4.745-3.584-7.444-5.632z" fill="#FC6D26"/></svg>
                 <span>GitLab Client Secret</span>
             </div>
             <input
                 prop:value={move || gitlab_client_secret.get()}
                 on:input=move |ev| { gitlab_client_secret.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
             />
         </div>
     };
@@ -752,13 +752,13 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
                             children=move |(region, hostname)| {
                                 view! {
                                     <div class="mt-2">
-                                        <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                                        <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900">
                                             <span>{format!("Region: {region}")}</span>
                                         </div>
                                         <input
                                             prop:value={move || hostname.get()}
                                             on:input=move |ev| { hostname.set(event_target_value(&ev)) }
-                                            class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                                            class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                                         />
                                     </div>
                                 }
@@ -775,7 +775,7 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
                                         h.set(event_target_value(&ev))
                                     }
                                 }
-                                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                             />
                         </div>
                     }.into_view()
@@ -896,7 +896,7 @@ pub fn ClusterCertsSetting() -> impl IntoView {
                                 rows=8
                                 prop:value={move || cert.get()}
                                 on:input=move |ev| { cert.set(event_target_value(&ev)); }
-                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                                 placeholder="Certificate Chain"
                             />
                         </div>
@@ -905,14 +905,14 @@ pub fn ClusterCertsSetting() -> impl IntoView {
                                 rows=8
                                 prop:value={move || key.get()}
                                 on:input=move |ev| { key.set(event_target_value(&ev)); }
-                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                                 placeholder="Private Key"
                             />
                         </div>
                         <div class="ml-2 hover:bg-gray-200 rounded-lg p-2 cursor-pointer"
                             on:click=move |_| delete_cert(i)
                         >
-                            <svg class="h-4 text-gray-800 dark:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <svg class="h-4 text-gray-800" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6m0 12L6 6"/>
                             </svg>
                         </div>
@@ -926,7 +926,7 @@ pub fn ClusterCertsSetting() -> impl IntoView {
     let extra = view! {
         <button
             type="button"
-            class="ml-2 py-2.5 px-5 text-sm font-medium text-gray-900 focus:outline-none bg-white rounded-lg border border-gray-200 hover:bg-gray-100 hover:text-blue-700 focus:z-10 focus:ring-4 focus:ring-gray-100 dark:focus:ring-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700"
+            class="ml-2 py-2.5 px-5 text-sm font-medium text-gray-900 focus:outline-none bg-white rounded-lg border border-gray-200 hover:bg-gray-100 hover:text-blue-700 focus:z-10 focus:ring-4 focus:ring-gray-100"
             on:click=new_cert
         >
             New Certificate
@@ -962,17 +962,17 @@ pub fn MachineTypeView() -> impl IntoView {
     });
     view! {
         <div class="pb-4">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Machine Types
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage the machine types for the cluster"}</p>
+            <p class="text-gray-700">{"Manage the machine types for the cluster"}</p>
             <div class="flex flex-col items-center justify-between py-4 gap-y-3 md:flex-row md:space-y-0 md:space-x-4">
                 <div class="w-full md:w-1/2">
                     <form class="flex items-center">
                         <label for="simple-search" class="sr-only">Filter Machine Types</label>
                         <div class="relative w-full">
                         <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                             </svg>
                         </div>
@@ -980,7 +980,7 @@ pub fn MachineTypeView() -> impl IntoView {
                             prop:value={move || machine_type_filter.get()}
                             on:input=move |ev| { machine_type_filter.set(event_target_value(&ev)); }
                             type="text"
-                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="Filter Machine Types"
                         />
                         </div>
@@ -988,7 +988,7 @@ pub fn MachineTypeView() -> impl IntoView {
                 </div>
                 <button
                     type="button"
-                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                     on:click=move |_| new_machine_type_modal_hidden.set(false)
                 >
                     New Machine Type
@@ -1079,12 +1079,12 @@ pub fn NewMachineTypeView(
             <input
                 type="checkbox"
                 value=""
-                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300 dark:bg-gray-700 dark:border-gray-600 dark:focus:ring-blue-600 dark:ring-offset-gray-800"
+                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
                 prop:checked=move || shared_cpu.get()
                 on:change=move |e| shared_cpu.set(event_target_checked(&e))
             />
             </div>
-            <label for="remember" class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">Shared cpu cores</label>
+            <label for="remember" class="ml-2 text-sm font-medium text-gray-900">Shared cpu cores</label>
         </div>
         <CreationInput label="CPU Cores".to_string() value=cpu placeholder="number of CPU cores".to_string() />
         <CreationInput label="Memory (GB)".to_string() value=memory placeholder="memory in GB".to_string() />
@@ -1182,7 +1182,7 @@ fn MachineTypeControl(
             on:focusout=on_focusout
         >
             <button
-                class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center"
                 type="button"
                 on:click=toggle_dropdown
             >
@@ -1195,11 +1195,11 @@ fn MachineTypeControl(
                 class:hidden=move || dropdown_hidden.get()
                 class=("right-0", move || align_right)
             >
-                <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-44 dark:bg-gray-700">
+                <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-44">
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=move |_| {
                                 dropdown_hidden.set(true);
                                 update_machine_type_modal_hidden.set(false);
@@ -1211,7 +1211,7 @@ fn MachineTypeControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 text-red-700"
+                            class="block px-4 py-2 hover:bg-gray-100 text-red-700"
                             on:click=delete_workspace_host
                         >
                             Delete
@@ -1470,17 +1470,17 @@ pub fn ClusterUsersView() -> impl IntoView {
     search_action.dispatch(());
     view! {
         <div class="pb-4">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Cluster Users
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage all users in the cluster"}</p>
+            <p class="text-gray-700">{"Manage all users in the cluster"}</p>
             <div class="flex flex-col items-center justify-between py-4 gap-y-3 md:flex-row md:space-y-0 md:space-x-4">
                 <div class="w-full md:w-1/2">
                     <form class="flex items-center">
                         <label for="simple-search" class="sr-only">Filter Workspace Hosts</label>
                         <div class="relative w-full">
                         <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                             </svg>
                         </div>
@@ -1488,7 +1488,7 @@ pub fn ClusterUsersView() -> impl IntoView {
                             prop:value={move || user_filter.get()}
                             on:input=move |ev| { user_filter.set(event_target_value(&ev)); }
                             type="text"
-                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="Filter Cluster Users"
                         />
                         </div>
@@ -1496,7 +1496,7 @@ pub fn ClusterUsersView() -> impl IntoView {
                 </div>
                 <button
                     type="button"
-                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                     on:click=move |_| search_action.dispatch(())
                 >
                     Search User
@@ -1506,8 +1506,8 @@ pub fn ClusterUsersView() -> impl IntoView {
 
         { move || if let Some(error) = error.get() {
             view! {
-                <div class="my-4 p-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                    <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                <div class="my-4 p-4 rounded-lg bg-red-50">
+                    <span class="text-sm font-medium text-red-800">{ error }</span>
                 </div>
             }.into_view()
         } else {
@@ -1515,19 +1515,19 @@ pub fn ClusterUsersView() -> impl IntoView {
         }}
 
         <div class="mt-4 flex flex-row items-center justify-between">
-            <span class="text-sm font-normal text-gray-500 dark:text-gray-400">
+            <span class="text-sm font-normal text-gray-500">
                 {"Showing "}
-                <span class="font-semibold text-gray-900 dark:text-white">
+                <span class="font-semibold text-gray-900">
                     {move || format!("{}-{}", users.with(|a| if a.users.is_empty() {0} else {1} + a.page * a.page_size ), users.with(|a| if a.users.is_empty() {0} else {a.users.len() as u64} + a.page * a.page_size  ))}
                 </span>
                 {" of "}
-                <span class="font-semibold text-gray-900 dark:text-white">{move || users.with(|a| a.total_items)}</span>
+                <span class="font-semibold text-gray-900">{move || users.with(|a| a.total_items)}</span>
             </span>
             <div class="flex flex-row items-center">
                 <p class="mr-2">{"rows per page"}</p>
 
                 <select
-                    class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-18 p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                    class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-18 p-2.5"
                     on:change=change_page_size
                 >
                     <option selected>10</option>
@@ -1561,7 +1561,7 @@ pub fn ClusterUsersView() -> impl IntoView {
             </div>
         </div>
 
-        <div class="mt-2 flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
+        <div class="mt-2 flex items-center w-full px-4 py-2 text-gray-900">
             <span class="w-1/4 truncate">Oauth Provider</span>
             <span class="w-1/4 truncate">User</span>
             <span class="w-1/4 truncate">Created At</span>
@@ -1599,14 +1599,14 @@ fn ClusterUserItemView(
                 id={user_id.to_string()}
                 type="checkbox"
                 value=""
-                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300 dark:bg-gray-700 dark:border-gray-600 dark:focus:ring-blue-600 dark:ring-offset-gray-800"
+                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
                 prop:checked=move || is_cluster_admin.get()
                 on:change=move |e| is_cluster_admin.set(event_target_checked(&e))
             />
             </div>
             <label
                 for={move || user_id.to_string()}
-                class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300"
+                class="ml-2 text-sm font-medium text-gray-900"
             >
                 Is Cluster Admin
             </label>
@@ -1661,7 +1661,7 @@ fn ClusterUserItemView(
             <div class="w-1/4 flex flex-row items-center justify-between">
                 <p>{user.cluster_admin}</p>
                 <button
-                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-none dark:focus:ring-green-800"
+                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
                     on:click=move |_| update_modal_hidden.set(false)
                 >
                     Update

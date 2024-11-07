@@ -23,6 +23,7 @@ use crate::{entities, migration::Migrator};
 use super::entities::workspace;
 
 pub const LAPDEV_CLUSTER_NOT_INITIATED: &str = "lapdev-cluster-not-initiated";
+pub const LAPDEV_PIN_UNPIN_ERROR: &str = "lapdev-pin-unpin-error";
 const LAPDEV_API_AUTH_TOKEN_KEY: &str = "lapdev-api-auth-token-key";
 const LAPDEV_DEFAULT_USAGE_LIMIT: &str = "lapdev-default-org-usage-limit";
 const LAPDEV_DEFAULT_RUNNING_WORKSPACE_LIMIT: &str = "lapdev-default-org-running-workspace-limit";
@@ -237,6 +238,7 @@ impl DbApi {
             .filter(entities::workspace::Column::HostId.eq(ws_host_id))
             .filter(entities::workspace::Column::DeletedAt.is_null())
             .filter(entities::workspace::Column::Status.eq(WorkspaceStatus::Stopped.to_string()))
+            .filter(entities::workspace::Column::Pinned.eq(false))
             .filter(entities::workspace::Column::UpdatedAt.lt(last_updated_at))
             .all(&self.conn)
             .await?;

@@ -115,11 +115,17 @@ pub struct Conductor {
         Mutex<HashMap<Uuid, Vec<futures::channel::mpsc::UnboundedSender<(Uuid, WorkspaceStatus)>>>>,
     >,
     pub enterprise: Arc<Enterprise>,
+    pub force_osuser: Option<String>,
     pub db: DbApi,
 }
 
 impl Conductor {
-    pub async fn new(version: &str, db: DbApi, data_folder: PathBuf) -> Result<Self> {
+    pub async fn new(
+        version: &str,
+        db: DbApi,
+        data_folder: PathBuf,
+        force_osuser: Option<String>,
+    ) -> Result<Self> {
         tokio::fs::create_dir_all(data_folder.join("projects"))
             .await
             .with_context(|| format!("trying to create {:?}", data_folder.join("projects")))?;
@@ -147,6 +153,7 @@ impl Conductor {
             cpu_overcommit: Arc::new(RwLock::new(cpu_overcommit)),
             all_workspace_updates: Default::default(),
             enterprise,
+            force_osuser,
             db,
         };
 
@@ -720,7 +727,7 @@ impl Conductor {
         .map_err(|_| ApiError::NoAvailableWorkspaceHost)?;
         txn.commit().await?;
 
-        let osuser = org_id.to_string().replace('-', "");
+        let osuser = self.get_osuser(org_id);
         let id = uuid::Uuid::new_v4();
         let ws_client = { self.rpcs.lock().await.get(&host.id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
@@ -878,6 +885,14 @@ impl Conductor {
         Ok(result)
     }
 
+    fn get_osuser(&self, org: Uuid) -> String {
+        if let Some(osuser) = self.force_osuser.clone() {
+            osuser
+        } else {
+            org.to_string().replace('-', "")
+        }
+    }
+
     pub async fn create_project_prebuild(
         &self,
         user: &entities::user::Model,
@@ -889,7 +904,7 @@ impl Conductor {
     ) -> Result<entities::prebuild::Model, ApiError> {
         let id = uuid::Uuid::new_v4();
 
-        let osuser = project.organization_id.to_string().replace('-', "");
+        let osuser = self.get_osuser(project.organization_id);
 
         let machine_type_id = ws
             .map(|ws| ws.machine_type_id)
@@ -1101,7 +1116,7 @@ impl Conductor {
     ) -> Result<entities::workspace::Model, ApiError> {
         let name = format!("{}-{}", repo.name, rand_string(12));
         let (id_rsa, public_key) = self.generate_key_pair()?;
-        let osuser = org.id.to_string().replace('-', "");
+        let osuser = self.get_osuser(org.id);
 
         self.enterprise
             .check_organization_limit(org, user.id)
@@ -1199,6 +1214,7 @@ impl Conductor {
             build_output: ActiveValue::Set(None),
             is_compose: ActiveValue::Set(false),
             compose_parent: ActiveValue::Set(None),
+            pinned: ActiveValue::Set(false),
         };
         let ws = ws.insert(&txn).await?;
         self.enterprise
@@ -1919,6 +1935,7 @@ impl Conductor {
                     build_output: ActiveValue::Set(Some(build_output.clone())),
                     is_compose: ActiveValue::Set(is_compose),
                     compose_parent: ActiveValue::Set(Some(ws.id)),
+                    pinned: ActiveValue::Set(false),
                 }
                 .insert(&self.db.conn)
                 .await?;

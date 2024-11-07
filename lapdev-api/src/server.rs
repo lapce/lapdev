@@ -30,6 +30,7 @@ struct LapdevConfig {
     https_port: Option<u16>,
     ssh_proxy_port: Option<u16>,
     ssh_proxy_display_port: Option<u16>,
+    force_osuser: Option<String>,
 }
 
 #[derive(Parser)]
@@ -87,7 +88,8 @@ async fn run(
         .ok_or_else(|| anyhow!("can't find database url in your config file"))?;
 
     let db = DbApi::new(&db_url, cli.no_migration).await?;
-    let conductor = Conductor::new(LAPDEV_VERSION, db.clone(), data_folder).await?;
+    let conductor =
+        Conductor::new(LAPDEV_VERSION, db.clone(), data_folder, config.force_osuser).await?;
 
     let ssh_proxy_port = config.ssh_proxy_port.unwrap_or(2222);
     let ssh_proxy_display_port = config.ssh_proxy_display_port.unwrap_or(2222);

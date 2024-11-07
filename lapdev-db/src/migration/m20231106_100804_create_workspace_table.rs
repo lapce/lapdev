@@ -56,6 +56,7 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Workspace::AutoStop).integer())
                     .col(ColumnDef::new(Workspace::IsCompose).boolean().not_null())
                     .col(ColumnDef::new(Workspace::ComposeParent).uuid())
+                    .col(ColumnDef::new(Workspace::Pinned).boolean().not_null())
                     .foreign_key(
                         ForeignKey::create()
                             .from_tbl(Workspace::Table)
@@ -171,4 +172,5 @@ pub enum Workspace {
     LastInactivity,
     IsCompose,
     ComposeParent,
+    Pinned,
 }

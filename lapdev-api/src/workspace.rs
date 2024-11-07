@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{cmp::Ordering, collections::HashMap, str::FromStr};
 
 use anyhow::Result;
 use axum::{
@@ -9,11 +9,12 @@ use axum::{
 use axum_extra::{headers::Cookie, TypedHeader};
 use chrono::Utc;
 use hyper::StatusCode;
+use itertools::Itertools;
 use lapdev_common::{
     AuditAction, AuditResourceKind, NewWorkspace, RepoBuildResult, UpdateWorkspacePort,
-    WorkspaceInfo, WorkspacePort, WorkspaceService, WorkspaceStatus,
+    WorkspaceInfo, WorkspacePort, WorkspaceService, WorkspaceStatus, WorkspaceUpdateEvent,
 };
-use lapdev_db::entities;
+use lapdev_db::{api::LAPDEV_PIN_UNPIN_ERROR, entities};
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, TransactionTrait,
@@ -105,7 +106,13 @@ pub async fn all_workspaces(
                 created_at: w.created_at,
                 hostname,
                 build_error: build_result.and_then(|r| r.error),
+                pinned: w.pinned,
             })
+        })
+        .sorted_by(|a, b| match (a.pinned, b.pinned) {
+            (true, true) | (false, false) => b.created_at.cmp(&a.created_at),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
         })
         .collect();
     Ok(Json(workspaces))
@@ -201,6 +208,7 @@ pub async fn get_workspace(
         created_at: ws.created_at,
         hostname,
         build_error: build_result.and_then(|r| r.error),
+        pinned: ws.pinned,
     };
     Ok(Json(info))
 }
@@ -270,6 +278,174 @@ pub async fn stop_workspace(
         .conductor
         .stop_workspace(ws, info.ip, info.user_agent)
         .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn pin_workspace(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Path((org_id, workspace_name)): Path<(Uuid, String)>,
+    State(state): State<CoreState>,
+    info: RequestInfo,
+) -> Result<Response, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+    let ws = state
+        .db
+        .get_workspace_by_name(&workspace_name)
+        .await
+        .map_err(|_| ApiError::InvalidRequest("workspace name doesn't exist".to_string()))?;
+    if ws.user_id != user.id {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let org = state.db.get_organization(ws.organization_id).await?;
+    if org.running_workspace_limit > 0 {
+        return Err(ApiError::InvalidRequest(
+            state
+                .db
+                .get_config(LAPDEV_PIN_UNPIN_ERROR)
+                .await
+                .unwrap_or_else(|_| "You can't pin/unpin workspaces".to_string()),
+        ));
+    }
+
+    if ws.compose_parent.is_some() {
+        return Err(ApiError::InvalidRequest(
+            "you can only pin the main workspace".to_string(),
+        ));
+    }
+
+    if ws.pinned {
+        return Err(ApiError::InvalidRequest(
+            "workspace is already pinned".to_string(),
+        ));
+    }
+
+    let now = Utc::now();
+    let txn = state.db.conn.begin().await?;
+    state
+        .conductor
+        .enterprise
+        .insert_audit_log(
+            &txn,
+            now.into(),
+            ws.user_id,
+            ws.organization_id,
+            AuditResourceKind::Workspace.to_string(),
+            ws.id,
+            format!("{} pin", ws.name),
+            AuditAction::WorkspaceUpdate.to_string(),
+            info.ip.clone(),
+            info.user_agent.clone(),
+        )
+        .await?;
+    let ws = entities::workspace::ActiveModel {
+        id: ActiveValue::Set(ws.id),
+        pinned: ActiveValue::Set(true),
+        ..Default::default()
+    }
+    .update(&txn)
+    .await?;
+    txn.commit().await?;
+
+    // send a status update to trigger frontend update
+    state
+        .conductor
+        .add_workspace_update_event(
+            Some(ws.user_id),
+            ws.id,
+            WorkspaceUpdateEvent::Status(WorkspaceStatus::from_str(&ws.status)?),
+        )
+        .await;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn unpin_workspace(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Path((org_id, workspace_name)): Path<(Uuid, String)>,
+    State(state): State<CoreState>,
+    info: RequestInfo,
+) -> Result<Response, ApiError> {
+    let user = state.authenticate(&cookie).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+    let ws = state
+        .db
+        .get_workspace_by_name(&workspace_name)
+        .await
+        .map_err(|_| ApiError::InvalidRequest("workspace name doesn't exist".to_string()))?;
+    if ws.user_id != user.id {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let org = state.db.get_organization(ws.organization_id).await?;
+    if org.running_workspace_limit > 0 {
+        return Err(ApiError::InvalidRequest(
+            state
+                .db
+                .get_config(LAPDEV_PIN_UNPIN_ERROR)
+                .await
+                .unwrap_or_else(|_| "You can't pin/unpin workspaces".to_string()),
+        ));
+    }
+
+    if ws.compose_parent.is_some() {
+        return Err(ApiError::InvalidRequest(
+            "you can only unpin the main workspace".to_string(),
+        ));
+    }
+
+    if !ws.pinned {
+        return Err(ApiError::InvalidRequest(
+            "workspace is not pinned".to_string(),
+        ));
+    }
+
+    let now = Utc::now();
+    let txn = state.db.conn.begin().await?;
+    state
+        .conductor
+        .enterprise
+        .insert_audit_log(
+            &txn,
+            now.into(),
+            ws.user_id,
+            ws.organization_id,
+            AuditResourceKind::Workspace.to_string(),
+            ws.id,
+            format!("{} unpin", ws.name),
+            AuditAction::WorkspaceUpdate.to_string(),
+            info.ip.clone(),
+            info.user_agent.clone(),
+        )
+        .await?;
+    let ws = entities::workspace::ActiveModel {
+        id: ActiveValue::Set(ws.id),
+        pinned: ActiveValue::Set(false),
+        ..Default::default()
+    }
+    .update(&txn)
+    .await?;
+    txn.commit().await?;
+
+    // send a status update to trigger frontend update
+    state
+        .conductor
+        .add_workspace_update_event(
+            Some(ws.user_id),
+            ws.id,
+            WorkspaceUpdateEvent::Status(WorkspaceStatus::from_str(&ws.status)?),
+        )
+        .await;
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

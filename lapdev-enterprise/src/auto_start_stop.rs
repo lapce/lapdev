@@ -255,6 +255,7 @@ pub mod tests {
             build_output: ActiveValue::Set(None),
             is_compose: ActiveValue::Set(false),
             compose_parent: ActiveValue::Set(None),
+            pinned: ActiveValue::Set(false),
         }
         .insert(&enterprise.auto_start_stop.db.conn)
         .await
@@ -301,6 +302,7 @@ pub mod tests {
             build_output: ActiveValue::Set(None),
             is_compose: ActiveValue::Set(false),
             compose_parent: ActiveValue::Set(None),
+            pinned: ActiveValue::Set(false),
         }
         .insert(&enterprise.auto_start_stop.db.conn)
         .await

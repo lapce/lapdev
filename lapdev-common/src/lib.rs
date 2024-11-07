@@ -332,6 +332,7 @@ pub struct WorkspaceInfo {
     pub created_at: DateTime<FixedOffset>,
     pub hostname: String,
     pub build_error: Option<RepobuildError>,
+    pub pinned: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]

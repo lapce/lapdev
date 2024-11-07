@@ -429,6 +429,7 @@ mod tests {
             deleted_at: ActiveValue::Set(None),
             env: ActiveValue::Set(None),
             last_inactivity: ActiveValue::Set(None),
+            pinned: ActiveValue::Set(false),
         }
         .insert(&txn)
         .await

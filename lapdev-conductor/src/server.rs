@@ -96,9 +96,9 @@ pub struct RepoDetails {
 #[derive(Clone)]
 pub struct Conductor {
     version: String,
-    rpc_aborts: Arc<Mutex<HashMap<Uuid, AbortHandle>>>,
-    rpcs: Arc<Mutex<HashMap<Uuid, WorkspaceServiceClient>>>,
-    ws_hosts: Arc<Mutex<HashMap<Uuid, WorkspaceHostInfo>>>,
+    rpc_aborts: Arc<RwLock<HashMap<Uuid, AbortHandle>>>,
+    rpcs: Arc<RwLock<HashMap<Uuid, WorkspaceServiceClient>>>,
+    ws_hosts: Arc<RwLock<HashMap<Uuid, WorkspaceHostInfo>>>,
     region: Arc<RwLock<String>>,
     data_folder: PathBuf,
     pub hostnames: Arc<RwLock<HashMap<String, String>>>,
@@ -212,13 +212,13 @@ impl Conductor {
 
         if workspace_host.deleted_at.is_some() {
             // the workspace host was deleted
-            self.ws_hosts.lock().await.remove(&workspace_host.id);
-            self.rpcs.lock().await.remove(&workspace_host.id);
-            if let Some(abort) = self.rpc_aborts.lock().await.remove(&workspace_host.id) {
+            self.ws_hosts.write().await.remove(&workspace_host.id);
+            self.rpcs.write().await.remove(&workspace_host.id);
+            if let Some(abort) = self.rpc_aborts.write().await.remove(&workspace_host.id) {
                 abort.abort();
             }
         } else {
-            let mut ws_hosts = self.ws_hosts.lock().await;
+            let mut ws_hosts = self.ws_hosts.write().await;
             if let Some(info) = ws_hosts.get_mut(&workspace_host.id) {
                 info.model = workspace_host;
             } else {
@@ -256,25 +256,40 @@ impl Conductor {
             });
         }
 
-        let mut ws_hosts = self.ws_hosts.lock().await;
-        let hosts = self.get_workspace_hosts().await;
+        {
+            let mut ws_hosts = self.ws_hosts.write().await;
+            let hosts = self.get_workspace_hosts().await;
 
-        for workspace_host in hosts {
-            if !ws_hosts.contains_key(&workspace_host.id) {
-                let id = workspace_host.id;
-                let host = workspace_host.host.clone();
-                let port = workspace_host.port as u16;
-                ws_hosts.insert(
-                    id,
-                    WorkspaceHostInfo {
-                        model: workspace_host,
-                        latency: None,
-                    },
-                );
-                let conductor = self.clone();
-                tokio::spawn(async move {
-                    conductor.connect_workspace_host(id, host, port).await;
-                });
+            for workspace_host in hosts {
+                if !ws_hosts.contains_key(&workspace_host.id) {
+                    let id = workspace_host.id;
+                    let host = workspace_host.host.clone();
+                    let port = workspace_host.port as u16;
+                    ws_hosts.insert(
+                        id,
+                        WorkspaceHostInfo {
+                            model: workspace_host,
+                            latency: None,
+                        },
+                    );
+                    let conductor = self.clone();
+                    tokio::spawn(async move {
+                        conductor.connect_workspace_host(id, host, port).await;
+                    });
+                }
+            }
+        }
+
+        {
+            let mut tick = tokio::time::interval(Duration::from_secs(6));
+            loop {
+                tick.tick().await;
+                let rpcs = { self.rpcs.read().await.clone() };
+                for (_, rpc) in rpcs {
+                    tokio::spawn(async move {
+                        let _ = rpc.ping(context::current()).await;
+                    });
+                }
             }
         }
     }
@@ -350,7 +365,7 @@ impl Conductor {
     async fn connect_workspace_host(&self, id: Uuid, host: String, port: u16) {
         loop {
             {
-                if !self.ws_hosts.lock().await.contains_key(&id) {
+                if !self.ws_hosts.read().await.contains_key(&id) {
                     // this means the workspace host server is removed,
                     // so we don't connect to it anymore.
                     return;
@@ -370,8 +385,8 @@ impl Conductor {
             .await;
 
             {
-                self.rpcs.lock().await.remove(&id);
-                self.rpc_aborts.lock().await.remove(&id);
+                self.rpcs.write().await.remove(&id);
+                self.rpc_aborts.write().await.remove(&id);
             }
 
             let _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -384,7 +399,7 @@ impl Conductor {
         }
 
         let mut region_latencies = HashMap::new();
-        for (_, ws_host) in self.ws_hosts.lock().await.iter() {
+        for (_, ws_host) in self.ws_hosts.read().await.iter() {
             if let Some(latency) = ws_host.latency {
                 if let Some(existing) = region_latencies.get_mut(&ws_host.model.region) {
                     if latency < *existing {
@@ -416,9 +431,9 @@ impl Conductor {
         let ws_client =
             WorkspaceServiceClient::new(tarpc::client::Config::default(), client_chan).spawn();
         {
-            self.rpcs.lock().await.insert(id, ws_client.clone());
+            self.rpcs.write().await.insert(id, ws_client.clone());
             self.rpc_aborts
-                .lock()
+                .write()
                 .await
                 .insert(id, abort_handle.clone());
         }
@@ -432,7 +447,7 @@ impl Conductor {
                     if pong == "pong" {
                         let latency = start.elapsed().as_millis();
                         {
-                            if let Some(info) = conductor.ws_hosts.lock().await.get_mut(&id) {
+                            if let Some(info) = conductor.ws_hosts.write().await.get_mut(&id) {
                                 info.latency = Some(latency);
                             }
                         }
@@ -729,7 +744,7 @@ impl Conductor {
 
         let osuser = self.get_osuser(org_id);
         let id = uuid::Uuid::new_v4();
-        let ws_client = { self.rpcs.lock().await.get(&host.id).cloned() }
+        let ws_client = { self.rpcs.read().await.get(&host.id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
         ws_client
             .create_project(
@@ -789,7 +804,7 @@ impl Conductor {
         project: &entities::project::Model,
         auth: (String, String),
     ) -> Result<Vec<GitBranch>, ApiError> {
-        let ws_client = { self.rpcs.lock().await.get(&project.host_id).cloned() }
+        let ws_client = { self.rpcs.read().await.get(&project.host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
         let branches = ws_client
             .get_project_branches(
@@ -845,7 +860,7 @@ impl Conductor {
             });
         }
 
-        let ws_client = { self.rpcs.lock().await.get(&prebuild.host_id).cloned() }
+        let ws_client = { self.rpcs.read().await.get(&prebuild.host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the prebuild host rpc client"))?;
         let env = repo
             .project
@@ -1418,9 +1433,9 @@ impl Conductor {
             .get_workspace_host(host_id)
             .await?
             .ok_or_else(|| anyhow!("can't find workspace host {host_id}"))?;
-        let prebuild_ws_client = { self.rpcs.lock().await.get(&prebuild.host_id).cloned() }
+        let prebuild_ws_client = { self.rpcs.read().await.get(&prebuild.host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
-        let ws_client = { self.rpcs.lock().await.get(&host_id).cloned() }
+        let ws_client = { self.rpcs.read().await.get(&host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
 
         let output = prebuild
@@ -1977,7 +1992,7 @@ impl Conductor {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<(), ApiError> {
-        let ws_client = { self.rpcs.lock().await.get(&ws.host_id).cloned() }
+        let ws_client = { self.rpcs.read().await.get(&ws.host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
         let env = repo
             .project
@@ -2313,7 +2328,7 @@ impl Conductor {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<()> {
-        let ws_client = { self.rpcs.lock().await.get(&ws.host_id).cloned() };
+        let ws_client = { self.rpcs.read().await.get(&ws.host_id).cloned() };
         let ws_client =
             ws_client.ok_or_else(|| anyhow!("can't connect to the workspace servic client"))?;
 
@@ -2487,7 +2502,7 @@ impl Conductor {
         let ws = update_ws.update(&txn).await?;
         txn.commit().await?;
 
-        let ws_client = { self.rpcs.lock().await.get(&workspace.host_id).cloned() };
+        let ws_client = { self.rpcs.read().await.get(&workspace.host_id).cloned() };
         let ws_client =
             ws_client.ok_or_else(|| anyhow!("can't connect to the workspace servic client"))?;
 
@@ -2569,7 +2584,7 @@ impl Conductor {
         let ws = update_ws.update(&txn).await?;
         txn.commit().await?;
 
-        let ws_client = { self.rpcs.lock().await.get(&workspace.host_id).cloned() };
+        let ws_client = { self.rpcs.read().await.get(&workspace.host_id).cloned() };
         let ws_client =
             ws_client.ok_or_else(|| anyhow!("can't connect to the workspace servic client"))?;
 
@@ -2731,7 +2746,7 @@ impl Conductor {
         ws: &entities::workspace::Model,
         machine_type: &entities::machine_type::Model,
     ) -> Result<(), ApiError> {
-        let ws_client = { self.rpcs.lock().await.get(&ws.host_id).cloned() }
+        let ws_client = { self.rpcs.read().await.get(&ws.host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
 
         let compose_services = if ws.is_compose {
@@ -3247,7 +3262,7 @@ impl Conductor {
         &self,
         prebuild: &entities::prebuild::Model,
     ) -> Result<(), ApiError> {
-        let ws_client = { self.rpcs.lock().await.get(&prebuild.host_id).cloned() }
+        let ws_client = { self.rpcs.read().await.get(&prebuild.host_id).cloned() }
             .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
         let output: Option<RepoBuildOutput> = prebuild
             .build_output
@@ -3270,7 +3285,7 @@ impl Conductor {
             .all(&self.db.conn)
             .await?;
         for replica in replicas {
-            let ws_client = { self.rpcs.lock().await.get(&replica.host_id).cloned() }
+            let ws_client = { self.rpcs.read().await.get(&replica.host_id).cloned() }
                 .ok_or_else(|| anyhow!("can't find the workspace host rpc client"))?;
             ws_client
                 .delete_prebuild(

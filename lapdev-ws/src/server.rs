@@ -278,14 +278,16 @@ impl WorkspaceServer {
             .await??;
 
         let mut active_ports = HashMap::new();
-        if let Ok(conns) = procfs::net::tcp() {
-            for conn in conns {
-                if conn.state == TcpState::Established {
-                    active_ports.insert(
-                        conn.local_address.port() as i32,
-                        conn.local_address.port() as i32,
-                    );
-                }
+        for conn in procfs::net::tcp()
+            .unwrap_or_default()
+            .into_iter()
+            .chain(procfs::net::tcp6().unwrap_or_default())
+        {
+            if conn.state == TcpState::Established {
+                active_ports.insert(
+                    conn.local_address.port() as i32,
+                    conn.local_address.port() as i32,
+                );
             }
         }
 

@@ -1561,22 +1561,30 @@ pub fn ClusterUsersView() -> impl IntoView {
             </div>
         </div>
 
-        <div class="mt-2 flex items-center w-full px-4 py-2 text-gray-900">
-            <span class="w-1/4 truncate">Oauth Provider</span>
-            <span class="w-1/4 truncate">User</span>
-            <span class="w-1/4 truncate">Created At</span>
-            <span class="w-1/4 truncate">Cluster Admin</span>
-        </div>
+        <div class="mt-2 overflow-x-auto w-full">
+            <table class="w-full text-left text-gray-700 bg-gray-50">
+                <thead>
+                    <tr>
+                        <th scope="col" class="py-2 px-4">Oauth Provider</th>
+                        <th scope="col" class="py-2 px-4">User</th>
+                        <th scope="col" class="py-2 px-4">Created At</th>
+                        <th scope="col" class="py-2 px-4">Cluster Admin</th>
+                    </tr>
+                </thead>
 
-        <For
-            each=move || users.get().users.into_iter().enumerate()
-            key=|(_, u)| (u.id, u.cluster_admin)
-            children=move |(i, user)| {
-                view! {
-                    <ClusterUserItemView i user search_action />
-                }
-            }
-        />
+                <tbody>
+                    <For
+                        each=move || users.get().users.into_iter().enumerate()
+                        key=|(_, u)| (u.id, u.cluster_admin)
+                        children=move |(i, user)| {
+                            view! {
+                                <ClusterUserItemView i user search_action />
+                            }
+                        }
+                    />
+                </tbody>
+            </table>
+        </div>
     }
 }
 
@@ -1634,15 +1642,17 @@ fn ClusterUserItemView(
         },
     };
     view! {
-        <div
-            class="flex items-center w-full px-4 py-2"
+        <tr
+            class="w-full bg-white"
             class=("border-t", move || i > 0)
         >
-            <div class="w-1/4 flex flex-row items-center">
-                {icon}
-                <p>{user.auth_provider.to_string()}</p>
-            </div>
-            <div class="w-1/4">
+            <td scope="row" class="px-4 py-2">
+                <div class="flex flex-row items-center">
+                    {icon}
+                    <p>{user.auth_provider.to_string()}</p>
+                </div>
+            </td>
+            <td class="px-4 py-2">
                 <div class="flex flex-row items-center">
                     <img
                         class="w-8 h-8 rounded-full mr-2"
@@ -1654,20 +1664,22 @@ fn ClusterUserItemView(
                         <p>{user.email}</p>
                     </div>
                 </div>
-            </div>
-            <div class="w-1/4 flex flex-col">
+            </td>
+            <td class="px-4 py-2">
                 <DatetimeModal time=user.created_at />
-            </div>
-            <div class="w-1/4 flex flex-row items-center justify-between">
+            </td>
+            <td class="px-4 py-2">
                 <p>{user.cluster_admin}</p>
+            </td>
+            <td class="px-4 py-2">
                 <button
                     class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
                     on:click=move |_| update_modal_hidden.set(false)
                 >
                     Update
                 </button>
-            </div>
-        </div>
+            </td>
+        </tr>
         <CreationModal title=format!("Update Cluster User") modal_hidden=update_modal_hidden action=update_action body=update_modal_body update_text=None updating_text=None create_button_hidden=false />
     }
 }

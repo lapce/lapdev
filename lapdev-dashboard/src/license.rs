@@ -26,10 +26,10 @@ pub fn LicenseView() -> impl IntoView {
 
     view! {
         <div class="border-b pb-4 mb-8">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Enterprise License
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage your Lapdev Enterprise License for the cluster"}</p>
+            <p class="text-gray-700">{"Manage your Lapdev Enterprise License for the cluster"}</p>
         </div>
 
         <UpdateLicenseView update_counter />
@@ -112,7 +112,7 @@ pub fn UpdateLicenseView(update_counter: RwSignal<i32>) -> impl IntoView {
     view! {
         <button
             type="button"
-            class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+            class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
             on:click=move |_| modal_hidden.set(false)
         >
             Update Enterprise License
@@ -191,13 +191,13 @@ pub fn SignLicenseView() -> impl IntoView {
     });
     view! {
         <div class="border-b pb-4 mb-8">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Sign a new Enterprise License
             </h5>
         </div>
         <button
             type="button"
-            class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+            class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
             on:click=move |_| modal_hidden.set(false)
         >
             Sign New License

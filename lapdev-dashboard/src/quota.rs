@@ -61,13 +61,13 @@ pub fn QuotaView() -> impl IntoView {
 
     view! {
         <div class="border-b pb-4 mb-8">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Organization Quota
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage your organization's quota settings"}</p>
+            <p class="text-gray-700">{"Manage your organization's quota settings"}</p>
         </div>
 
-        <div class="mt-2 flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
+        <div class="mt-2 flex items-center w-full px-4 py-2 text-gray-900 bg-gray-50">
             <span class="w-1/4 truncate">Quota Type</span>
             <span class="w-1/4 truncate">Quota Value</span>
             <div class="w-1/2 flex flex-row">
@@ -210,13 +210,13 @@ fn QuotaItemView(
                 </div>
                 <div class="w-2/3 flex flex-row items-center justify-between">
                     <div class="flex flex-row items-center">
-                        <div class="w-36 bg-gray-200 rounded-full h-1.5 dark:bg-gray-700">
+                        <div class="w-36 bg-gray-200 rounded-full h-1.5">
                             <div class={format!("{color} h-1.5 rounded-full")} style={format!("width: {}%", percentage.min(100))} > </div>
                         </div>
                         <span class="ml-2">{format!("{percentage}%")}</span>
                     </div>
                     <button
-                        class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-none dark:focus:ring-green-800"
+                        class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
                         on:click=move |_| update_modal_hidden.set(false)
                     >
                         Update

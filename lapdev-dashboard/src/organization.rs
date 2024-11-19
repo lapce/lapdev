@@ -100,9 +100,9 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
             class:hidden=move || hidden.get()
         >
         <div
-            class="absolute w-full mr-4 mt-2 z-10 bg-white divide-y divide-gray-100 rounded-xl border shadow w-full dark:bg-gray-700"
+            class="absolute w-full mr-4 mt-2 z-10 bg-white divide-y divide-gray-100 rounded-xl border shadow w-full"
         >
-            <ul class="py-2 text-sm text-gray-700 dark:text-gray-200">
+            <ul class="py-2 text-sm text-gray-700">
                 <For
                     each=move || login.get().flatten().map(|l| {
                         let mut orgs = l.all_organizations;
@@ -114,7 +114,7 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
                         view! {
                             <li>
                                 <a href="#"
-                                    class="flex items-center px-5 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                                    class="flex items-center px-5 hover:bg-gray-100"
                                     on:click=move |_| {
                                         hidden.set(true);
                                         create_action(move |org_id: &String| switch_org(org_id.clone())).dispatch(org.id.to_string());
@@ -131,7 +131,7 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
                 />
                 <li>
                     <a href="#"
-                        class="flex items-center justify-between px-5 py-4 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                        class="flex items-center justify-between px-5 py-4 hover:bg-gray-100"
                         on:click=move |_| { new_org_modal_hidden.set(false); hidden.set(true); }
                     >
                         Create New Organization
@@ -160,7 +160,7 @@ pub fn NewOrgModal(modal_hidden: RwSignal<bool>) -> impl IntoView {
             id="default-modal"
             tabindex="-1"
             aria-hidden="true"
-            class="bg-gray-900/50 dark:bg-gray-900/80 flex overflow-y-auto overflow-x-hidden fixed top-0 right-0 left-0 z-50 justify-center items-center w-full h-full"
+            class="bg-gray-900/50 flex overflow-y-auto overflow-x-hidden fixed top-0 right-0 left-0 z-50 justify-center items-center w-full h-full"
             class:hidden=move || modal_hidden.get()
             on:click=move |_| modal_hidden.set(true)
         >
@@ -168,14 +168,14 @@ pub fn NewOrgModal(modal_hidden: RwSignal<bool>) -> impl IntoView {
                 class="relative p-4 w-full max-w-2xl max-h-full"
                 on:click=move |e| e.stop_propagation()
             >
-                <div class="relative bg-white rounded-lg shadow dark:bg-gray-700">
-                    <div class="flex items-center justify-between p-4 md:p-5 border-b rounded-t dark:border-gray-600">
-                        <h3 class="text-xl font-semibold text-gray-900 dark:text-white">
+                <div class="relative bg-white rounded-lg shadow">
+                    <div class="flex items-center justify-between p-4 md:p-5 border-b rounded-t">
+                        <h3 class="text-xl font-semibold text-gray-900">
                             Create New Organization
                         </h3>
                         <button
                             type="button"
-                            class="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm w-8 h-8 ms-auto inline-flex justify-center items-center dark:hover:bg-gray-600 dark:hover:text-white" data-modal-hide="default-modal"
+                            class="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm w-8 h-8 ms-auto inline-flex justify-center items-center" data-modal-hide="default-modal"
                             on:click=move |_| modal_hidden.set(true)
                         >
                             <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 14">
@@ -186,19 +186,19 @@ pub fn NewOrgModal(modal_hidden: RwSignal<bool>) -> impl IntoView {
                     </div>
                     <div class="p-4 md:p-5 space-y-4">
                         <div>
-                            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Your Organization Name</label>
+                            <label class="block mb-2 text-sm font-medium text-gray-900">Your Organization Name</label>
                             <input
                                 prop:value={move || org_name.get()}
                                 on:input=move |ev| { org_name.set(event_target_value(&ev)); }
-                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                                 required
                             />
                         </div>
                     </div>
-                    <div class="flex items-center p-4 md:p-5 border-t border-gray-200 rounded-b dark:border-gray-600">
+                    <div class="flex items-center p-4 md:p-5 border-t border-gray-200 rounded-b">
                         <button
                             type="button"
-                            class="flex flex-row items-center text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 font-medium rounded-lg text-sm px-5 py-2.5 text-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                            class="flex flex-row items-center text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 font-medium rounded-lg text-sm px-5 py-2.5 text-center"
                             disabled=move || create_pending.get()
                             on:click=handle_create_org
                         >
@@ -213,7 +213,7 @@ pub fn NewOrgModal(modal_hidden: RwSignal<bool>) -> impl IntoView {
                         </button>
                         <button
                             type="button"
-                            class="ms-3 text-gray-500 bg-white hover:bg-gray-100 focus:ring-4 focus:outline-none focus:ring-blue-300 rounded-lg border border-gray-200 text-sm font-medium px-5 py-2.5 hover:text-gray-900 focus:z-10 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-500 dark:hover:text-white dark:hover:bg-gray-600 dark:focus:ring-gray-600"
+                            class="ms-3 text-gray-500 bg-white hover:bg-gray-100 focus:ring-4 focus:outline-none focus:ring-blue-300 rounded-lg border border-gray-200 text-sm font-medium px-5 py-2.5 hover:text-gray-900 focus:z-10"
                             disabled=move || create_pending.get()
                             on:click=move |_| modal_hidden.set(true)
                         >Cancel</button>
@@ -255,10 +255,10 @@ pub fn OrgSettings() -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
     view! {
         <div class="border-b pb-4 mb-8">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Organization Settings
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage your organization's settings"}</p>
+            <p class="text-gray-700">{"Manage your organization's settings"}</p>
         </div>
         <div class="mb-8">
             <div class="w-full p-8 border rounded-xl">
@@ -275,12 +275,12 @@ pub fn OrgSettings() -> impl IntoView {
                 class="mt-4 w-full p-8 border rounded-xl"
                 class:hidden=move || !login.with(|l| { l.as_ref() .and_then(|l| l.as_ref().map(|l| l.organization.role == UserRole::Owner)) .unwrap_or(false) })
             >
-                <h5 class="text-lg font-semibold dark:text-white">
+                <h5 class="text-lg font-semibold">
                     Delete Organization
                 </h5>
                 <button
                     type="button"
-                    class="flex items-center justify-center mt-2 px-5 py-2.5 text-sm font-medium text-white rounded-lg bg-red-600 hover:bg-red-800 focus:ring-4 focus:ring-red-300 dark:bg-red-600 dark:hover:bg-red-700 focus:outline-none dark:focus:ring-red-800"
+                    class="flex items-center justify-center mt-2 px-5 py-2.5 text-sm font-medium text-white rounded-lg bg-red-600 hover:bg-red-800 focus:ring-4 focus:ring-red-300 focus:outline-none"
                     on:click=move |_| modal_hidden.set(false)
                 >
                     Delete
@@ -320,7 +320,7 @@ pub fn DeleteOrgModal(
         })
     });
     view! {
-        <div tabindex="-1" class="bg-gray-900/50 dark:bg-gray-900/80 flex overflow-y-auto overflow-x-hidden fixed top-0 right-0 left-0 z-50 justify-center items-center w-full h-full"
+        <div tabindex="-1" class="bg-gray-900/50 flex overflow-y-auto overflow-x-hidden fixed top-0 right-0 left-0 z-50 justify-center items-center w-full h-full"
             class:hidden=move || modal_hidden.get()
             on:click=move |_| modal_hidden.set(true)
         >
@@ -328,9 +328,9 @@ pub fn DeleteOrgModal(
                 class="relative p-4 w-full max-w-md max-h-full"
                 on:click=move |e| e.stop_propagation()
             >
-                <div class="relative bg-white rounded-lg shadow dark:bg-gray-700">
+                <div class="relative bg-white rounded-lg shadow">
                     <button type="button"
-                        class="absolute top-3 end-2.5 text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm w-8 h-8 ms-auto inline-flex justify-center items-center dark:hover:bg-gray-600 dark:hover:text-white"
+                        class="absolute top-3 end-2.5 text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm w-8 h-8 ms-auto inline-flex justify-center items-center"
                         on:click=move |_| modal_hidden.set(true)
                     >
                         <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 14">
@@ -338,8 +338,8 @@ pub fn DeleteOrgModal(
                         </svg>
                         <span class="sr-only">Close modal</span>
                     </button>
-                    <div class="p-4 md:p-5 text-center text-gray-500 dark:text-gray-400">
-                        <svg class="mx-auto mb-4 text-gray-400 w-12 h-12 dark:text-gray-200" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
+                    <div class="p-4 md:p-5 text-center text-gray-500">
+                        <svg class="mx-auto mb-4 text-gray-400 w-12 h-12" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
                             <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 11V6m0 8h.01M19 10a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
                         </svg>
                         <h3 class="mb-5 text-lg font-normalflex flex-col items-center">
@@ -348,8 +348,8 @@ pub fn DeleteOrgModal(
                         </h3>
                         { move || if let Some(error) = error.get() {
                                 view! {
-                                    <div class="text-left p-4 mb-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                                        <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                                    <div class="text-left p-4 mb-4 rounded-lg bg-red-50">
+                                        <span class="text-sm font-medium text-red-800">{ error }</span>
                                     </div>
                                 }.into_view()
                             } else {
@@ -372,7 +372,7 @@ pub fn DeleteOrgModal(
                         />
                         <button
                             type="button"
-                            class="text-white bg-red-600 disabled:bg-red-400 hover:bg-red-800 focus:ring-4 focus:outline-none focus:ring-red-300 dark:focus:ring-red-800 font-medium rounded-lg text-sm inline-flex items-center px-5 py-2.5 text-center me-2"
+                            class="text-white bg-red-600 disabled:bg-red-400 hover:bg-red-800 focus:ring-4 focus:outline-none focus:ring-red-300 font-medium rounded-lg text-sm inline-flex items-center px-5 py-2.5 text-center me-2"
                             on:click=handle_delete
                             disabled=move || delete_pending.get() || {
                                 let confirmation = confirmation.get();
@@ -391,7 +391,7 @@ pub fn DeleteOrgModal(
                         </button>
                         <button
                             type="button"
-                            class="text-gray-500 bg-white hover:bg-gray-100 focus:ring-4 focus:outline-none focus:ring-gray-200 rounded-lg border border-gray-200 text-sm font-medium px-5 py-2.5 hover:text-gray-900 focus:z-10 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-500 dark:hover:text-white dark:hover:bg-gray-600 dark:focus:ring-gray-600"
+                            class="text-gray-500 bg-white hover:bg-gray-100 focus:ring-4 focus:outline-none focus:ring-gray-200 rounded-lg border border-gray-200 text-sm font-medium px-5 py-2.5 hover:text-gray-900 focus:z-10"
                             disabled=move || delete_pending.get()
                             on:click=move |_| modal_hidden.set(true)
                         >No, cancel</button>
@@ -521,8 +521,8 @@ fn AutoStartStopView() -> impl IntoView {
                     prop:checked=move || auto_start_enabled.get()
                     on:change=move |e| auto_start_enabled.set(event_target_checked(&e))
                 />
-                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">Auto Start Enabled</span>
+                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                <span class="ms-3 text-sm font-medium text-gray-900">Auto Start Enabled</span>
             </label>
         </div>
         <div class="mt-2">
@@ -531,8 +531,8 @@ fn AutoStartStopView() -> impl IntoView {
                     prop:checked=move || allow_workspace_change_auto_start.get()
                     on:change=move |e| allow_workspace_change_auto_start.set(event_target_checked(&e))
                 />
-                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">Allow Changing Auto Start on Workspace</span>
+                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                <span class="ms-3 text-sm font-medium text-gray-900">Allow Changing Auto Start on Workspace</span>
             </label>
         </div>
         <div class="mt-2">
@@ -541,8 +541,8 @@ fn AutoStartStopView() -> impl IntoView {
                     prop:checked=move || auto_stop_enabled.get()
                     on:change=move |e| auto_stop_enabled.set(event_target_checked(&e))
                 />
-                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">Auto Stop Enabled</span>
+                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                <span class="ms-3 text-sm font-medium text-gray-900">Auto Stop Enabled</span>
             </label>
         </div>
         <div class="mt-2">
@@ -551,15 +551,15 @@ fn AutoStartStopView() -> impl IntoView {
                     prop:checked=move || allow_workspace_change_auto_stop.get()
                     on:change=move |e| allow_workspace_change_auto_stop.set(event_target_checked(&e))
                 />
-                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">Allow Changing Auto Stop on Workspace</span>
+                <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                <span class="ms-3 text-sm font-medium text-gray-900">Allow Changing Auto Stop on Workspace</span>
             </label>
         </div>
         {
             move || if auto_stop_enabled.get() {
                 view! {
                     <div class="mt-2">
-                        <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Auto Stop Seconds</label>
+                        <label class="block mb-2 text-sm font-medium text-gray-900">Auto Stop Seconds</label>
                         <input
                             prop:value={move || auto_stop_seconds.get()}
                             on:input=move |ev| {
@@ -567,7 +567,7 @@ fn AutoStartStopView() -> impl IntoView {
                                     auto_stop_seconds.set(seconds);
                                 }
                             }
-                            class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                            class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                             // placeholder={placeholder}
                         />
                     </div>
@@ -612,7 +612,7 @@ fn UpdateNameView() -> impl IntoView {
                 on:input=move |ev| {
                     org_name.set(event_target_value(&ev));
                 }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                 // placeholder={placeholder}
             />
         </div>
@@ -664,17 +664,17 @@ pub fn OrgMembers() -> impl IntoView {
 
     view! {
         <div class="pb-4">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Organization Members
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"Manage your organization's members"}</p>
+            <p class="text-gray-700">{"Manage your organization's members"}</p>
             <div class="flex flex-col items-center justify-between py-4 gap-y-3 md:flex-row md:space-y-0 md:space-x-4">
                 <div class="w-full md:w-1/2">
                     <form class="flex items-center">
                         <label for="simple-search" class="sr-only">Filter Members</label>
                         <div class="relative w-full">
                         <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                             </svg>
                         </div>
@@ -682,7 +682,7 @@ pub fn OrgMembers() -> impl IntoView {
                             prop:value={move || member_filter.get()}
                             on:input=move |ev| { member_filter.set(event_target_value(&ev)); }
                             type="text"
-                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="Filter Members"
                         />
                         </div>
@@ -690,7 +690,7 @@ pub fn OrgMembers() -> impl IntoView {
                 </div>
                 <button
                     type="button"
-                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                     on:click=move |_| invite_member_modal_hidden.set(false)
                 >
                     Invite New Member
@@ -698,7 +698,7 @@ pub fn OrgMembers() -> impl IntoView {
             </div>
         </div>
 
-        <div class="flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
+        <div class="flex items-center w-full px-4 py-2 text-gray-900 bg-gray-50">
             <span class="w-1/3 truncate pr-2">Name</span>
             <span class="w-1/3 truncate">Joined</span>
             <span class="w-1/3 truncate pl-2 flex flex-row items-center">
@@ -813,7 +813,7 @@ fn MemberItemView(
             class="flex items-center w-full px-4 py-2"
             class=("border-t", move || i > 0)
         >
-            <span class="w-1/3 truncate pr-2 text-gray-900 dark:text-white flex flex-row items-center">
+            <span class="w-1/3 truncate pr-2 text-gray-900 flex flex-row items-center">
                 <img
                     class="w-8 h-8 rounded-full mr-2"
                     src={ member.avatar_url.clone().unwrap_or("https://flowbite.s3.amazonaws.com/blocks/marketing-ui/avatars/michael-gough.png".to_string()) }
@@ -858,11 +858,11 @@ fn UpdateMemberView(
     };
     let body = view! {
         <div>
-            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+            <label class="block mb-2 text-sm font-medium text-gray-900">
                 Role
             </label>
             <select
-                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                 on:change=select_on_change
             >
                 <For
@@ -936,7 +936,7 @@ fn MemberControl(
             on:focusout=on_focusout
         >
             <button
-                class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center"
                 type="button"
                 on:click=toggle_dropdown
             >
@@ -949,11 +949,11 @@ fn MemberControl(
                 class:hidden=move || dropdown_hidden.get()
                 class=("right-0", move || align_right)
             >
-                <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-44 dark:bg-gray-700">
+                <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-44">
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=move |_| {
                                 dropdown_hidden.set(true);
                                 update_member_modal_hidden.set(false);
@@ -965,7 +965,7 @@ fn MemberControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 text-red-700"
+                            class="block px-4 py-2 hover:bg-gray-100 text-red-700"
                             on:click=delete_member
                         >
                             Delete Member
@@ -1021,10 +1021,10 @@ fn InviteMemberView(invite_member_modal_hidden: RwSignal<bool>) -> impl IntoView
 
     let body = view! {
         <div>
-            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+            <label class="block mb-2 text-sm font-medium text-gray-900">
                 Invite URL
             </label>
-            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white">
+            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5">
                 { move || format!("{}/join/{}", window().location().origin().unwrap(), invitation.get()) }
             </span>
             <label class="block mt-2 text-sm font-medium text-yellow-500">

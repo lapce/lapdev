@@ -108,18 +108,18 @@ pub fn GitProviderView() -> impl IntoView {
             <div class="border-b pb-4">
                 <div class="flex items-end justify-between">
                     <div class="min-w-0 mr-4">
-                        <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+                        <h5 class="mr-3 text-2xl font-semibold">
                             Git Providers
                         </h5>
-                        <p class="text-gray-700 dark:text-gray-400">{"Connect to a git provider or manage your permissions of a git provider."}</p>
+                        <p class="text-gray-700">{"Connect to a git provider or manage your permissions of a git provider."}</p>
                     </div>
                 </div>
             </div>
 
             { move || if let Some(error) = error.get() {
                 view! {
-                    <div class="w-full mt-8 p-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                        <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                    <div class="w-full mt-8 p-4 rounded-lg bg-red-50">
+                        <span class="text-sm font-medium text-red-800">{ error }</span>
                     </div>
                 }.into_view()
             } else {
@@ -214,7 +214,7 @@ fn GitProviderControl(
                 on:focusout=on_focusout
             >
                 <button
-                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center"
                     type="button"
                     on:click=toggle_dropdown
                 >
@@ -226,11 +226,11 @@ fn GitProviderControl(
                     class="absolute pt-2 z-10 divide-y divide-gray-100 right-0"
                     class:hidden=move || dropdown_hidden.get()
                 >
-                    <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-44 dark:bg-gray-700">
+                    <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-44">
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=connect
                             // class:hidden=move || workspace_status != WorkspaceStatus::Running && workspace_status != WorkspaceStatus::Stopping
                         >
@@ -240,7 +240,7 @@ fn GitProviderControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=disconnect
                         >
                             Disconnect
@@ -249,7 +249,7 @@ fn GitProviderControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 text-red-700"
+                            class="block px-4 py-2 hover:bg-gray-100 text-red-700"
                             on:click=move |_| {
                                 dropdown_hidden.set(true);
                                 update_scope_modal_hidden.set(false);
@@ -352,7 +352,7 @@ pub fn UpdateScopeModal(
     let read_repo = create_rw_signal(read_repo);
 
     let body = view! {
-        <div class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+        <div class="block mb-2 text-sm font-medium text-gray-900">
             Turn this option on if you want to open private repo in Lapdev
         </div>
         <div
@@ -363,12 +363,12 @@ pub fn UpdateScopeModal(
                 id={format!("read_repo_{provider}")}
                 type="checkbox"
                 value=""
-                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300 dark:bg-gray-700 dark:border-gray-600 dark:focus:ring-blue-600 dark:ring-offset-gray-800"
+                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
                 prop:checked=move || read_repo.get()
                 on:change=move |e| read_repo.set(event_target_checked(&e))
             />
             </div>
-            <label for={format!("read_repo_{provider}")} class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">Can read private repo</label>
+            <label for={format!("read_repo_{provider}")} class="ml-2 text-sm font-medium text-gray-900">Can read private repo</label>
         </div>
     };
 

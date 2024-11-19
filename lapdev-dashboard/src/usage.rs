@@ -151,10 +151,10 @@ pub fn UsageView() -> impl IntoView {
 
     view! {
         <div class="border-b pb-4 mb-8">
-            <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+            <h5 class="mr-3 text-2xl font-semibold">
                 Organization Usage
             </h5>
-            <p class="text-gray-700 dark:text-gray-400">{"View your organization's usage"}</p>
+            <p class="text-gray-700">{"View your organization's usage"}</p>
         </div>
 
         <div class="pb-8">
@@ -164,7 +164,7 @@ pub fn UsageView() -> impl IntoView {
                 <Datepicker value=to_date />
                 <button
                     type="button"
-                    class="ml-4 px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="ml-4 px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                     on:click=move |_| get_action.dispatch(())
                 >
                     Search
@@ -172,28 +172,28 @@ pub fn UsageView() -> impl IntoView {
             </div>
             { move || if let Some(error) = error.get() {
                 view! {
-                    <div class="my-4 p-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                        <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                    <div class="my-4 p-4 rounded-lg bg-red-50">
+                        <span class="text-sm font-medium text-red-800">{ error }</span>
                     </div>
                 }.into_view()
             } else {
                 view!{}.into_view()
             }}
             <div class="mt-4 flex flex-row items-center justify-between">
-                <span class="text-sm font-normal text-gray-500 dark:text-gray-400">
+                <span class="text-sm font-normal text-gray-500">
                     {"Showing "}
-                    <span class="font-semibold text-gray-900 dark:text-white">
+                    <span class="font-semibold text-gray-900">
                         {move || format!("{}-{}", usage.with(|u| if u.records.is_empty() {0} else {1} + u.page * u.page_size ), usage.with(|u| if u.records.is_empty() {0} else {u.records.len() as u64} + u.page * u.page_size  ))}
                     </span>
                     {" of "}
-                    <span class="font-semibold text-gray-900 dark:text-white">{move || usage.with(|u| u.total_items)}</span>
+                    <span class="font-semibold text-gray-900">{move || usage.with(|u| u.total_items)}</span>
                 </span>
                 <p><span class="text-gray-500 mr-1">{"Total Cost:"}</span>{move || usage.with(|u| format_cost(u.total_cost))}</p>
                 <div class="flex flex-row items-center">
                     <p class="mr-2">{"rows per page"}</p>
 
                     <select
-                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-18 p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-18 p-2.5"
                         on:change=change_page_size
                     >
                         <option selected>10</option>
@@ -227,22 +227,29 @@ pub fn UsageView() -> impl IntoView {
                 </div>
             </div>
 
-            <div class="mt-2 flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
-                <span class="w-1/4 truncate">Resource Type</span>
-                <span class="w-1/4 truncate">Resource Name</span>
-                <span class="w-1/4 truncate">Cost</span>
-                <span class="w-1/4 truncate">User</span>
+            <div class="mt-2 overflow-x-auto w-full">
+                <table class="w-full text-left text-gray-700 bg-gray-50">
+                    <thead>
+                        <tr>
+                            <th scope="col" class="py-2 px-4">Resource Type</th>
+                            <th scope="col" class="py-2 px-4">Resource Name</th>
+                            <th scope="col" class="py-2 px-4">Cost</th>
+                            <th scope="col" class="py-2 px-4">User</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <For
+                            each=move || usage.get().records.into_iter().enumerate()
+                            key=move |(_, r)| (r.id, counter.get_untracked())
+                            children=move |(i, record)| {
+                                view! {
+                                    <RecordItemView i record />
+                                }
+                            }
+                        />
+                    </tbody>
+                </table>
             </div>
-
-            <For
-                each=move || usage.get().records.into_iter().enumerate()
-                key=move |(_, r)| (r.id, counter.get_untracked())
-                children=move |(i, record)| {
-                    view! {
-                        <RecordItemView i record />
-                    }
-                }
-            />
         </div>
     }
 }
@@ -270,23 +277,23 @@ fn RecordItemView(i: usize, record: UsageRecord) -> impl IntoView {
     );
 
     view! {
-        <div
-            class="flex items-center w-full px-4 py-2"
+        <tr
+            class="w-full bg-white"
             class=("border-t", move || i > 0)
         >
-            <div class="w-1/4 flex flex-col">
+            <td scope="row" class="px-4 py-2">
                 <p>{record.resource_kind}</p>
-            </div>
-            <div class="w-1/4 flex flex-col">
+            </td>
+            <td class="px-4 py-2">
                 <p>{record.resource_name}</p>
                 <p><span class="text-gray-500 mr-1">{"Machine Type:"}</span>{record.machine_type}</p>
-            </div>
-            <div class="w-1/4 flex flex-col">
+            </td>
+            <td class="px-4 py-2">
                 <p><span class="text-gray-500 mr-1">{"Duration:"}</span>{duration}</p>
                 <p><span class="text-gray-500 mr-1">{"Cost:"}</span>{ format_cost(record.cost) }</p>
-            </div>
-            <div class="w-1/4 flex flex-col">
-                <span class="mb-2 truncate pr-2 text-gray-900 dark:text-white flex flex-row items-center">
+            </td>
+            <td class="px-4 py-2">
+                <span class="mb-2 pr-2 text-gray-900 flex flex-row items-center">
                     <img
                         class="w-6 h-6 rounded-full mr-2"
                         src={ record.avatar.clone() }
@@ -295,8 +302,8 @@ fn RecordItemView(i: usize, record: UsageRecord) -> impl IntoView {
                     {record.user.clone()}
                 </span>
                 <DatetimeModal time=record.start />
-            </div>
-        </div>
+            </td>
+        </tr>
     }
 }
 

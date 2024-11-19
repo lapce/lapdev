@@ -278,11 +278,11 @@ fn OpenWorkspaceView(
     };
 
     let open_button_class = if workspace_status == WorkspaceStatus::Running {
-        "bg-green-700 dark:bg-green-600 hover:bg-green-800 dark:hover:bg-green-700"
+        "bg-green-700 hover:bg-green-800"
     } else {
-        "bg-green-200 dark:bg-green-700"
+        "bg-green-200"
     };
-    let open_button_class = format!("{open_button_class} py-2 text-sm font-medium text-white focus:ring-4 focus:ring-green-300 focus:outline-none dark:focus:ring-green-800");
+    let open_button_class = format!("{open_button_class} py-2 text-sm font-medium text-white focus:ring-4 focus:ring-green-300 focus:outline-none");
 
     let workspace_hostname = workspace_hostname.clone();
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
@@ -315,7 +315,7 @@ fn OpenWorkspaceView(
                 class:hidden=move || dropdown_hidden.get()
                 class=("right-0", move || align_right)
             >
-                <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-64 dark:bg-gray-700">
+                <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-64">
                     <li>
                         <a
                             href={
@@ -329,7 +329,7 @@ fn OpenWorkspaceView(
                                         }
                                     )
                             }
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             target="_blank"
                         >
                             Open in VSCode Desktop
@@ -474,7 +474,7 @@ fn WorkspaceControl(
                 on:focusout=on_focusout
             >
                 <button
-                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center"
                     type="button"
                     on:click=toggle_dropdown
                 >
@@ -487,11 +487,11 @@ fn WorkspaceControl(
                     class:hidden=move || dropdown_hidden.get()
                     class=("right-0", move || align_right)
                 >
-                    <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-44 dark:bg-gray-700">
+                    <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-44">
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=stop_workspace
                             class:hidden=move || workspace_status == WorkspaceStatus::Stopped
                         >
@@ -501,7 +501,7 @@ fn WorkspaceControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=start_workspace
                             class:hidden=move || workspace_status != WorkspaceStatus::Stopped
                         >
@@ -511,7 +511,7 @@ fn WorkspaceControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=pin_workspace
                             class:hidden=move || workspace_pinned
                         >
@@ -521,7 +521,7 @@ fn WorkspaceControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=unpin_workspace
                             class:hidden=move || !workspace_pinned
                         >
@@ -531,7 +531,7 @@ fn WorkspaceControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                            class="block px-4 py-2 hover:bg-gray-100"
                             on:click=rebuild_workspace
                         >
                             Rebuild
@@ -540,7 +540,7 @@ fn WorkspaceControl(
                     <li>
                         <a
                             href="#"
-                            class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 text-red-700"
+                            class="block px-4 py-2 hover:bg-gray-100 text-red-700"
                             on:click=delete_workspace
                         >
                             Delete
@@ -555,26 +555,18 @@ fn WorkspaceControl(
 
 fn workspace_status_class(status: &WorkspaceStatus) -> &str {
     match status {
-        WorkspaceStatus::Running => {
-            "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300"
-        }
+        WorkspaceStatus::Running => "bg-green-100 text-green-800",
         WorkspaceStatus::Failed
         | WorkspaceStatus::Deleting
         | WorkspaceStatus::DeleteFailed
-        | WorkspaceStatus::StopFailed => {
-            "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300"
-        }
+        | WorkspaceStatus::StopFailed => "bg-red-100 text-red-800",
         WorkspaceStatus::New
         | WorkspaceStatus::Building
         | WorkspaceStatus::PrebuildBuilding
         | WorkspaceStatus::PrebuildCopying
         | WorkspaceStatus::Stopping
-        | WorkspaceStatus::Starting => {
-            "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300"
-        }
-        WorkspaceStatus::Stopped | WorkspaceStatus::Deleted => {
-            "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300"
-        }
+        | WorkspaceStatus::Starting => "bg-yellow-100 text-yellow-800",
+        WorkspaceStatus::Stopped | WorkspaceStatus::Deleted => "bg-gray-100 text-gray-800",
     }
 }
 
@@ -640,8 +632,8 @@ pub fn WorkspaceItem(
     let status_class = workspace_status_class(&workspace.status);
     let status_class = format!("{status_class} text-sm font-medium me-2 px-2.5 py-0.5 rounded");
     view! {
-        <div class="w-full mb-8 bg-white rounded-lg border border-gray-200 shadow-lg dark:border-gray-700 dark:bg-gray-800">
-            <div class="flex flex-col items-center  md:flex-row w-full">
+        <div class="w-full mb-8 bg-white rounded-lg border border-gray-200 shadow-lg">
+            <div class="flex flex-col items-center w-full lg:flex-row">
                 <div class="lg:w-1/3 flex flex-row">
                     <a href={ workspace.repo_url.clone() } target="_blank">
                         <img
@@ -650,24 +642,24 @@ pub fn WorkspaceItem(
                         />
                     </a>
                 </div>
-                <div class="md:w-1/3 flex flex-col justify-center">
+                <div class="lg:w-1/3 flex flex-col justify-center">
                     <div class="flex flex-col p-4">
                         <a href={ format!("/workspaces/{}", workspace.name) }>
                             <span class="font-semibold" href={ format!("/workspaces/{}", workspace.name) }>{ move || workspace.name.clone() }</span>
-                            <span href={ workspace.repo_url.clone() } target="_blank" class="flex flex-row items-center text-sm text-gray-700 dark:text-gray-400 mt-2">
+                            <span href={ workspace.repo_url.clone() } target="_blank" class="flex flex-row items-center text-sm text-gray-700 mt-2">
                                 <svg class="w-4 h-4 mr-1" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                     <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.2 9.8a3.4 3.4 0 0 0-4.8 0L5 13.2A3.4 3.4 0 0 0 9.8 18l.3-.3m-.3-4.5a3.4 3.4 0 0 0 4.8 0L18 9.8A3.4 3.4 0 0 0 13.2 5l-1 1"/>
                                 </svg>
                                 <p>{ move || workspace.repo_url.clone() }</p>
                             </span>
-                            <span class="flex flex-row truncate items-center text-sm text-gray-700 dark:text-gray-400 mt-2">
+                            <span class="flex flex-row truncate items-center text-sm text-gray-700 mt-2">
                                 <svg class="w-3 h-3 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 20">
                                     <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5v10M3 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6-3.976-2-.01A4.015 4.015 0 0 1 3 7m10 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"/>
                                 </svg>
                                 <span class="mr-2">{workspace.branch}</span>
                                 <span>{workspace.commit[..7].to_string()}</span>
                             </span>
-                            <span class="mt-2 text-sm text-gray-800 inline-flex items-center rounded me-2 text-gray-700 dark:text-gray-400">
+                            <span class="mt-2 text-sm text-gray-800 inline-flex items-center rounded me-2 text-gray-700">
                                 <svg class="w-2.5 h-2.5 mr-2.5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                                 <path d="M10 0a10 10 0 1 0 10 10A10.011 10.011 0 0 0 10 0Zm3.982 13.982a1 1 0 0 1-1.414 0l-3.274-3.274A1.012 1.012 0 0 1 9 10V6a1 1 0 0 1 2 0v3.586l2.982 2.982a1 1 0 0 1 0 1.414Z"/>
                                 </svg>
@@ -676,14 +668,14 @@ pub fn WorkspaceItem(
                         </a>
                     </div>
                 </div>
-                <div class="md:w-1/3 flex flex-row items-center justify-between">
+                <div class="lg:w-1/3 flex flex-col xl:flex-row items-center justify-between">
                     <div class="flex flex-row items-center">
                         <span
                             class=status_class
                         >{ move || workspace.status.to_string() }</span>
                     </div>
                     <div class="flex flex-row items-center p-4 justify-center">
-                        <div class="w-4 h-4 mr-4">
+                        <div class="w-4 h-4 mr-6">
                             <svg
                                 class:hidden = move || !workspace.pinned
                                 class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"
@@ -715,7 +707,7 @@ pub fn WorkspaceItem(
                                 <div class="md:w-1/3 flex flex-col justify-center">
                                     <div class="flex flex-col p-4">
                                         <span class="font-semibold">{ws_service.name.clone()}</span>
-                                        <div class="flex flex-row items-center text-sm text-gray-700 dark:text-gray-400 mt-2">
+                                        <div class="flex flex-row items-center text-sm text-gray-700 mt-2">
                                             <svg class="w-4 h-4 mr-1" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16">
                                                 <path fill-rule="evenodd" d="M6 3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5v1A1.5 1.5 0 0 1 8.5 6v1H11a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V8h-5v.5a.5.5 0 0 1-1 0v-1A.5.5 0 0 1 5 7h2.5V6A1.5 1.5 0 0 1 6 4.5zM8.5 5a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5zM3 11.5A1.5 1.5 0 0 1 4.5 10h1A1.5 1.5 0 0 1 7 11.5v1A1.5 1.5 0 0 1 5.5 14h-1A1.5 1.5 0 0 1 3 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5zm4.5.5a1.5 1.5 0 0 1 1.5-1.5h1a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-1.5 1.5h-1A1.5 1.5 0 0 1 9 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5z"/>
                                             </svg>
@@ -855,19 +847,19 @@ pub fn Workspaces() -> impl IntoView {
             <div class="mx-auto w-full">
                 <div class="flex-row items-center justify-between space-y-3 sm:flex sm:space-y-0 sm:space-x-4">
                     <div>
-                        <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+                        <h5 class="mr-3 text-2xl font-semibold">
                             All Workspaces
                         </h5>
-                        <p class="text-gray-700 dark:text-gray-400">Manage all your existing workspaces or add a new one</p>
+                        <p class="text-gray-700">Manage all your existing workspaces or add a new one</p>
                     </div>
                 </div>
-                <div class="flex flex-col items-center justify-between py-4 space-y-3 md:flex-row md:space-y-0 md:space-x-4">
-                    <div class="w-full md:w-1/2">
+                <div class="flex flex-row items-center justify-between py-4 space-x-4">
+                    <div class="w-1/2">
                         <form class="flex items-center">
                             <label for="simple-search" class="sr-only">Filter Workspaces</label>
                             <div class="relative w-full">
                             <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                                <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                                 <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                                 </svg>
                             </div>
@@ -875,7 +867,7 @@ pub fn Workspaces() -> impl IntoView {
                                 prop:value={move || workspace_filter.get()}
                                 on:input=move |ev| { workspace_filter.set(event_target_value(&ev)); }
                                 type="text"
-                                class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                                class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="Filter Workspaces"
                                 required=""
                             />
@@ -884,7 +876,7 @@ pub fn Workspaces() -> impl IntoView {
                     </div>
                     <button
                         type="button"
-                        class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                        class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                         on:click=new_workspace
                     >
                         New Workspace
@@ -894,8 +886,8 @@ pub fn Workspaces() -> impl IntoView {
 
             { move || if let Some(error) = error.get() {
                 view! {
-                    <div class="w-full my-4 p-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                        <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                    <div class="w-full my-4 p-4 rounded-lg bg-red-50">
+                        <span class="text-sm font-medium text-red-800">{ error }</span>
                     </div>
                 }.into_view()
             } else {
@@ -1035,11 +1027,11 @@ pub fn NewWorkspaceModal(
     let no_project_view = move || {
         view! {
             <div>
-                <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Your repository url</label>
+                <label class="block mb-2 text-sm font-medium text-gray-900">Your repository url</label>
                 <input
                     prop:value={move || repo_url.get()}
                     on:input=move |ev| { repo_url.set(event_target_value(&ev)); }
-                    class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                    class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                     placeholder="https://github.com/owner/repo"
                     required
                 />
@@ -1058,27 +1050,27 @@ pub fn NewWorkspaceModal(
                     let branches = project_info.branches.clone();
                     view! {
                         <div>
-                            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                            <label class="block mb-2 text-sm font-medium text-gray-900">
                                 Project Name
                             </label>
-                            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white">
+                            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5">
                                 { project_info.project.name }
                             </span>
                         </div>
                         <div>
-                            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                            <label class="block mb-2 text-sm font-medium text-gray-900">
                                 Project Repository
                             </label>
-                            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white">
+                            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5">
                                 { project_info.project.repo_url }
                             </span>
                         </div>
                         <div>
-                            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                            <label class="block mb-2 text-sm font-medium text-gray-900">
                                 Branch
                             </label>
                             <select
-                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                                 on:change=select_on_change
                             >
                                 <For
@@ -1096,10 +1088,10 @@ pub fn NewWorkspaceModal(
                             </select>
                         </div>
                         <div>
-                            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                            <label class="block mb-2 text-sm font-medium text-gray-900">
                                 Prebuild Status
                             </label>
-                            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white">
+                            <span class="bg-gray-50 text-gray-900 text-sm rounded-lg block w-full p-2.5">
                                 {
                                     move || if let Some(branch) = current_branch.get() {
                                         project_info.prebuilds.get(&branch.name).and_then(|prebuild| {
@@ -1248,13 +1240,13 @@ pub fn WorkspaceDetails() -> impl IntoView {
     });
     view! {
         <section class="w-full flex flex-col">
-            <a href="/workspaces" class="text-sm inline-flex items-center text-gray-700 dark:text-gray-400">
+            <a href="/workspaces" class="text-sm inline-flex items-center text-gray-700">
                 <svg class="w-2 h-2 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 10">
                 <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5H1m0 0 4 4M1 5l4-4"/>
                 </svg>
                 Back to Workspace List
             </a>
-            <h5 class="text-semibold text-2xl dark:text-white mt-4">
+            <h5 class="text-semibold text-2xl mt-4">
                 { local_name.clone() }
             </h5>
             <Show
@@ -1291,7 +1283,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         <svg class="w-4 h-4 mr-1" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                             <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.2 9.8a3.4 3.4 0 0 0-4.8 0L5 13.2A3.4 3.4 0 0 0 9.8 18l.3-.3m-.3-4.5a3.4 3.4 0 0 0 4.8 0L18 9.8A3.4 3.4 0 0 0 13.2 5l-1 1"/>
                                         </svg>
-                                        <span class="mr-1 text-gray-500 dark:text-gray-500">{"Repository URL:"}</span>
+                                        <span class="mr-1 text-gray-500">{"Repository URL:"}</span>
                                         <p>{ move || info.repo_url.clone() }</p>
                                     </a>
                                 </span>
@@ -1299,7 +1291,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                     <svg class="w-3 h-3 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 20">
                                         <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5v10M3 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6-3.976-2-.01A4.015 4.015 0 0 1 3 7m10 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500 dark:text-gray-500">{"Branch:"}</span>
+                                    <span class="mr-1 text-gray-500">{"Branch:"}</span>
                                     <span class="mr-2">{ info.branch }</span>
                                     <span>{ info.commit }</span>
                                 </span>
@@ -1308,7 +1300,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         <path d="M6 9a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3A.5.5 0 0 1 6 9M3.854 4.146a.5.5 0 1 0-.708.708L4.793 6.5 3.146 8.146a.5.5 0 1 0 .708.708l2-2a.5.5 0 0 0 0-.708z"/>
                                         <path d="M2 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500 dark:text-gray-500">{"SSH Connection:"}</span>
+                                    <span class="mr-1 text-gray-500">{"SSH Connection:"}</span>
                                     {
                                         let workspace_name = workspace_name.clone();
                                         let workspace_hostname = workspace_hostname.clone();
@@ -1331,7 +1323,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         <path d="M5 11.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0M14 3a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM2 2a2 2 0 0 0-2 2v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
                                         <path d="M5 4.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500 dark:text-gray-500">{"Machine Type:"}</span>
+                                    <span class="mr-1 text-gray-500">{"Machine Type:"}</span>
                                     {
                                         machine_types.get()
                                             .and_then(|m|
@@ -1343,14 +1335,14 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
                                     <svg class="w-2.5 h-2.5 mr-2" xmlns="http://www.w3.org/2000/svg" width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>
-                                    <span class="mr-1 text-gray-500 dark:text-gray-500">{"Pinned:"}</span>
+                                    <span class="mr-1 text-gray-500">{"Pinned:"}</span>
                                     <span>{ info.pinned }</span>
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
                                     <svg class="w-2.5 h-2.5 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                                     <path d="M10 0a10 10 0 1 0 10 10A10.011 10.011 0 0 0 10 0Zm3.982 13.982a1 1 0 0 1-1.414 0l-3.274-3.274A1.012 1.012 0 0 1 9 10V6a1 1 0 0 1 2 0v3.586l2.982 2.982a1 1 0 0 1 0 1.414Z"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500 dark:text-gray-500">{"Created:"}</span>
+                                    <span class="mr-1 text-gray-500">{"Created:"}</span>
                                     <DatetimeModal time=info.created_at />
                                 </span>
                                 <div class="mt-4">
@@ -1367,8 +1359,8 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                 </div>
                                 { move || if let Some(error) = error.get() {
                                     view! {
-                                        <div class="w-full my-4 p-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                                            <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                                        <div class="w-full my-4 p-4 rounded-lg bg-red-50">
+                                            <span class="text-sm font-medium text-red-800">{ error }</span>
                                         </div>
                                     }.into_view()
                                 } else {
@@ -1490,7 +1482,7 @@ fn WorkspaceServiceView(
                             <svg class="w-4 h-4 mr-1" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16">
                                 <path fill-rule="evenodd" d="M6 3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5v1A1.5 1.5 0 0 1 8.5 6v1H11a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V8h-5v.5a.5.5 0 0 1-1 0v-1A.5.5 0 0 1 5 7h2.5V6A1.5 1.5 0 0 1 6 4.5zM8.5 5a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5zM3 11.5A1.5 1.5 0 0 1 4.5 10h1A1.5 1.5 0 0 1 7 11.5v1A1.5 1.5 0 0 1 5.5 14h-1A1.5 1.5 0 0 1 3 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5zm4.5.5a1.5 1.5 0 0 1 1.5-1.5h1a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-1.5 1.5h-1A1.5 1.5 0 0 1 9 12.5zm1.5-.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5z"/>
                             </svg>
-                            <span class="text-gray-500 dark:text-gray-500">{"Service"}</span>
+                            <span class="text-gray-500">{"Service"}</span>
                         </div>
                         { ws_service.service.clone() }
                     </div>
@@ -1501,7 +1493,7 @@ fn WorkspaceServiceView(
                             <path d="M6 9a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3A.5.5 0 0 1 6 9M3.854 4.146a.5.5 0 1 0-.708.708L4.793 6.5 3.146 8.146a.5.5 0 1 0 .708.708l2-2a.5.5 0 0 0 0-.708z"/>
                             <path d="M2 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
                         </svg>
-                        <span class="text-gray-500 dark:text-gray-500">{"SSH Connection"}</span>
+                        <span class="text-gray-500">{"SSH Connection"}</span>
                     </div>
                     <WorkspaceSSHConnView
                         name=ws_service.name.clone()
@@ -1564,15 +1556,16 @@ pub fn WorkspaceTabView(
     build_error: Option<RepobuildError>,
 ) -> impl IntoView {
     let tab_kind = create_rw_signal(TabKind::Port);
-    let active_class = "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active dark:text-blue-500 dark:border-blue-500";
-    let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300 dark:hover:text-gray-300";
+    let active_class =
+        "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active";
+    let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300";
     let change_tab = move |kind: TabKind| {
         tab_kind.set(kind);
     };
 
     view! {
         <div
-            class="mt-8 text-sm font-medium text-center text-gray-500 border-b border-gray-200 dark:text-gray-400 dark:border-gray-700"
+            class="mt-8 text-sm font-medium text-center text-gray-500 border-b border-gray-200"
         >
             <ul class="flex flex-wrap -mb-px">
                 <li class="me-2">
@@ -1594,7 +1587,7 @@ pub fn WorkspaceTabView(
             </ul>
         </div>
         <div
-            class="text-gray-600 dark:text-gray-400"
+            class="text-gray-600"
             class=("min-h-32", move || show_build_error)
         >
             <div class:hidden=move || tab_kind.get() != TabKind::Port>
@@ -1698,7 +1691,7 @@ pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl Into
     let error = create_rw_signal(None);
 
     view! {
-        <p class="mt-2 py-2 text-sm text-gray-900 dark:text-gray-400">Exposed ports of your workspace</p>
+        <p class="mt-2 py-2 text-sm text-gray-900">Exposed ports of your workspace</p>
         <div class="text-sm text-gray-500">
             <p>Only you can access the ports by default.</p>
             <p>If you make the port shared, all members in the same organisation can access it.</p>
@@ -1706,8 +1699,8 @@ pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl Into
         </div>
         { move || if let Some(success) = success.get() {
             view! {
-                <div class="mt-4 p-4 rounded-lg bg-green-50 dark:bg-gray-800 w-full">
-                    <span class="text-sm font-medium text-green-800 dark:text-green-400">{ success }</span>
+                <div class="mt-4 p-4 rounded-lg bg-green-50 w-full">
+                    <span class="text-sm font-medium text-green-800">{ success }</span>
                 </div>
             }.into_view()
         } else {
@@ -1817,7 +1810,7 @@ fn WorkspacePortView(
                     Open
                 </a>
                 <button
-                    class="ml-4 flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="ml-4 flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                     on:click=move |_| action.dispatch(())
                 >
                     Update

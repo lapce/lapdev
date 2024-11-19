@@ -157,7 +157,7 @@ pub fn AuditLogView() -> impl IntoView {
                 <Datepicker value=to_date />
                 <button
                     type="button"
-                    class="ml-4 px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="ml-4 px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                     on:click=move |_| get_action.dispatch(())
                 >
                     Search
@@ -165,8 +165,8 @@ pub fn AuditLogView() -> impl IntoView {
             </div>
             { move || if let Some(error) = error.get() {
                 view! {
-                    <div class="my-4 p-4 rounded-lg bg-red-50 dark:bg-gray-800 ">
-                        <span class="text-sm font-medium text-red-800 dark:text-red-400">{ error }</span>
+                    <div class="my-4 p-4 rounded-lg bg-red-50">
+                        <span class="text-sm font-medium text-red-800">{ error }</span>
                     </div>
                 }.into_view()
             } else {
@@ -174,19 +174,19 @@ pub fn AuditLogView() -> impl IntoView {
             }}
 
             <div class="mt-4 flex flex-row items-center justify-between">
-                <span class="text-sm font-normal text-gray-500 dark:text-gray-400">
+                <span class="text-sm font-normal text-gray-500">
                     {"Showing "}
-                    <span class="font-semibold text-gray-900 dark:text-white">
+                    <span class="font-semibold text-gray-900">
                         {move || format!("{}-{}", audit_logs.with(|a| if a.records.is_empty() {0} else {1} + a.page * a.page_size ), audit_logs.with(|a| if a.records.is_empty() {0} else {a.records.len() as u64} + a.page * a.page_size  ))}
                     </span>
                     {" of "}
-                    <span class="font-semibold text-gray-900 dark:text-white">{move || audit_logs.with(|a| a.total_items)}</span>
+                    <span class="font-semibold text-gray-900">{move || audit_logs.with(|a| a.total_items)}</span>
                 </span>
                 <div class="flex flex-row items-center">
                     <p class="mr-2">{"rows per page"}</p>
 
                     <select
-                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-18 p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-18 p-2.5"
                         on:change=change_page_size
                     >
                         <option selected>10</option>
@@ -220,22 +220,29 @@ pub fn AuditLogView() -> impl IntoView {
                 </div>
             </div>
 
-            <div class="mt-2 flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
-                <span class="w-1/4 truncate">Time</span>
-                <span class="w-1/4 truncate">User</span>
-                <span class="w-1/4 truncate">Action</span>
-                <span class="w-1/4 truncate">Resource</span>
+            <div class="mt-2 overflow-x-auto w-full">
+                <table class="w-full text-left text-gray-700 bg-gray-50">
+                    <thead>
+                        <tr>
+                            <th scope="col" class="py-2 px-4">Time</th>
+                            <th scope="col" class="py-2 px-4">User</th>
+                            <th scope="col" class="py-2 px-4">Action</th>
+                            <th scope="col" class="py-2 px-4">Resource</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <For
+                            each=move || audit_logs.get().records.into_iter().enumerate()
+                            key=|(_, a)| a.id
+                            children=move |(i, record)| {
+                                view! {
+                                    <RecordItemView i record />
+                                }
+                            }
+                        />
+                    </tbody>
+                </table>
             </div>
-
-            <For
-                each=move || audit_logs.get().records.into_iter().enumerate()
-                key=|(_, a)| a.id
-                children=move |(i, record)| {
-                    view! {
-                        <RecordItemView i record />
-                    }
-                }
-            />
         </div>
     }
 }
@@ -243,30 +250,30 @@ pub fn AuditLogView() -> impl IntoView {
 #[component]
 fn RecordItemView(i: usize, record: AuditLogRecord) -> impl IntoView {
     view! {
-        <div
-            class="flex items-center w-full px-4 py-2"
+        <tr
+            class="w-full bg-white"
             class=("border-t", move || i > 0)
         >
-            <div class="w-1/4 flex flex-col">
+            <td scope="row" class="px-4 py-2">
                 <DatetimeModal time=record.time />
-            </div>
-            <div class="w-1/4 flex flex-col">
-                <span class="truncate text-gray-900 dark:text-white flex flex-row items-center">
+            </td>
+            <td class="px-4 py-2">
+                <div class="text-gray-900 flex flex-row items-center">
                     <img
                         class="w-6 h-6 rounded-full mr-2"
                         src={ record.avatar.clone() }
                         alt="user photo"
                     />
                     {record.user.clone()}
-                </span>
-            </div>
-            <div class="w-1/4 flex flex-col">
+                </div>
+            </td>
+            <td class="px-4 py-2">
                 <p>{record.action}</p>
-            </div>
-            <div class="w-1/4 flex flex-col">
+            </td>
+            <td class="px-4 py-2">
                 <p>{record.resource_kind}</p>
                 <p class="text-gray-500">{record.resource_name}</p>
-            </div>
-        </div>
+            </td>
+        </tr>
     }
 }

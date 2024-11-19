@@ -44,7 +44,7 @@ pub fn SshKeyItem(key: SshKey, update_counter: RwSignal<i32>) -> impl IntoView {
             <span class="w-3/6 truncate p-2">{key.key}</span>
             <span class="w-1/6 truncate p-2">{key.created_at.to_rfc2822()}</span>
             <div class="w-1/6 flex justify-end items-center">
-                <button class="px-4 py-2 text-sm text-white rounded-lg bg-red-700 hover:bg-red-800 focus:ring-4 focus:ring-red-300 dark:bg-red-600 dark:hover:bg-red-700 focus:outline-none dark:focus:ring-red-800"
+                <button class="px-4 py-2 text-sm text-white rounded-lg bg-red-700 hover:bg-red-800 focus:ring-4 focus:ring-red-300 focus:outline-none"
                     on:click=move |_| delete_modal_hidden.set(false)
                 >Delete</button>
             </div>
@@ -72,10 +72,10 @@ pub fn SshKeys() -> impl IntoView {
             <div class="border-b pb-4">
                 <div class="flex items-end justify-between">
                     <div class="min-w-0 mr-4">
-                        <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+                        <h5 class="mr-3 text-2xl font-semibold">
                             SSH Keys
                         </h5>
-                        <p class="text-gray-700 dark:text-gray-400">{"Manage your SSH keys. Add your SSH public keys to your account will enable you to SSH into all your workspaces."}</p>
+                        <p class="text-gray-700">{"Manage your SSH keys. Add your SSH public keys to your account will enable you to SSH into all your workspaces."}</p>
                     </div>
                     <NewSshKey update_counter />
                 </div>
@@ -139,12 +139,12 @@ pub fn NewSshKey(update_counter: RwSignal<i32>) -> impl IntoView {
     let body = view! {
         <CreationInput label="Name".to_string() value=name placeholder="".to_string() />
         <div>
-            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">SSH Public Key</label>
+            <label class="block mb-2 text-sm font-medium text-gray-900">SSH Public Key</label>
             <textarea
                 rows=4
                 prop:value={move || key.get()}
                 on:input=move |ev| { key.set(event_target_value(&ev)); }
-                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
             />
         </div>
     };
@@ -152,7 +152,7 @@ pub fn NewSshKey(update_counter: RwSignal<i32>) -> impl IntoView {
     view! {
         <button
             type="button"
-            class="flex items-center justify-center whitespace-nowrap px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+            class="flex items-center justify-center whitespace-nowrap px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
             on:click=move |_| modal_hidden.set(false)
         >
             New SSH Key

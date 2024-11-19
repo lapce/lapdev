@@ -153,7 +153,7 @@ fn ProjectControl(
     view! {
         <div class="flex flex-row items-center">
             <button
-                class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-none dark:focus:ring-green-800"
+                class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
                 on:click=handle_create_workspace
             >
                 New Workspace
@@ -163,7 +163,7 @@ fn ProjectControl(
                 on:focusout=on_focusout
             >
                 <button
-                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center"
                     type="button"
                     on:click=toggle_dropdown
                 >
@@ -176,11 +176,11 @@ fn ProjectControl(
                     class:hidden=move || hidden.get()
                     class=("right-0", move || align_right)
                 >
-                    <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white rounded-lg border shadow w-44 dark:bg-gray-700">
+                    <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-44">
                         <li>
                             <a
                                 href="#"
-                                class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 text-red-700"
+                                class="block px-4 py-2 hover:bg-gray-100 text-red-700"
                                 on:click=move |_| delete_modal_hidden.set(false)
                             >
                                 Delete
@@ -299,7 +299,7 @@ pub fn ProjectItem(
     let delete_action =
         create_action(move |_| delete_project(id, delete_modal_hidden, Some(update_counter)));
     view! {
-        <div class="flex flex-col items-center bg-white border border-gray-200 rounded-lg shadow-lg md:flex-row w-full dark:border-gray-700 dark:bg-gray-800">
+        <div class="flex flex-col items-center bg-white border border-gray-200 rounded-lg shadow-lg lg:flex-row w-full">
             <div class="lg:w-1/3 flex flex-row">
                 <a href={ project.repo_url.clone() } target="_blank">
                     <img
@@ -308,17 +308,17 @@ pub fn ProjectItem(
                     />
                 </a>
             </div>
-            <div class="md:w-1/3 flex flex-col justify-center">
+            <div class="lg:w-1/3 flex flex-col justify-center">
                 <div class="flex flex-col p-4">
                     <a href={ format!("/projects/{}", project.id) }>
                         <span class="font-semibold">{ project.name.clone() }</span>
-                        <span class="flex flex-row items-center text-sm text-gray-700 dark:text-gray-400 mt-2">
+                        <span class="flex flex-row items-center text-sm text-gray-700 mt-2">
                             <svg class="w-3 h-3 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 20">
                                 <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5v10M3 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6-3.976-2-.01A4.015 4.015 0 0 1 3 7m10 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"/>
                             </svg>
                             <p>{ move || project.repo_url.clone() }</p>
                         </span>
-                        <span class="mt-2 text-sm text-gray-800 inline-flex items-center rounded me-2 text-gray-700 dark:text-gray-400">
+                        <span class="mt-2 text-sm text-gray-800 inline-flex items-center rounded me-2 text-gray-700">
                             <svg class="w-2.5 h-2.5 mr-2.5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                             <path d="M10 0a10 10 0 1 0 10 10A10.011 10.011 0 0 0 10 0Zm3.982 13.982a1 1 0 0 1-1.414 0l-3.274-3.274A1.012 1.012 0 0 1 9 10V6a1 1 0 0 1 2 0v3.586l2.982 2.982a1 1 0 0 1 0 1.414Z"/>
                             </svg>
@@ -327,7 +327,7 @@ pub fn ProjectItem(
                     </a>
                 </div>
             </div>
-            <div class="md:w-1/3 flex flex-row items-center p-4 justify-center">
+            <div class="lg:w-1/3 flex flex-row items-center p-4 justify-center">
                 <ProjectControl project_info=Some(local_project) delete_modal_hidden project_id=id align_right=true new_workspace_modal_hidden create_workspace_project />
             </div>
         </div>
@@ -373,19 +373,19 @@ pub fn Projects() -> impl IntoView {
         <section class="w-full h-full flex flex-col">
             <div class="flex-row items-center justify-between space-y-3 sm:flex sm:space-y-0 sm:space-x-4">
                 <div>
-                    <h5 class="mr-3 text-2xl font-semibold dark:text-white">
+                    <h5 class="mr-3 text-2xl font-semibold">
                         All Projects
                     </h5>
-                    <p class="text-gray-700 dark:text-gray-400">Manage all your existing projects or add a new one</p>
+                    <p class="text-gray-700">Manage all your existing projects or add a new one</p>
                 </div>
             </div>
-            <div class="flex flex-col items-center justify-between py-4 space-y-3 md:flex-row md:space-y-0 md:space-x-4">
-                <div class="w-full md:w-1/2">
+            <div class="flex flex-row items-center justify-between py-4 space-x-4">
+                <div class="w-1/2">
                     <form class="flex items-center">
                         <label for="simple-search" class="sr-only">Filter Projects</label>
                         <div class="relative w-full">
                         <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewbox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                             </svg>
                         </div>
@@ -393,7 +393,7 @@ pub fn Projects() -> impl IntoView {
                             prop:value={move || project_filter.get()}
                             on:input=move |ev| { project_filter.set(event_target_value(&ev)); }
                             type="text"
-                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                            class="bg-white block w-full p-2 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="Filter Projects"
                         />
                         </div>
@@ -401,7 +401,7 @@ pub fn Projects() -> impl IntoView {
                 </div>
                 <button
                     type="button"
-                    class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800"
+                    class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
                     on:click=move |_| new_project_modal_hidden.set(false)
                 >
                     New Project
@@ -715,7 +715,7 @@ pub fn ProjectBranchControl(
     view! {
         <div class="flex flex-row items-center py-1">
             <button
-                class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-none dark:focus:ring-green-800"
+                class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
                 on:click=handle_create_workspace
             >
                 New Workspace
@@ -725,7 +725,7 @@ pub fn ProjectBranchControl(
                 on:focusout=on_focusout
             >
                 <button
-                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                    class="hover:bg-gray-100 focus:outline-none font-medium rounded-lg text-sm px-2.5 py-2.5 text-center inline-flex items-center"
                     type="button"
                     on:click=toggle_dropdown
                 >
@@ -737,13 +737,13 @@ pub fn ProjectBranchControl(
                     class="absolute pt-2 z-10 right-0 divide-y divide-gray-100"
                     class:hidden=move || hidden.get()
                 >
-                    <ul class="py-2 text-sm text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 rounded-lg border shadow w-44">
+                    <ul class="py-2 text-sm text-gray-700 bg-white rounded-lg border shadow w-44">
                         <li
                             class:hidden=move || prebuild.with(|p| p.is_some())
                         >
                             <a
                                 href="#"
-                                class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                                class="block px-4 py-2 hover:bg-gray-100"
                                 on:click=create_prebuild
                             >Create Prebuild</a>
                         </li>
@@ -752,7 +752,7 @@ pub fn ProjectBranchControl(
                         >
                             <a
                                 href="#"
-                                class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white"
+                                class="block px-4 py-2 hover:bg-gray-100"
                                 on:click=move |_| delete_modal_hidden.set(false)
                             >Delete Prebuild</a>
                         </li>
@@ -813,7 +813,7 @@ pub fn ProjectDetails() -> impl IntoView {
     });
 
     view! {
-        <a href="/projects" class="text-sm inline-flex items-center text-gray-700 dark:text-gray-400">
+        <a href="/projects" class="text-sm inline-flex items-center text-gray-700">
             <svg class="w-2 h-2 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 10">
             <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5H1m0 0 4 4M1 5l4-4"/>
             </svg>
@@ -854,7 +854,7 @@ fn ProjectInfoView(
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
     let machine_types = create_rw_signal(cluster_info.get_untracked().map(|i| i.machine_types));
     view! {
-        <h5 class="text-semibold text-2xl dark:text-white mt-4">
+        <h5 class="text-semibold text-2xl mt-4">
             { info.name.clone() }
         </h5>
         <a href={ info.repo_url.clone() } target="_blank" class="inline-flex border rounded-lg mt-8">
@@ -865,7 +865,7 @@ fn ProjectInfoView(
                 <svg class="w-3 h-3 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 20">
                     <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5v10M3 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6-3.976-2-.01A4.015 4.015 0 0 1 3 7m10 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"/>
                 </svg>
-                <span class="mr-1 text-gray-500 dark:text-gray-500">{"Repository URL:"}</span>
+                <span class="mr-1 text-gray-500">{"Repository URL:"}</span>
                 <span>{ move || info.repo_url.clone() }</span>
             </a>
         </span>
@@ -875,7 +875,7 @@ fn ProjectInfoView(
                 <path d="M5 11.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0M14 3a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM2 2a2 2 0 0 0-2 2v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
                 <path d="M5 4.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0"/>
             </svg>
-            <span class="mr-1 text-gray-500 dark:text-gray-500">{"Machine Type:"}</span>
+            <span class="mr-1 text-gray-500">{"Machine Type:"}</span>
             {
                 move || machine_types.get()
                     .and_then(|m|
@@ -890,7 +890,7 @@ fn ProjectInfoView(
             <svg class="w-2.5 h-2.5 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
             <path d="M10 0a10 10 0 1 0 10 10A10.011 10.011 0 0 0 10 0Zm3.982 13.982a1 1 0 0 1-1.414 0l-3.274-3.274A1.012 1.012 0 0 1 9 10V6a1 1 0 0 1 2 0v3.586l2.982 2.982a1 1 0 0 1 0 1.414Z"/>
             </svg>
-            <span class="mr-1 text-gray-500 dark:text-gray-500">{"Created:"}</span>
+            <span class="mr-1 text-gray-500">{"Created:"}</span>
             <DatetimeModal time=info.created_at />
         </span>
         <div class="mt-4">
@@ -915,8 +915,9 @@ fn ProjectDetailsTabView(
     create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> impl IntoView {
     let tab_kind = create_rw_signal(TabKind::Branch);
-    let active_class = "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active dark:text-blue-500 dark:border-blue-500";
-    let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300 dark:hover:text-gray-300";
+    let active_class =
+        "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active";
+    let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300";
     let change_tab = move |kind: TabKind| {
         tab_kind.set(kind);
     };
@@ -929,7 +930,7 @@ fn ProjectDetailsTabView(
     );
 
     view! {
-        <div class="mt-8 text-sm font-medium text-center text-gray-500 border-b border-gray-200 dark:text-gray-400 dark:border-gray-700">
+        <div class="mt-8 text-sm font-medium text-center text-gray-500 border-b border-gray-200">
             <ul class="flex flex-wrap -mb-px">
                 <li class="me-2">
                     <a
@@ -985,14 +986,14 @@ fn ProjectBranchesView(
     );
     view! {
         <div
-            class="mb-4 text-gray-600 dark:text-gray-400"
+            class="mb-4 text-gray-600"
             class:hidden=move || tab_kind.get() != TabKind::Branch
         >
             <div class="w-full md:w-1/2 p-4">
                 <label for="simple-search" class="sr-only">Search</label>
                 <div class="relative w-full">
                     <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                        <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                        <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"></path>
                         </svg>
                     </div>
@@ -1001,12 +1002,12 @@ fn ProjectBranchesView(
                         on:input=move |ev| { branch_filter.set(event_target_value(&ev)); }
                         type="text"
                         id="simple-search"
-                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 block w-full pl-10 p-2 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-primary-500 dark:focus:border-primary-500"
+                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 block w-full pl-10 p-2"
                         placeholder="Search" required=""
                     />
                 </div>
             </div>
-            <div class="flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
+            <div class="flex items-center w-full px-4 py-2 text-gray-900 bg-gray-50">
                 <span class="w-1/3 truncate pr-2">Branch</span>
                 <span class="w-1/3 truncate">Commit</span>
                 <span class="w-1/3 truncate pl-2 flex flex-row items-center">
@@ -1035,7 +1036,7 @@ fn ProjectBranchesView(
                                 class="flex items-center w-full px-4 py-2"
                                 class=("border-t", move || i > 0)
                             >
-                                <span class="w-1/3 truncate pr-2 text-gray-900 dark:text-white">{branch.name.clone()}</span>
+                                <span class="w-1/3 truncate pr-2 text-gray-900">{branch.name.clone()}</span>
                                 <div class="w-1/3 flex flex-col">
                                     <div class="truncate">{branch.summary}</div>
                                     <div class="truncate text-sm mt-1">
@@ -1084,28 +1085,28 @@ fn ProjectPrebuildsView(
 ) -> impl IntoView {
     view! {
         <div
-            class="mb-4 text-gray-600 dark:text-gray-400"
+            class="mb-4 text-gray-600"
             class:hidden=move || tab_kind.get() != TabKind::Prebuild
         >
             <div class="w-full md:w-1/2 p-4">
                 <label for="simple-search" class="sr-only">Search</label>
                 <div class="relative w-full">
                     <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                        <svg aria-hidden="true" class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                        <svg aria-hidden="true" class="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"></path>
                         </svg>
                     </div>
                     <input
                         type="text"
                         id="simple-search"
-                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 block w-full pl-10 p-2 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-primary-500 dark:focus:border-primary-500"
+                        class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 block w-full pl-10 p-2"
                         placeholder="Search" required=""
                         prop:value={move || prebuild_filter.get()}
                         on:input=move |ev| { prebuild_filter.set(event_target_value(&ev)); }
                     />
                 </div>
             </div>
-            <div class="flex items-center w-full px-4 py-2 text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700">
+            <div class="flex items-center w-full px-4 py-2 text-gray-900 bg-gray-50">
                 <div class="w-2/3 flex flex-row items-center">
                     <span class="w-1/3 truncate pr-2">Branch</span>
                     <span class="w-1/3 truncate">Commit</span>
@@ -1130,7 +1131,7 @@ fn ProjectPrebuildsView(
                                 class=("border-t", move || i > 0)
                             >
                                 <div class="w-2/3 flex flex-row items-center">
-                                    <span class="w-1/3 truncate pr-2 text-gray-900 dark:text-white">
+                                    <span class="w-1/3 truncate pr-2 text-gray-900">
                                         {prebuild.branch.clone()}
                                     </span>
                                     <span class="w-1/3 flex flex-col">
@@ -1229,12 +1230,12 @@ pub fn MachineTypeView(
 
     view! {
         <div>
-            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+            <label class="block mb-2 text-sm font-medium text-gray-900">
                 Machine Type
             </label>
             <select
                 id="select"
-                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                 on:change=change_machine_type
             >
                 <For
@@ -1372,7 +1373,7 @@ fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoVie
                                 <input
                                 prop:value={move || name.get()}
                                 on:input=move |ev| { name.set(event_target_value(&ev)); }
-                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                             />
                         </div>
                         <div class="ml-2 w-96">
@@ -1380,13 +1381,13 @@ fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoVie
                                 type="password"
                                 prop:value={move || value.get()}
                                 on:input=move |ev| { value.set(event_target_value(&ev)); }
-                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:placeholder-gray-400 dark:text-white"
+                                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                             />
                         </div>
                         <div class="ml-2 hover:bg-gray-200 rounded-lg p-2 cursor-pointer"
                             on:click=move |_| delete_var(i)
                         >
-                            <svg class="h-4 text-gray-800 dark:text-white" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <svg class="h-4 text-gray-800" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6m0 12L6 6"/>
                             </svg>
                         </div>
@@ -1398,7 +1399,7 @@ fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoVie
     let extra = view! {
         <button
             type="button"
-            class="ml-2 py-2.5 px-5 text-sm font-medium text-gray-900 focus:outline-none bg-white rounded-lg border border-gray-200 hover:bg-gray-100 hover:text-blue-700 focus:z-10 focus:ring-4 focus:ring-gray-100 dark:focus:ring-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700"
+            class="ml-2 py-2.5 px-5 text-sm font-medium text-gray-900 focus:outline-none bg-white rounded-lg border border-gray-200 hover:bg-gray-100 hover:text-blue-700 focus:z-10 focus:ring-4 focus:ring-gray-100"
             on:click=new_variable
         >
             New Variable

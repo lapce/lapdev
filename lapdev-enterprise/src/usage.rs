@@ -169,7 +169,9 @@ impl Usage {
             })
             .collect();
 
-        let total_cost = self.get_cost(organization, user, start, end, now).await?;
+        let total_cost = self
+            .get_cost(organization, user, None, start, end, now)
+            .await?;
         Ok(UsageResult {
             total_items: items_and_pages.number_of_items,
             num_pages: items_and_pages.number_of_pages,
@@ -184,6 +186,7 @@ impl Usage {
         &self,
         organization: Uuid,
         user: Option<Uuid>,
+        cost_per_second: Option<i32>,
         start: DateTime<FixedOffset>,
         end: DateTime<FixedOffset>,
         now: DateTime<FixedOffset>,
@@ -195,6 +198,9 @@ impl Usage {
                 .filter(entities::usage::Column::Start.gte(start));
             if let Some(user) = user {
                 query = query.filter(entities::usage::Column::UserId.eq(user));
+            }
+            if let Some(cost_per_second) = cost_per_second {
+                query = query.filter(entities::usage::Column::CostPerSecond.eq(cost_per_second));
             }
             let fixed_cost: Vec<Option<i64>> = query
                 .select_only()
@@ -228,6 +234,9 @@ impl Usage {
         if let Some(user) = user {
             query = query.filter(entities::usage::Column::UserId.eq(user));
         }
+        if let Some(cost_per_second) = cost_per_second {
+            query = query.filter(entities::usage::Column::CostPerSecond.eq(cost_per_second));
+        }
 
         let usages = query.all(&self.db.conn).await?;
 
@@ -256,6 +265,7 @@ impl Usage {
         &self,
         organization: Uuid,
         user: Option<Uuid>,
+        cost_per_second: Option<i32>,
         date: DateTime<FixedOffset>,
         now: Option<DateTime<FixedOffset>>,
     ) -> Result<usize> {
@@ -268,6 +278,7 @@ impl Usage {
         self.get_cost(
             organization,
             user,
+            cost_per_second,
             day_start,
             day_end,
             now.unwrap_or_else(|| Utc::now().into()),
@@ -279,6 +290,7 @@ impl Usage {
         &self,
         organization: Uuid,
         user: Option<Uuid>,
+        cost_per_second: Option<i32>,
         date: DateTime<FixedOffset>,
         now: Option<DateTime<FixedOffset>>,
     ) -> Result<usize> {
@@ -305,6 +317,7 @@ impl Usage {
         self.get_cost(
             organization,
             user,
+            cost_per_second,
             month_start,
             month_end,
             now.unwrap_or_else(|| Utc::now().into()),
@@ -414,6 +427,7 @@ pub mod tests {
             .get_daily_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
                 None,
             )
@@ -436,6 +450,7 @@ pub mod tests {
             .get_daily_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
                 None,
             )
@@ -458,6 +473,7 @@ pub mod tests {
             .get_daily_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
                 Some(Utc.with_ymd_and_hms(2024, 1, 29, 15, 1, 0).unwrap().into()),
             )
@@ -470,6 +486,7 @@ pub mod tests {
             .get_daily_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 30, 1, 0, 0).unwrap().into(),
                 Some(Utc.with_ymd_and_hms(2024, 1, 30, 1, 0, 0).unwrap().into()),
             )
@@ -492,6 +509,7 @@ pub mod tests {
             .get_daily_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
                 Some(Utc.with_ymd_and_hms(2024, 1, 29, 15, 1, 0).unwrap().into()),
             )
@@ -514,6 +532,7 @@ pub mod tests {
             .get_daily_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
                 Some(Utc.with_ymd_and_hms(2024, 1, 29, 15, 1, 0).unwrap().into()),
             )
@@ -561,6 +580,7 @@ pub mod tests {
             .get_monthly_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
                 None,
             )
@@ -583,6 +603,7 @@ pub mod tests {
             .get_monthly_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
                 None,
             )
@@ -595,6 +616,7 @@ pub mod tests {
             .get_monthly_cost(
                 organization,
                 Some(user.id),
+                None,
                 Utc.with_ymd_and_hms(2023, 12, 29, 1, 0, 0).unwrap().into(),
                 None,
             )

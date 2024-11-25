@@ -74,7 +74,7 @@ impl Enterprise {
         if organization.usage_limit > 0 {
             let usage = self
                 .usage
-                .get_monthly_cost(organization.id, None, Utc::now().into(), None)
+                .get_monthly_cost(organization.id, None, None, Utc::now().into(), None)
                 .await?;
             if usage as i64 >= organization.usage_limit {
                 return Err(ApiError::InvalidRequest(
@@ -97,6 +97,7 @@ impl Enterprise {
                                     .get_monthly_cost(
                                         org.id,
                                         Some(user_id),
+                                        None,
                                         Utc::now().into(),
                                         None,
                                     )

@@ -218,12 +218,12 @@ impl Quota {
             QuotaKind::Project => 0,
             QuotaKind::DailyCost => {
                 self.usage
-                    .get_daily_cost(organization, Some(user), Utc::now().into(), None)
+                    .get_daily_cost(organization, Some(user), None, Utc::now().into(), None)
                     .await?
             }
             QuotaKind::MonthlyCost => {
                 self.usage
-                    .get_monthly_cost(organization, Some(user), Utc::now().into(), None)
+                    .get_monthly_cost(organization, Some(user), None, Utc::now().into(), None)
                     .await?
             }
         };
@@ -264,14 +264,14 @@ impl Quota {
             }
             QuotaKind::DailyCost => {
                 self.usage
-                    .get_daily_cost(organization, None, Utc::now().into(), None)
+                    .get_daily_cost(organization, None, None, Utc::now().into(), None)
                     .await?
                     / 60
                     / 60
             }
             QuotaKind::MonthlyCost => {
                 self.usage
-                    .get_monthly_cost(organization, None, Utc::now().into(), None)
+                    .get_monthly_cost(organization, None, None, Utc::now().into(), None)
                     .await?
                     / 60
                     / 60

@@ -545,7 +545,7 @@ impl Conductor {
                         let usage = self
                             .enterprise
                             .usage
-                            .get_monthly_cost(org.id, None, Utc::now().into(), None)
+                            .get_monthly_cost(org.id, None, None, Utc::now().into(), None)
                             .await
                             .unwrap_or(0);
                         if usage as i64 >= org.usage_limit {

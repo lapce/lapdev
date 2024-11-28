@@ -389,7 +389,11 @@ impl WorkspaceServer {
             .output()
             .await?;
 
-        Command::new("userdel").arg(osuser).output().await?;
+        Command::new("userdel")
+            .arg("-f")
+            .arg(osuser)
+            .output()
+            .await?;
 
         tokio::fs::remove_dir(&workspace_base_folder).await?;
         tokio::fs::remove_dir_all(format!("/home/{osuser}")).await?;

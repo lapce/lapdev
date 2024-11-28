@@ -261,18 +261,18 @@ pub fn OrgSettings() -> impl IntoView {
             <p class="text-gray-700">{"Manage your organization's settings"}</p>
         </div>
         <div class="mb-8">
-            <div class="w-full p-8 border rounded-xl">
+            <div class="w-full p-8 border rounded-xl shadow">
                 <UpdateNameView />
             </div>
             <div
-                class="mt-4 w-full p-8 border rounded-xl"
+                class="mt-8 w-full p-8 border rounded-xl shadow"
                 class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
             >
                 <AutoStartStopView />
             </div>
 
             <div
-                class="mt-4 w-full p-8 border rounded-xl"
+                class="mt-8 w-full p-8 border rounded-xl shadow"
                 class:hidden=move || !login.with(|l| { l.as_ref() .and_then(|l| l.as_ref().map(|l| l.organization.role == UserRole::Owner)) .unwrap_or(false) })
             >
                 <h5 class="text-lg font-semibold">

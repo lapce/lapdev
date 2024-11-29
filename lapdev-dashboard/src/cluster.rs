@@ -140,7 +140,7 @@ pub fn NewWorkspaceHostView(
         <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
     };
     view! {
-        <CreationModal title="Create New Workspace Host".to_string() modal_hidden=new_workspace_host_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) create_button_hidden=false />
+        <CreationModal title="Create New Workspace Host".to_string() modal_hidden=new_workspace_host_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=|| false />
     }
 }
 
@@ -184,7 +184,7 @@ pub fn UpdateWorkspaceHostModal(
         <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
     };
     view! {
-        <CreationModal title="Update Workspace Host".to_string() modal_hidden=update_workspace_host_modal_hidden action body update_text=None updating_text=None create_button_hidden=false />
+        <CreationModal title="Update Workspace Host".to_string() modal_hidden=update_workspace_host_modal_hidden action body update_text=None updating_text=None  width_class=None create_button_hidden=|| false />
     }
 }
 
@@ -1096,7 +1096,7 @@ pub fn NewMachineTypeView(
         </div>
     };
     view! {
-        <CreationModal title="Create New Machine Type".to_string() modal_hidden=new_machine_type_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) create_button_hidden=false />
+        <CreationModal title="Create New Machine Type".to_string() modal_hidden=new_machine_type_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string())  width_class=None create_button_hidden=|| false />
     }
 }
 
@@ -1127,7 +1127,7 @@ pub fn UpdateMachineTypeModal(
         </div>
     };
     view! {
-        <CreationModal title="Update Workspace Host".to_string() modal_hidden=update_machine_type_modal_hidden action body update_text=None updating_text=None create_button_hidden=false />
+        <CreationModal title="Update Workspace Host".to_string() modal_hidden=update_machine_type_modal_hidden action body update_text=None updating_text=None  width_class=None create_button_hidden=|| false />
     }
 }
 
@@ -1680,6 +1680,6 @@ fn ClusterUserItemView(
                 </button>
             </td>
         </tr>
-        <CreationModal title=format!("Update Cluster User") modal_hidden=update_modal_hidden action=update_action body=update_modal_body update_text=None updating_text=None create_button_hidden=false />
+        <CreationModal title=format!("Update Cluster User") modal_hidden=update_modal_hidden action=update_action body=update_modal_body update_text=None updating_text=None  width_class=None create_button_hidden=|| false />
     }
 }

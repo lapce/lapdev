@@ -881,7 +881,7 @@ fn UpdateMemberView(
         </div>
     };
     view! {
-        <CreationModal title="Update Member".to_string() modal_hidden=update_modal_hidden body action=update_action update_text=None updating_text=None create_button_hidden=false />
+        <CreationModal title="Update Member".to_string() modal_hidden=update_modal_hidden body action=update_action update_text=None updating_text=None width_class=None create_button_hidden=|| false />
     }
 }
 
@@ -1033,6 +1033,6 @@ fn InviteMemberView(invite_member_modal_hidden: RwSignal<bool>) -> impl IntoView
         </div>
     };
     view! {
-        <CreationModal title="Invite New Member".to_string() modal_hidden=invite_member_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) create_button_hidden=true />
+        <CreationModal title="Invite New Member".to_string() modal_hidden=invite_member_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=|| true />
     }
 }

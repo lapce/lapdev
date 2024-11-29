@@ -46,7 +46,8 @@ pub fn CreationModal<T>(
     body: T,
     update_text: Option<String>,
     updating_text: Option<String>,
-    create_button_hidden: bool,
+    create_button_hidden: impl Fn() -> bool + 'static,
+    width_class: Option<String>,
 ) -> impl IntoView
 where
     T: IntoView + 'static,
@@ -73,6 +74,12 @@ where
             }
         })
     });
+
+    let width_class = if let Some(width_class) = width_class {
+        width_class
+    } else {
+        "max-w-2xl".to_string()
+    };
     view! {
         <div
             tabindex="-1"
@@ -81,7 +88,7 @@ where
             on:click=move |_| modal_hidden.set(true)
         >
             <div
-                class="relative p-4 w-full max-w-2xl max-h-full"
+                class=format!("relative p-4 w-full {width_class} max-h-full")
                 on:click=move |e| e.stop_propagation()
             >
                 <div class="relative bg-white rounded-lg shadow">
@@ -120,7 +127,7 @@ where
                             type="button"
                             class="mr-3 flex flex-row items-center text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 font-medium rounded-lg text-sm px-5 py-2.5 text-center"
                             disabled=move || create_pending.get()
-                            class:hidden=move || create_button_hidden
+                            class:hidden=move || create_button_hidden()
                             on:click=handle_create
                         >
                             <svg aria-hidden="true" role="status"

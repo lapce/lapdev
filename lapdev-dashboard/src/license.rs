@@ -117,7 +117,7 @@ pub fn UpdateLicenseView(update_counter: RwSignal<i32>) -> impl IntoView {
         >
             Update Enterprise License
         </button>
-        <CreationModal title="Update Enterprise License".to_string() modal_hidden body action update_text=None updating_text=None create_button_hidden=false />
+        <CreationModal title="Update Enterprise License".to_string() modal_hidden body action update_text=None updating_text=None  width_class=None create_button_hidden=|| false />
     }
 }
 
@@ -202,6 +202,6 @@ pub fn SignLicenseView() -> impl IntoView {
         >
             Sign New License
         </button>
-        <CreationModal title="Sign Enterprise License".to_string() modal_hidden body action update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) create_button_hidden=false />
+        <CreationModal title="Sign Enterprise License".to_string() modal_hidden body action update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=|| false />
     }
 }

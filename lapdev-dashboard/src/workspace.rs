@@ -598,7 +598,7 @@ fn WorkspaceRebuildModal(
             body
             update_text=Some("Rebuild".to_string())
             updating_text=None
-            create_button_hidden=|| false
+            create_button_hidden=Box::new(|| false)
             width_class=None
         />
     }
@@ -1121,7 +1121,7 @@ pub fn NewWorkspaceModal(
     };
 
     view! {
-        <CreationModal title="Create New Workspace".to_string() modal_hidden action body=create_info_view update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=|| false />
+        <CreationModal title="Create New Workspace".to_string() modal_hidden action body=create_info_view update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=Box::new(|| false) />
     }
 }
 

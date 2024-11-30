@@ -73,7 +73,7 @@ pub fn NewProjectView(new_project_modal_hidden: RwSignal<bool>) -> impl IntoView
         <MachineTypeView current_machine_type preferred_machine_type />
     };
     view! {
-        <CreationModal title="Create New Project".to_string() modal_hidden=new_project_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=|| false />
+        <CreationModal title="Create New Project".to_string() modal_hidden=new_project_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=Box::new(|| false) />
     }
 }
 

@@ -46,7 +46,7 @@ pub fn CreationModal<T>(
     body: T,
     update_text: Option<String>,
     updating_text: Option<String>,
-    create_button_hidden: impl Fn() -> bool + 'static,
+    create_button_hidden: Box<dyn Fn() -> bool + 'static>,
     width_class: Option<String>,
 ) -> impl IntoView
 where

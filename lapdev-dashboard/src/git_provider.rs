@@ -381,7 +381,7 @@ pub fn UpdateScopeModal(
             body
             update_text=None
             updating_text=None
-            create_button_hidden=|| false
+            create_button_hidden=Box::new(|| false)
             width_class=None
         />
     }

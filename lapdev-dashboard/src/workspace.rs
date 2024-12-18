@@ -702,10 +702,10 @@ pub fn WorkspaceItem(
                     let workspace_hostname = workspace_hostname.clone();
                     move |ws_service| {
                         view! {
-                            <div class="flex flex-col border-t items-center shadow-sm md:flex-row w-full">
-                                <div class="lg:w-1/3 flex flex-row">
+                            <div class="flex flex-col border-t items-center shadow-sm lg:flex-row w-full">
+                                <div class="hidden w-1/3 lg:flex flex-row">
                                 </div>
-                                <div class="md:w-1/3 flex flex-col justify-center">
+                                <div class="w-full lg:w-1/3 flex flex-col items-center lg:items-start">
                                     <div class="flex flex-col p-4">
                                         <span class="font-semibold">{ws_service.name.clone()}</span>
                                         <div class="flex flex-row items-center text-sm text-gray-700 mt-2">
@@ -716,10 +716,8 @@ pub fn WorkspaceItem(
                                         </div>
                                     </div>
                                 </div>
-                                <div class="md:w-1/6 flex flex-row items-center p-4 justify-center">
-                                </div>
-                                <div class="md:w-1/6 flex flex-row items-center p-4 justify-center">
-                                    <div class="mr-10">
+                                <div class="w-full lg:w-1/3 flex flex-row items-center p-4 justify-center xl:justify-end">
+                                    <div class="mx-11">
                                         <OpenWorkspaceView workspace_name=ws_service.name.clone() workspace_status={workspace.status} workspace_folder=workspace_folder.clone() workspace_hostname=workspace_hostname.clone() align_right=true />
                                     </div>
                                 </div>

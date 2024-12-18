@@ -486,6 +486,12 @@ impl WorkspaceServer {
             return Err(anyhow!("can't do useradd {username}").into());
         }
 
+        let _ = Command::new("chmod")
+            .arg("700")
+            .arg(format!("/home/{username}"))
+            .output()
+            .await;
+
         let _ = tokio::process::Command::new("usermod")
             .arg("-a")
             .arg("-G")
@@ -514,6 +520,11 @@ impl WorkspaceServer {
             .arg(&workspace_base_folder)
             .output()
             .await?;
+        let _ = Command::new("chmod")
+            .arg("700")
+            .arg(&workspace_base_folder)
+            .output()
+            .await;
 
         let prebuild_base_folder = self.osuser_prebuild_base_folder(username);
         Command::new("mkdir")
@@ -522,6 +533,11 @@ impl WorkspaceServer {
             .spawn()?
             .wait()
             .await?;
+        let _ = Command::new("chmod")
+            .arg("700")
+            .arg(&prebuild_base_folder)
+            .output()
+            .await;
 
         let project_base_folder = self.osuser_project_base_folder(username);
         Command::new("mkdir")
@@ -530,6 +546,11 @@ impl WorkspaceServer {
             .spawn()?
             .wait()
             .await?;
+        let _ = Command::new("chmod")
+            .arg("700")
+            .arg(&project_base_folder)
+            .output()
+            .await;
 
         let containers_config_folder = format!("/home/{username}/.config/containers");
         Command::new("su")

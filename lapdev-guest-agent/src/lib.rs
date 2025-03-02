@@ -54,6 +54,16 @@ fn run_sshd() -> Result<(), LapdevGuestAgentError> {
         .map_err(|e| LapdevGuestAgentError::SshPublicKey(e.to_string()))?;
     fs::create_dir_all("/root/.ssh/")?;
     fs::write("/root/.ssh/authorized_keys", public_key)?;
+    Command::new("chown")
+        .arg("root:root")
+        .arg("-R")
+        .arg("/run")
+        .output()?;
+    Command::new("chown")
+        .arg("root:root")
+        .arg("-R")
+        .arg("/root")
+        .output()?;
     Command::new("/usr/sbin/sshd")
         .arg("-p")
         .arg("22")

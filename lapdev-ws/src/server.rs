@@ -97,6 +97,7 @@ pub async fn start() {
 }
 
 async fn run(cli: &Cli) -> Result<()> {
+    tracing::info!("start to run server");
     let config_file = cli
         .config_file
         .clone()
@@ -151,10 +152,19 @@ impl WorkspaceServer {
                 .status()
                 .await?;
 
-            let watcher = FileWatcher::new(&self.data_folder, backup_host)?;
-            std::thread::spawn(move || {
-                watcher.watch();
-            });
+            {
+                let data_folder = self.data_folder.clone();
+                std::thread::spawn(move || {
+                    let watcher = match FileWatcher::new(&data_folder, backup_host) {
+                        Ok(watcher) => watcher,
+                        Err(e) => {
+                            tracing::error!("start file watcher error: {e:?}");
+                            return;
+                        }
+                    };
+                    watcher.watch();
+                });
+            }
         }
 
         {
@@ -167,6 +177,7 @@ impl WorkspaceServer {
             });
         }
 
+        tracing::info!("start to listen ws port");
         let mut listener =
             tarpc::serde_transport::tcp::listen((bind, ws_port), Json::default).await?;
 
@@ -227,7 +238,7 @@ impl WorkspaceServer {
         loop {
             tick.tick().await;
             if let Err(e) = self.run_auto_stop_delete_task().await {
-                tracing::error!("run task error: {e:?}");
+                tracing::error!("run run_auto_stop_delete_task error: {e:?}");
             }
             if let Err(e) = self.check_inactive_osusers().await {
                 tracing::error!("check inactive osusers error: {e:?}");
@@ -581,6 +592,12 @@ unqualified-search-registries = ["docker.io"]
             r#"
 [storage]
 driver = "overlay"
+
+[storage.options]
+additionalimagestores = [ "/var/lib/lapdev-images",]
+
+[storage.options.overlay]
+mount_program = "/usr/bin/fuse-overlayfs"
 "#,
         )
         .await?;

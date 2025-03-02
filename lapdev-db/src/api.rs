@@ -24,6 +24,7 @@ use super::entities::workspace;
 
 pub const LAPDEV_CLUSTER_NOT_INITIATED: &str = "lapdev-cluster-not-initiated";
 pub const LAPDEV_PIN_UNPIN_ERROR: &str = "lapdev-pin-unpin-error";
+pub const LAPDEV_MAX_CPU_ERROR: &str = "lapdev-max-cpu-error";
 const LAPDEV_API_AUTH_TOKEN_KEY: &str = "lapdev-api-auth-token-key";
 const LAPDEV_DEFAULT_USAGE_LIMIT: &str = "lapdev-default-org-usage-limit";
 const LAPDEV_DEFAULT_RUNNING_WORKSPACE_LIMIT: &str = "lapdev-default-org-running-workspace-limit";
@@ -352,6 +353,7 @@ impl DbApi {
             usage_limit: ActiveValue::Set(default_usage_limit),
             running_workspace_limit: ActiveValue::Set(default_running_workspace_limit),
             has_running_workspace: ActiveValue::Set(false),
+            max_cpu: ActiveValue::Set(4),
         }
         .insert(txn)
         .await?;
@@ -394,6 +396,7 @@ impl DbApi {
             name: ActiveValue::Set(provider_user.name.clone()),
             current_organization: ActiveValue::Set(org.id),
             cluster_admin: ActiveValue::Set(cluster_admin),
+            disabled: ActiveValue::Set(false),
         }
         .insert(txn)
         .await?;

@@ -47,3 +47,4 @@ lapdev-enterprise.workspace = true
 lapdev-conductor.workspace = true
 lapdev-proxy-ssh.workspace = true
 lapdev-proxy-http.workspace = true
+lapdev-kube.workspace = true

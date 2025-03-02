@@ -5,6 +5,8 @@ use axum::{
     response::Response,
 };
 use futures::{SinkExt, StreamExt};
+use hyper::HeaderMap;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 pub enum ProxyForward {
     Resp(Response),
@@ -15,19 +17,30 @@ pub async fn handler(
     host: &str,
     path_query: &str,
     websocket: Option<WebSocketUpgrade>,
+    headers: &HeaderMap,
     port: Option<u16>,
 ) -> Option<ProxyForward> {
     let port = port?;
     if let Some(websocket) = websocket {
-        println!("proxy ide websocket");
-        let uri = format!("ws://{host}:{port}{}", path_query);
-        let resp = websocket.on_upgrade(move |socket| async move {
-            if let Err(e) = proxy_socket(socket, uri).await {
-                println!("handle websocket error: {e}");
+        let protocols = if let Some(protocol) = headers.get("Sec-Websocket-Protocol") {
+            if let Ok(s) = protocol.to_str() {
+                vec![s.to_string()]
             } else {
-                println!("handle websocket finished");
+                vec![]
             }
-        });
+        } else {
+            vec![]
+        };
+        let uri = format!("ws://{host}:{port}{}", path_query);
+        let resp = websocket
+            .protocols(protocols)
+            .on_upgrade(move |socket| async move {
+                if let Err(e) = proxy_socket(socket, uri).await {
+                    println!("handle websocket error: {e}");
+                } else {
+                    println!("handle websocket finished");
+                }
+            });
         return Some(ProxyForward::Resp(resp));
     }
 
@@ -37,6 +50,14 @@ pub async fn handler(
 }
 
 async fn proxy_socket(socket: WebSocket, req: String) -> Result<()> {
+    let protocol = socket.protocol();
+    let mut req = req.into_client_request()?;
+
+    if let Some(protocol) = protocol {
+        req.headers_mut()
+            .insert("Sec-Websocket-Protocol", protocol.to_owned());
+    }
+
     let (ws_stream, _) = tokio_tungstenite::connect_async(req).await?;
     let (mut server_sender, mut server_receiver) = ws_stream.split();
 
@@ -74,16 +95,16 @@ fn msg_into_tungstenite(
 ) -> tokio_tungstenite::tungstenite::Message {
     match msg {
         axum::extract::ws::Message::Text(text) => {
-            tokio_tungstenite::tungstenite::Message::Text(text)
+            tokio_tungstenite::tungstenite::Message::Text(text.into())
         }
         axum::extract::ws::Message::Binary(binary) => {
-            tokio_tungstenite::tungstenite::Message::Binary(binary)
+            tokio_tungstenite::tungstenite::Message::Binary(binary.into())
         }
         axum::extract::ws::Message::Ping(ping) => {
-            tokio_tungstenite::tungstenite::Message::Ping(ping)
+            tokio_tungstenite::tungstenite::Message::Ping(ping.into())
         }
         axum::extract::ws::Message::Pong(pong) => {
-            tokio_tungstenite::tungstenite::Message::Pong(pong)
+            tokio_tungstenite::tungstenite::Message::Pong(pong.into())
         }
         axum::extract::ws::Message::Close(Some(close)) => {
             tokio_tungstenite::tungstenite::Message::Close(Some(
@@ -91,7 +112,7 @@ fn msg_into_tungstenite(
                     code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(
                         close.code,
                     ),
-                    reason: close.reason,
+                    reason: close.reason.to_string().into(),
                 },
             ))
         }
@@ -106,21 +127,21 @@ fn msg_from_tungstenite(
 ) -> Option<axum::extract::ws::Message> {
     match message {
         tokio_tungstenite::tungstenite::Message::Text(text) => {
-            Some(axum::extract::ws::Message::Text(text))
+            Some(axum::extract::ws::Message::Text(text.to_string()))
         }
         tokio_tungstenite::tungstenite::Message::Binary(binary) => {
-            Some(axum::extract::ws::Message::Binary(binary))
+            Some(axum::extract::ws::Message::Binary(binary.to_vec()))
         }
         tokio_tungstenite::tungstenite::Message::Ping(ping) => {
-            Some(axum::extract::ws::Message::Ping(ping))
+            Some(axum::extract::ws::Message::Ping(ping.to_vec()))
         }
         tokio_tungstenite::tungstenite::Message::Pong(pong) => {
-            Some(axum::extract::ws::Message::Pong(pong))
+            Some(axum::extract::ws::Message::Pong(pong.to_vec()))
         }
         tokio_tungstenite::tungstenite::Message::Close(Some(close)) => Some(
             axum::extract::ws::Message::Close(Some(axum::extract::ws::CloseFrame {
                 code: close.code.into(),
-                reason: close.reason,
+                reason: close.reason.to_string().into(),
             })),
         ),
         tokio_tungstenite::tungstenite::Message::Close(None) => {

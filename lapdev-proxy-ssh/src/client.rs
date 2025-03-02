@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use russh::keys::key::KeyPair;
-use russh::{Channel, ChannelId, ChannelMsg};
+use russh::{keys::PrivateKeyWithHashAlg, Channel, ChannelId, ChannelMsg};
 use tracing::debug;
 
 pub struct SshProxyClient {}
@@ -12,20 +10,19 @@ pub struct ClientSession {
     pub handle: russh::client::Handle<SshProxyClient>,
 }
 
-#[async_trait]
 impl russh::client::Handler for SshProxyClient {
     type Error = anyhow::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::key::PublicKey,
+        _server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
 }
 
 impl ClientSession {
-    pub async fn connect(addr: &str, key: &KeyPair) -> Result<ClientSession> {
+    pub async fn connect(addr: &str, key: &PrivateKeyWithHashAlg) -> Result<ClientSession> {
         let config = russh::client::Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(30)),
             keepalive_interval: Some(std::time::Duration::from_secs(10)),
@@ -34,7 +31,7 @@ impl ClientSession {
         let config = Arc::new(config);
         let mut handle = russh::client::connect(config, addr, SshProxyClient {}).await?;
         handle
-            .authenticate_publickey("root", Arc::new(key.to_owned()))
+            .authenticate_publickey("root", key.to_owned())
             .await?;
 
         Ok(ClientSession { handle })

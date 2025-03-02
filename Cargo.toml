@@ -36,6 +36,7 @@ sea-orm-migration.workspace = true
 lapdev-db.workspace = true
 lapdev-ws.workspace = true
 lapdev-guest-agent.workspace = true
+lapdev-kube.workspace = true
 
 [workspace]
 members = [
@@ -43,6 +44,7 @@ members = [
   "lapdev-conductor",
   "lapdev-ws",
   "lapdev-rpc",
+  "lapdev-kube",
   "lapdev-dashboard",
   "lapdev-db",
   "lapdev-common",
@@ -83,7 +85,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4.31", features = ["serde"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5.2", features = ["fs", "trace"] }
-tokio-tungstenite = "0.21.0"
+tokio-tungstenite = "0.26.1"
 data-encoding = "2.4.0"
 sha2 = "0.10.8"
 rand = "0.8.5"
@@ -108,7 +110,7 @@ sqlx = { version = "0.7.3", default-features = false, features = ["sqlx-postgres
 sea-orm = { version = "0.12.12", features = [ "sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
 sea-orm-migration = { version = "0.12.6", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
-russh = {version = "0.46.0", features = ["vendored-openssl"] }
+russh = {version = "0.50.2" }
 lapdev-api = { path = "./lapdev-api" }
 lapdev-ws = { path = "./lapdev-ws" }
 lapdev-db = { path = "./lapdev-db" }
@@ -119,6 +121,7 @@ lapdev-proxy-http = { path = "./lapdev-proxy-http" }
 lapdev-common = { path = "./lapdev-common" }
 lapdev-enterprise = { path = "./lapdev-enterprise" }
 lapdev-guest-agent = { path = "./lapdev-guest-agent" }
+lapdev-kube = { path = "./lapdev-kube" }
 
 [package.metadata.deb]
 depends = "$auto, passwd"

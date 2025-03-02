@@ -16,6 +16,7 @@ pub struct Model {
     pub osuser: String,
     pub current_organization: Uuid,
     pub cluster_admin: bool,
+    pub disabled: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

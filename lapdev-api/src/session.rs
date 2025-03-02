@@ -138,6 +138,13 @@ pub(crate) async fn session_authorize(
     let provider_user = match &query.provider {
         AuthProvider::Github => {
             let ghuser = state.github_client.current_user(&token).await?;
+            if Utc::now()
+                .signed_duration_since(ghuser.created_at)
+                .num_seconds()
+                < 86400
+            {
+                return Err(ApiError::InvalidRequest("user not allowed".to_string()));
+            }
             let mut email = None;
             if let Ok(emails) = state.github_client.user_email(&token).await {
                 for e in &emails {
@@ -160,6 +167,13 @@ pub(crate) async fn session_authorize(
         }
         AuthProvider::Gitlab => {
             let user = state.auth.gitlab_client.current_user(&token).await?;
+            if Utc::now()
+                .signed_duration_since(user.created_at)
+                .num_seconds()
+                < 86400
+            {
+                return Err(ApiError::InvalidRequest("user not allowed".to_string()));
+            }
             ProviderUser {
                 id: user.id,
                 login: user.username,

@@ -699,3 +699,24 @@ pub async fn update_organization_quota(
 
     Ok(StatusCode::NO_CONTENT)
 }
+
+pub async fn clear_organization(
+    TypedHeader(cookie): TypedHeader<Cookie>,
+    Path(org_id): Path<Uuid>,
+    State(state): State<CoreState>,
+) -> Result<StatusCode, ApiError> {
+    state.authenticate_cluster_admin(&cookie).await?;
+    state.db.get_organization(org_id).await?;
+
+    let models = entities::workspace::Entity::find()
+        .filter(entities::workspace::Column::OrganizationId.eq(org_id))
+        .filter(entities::workspace::Column::DeletedAt.is_null())
+        .all(&state.db.conn)
+        .await?;
+
+    for ws in models {
+        state.conductor.delete_workspace(&ws, None, None).await?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}

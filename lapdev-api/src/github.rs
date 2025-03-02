@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, FixedOffset};
 use oauth2::AccessToken;
 use reqwest::{header, Client};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -14,6 +15,7 @@ pub struct GithubUser {
     pub id: i32,
     pub login: String,
     pub name: Option<String>,
+    pub created_at: DateTime<FixedOffset>,
 }
 
 #[derive(Debug, Deserialize)]

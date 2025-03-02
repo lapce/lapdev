@@ -218,6 +218,7 @@ pub mod tests {
             has_running_workspace: ActiveValue::Set(false),
             deleted_at: ActiveValue::Set(None),
             last_auto_stop_check: ActiveValue::Set(None),
+            max_cpu: ActiveValue::Set(4),
         }
         .insert(&db.conn)
         .await

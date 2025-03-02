@@ -240,7 +240,11 @@ fn v1_api_routes(additional_router: Option<Router<CoreState>>) -> Router<CoreSta
             delete(machine_type::delete_machine_type),
         )
         .route("/admin/users", get(admin::get_cluster_users))
-        .route("/admin/users/:user_id", put(admin::update_cluster_user));
+        .route("/admin/users/:user_id", put(admin::update_cluster_user))
+        .route(
+            "/admin/organizations/:org_id/clear",
+            put(organization::clear_organization),
+        );
     if let Some(additional) = additional_router {
         router.merge(additional)
     } else {
@@ -429,6 +433,7 @@ async fn forward_middleware(
                 &workspace_host.host,
                 path_query,
                 websocket,
+                req.headers(),
                 port,
             )
             .await

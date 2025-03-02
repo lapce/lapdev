@@ -17,6 +17,7 @@ pub struct Model {
     pub usage_limit: i64,
     pub running_workspace_limit: i32,
     pub has_running_workspace: bool,
+    pub max_cpu: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

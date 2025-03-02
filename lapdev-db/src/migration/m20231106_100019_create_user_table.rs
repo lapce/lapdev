@@ -25,6 +25,7 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(User::Osuser).string().not_null())
                     .col(ColumnDef::new(User::CurrentOrganization).uuid().not_null())
                     .col(ColumnDef::new(User::ClusterAdmin).boolean().not_null())
+                    .col(ColumnDef::new(User::Disabled).boolean().not_null())
                     .to_owned(),
             )
             .await?;
@@ -46,4 +47,5 @@ pub enum User {
     Osuser,
     CurrentOrganization,
     ClusterAdmin,
+    Disabled,
 }

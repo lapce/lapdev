@@ -13,15 +13,14 @@ use lapdev_common::{
     ProjectRequest, RepoBuildInfo, RepoBuildOutput, RepoSource, StartWorkspaceRequest,
     StopWorkspaceRequest, UsageResourceKind, WorkspaceStatus, WorkspaceUpdateEvent,
 };
+use lapdev_db::api::LAPDEV_MAX_CPU_ERROR;
 use lapdev_db::{api::DbApi, entities};
 use lapdev_enterprise::enterprise::Enterprise;
 use lapdev_rpc::{
     error::ApiError, long_running_context, spawn_twoway, ConductorService, WorkspaceServiceClient,
 };
-use russh::keys::{
-    key::{KeyPair, PublicKey, SignatureHash},
-    pkcs8, PublicKeyBase64,
-};
+use russh::keys::ssh_key::rand_core::OsRng;
+use russh::keys::{pkcs8, Algorithm, HashAlg, PrivateKey, PublicKeyBase64};
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
     TransactionTrait,
@@ -1096,15 +1095,22 @@ impl Conductor {
     }
 
     fn generate_key_pair(&self) -> Result<(String, String)> {
-        let key = KeyPair::generate_rsa(4096, SignatureHash::SHA2_512)
-            .ok_or_else(|| anyhow!("can't generate ssh key pair"))?;
+        let key = PrivateKey::random(
+            &mut OsRng,
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha512),
+            },
+        )
+        .map_err(|e| anyhow!("can't generate ssh key pair: {e:?}"))?;
         let id_rsa = encode_pkcs8_pem(&key)?;
-        let public_key = key.clone_public_key()?;
+        let public_key = key.public_key();
+        let algorithm = public_key.algorithm();
         let public_key = format!(
             "{} {}",
-            match public_key {
-                PublicKey::RSA { .. } | PublicKey::EC { .. } => "ssh-rsa",
-                PublicKey::Ed25519(_) => "ssh-ed25519",
+            match algorithm {
+                Algorithm::Rsa { .. } | Algorithm::Ecdsa { .. } => "ssh-rsa",
+                Algorithm::Ed25519 => "ssh-ed25519",
+                _ => algorithm.as_str(),
             },
             public_key.public_key_base64()
         );
@@ -1132,6 +1138,15 @@ impl Conductor {
         let name = format!("{}-{}", repo.name, rand_string(12));
         let (id_rsa, public_key) = self.generate_key_pair()?;
         let osuser = self.get_osuser(org.id);
+
+        if org.max_cpu > 0 && machine_type.cpu > org.max_cpu {
+            return Err(ApiError::InvalidRequest(
+                self.db
+                    .get_config(LAPDEV_MAX_CPU_ERROR)
+                    .await
+                    .unwrap_or_else(|_| "You can't use this workspace machine type".to_string()),
+            ));
+        }
 
         self.enterprise
             .check_organization_limit(org, user.id)
@@ -2044,6 +2059,11 @@ impl Conductor {
         ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<NewWorkspaceResponse, ApiError> {
+        if user.disabled {
+            return Err(ApiError::InvalidRequest(
+                "Your account has been disabled. Please contact support.".to_string(),
+            ));
+        }
         let repo = self
             .get_repo_details(
                 org.id,
@@ -3406,7 +3426,7 @@ impl Conductor {
     }
 }
 
-pub fn encode_pkcs8_pem(key: &KeyPair) -> Result<String> {
+pub fn encode_pkcs8_pem(key: &PrivateKey) -> Result<String> {
     let x = pkcs8::encode_pkcs8(key)?;
     Ok(format!(
         "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",

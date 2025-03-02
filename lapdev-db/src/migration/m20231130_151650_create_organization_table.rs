@@ -47,6 +47,7 @@ impl MigrationTrait for Migration {
                             .boolean()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(Organization::MaxCpu).integer().not_null())
                     .to_owned(),
             )
             .await?;
@@ -81,4 +82,5 @@ enum Organization {
     UsageLimit,
     RunningWorkspaceLimit,
     HasRunningWorkspace,
+    MaxCpu,
 }

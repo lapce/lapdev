@@ -109,6 +109,14 @@ async fn run(
         });
     }
 
+    {
+        tokio::spawn(async move {
+            if let Err(e) = lapdev_kube::run().await {
+                error!("kube run error {e:?}");
+            }
+        });
+    }
+
     let state = CoreState::new(
         conductor,
         ssh_proxy_port,

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, FixedOffset};
 use oauth2::AccessToken;
 use reqwest::{header, Client};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -13,6 +14,7 @@ pub struct GitlabUser {
     pub id: i32,
     pub username: String,
     pub name: Option<String>,
+    pub created_at: DateTime<FixedOffset>,
 }
 
 #[derive(Clone)]

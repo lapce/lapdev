@@ -71,7 +71,7 @@ impl Enterprise {
             }
         }
 
-        if organization.usage_limit > 0 {
+        if organization.usage_limit > -1 {
             let usage = self
                 .usage
                 .get_monthly_cost(organization.id, None, None, Utc::now().into(), None)

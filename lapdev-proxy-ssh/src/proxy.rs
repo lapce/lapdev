@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use lapdev_common::WorkspaceStatus;
 use lapdev_conductor::Conductor;
 use lapdev_db::api::DbApi;
-use russh::keys::{decode_secret_key, key::KeyPair, PublicKeyBase64};
+use russh::keys::{decode_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKeyBase64};
 use russh::{
     server::{Auth, Msg, Session},
     Channel, ChannelMsg,
@@ -25,7 +24,7 @@ pub struct SshProxyHandler {
     id: usize,
     ws_addr: Option<(String, u16)>,
     ws_session: Option<super::client::ClientSession>,
-    ws_private_key: Option<KeyPair>,
+    ws_private_key: Option<PrivateKeyWithHashAlg>,
     ws_env: Vec<(String, String)>,
     db: DbApi,
     conductor: Arc<Conductor>,
@@ -48,7 +47,6 @@ impl russh::server::Server for SshProxy {
     }
 }
 
-#[async_trait]
 impl russh::server::Handler for SshProxyHandler {
     type Error = anyhow::Error;
 
@@ -61,7 +59,7 @@ impl russh::server::Handler for SshProxyHandler {
     async fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        _public_key: &russh::keys::key::PublicKey,
+        _public_key: &russh::keys::PublicKey,
     ) -> Result<Auth, Self::Error> {
         Ok(Auth::Accept)
     }
@@ -69,7 +67,7 @@ impl russh::server::Handler for SshProxyHandler {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &russh::keys::key::PublicKey,
+        public_key: &russh::keys::PublicKey,
     ) -> Result<Auth, Self::Error> {
         let public_key = public_key.public_key_base64();
         println!("auth public key");
@@ -88,7 +86,10 @@ impl russh::server::Handler for SshProxyHandler {
                 .ok_or_else(|| anyhow!("the workspace doesn't have a ssh port"))?
                 as u16,
         ));
-        self.ws_private_key = Some(decode_secret_key(&ws.ssh_private_key, None)?);
+        self.ws_private_key = Some(PrivateKeyWithHashAlg::new(
+            Arc::new(decode_secret_key(&ws.ssh_private_key, None)?),
+            Some(HashAlg::Sha512),
+        ));
         if let Some(Ok(env)) = ws.env.as_ref().map(|env| serde_json::from_str(env)) {
             self.ws_env = env;
         }

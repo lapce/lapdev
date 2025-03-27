@@ -1,11 +1,11 @@
 use anyhow::Result;
 use gloo_net::http::Request;
 use lapdev_common::{console::MeUser, ClusterInfo};
-use leptos::{
-    component, create_local_resource, create_rw_signal, provide_context, use_context, view, window,
-    IntoView, Resource, Show, Signal, SignalGet,
+use leptos::prelude::*;
+use leptos_router::{
+    components::{Route, Router, Routes},
+    path,
 };
-use leptos_router::{Route, Router, Routes};
 
 use crate::{
     account::{get_login, AccountSettings, JoinView, Login},
@@ -41,34 +41,34 @@ async fn get_cluster_info() -> Result<ClusterInfo> {
 }
 
 pub fn set_context() {
-    let login_counter = create_rw_signal(0);
+    let login_counter = RwSignal::new(0);
     provide_context(login_counter);
 
-    let login = create_local_resource(
-        move || login_counter.get(),
-        |_| async move { get_login().await.ok() },
-    );
+    let login = LocalResource::new(|| async move { get_login().await.ok() });
+    Effect::new(move |_| {
+        login_counter.track();
+        login.refetch();
+    });
     provide_context(login);
 
-    let cluster_info =
-        create_local_resource(move || (), |_| async move { get_cluster_info().await.ok() });
-    let cluster_info = Signal::derive(move || cluster_info.get().flatten());
+    let cluster_info = LocalResource::new(|| async move { get_cluster_info().await.ok() });
+    let cluster_info = Signal::derive(move || cluster_info.get().as_deref().cloned().flatten());
     provide_context(cluster_info);
 
     let current_org = Signal::derive(move || {
-        let login = login.get().flatten();
+        let login = login.get().as_deref().cloned().flatten();
         login.map(|u| u.organization)
     });
     provide_context(current_org);
 
     let pathname = window().location().pathname().unwrap_or_default();
     let nav_expanded = NavExpanded {
-        orgnization: create_rw_signal(pathname.starts_with("/organization")),
-        account: create_rw_signal(pathname.starts_with("/account")),
+        orgnization: RwSignal::new(pathname.starts_with("/organization")),
+        account: RwSignal::new(pathname.starts_with("/account")),
     };
     provide_context(nav_expanded);
 
-    provide_context(create_rw_signal(AppConfig {
+    provide_context(RwSignal::new(AppConfig {
         show_lapdev_website: false,
     }));
 }
@@ -78,44 +78,43 @@ pub fn App() -> impl IntoView {
     set_context();
     view! {
         <Router>
-            <Routes>
-                <Route path="/" view=move || view! { <WrappedView element=Root /> } />
-                <Route path="/projects" view=move || view! { <WrappedView element=Projects /> } />
-                <Route path="/projects/:id" view=move || view! { <WrappedView element=ProjectDetails /> } />
-                <Route path="/workspaces" view=move || view! { <WrappedView element=Workspaces /> } />
-                <Route path="/workspaces/:name" view=move || view! { <WrappedView element=WorkspaceDetails /> } />
-                <Route path="/organization/usage" view=move || view! { <WrappedView element=UsageView /> } />
-                <Route path="/organization/members" view=move || view! { <WrappedView element=OrgMembers /> } />
-                <Route path="/organization/quota" view=move || view! { <WrappedView element=QuotaView /> } />
-                <Route path="/organization/audit_log" view=move || view! { <WrappedView element=AuditLogView /> } />
-                <Route path="/organization/settings" view=move || view! { <WrappedView element=OrgSettings /> } />
-                <Route path="/account" view=move || view! { <WrappedView element=AccountSettings /> } />
-                <Route path="/join/:id" view=move || view! { <WrappedView element=JoinView /> } />
-                <Route path="/account/ssh-keys" view=move || view! { <WrappedView element=SshKeys /> } />
-                <Route path="/account/git-providers" view=move || view! { <WrappedView element=GitProviderView /> } />
-                <Route path="/admin" view=move || view! { <AdminWrappedView element=WorkspaceHostView /> } />
-                <Route path="/admin/workspace_hosts" view=move || view! { <AdminWrappedView element=WorkspaceHostView /> } />
-                <Route path="/admin/machine_types" view=move || view! { <AdminWrappedView element=MachineTypeView /> } />
-                <Route path="/admin/users" view=move || view! { <AdminWrappedView element=ClusterUsersView /> } />
-                <Route path="/admin/settings" view=move || view! { <AdminWrappedView element=ClusterSettings /> } />
-                <Route path="/admin/license" view=move || view! { <AdminWrappedView element=LicenseView /> } />
-                <Route path="/admin/sign_license" view=move || view! { <AdminWrappedView element=SignLicenseView /> } />
+            <Routes fallback=|| "Not found.">
+                <Route path=path!("/") view=move || view! { <WrappedView element=Root /> } />
+                <Route path=path!("/projects") view=move || view! { <WrappedView element=Projects /> } />
+                <Route path=path!("/projects/:id") view=move || view! { <WrappedView element=ProjectDetails /> } />
+                <Route path=path!("/workspaces") view=move || view! { <WrappedView element=Workspaces /> } />
+                <Route path=path!("/workspaces/:name") view=move || view! { <WrappedView element=WorkspaceDetails /> } />
+                <Route path=path!("/organization/usage") view=move || view! { <WrappedView element=UsageView /> } />
+                <Route path=path!("/organization/members") view=move || view! { <WrappedView element=OrgMembers /> } />
+                <Route path=path!("/organization/quota") view=move || view! { <WrappedView element=QuotaView /> } />
+                <Route path=path!("/organization/audit_log") view=move || view! { <WrappedView element=AuditLogView /> } />
+                <Route path=path!("/organization/settings") view=move || view! { <WrappedView element=OrgSettings /> } />
+                <Route path=path!("/account") view=move || view! { <WrappedView element=AccountSettings /> } />
+                <Route path=path!("/join/:id") view=move || view! { <WrappedView element=JoinView /> } />
+                <Route path=path!("/account/ssh-keys") view=move || view! { <WrappedView element=SshKeys /> } />
+                <Route path=path!("/account/git-providers") view=move || view! { <WrappedView element=GitProviderView /> } />
+                <Route path=path!("/admin") view=move || view! { <AdminWrappedView element=WorkspaceHostView /> } />
+                <Route path=path!("/admin/workspace_hosts") view=move || view! { <AdminWrappedView element=WorkspaceHostView /> } />
+                <Route path=path!("/admin/machine_types") view=move || view! { <AdminWrappedView element=MachineTypeView /> } />
+                <Route path=path!("/admin/users") view=move || view! { <AdminWrappedView element=ClusterUsersView /> } />
+                <Route path=path!("/admin/settings") view=move || view! { <AdminWrappedView element=ClusterSettings /> } />
+                <Route path=path!("/admin/license") view=move || view! { <AdminWrappedView element=LicenseView /> } />
+                <Route path=path!("/admin/sign_license") view=move || view! { <AdminWrappedView element=SignLicenseView /> } />
             </Routes>
         </Router>
-
     }
 }
 
 #[component]
 pub fn WrappedView<T>(element: T) -> impl IntoView
 where
-    T: IntoView + Copy + 'static,
+    T: IntoView + Copy + 'static + Send + Sync,
 {
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
-    let new_org_modal_hidden = create_rw_signal(true);
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
+    let new_org_modal_hidden = RwSignal::new(true);
     view! {
         <Show
-            when=move || { login.get().flatten().is_some() }
+            when=move || { login.get().as_deref().flatten().is_some() }
             fallback=move || view! { <Login /> }
         >
             <div class="flex flex-col h-screen">
@@ -135,12 +134,12 @@ where
 #[component]
 pub fn AdminWrappedView<T>(element: T) -> impl IntoView
 where
-    T: IntoView + Copy + 'static,
+    T: IntoView + Copy + 'static + Send + Sync,
 {
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     view! {
         <Show
-            when=move || { login.get().flatten().is_some() }
+            when=move || { login.get().as_deref().flatten().is_some() }
             fallback=move || view! { <Login /> }
         >
             <div class="flex flex-col h-screen">

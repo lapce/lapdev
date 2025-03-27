@@ -2,11 +2,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, TimeZone};
 use gloo_net::http::Request;
 use lapdev_common::{console::Organization, AuditLogRecord, AuditLogResult};
-use leptos::{
-    component, create_action, create_rw_signal, event_target_value, use_context, view, For,
-    IntoView, Signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith,
-    SignalWithUntracked,
-};
+use leptos::prelude::*;
 
 use crate::{
     datepicker::Datepicker,
@@ -79,14 +75,14 @@ async fn get_audit_logs(
 
 #[component]
 pub fn AuditLogView() -> impl IntoView {
-    let from_date = create_rw_signal(Some(Local::now().date_naive()));
-    let to_date = create_rw_signal(Some(Local::now().date_naive()));
-    let page_size = create_rw_signal(String::new());
-    let page = create_rw_signal(0);
+    let from_date = RwSignal::new(Some(Local::now().date_naive()));
+    let to_date = RwSignal::new(Some(Local::now().date_naive()));
+    let page_size = RwSignal::new(String::new());
+    let page = RwSignal::new(0);
 
-    let error = create_rw_signal(None);
+    let error = RwSignal::new(None);
 
-    let get_action = create_action(move |()| async move {
+    let get_action = Action::new_local(move |()| async move {
         error.set(None);
         let result = get_audit_logs(
             from_date.get_untracked(),
@@ -158,7 +154,7 @@ pub fn AuditLogView() -> impl IntoView {
                 <button
                     type="button"
                     class="ml-4 px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
-                    on:click=move |_| get_action.dispatch(())
+                    on:click=move |_| {get_action.dispatch(());}
                 >
                     Search
                 </button>
@@ -168,9 +164,9 @@ pub fn AuditLogView() -> impl IntoView {
                     <div class="my-4 p-4 rounded-lg bg-red-50">
                         <span class="text-sm font-medium text-red-800">{ error }</span>
                     </div>
-                }.into_view()
+                }.into_any()
             } else {
-                view!{}.into_view()
+                ().into_any()
             }}
 
             <div class="mt-4 flex flex-row items-center justify-between">
@@ -200,7 +196,7 @@ pub fn AuditLogView() -> impl IntoView {
                         class=("text-gray-300", move || audit_logs.with(|a| a.page == 0))
                         class=("cursor-pointer", move || !audit_logs.with(|a| a.page == 0))
                         class=("hover:bg-gray-100", move || !audit_logs.with(|a| a.page == 0))
-                        disabled=move || audit_logs.with(|a| a.page == 0)
+                        class=("disabled", move || audit_logs.with(|a| a.page == 0))
                         on:click=prev_page
                     >
                         <svg class="w-5 h-5" aria-hidden="true" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
@@ -254,7 +250,7 @@ fn RecordItemView(i: usize, record: AuditLogRecord) -> impl IntoView {
             class="w-full bg-white"
             class=("border-t", move || i > 0)
         >
-            <td scope="row" class="px-4 py-2">
+            <td class="px-4 py-2">
                 <DatetimeModal time=record.time />
             </td>
             <td class="px-4 py-2">

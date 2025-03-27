@@ -284,6 +284,7 @@ async fn handle_catch_all(
     req: Request<Body>,
 ) -> Result<Response, ApiError> {
     let path = req.uri().path();
+    println!("path is {path}");
 
     if let Some(websocket) = websocket {
         let uri = req.uri();

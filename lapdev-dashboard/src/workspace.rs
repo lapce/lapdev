@@ -1,7 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use anyhow::{anyhow, Result};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use gloo_net::{
     http::Request,
     websocket::{futures::WebSocket, Message},
@@ -11,14 +11,8 @@ use lapdev_common::{
     PrebuildStatus, ProjectInfo, ProjectPrebuild, RepoSource, RepobuildError, UpdateWorkspacePort,
     WorkspaceInfo, WorkspacePort, WorkspaceService, WorkspaceStatus, WorkspaceUpdateEvent,
 };
-use leptos::{
-    component, create_action, create_effect, create_local_resource, create_rw_signal, document,
-    event_target_checked, event_target_value, expect_context, on_cleanup, set_timeout, spawn_local,
-    spawn_local_with_current_owner, use_context, view, window, For, IntoView, RwSignal, Show,
-    Signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith,
-    SignalWithUntracked,
-};
-use leptos_router::{use_location, use_navigate, use_params_map};
+use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
+use leptos_router::hooks::{use_location, use_navigate, use_params_map};
 use uuid::Uuid;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
@@ -246,7 +240,7 @@ fn OpenWorkspaceView(
     workspace_hostname: String,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = create_rw_signal(true);
+    let dropdown_hidden = RwSignal::new(true);
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
             dropdown_hidden.set(false);
@@ -295,7 +289,6 @@ fn OpenWorkspaceView(
         >
             <a
                 class={format!("{open_button_class} px-4 rounded-l-lg inline-block")}
-                disabled=move || workspace_status != WorkspaceStatus::Running
                 target="_blank"
                 href={format!("https://{workspace_name}.{workspace_hostname}/")}
             >
@@ -353,7 +346,7 @@ fn WorkspaceControl(
     error: RwSignal<Option<String>>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = create_rw_signal(true);
+    let dropdown_hidden = RwSignal::new(true);
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
             dropdown_hidden.set(false);
@@ -400,7 +393,7 @@ fn WorkspaceControl(
 
     let stop_action = {
         let workspace_name = workspace_name.clone();
-        create_action(move |_| {
+        Action::new_local(move |_| {
             let workspace_name = workspace_name.clone();
             async move {
                 if let Err(e) = stop_workspace(workspace_name.clone()).await {
@@ -417,7 +410,7 @@ fn WorkspaceControl(
 
     let start_action = {
         let workspace_name = workspace_name.clone();
-        create_action(move |_| {
+        Action::new_local(move |_| {
             let workspace_name = workspace_name.clone();
             async move {
                 if let Err(e) = start_workspace(workspace_name.clone()).await {
@@ -434,7 +427,7 @@ fn WorkspaceControl(
 
     let pin_action = {
         let workspace_name = workspace_name.clone();
-        create_action(move |_| {
+        Action::new_local(move |_| {
             let workspace_name = workspace_name.clone();
             async move {
                 if let Err(e) = pin_workspace(workspace_name.clone()).await {
@@ -451,7 +444,7 @@ fn WorkspaceControl(
 
     let unpin_action = {
         let workspace_name = workspace_name.clone();
-        create_action(move |_| {
+        Action::new_local(move |_| {
             let workspace_name = workspace_name.clone();
             async move {
                 if let Err(e) = unpin_workspace(workspace_name.clone()).await {
@@ -577,7 +570,7 @@ fn WorkspaceRebuildModal(
 ) -> impl IntoView {
     let rebuild_action = {
         let workspace_name = workspace_name.clone();
-        create_action(move |_| rebuild_workspace(workspace_name.clone(), rebuild_modal_hidden))
+        Action::new_local(move |_| rebuild_workspace(workspace_name.clone(), rebuild_modal_hidden))
     };
 
     let body = view! {
@@ -610,8 +603,8 @@ pub fn WorkspaceItem(
     error: RwSignal<Option<String>>,
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
-    let rebuild_modal_hidden = create_rw_signal(true);
-    let delete_modal_hidden = create_rw_signal(true);
+    let rebuild_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new(true);
     let workspace_name = workspace.name.clone();
     let workspace_folder = workspace.repo_name.clone();
     let workspace_hostname = workspace.hostname.clone();
@@ -622,7 +615,7 @@ pub fn WorkspaceItem(
     };
     let delete_action = {
         let workspace_name = workspace_name.clone();
-        create_action(move |_| {
+        Action::new_local(move |_| {
             delete_workspace(
                 workspace_name.clone(),
                 delete_modal_hidden,
@@ -646,13 +639,23 @@ pub fn WorkspaceItem(
                 <div class="lg:w-1/3 flex flex-col justify-center">
                     <div class="flex flex-col p-4">
                         <a href={ format!("/workspaces/{}", workspace.name) }>
-                            <span class="font-semibold" href={ format!("/workspaces/{}", workspace.name) }>{ move || workspace.name.clone() }</span>
-                            <span href={ workspace.repo_url.clone() } target="_blank" class="flex flex-row items-center text-sm text-gray-700 mt-2">
+                            <a class="font-semibold" href={ format!("/workspaces/{}", workspace.name.clone()) }>
+                                {
+                                    let workspace_name = workspace.name.clone();
+                                    move || workspace_name.clone()
+                                }
+                            </a>
+                            <a href={ workspace.repo_url.clone() } target="_blank" class="flex flex-row items-center text-sm text-gray-700 mt-2">
                                 <svg class="w-4 h-4 mr-1" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                     <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.2 9.8a3.4 3.4 0 0 0-4.8 0L5 13.2A3.4 3.4 0 0 0 9.8 18l.3-.3m-.3-4.5a3.4 3.4 0 0 0 4.8 0L18 9.8A3.4 3.4 0 0 0 13.2 5l-1 1"/>
                                 </svg>
-                                <p>{ move || workspace.repo_url.clone() }</p>
-                            </span>
+                                <p>
+                                    {
+                                        let repo_url = workspace.repo_url.clone();
+                                        move || repo_url.clone()
+                                    }
+                                </p>
+                            </a>
                             <span class="flex flex-row truncate items-center text-sm text-gray-700 mt-2">
                                 <svg class="w-3 h-3 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 20">
                                     <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5v10M3 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6-3.976-2-.01A4.015 4.015 0 0 1 3 7m10 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"/>
@@ -745,16 +748,9 @@ async fn watch_all_workspace_status(
         "wss"
     };
     let host = location.host().unwrap();
-    let websocket = WebSocket::open(&format!("{protocol}://{host}/all_workspaces_ws"))?;
+    let mut websocket = WebSocket::open(&format!("{protocol}://{host}/all_workspaces_ws"))?;
 
-    let (mut tx, mut rx) = websocket.split();
-    on_cleanup(move || {
-        spawn_local(async move {
-            let _ = tx.close().await;
-        });
-    });
-
-    while let Some(Ok(msg)) = rx.next().await {
+    while let Some(Ok(msg)) = websocket.next().await {
         if let Message::Text(s) = msg {
             if let Ok((ws_name, status)) = serde_json::from_str::<(String, WorkspaceStatus)>(&s) {
                 status_update.set((ws_name, status));
@@ -767,32 +763,38 @@ async fn watch_all_workspace_status(
 
 #[component]
 pub fn Workspaces() -> impl IntoView {
-    let error = create_rw_signal(None);
-    let status_update = create_rw_signal(("".to_string(), WorkspaceStatus::New));
+    let error = RwSignal::new(None);
+    let status_update = RwSignal::new(("".to_string(), WorkspaceStatus::New));
 
-    let _ = spawn_local_with_current_owner(async move {
+    spawn_local_scoped_with_cancellation(async move {
         let _ = watch_all_workspace_status(status_update).await;
     });
 
-    let new_workspace_modal_hidden = create_rw_signal(true);
+    let new_workspace_modal_hidden = RwSignal::new(true);
 
-    let delete_counter = create_rw_signal(0);
-    create_effect(move |_| {
+    let delete_counter = RwSignal::new(0);
+    Effect::new(move |_| {
         status_update.track();
         delete_counter.update(|c| {
             *c += 1;
         });
     });
 
-    let workspaces_resource = create_local_resource(
-        move || delete_counter.get(),
-        |_| async move { all_workspaces().await.unwrap_or_default() },
-    );
+    let workspaces_resource =
+        LocalResource::new(|| async move { all_workspaces().await.unwrap_or_default() });
+    Effect::new(move |_| {
+        delete_counter.track();
+        workspaces_resource.refetch();
+    });
 
-    let workspace_filter = create_rw_signal(String::new());
+    let workspace_filter = RwSignal::new(String::new());
 
     let workspaces = Signal::derive(move || {
-        let mut workspaces = workspaces_resource.get().unwrap_or_default();
+        let mut workspaces = workspaces_resource
+            .get()
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
         let workspace_filter = workspace_filter.get();
         workspaces.retain(|w| w.name.contains(&workspace_filter));
         workspaces
@@ -806,13 +808,13 @@ pub fn Workspaces() -> impl IntoView {
         let hash = use_location().hash.get_untracked();
         if let Some(url) = hash.strip_prefix("#") {
             let url = utils::format_repo_url(url);
-            let action_dispatched = create_rw_signal(false);
+            let action_dispatched = RwSignal::new(false);
             let current_org = expect_context::<Signal<Option<Organization>>>();
             let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-            let action = create_action(move |url: &String| {
+            let action = Action::new_local(move |url: &String| {
                 create_workspace(RepoSource::Url(url.clone()), None, None, true)
             });
-            create_effect(move |_| {
+            Effect::new(move |_| {
                 let org = current_org.get();
                 if org.is_none() {
                     return;
@@ -826,7 +828,7 @@ pub fn Workspaces() -> impl IntoView {
                     action_dispatched.set(true);
                 }
             });
-            create_effect(move |_| {
+            Effect::new(move |_| {
                 action.value().with(|result| {
                     if let Some(result) = result {
                         match result {
@@ -888,9 +890,9 @@ pub fn Workspaces() -> impl IntoView {
                     <div class="w-full my-4 p-4 rounded-lg bg-red-50">
                         <span class="text-sm font-medium text-red-800">{ error }</span>
                     </div>
-                }.into_view()
+                }.into_any()
             } else {
-                view!{}.into_view()
+                ().into_any()
             }}
 
             <div class="relative w-full basis-0 grow">
@@ -907,7 +909,7 @@ pub fn Workspaces() -> impl IntoView {
                 </div>
             </div>
 
-            <NewWorkspaceModal modal_hidden=new_workspace_modal_hidden project_info=create_rw_signal(None) />
+            <NewWorkspaceModal modal_hidden=new_workspace_modal_hidden project_info=RwSignal::new(None) />
 
         </section>
 
@@ -979,11 +981,11 @@ pub fn NewWorkspaceModal(
     modal_hidden: RwSignal<bool>,
     project_info: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> impl IntoView {
-    let repo_url = create_rw_signal("".to_string());
-    let current_branch = create_rw_signal(None);
-    let current_machine_type = create_rw_signal(None);
+    let repo_url = RwSignal::new("".to_string());
+    let current_branch = RwSignal::new(None);
+    let current_machine_type = RwSignal::new(None);
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         let branch = project_info.with(|info| {
             info.as_ref()
                 .and_then(|info| info.branch.as_ref().or(info.branches.first()))
@@ -1009,7 +1011,7 @@ pub fn NewWorkspaceModal(
         current_branch.set(branch);
     };
 
-    let action = create_action(move |_| {
+    let action = Action::new_local(move |_| {
         let source = if let Some(project) = current_project.get_untracked() {
             RepoSource::Project(project)
         } else {
@@ -1109,10 +1111,9 @@ pub fn NewWorkspaceModal(
                             </span>
                         </div>
                         <MachineTypeView current_machine_type preferred_machine_type />
-                    }.into_view()
+                    }.into_any()
                 } else {
-                    view! {
-                    }.into_view()
+                    ().into_any()
                 }
             }
         </Show>
@@ -1135,17 +1136,8 @@ async fn watch_workspace_updates(
     } else {
         "wss"
     };
-    let websocket = WebSocket::open(&format!("{protocol}://{host}/ws?name={}", name))?;
-
-    let (mut tx, mut rx) = websocket.split();
-    on_cleanup(move || {
-        println!("watch workspace updates cleanup");
-        spawn_local(async move {
-            let _ = tx.close().await;
-        });
-    });
-
-    while let Some(Ok(msg)) = rx.next().await {
+    let mut websocket = WebSocket::open(&format!("{protocol}://{host}/ws?name={}", name))?;
+    while let Some(Ok(msg)) = websocket.next().await {
         if let Message::Text(s) = msg {
             if let Ok(event) = serde_json::from_str::<WorkspaceUpdateEvent>(&s) {
                 match event {
@@ -1190,38 +1182,41 @@ fn scroll_build_messages() -> Result<()> {
 
 #[component]
 pub fn WorkspaceDetails() -> impl IntoView {
-    let error = create_rw_signal(None);
+    let error = RwSignal::new(None);
     let params = use_params_map();
-    let name = params.with_untracked(|params| params.get("name").cloned().unwrap());
+    let name = params.with_untracked(|params| params.get("name").clone().unwrap());
     let local_name = name.clone();
     let workspace_name = name.clone();
-    let rebuild_modal_hidden = create_rw_signal(true);
-    let delete_modal_hidden = create_rw_signal(true);
+    let rebuild_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new(true);
     let delete_action = {
         let workspace_name = workspace_name.clone();
-        create_action(move |_| delete_workspace(workspace_name.clone(), delete_modal_hidden, None))
+        Action::new_local(move |_| {
+            delete_workspace(workspace_name.clone(), delete_modal_hidden, None)
+        })
     };
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let machine_types = create_rw_signal(cluster_info.get_untracked().map(|i| i.machine_types));
+    let machine_types = RwSignal::new(cluster_info.get_untracked().map(|i| i.machine_types));
 
-    let update_counter = create_rw_signal(0);
-    let workspace_info = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move {
-            let name = params.with_untracked(|params| params.get("name").cloned().unwrap());
-            get_workspace(&name).await
-        },
-    );
+    let update_counter = RwSignal::new(0);
+    let workspace_info = LocalResource::new(move || async move {
+        let name = params.with_untracked(|params| params.get("name").unwrap_or_default());
+        get_workspace(&name).await
+    });
+    Effect::new(move |_| {
+        update_counter.track();
+        workspace_info.refetch();
+    });
 
-    let build_messages = create_rw_signal(Vec::new());
-    let status = create_rw_signal(WorkspaceStatus::New);
+    let build_messages = RwSignal::new(Vec::new());
+    let status = RwSignal::new(WorkspaceStatus::New);
     {
         let name = local_name.clone();
-        let _ = spawn_local_with_current_owner(async move {
+        spawn_local_scoped_with_cancellation(async move {
             let _ = watch_workspace_updates(&name, status, build_messages).await;
         });
     }
-    create_effect(move |_| {
+    Effect::new(move |_| {
         if let Some(info) = workspace_info.with(|info| {
             info.as_ref()
                 .map(|info| info.as_ref().ok().cloned())
@@ -1233,7 +1228,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
             }
         }
     });
-    create_effect(move |_| {
+    Effect::new(move |_| {
         status.track();
         update_counter.update(|c| *c += 1);
     });
@@ -1250,7 +1245,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
             </h5>
             <Show
                 when=move || { workspace_info.with(|info| info.as_ref().map(|info| info.is_ok()).unwrap_or(false)) }
-                fallback=move || view! {}
+                fallback=move || {}
             >
                 {
                     if let Some(info) = workspace_info.with(|info|  info.as_ref().map(|info| info.as_ref().ok().cloned()).clone().flatten()) {
@@ -1282,15 +1277,20 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         <svg class="w-4 h-4 mr-1" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                             <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.2 9.8a3.4 3.4 0 0 0-4.8 0L5 13.2A3.4 3.4 0 0 0 9.8 18l.3-.3m-.3-4.5a3.4 3.4 0 0 0 4.8 0L18 9.8A3.4 3.4 0 0 0 13.2 5l-1 1"/>
                                         </svg>
-                                        <span class="mr-1 text-gray-500">{"Repository URL:"}</span>
-                                        <p>{ move || info.repo_url.clone() }</p>
+                                        <span class="text-gray-500 w-36">{"Repository URL"}</span>
+                                        <p>
+                                            {
+                                                let repo_url = info.repo_url.clone();
+                                                move || repo_url.clone()
+                                            }
+                                        </p>
                                     </a>
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
                                     <svg class="w-3 h-3 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 20">
                                         <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5v10M3 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6-3.976-2-.01A4.015 4.015 0 0 1 3 7m10 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500">{"Branch:"}</span>
+                                    <span class="text-gray-500 w-36">{"Branch"}</span>
                                     <span class="mr-2">{ info.branch }</span>
                                     <span>{ info.commit }</span>
                                 </span>
@@ -1299,7 +1299,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         <path d="M6 9a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3A.5.5 0 0 1 6 9M3.854 4.146a.5.5 0 1 0-.708.708L4.793 6.5 3.146 8.146a.5.5 0 1 0 .708.708l2-2a.5.5 0 0 0 0-.708z"/>
                                         <path d="M2 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500">{"SSH Connection:"}</span>
+                                    <span class="text-gray-500 w-36">{"SSH Connection"}</span>
                                     {
                                         let workspace_name = workspace_name.clone();
                                         let workspace_hostname = workspace_hostname.clone();
@@ -1322,7 +1322,7 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         <path d="M5 11.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0M14 3a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM2 2a2 2 0 0 0-2 2v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
                                         <path d="M5 4.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500">{"Machine Type:"}</span>
+                                    <span class="text-gray-500 w-36">{"Machine Type"}</span>
                                     {
                                         machine_types.get()
                                             .and_then(|m|
@@ -1334,14 +1334,14 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
                                     <svg class="w-2.5 h-2.5 mr-2" xmlns="http://www.w3.org/2000/svg" width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>
-                                    <span class="mr-1 text-gray-500">{"Pinned:"}</span>
+                                    <span class="text-gray-500 w-36">{"Pinned"}</span>
                                     <span>{ info.pinned }</span>
                                 </span>
                                 <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
                                     <svg class="w-2.5 h-2.5 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                                     <path d="M10 0a10 10 0 1 0 10 10A10.011 10.011 0 0 0 10 0Zm3.982 13.982a1 1 0 0 1-1.414 0l-3.274-3.274A1.012 1.012 0 0 1 9 10V6a1 1 0 0 1 2 0v3.586l2.982 2.982a1 1 0 0 1 0 1.414Z"/>
                                     </svg>
-                                    <span class="mr-1 text-gray-500">{"Created:"}</span>
+                                    <span class="text-gray-500 w-36">{"Created"}</span>
                                     <DatetimeModal time=info.created_at />
                                 </span>
                                 <div class="mt-4">
@@ -1361,9 +1361,9 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                         <div class="w-full my-4 p-4 rounded-lg bg-red-50">
                                             <span class="text-sm font-medium text-red-800">{ error }</span>
                                         </div>
-                                    }.into_view()
+                                    }.into_any()
                                 } else {
-                                    view!{}.into_view()
+                                    ().into_any()
                                 }}
 
                                 <Show
@@ -1420,12 +1420,12 @@ pub fn WorkspaceDetails() -> impl IntoView {
                                     rebuild_modal_hidden
                                 />
                             </div>
-                        }
+                        }.into_any()
                     } else {
                         view! {
                             <div>
                             </div>
-                        }
+                        }.into_any()
                     }
                 }
             </Show>
@@ -1447,7 +1447,7 @@ fn WorkspaceServiceView(
     status: RwSignal<WorkspaceStatus>,
     cluster_info: Signal<Option<ClusterInfo>>,
 ) -> impl IntoView {
-    let expanded = create_rw_signal(false);
+    let expanded = RwSignal::new(false);
     let toggle_expand_view = move |_| {
         expanded.update(|e| {
             *e = !*e;
@@ -1554,7 +1554,7 @@ pub fn WorkspaceTabView(
     show_build_error: bool,
     build_error: Option<RepobuildError>,
 ) -> impl IntoView {
-    let tab_kind = create_rw_signal(TabKind::Port);
+    let tab_kind = RwSignal::new(TabKind::Port);
     let active_class =
         "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active";
     let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300";
@@ -1609,11 +1609,11 @@ pub fn WorkspaceTabView(
                                     }
                                 />
                             </div>
-                        }.into_view()
+                        }.into_any()
                     } else {
                         view! {
                             <p class="my-4 text-sm text-gray-900">Workspace image was built successfully</p>
-                        }.into_view()
+                        }.into_any()
                     }
                 }
             </div>
@@ -1671,13 +1671,10 @@ async fn update_workspace_port(
 pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl IntoView {
     let ports = {
         let name = name.clone();
-        create_local_resource(
-            || (),
-            move |_| {
-                let name = name.clone();
-                async move { workspace_ports(&name.clone()).await }
-            },
-        )
+        LocalResource::new(move || {
+            let name = name.clone();
+            async move { workspace_ports(&name.clone()).await }
+        })
     };
     let ports = Signal::derive(move || {
         ports
@@ -1686,8 +1683,8 @@ pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl Into
             .unwrap_or_default()
     });
 
-    let success = create_rw_signal(None);
-    let error = create_rw_signal(None);
+    let success = RwSignal::new(None);
+    let error = RwSignal::new(None);
 
     view! {
         <p class="mt-2 py-2 text-sm text-gray-900">Exposed ports of your workspace</p>
@@ -1701,9 +1698,9 @@ pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl Into
                 <div class="mt-4 p-4 rounded-lg bg-green-50 w-full">
                     <span class="text-sm font-medium text-green-800">{ success }</span>
                 </div>
-            }.into_view()
+            }.into_any()
         } else {
-            view!{}.into_view()
+            ().into_any()
         }}
 
         { move || if let Some(error) = error.get() {
@@ -1711,9 +1708,9 @@ pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl Into
                 <div class="mt-4 p-4 rounded-lg bg-red-50 w-full">
                     <span class="text-sm font-medium text-red-800">{ error }</span>
                 </div>
-            }.into_view()
+            }.into_any()
         } else {
-            view!{}.into_view()
+            ().into_any()
         }}
 
         <div class="mt-4 flex items-center w-full px-4 py-2 text-gray-900 bg-gray-50">
@@ -1745,12 +1742,12 @@ fn WorkspacePortView(
     success: RwSignal<Option<String>>,
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
-    let shared = create_rw_signal(p.shared);
-    let public = create_rw_signal(p.public);
+    let shared = RwSignal::new(p.shared);
+    let public = RwSignal::new(p.public);
     let action = {
         let name = name.clone();
         let port = p.port;
-        create_action(move |_| {
+        Action::new_local(move |_| {
             let name = name.clone();
             async move {
                 error.set(None);
@@ -1810,7 +1807,7 @@ fn WorkspacePortView(
                 </a>
                 <button
                     class="ml-4 flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
-                    on:click=move |_| action.dispatch(())
+                    on:click=move |_| { action.dispatch(()); }
                 >
                     Update
                 </button>

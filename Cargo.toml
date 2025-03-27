@@ -55,7 +55,7 @@ members = [
 ]
 
 [workspace.dependencies]
-rust_decimal = "1.36.0"
+rust_decimal = "1.37.1"
 toml = "0.8.11"
 clap = { version = "4.5.2", features = ["derive"] }
 tempfile = "3.8.1"
@@ -65,12 +65,12 @@ git2 = { version = "0.18.2", features = ["vendored-libgit2", "vendored-openssl"]
 anyhow = "1.0.66"
 thiserror = "1.0.58"
 async-trait = "0.1.74"
-serde = "1.0.190"
+serde = "1.0.219"
 pasetors = "0.6.8"
-futures = "0.3"
-futures-util = "0.3"
+futures = "0.3.31"
+futures-util = "0.3.31"
 serde_yaml = "0.9.30"
-serde_json = "1.0.111"
+serde_json = "1.0.140"
 json5 = "0.4.1"
 itertools = "0.12.0"
 base64 = "0.22.0"
@@ -82,15 +82,15 @@ docker-compose-types = "0.7.0"
 tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = { version = "0.4.31", features = ["serde"] }
+chrono = { version = "0.4.40", features = ["serde"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5.2", features = ["fs", "trace"] }
 tokio-tungstenite = "0.26.1"
 data-encoding = "2.4.0"
 sha2 = "0.10.8"
-rand = "0.8.5"
-strum = "0.26.1"
-strum_macros = "0.26.1"
+rand = "0.9.0"
+strum = "0.27.1"
+strum_macros = "0.27.1"
 procfs = "0.17.0"
 base16ct = { version = "0.2.0", features = ["alloc"] }
 axum = { version = "0.7.4", features = ["ws"] }
@@ -110,7 +110,7 @@ sqlx = { version = "0.7.3", default-features = false, features = ["sqlx-postgres
 sea-orm = { version = "0.12.12", features = [ "sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
 sea-orm-migration = { version = "0.12.6", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
-russh = {version = "0.50.2" }
+russh = {version = "0.50.4" }
 lapdev-api = { path = "./lapdev-api" }
 lapdev-ws = { path = "./lapdev-ws" }
 lapdev-db = { path = "./lapdev-db" }

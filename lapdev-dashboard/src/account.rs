@@ -4,11 +4,8 @@ use lapdev_common::{
     console::{MeUser, NewSessionResponse},
     AuthProvider, ClusterInfo,
 };
-use leptos::{
-    component, create_action, create_local_resource, expect_context, use_context, view, window,
-    IntoView, Resource, RwSignal, Signal, SignalGet, SignalGetUntracked, SignalSet, SignalWith,
-};
-use leptos_router::use_params_map;
+use leptos::prelude::*;
+use leptos_router::hooks::use_params_map;
 
 use crate::{cluster::OauthSettings, modal::ErrorResponse};
 
@@ -60,18 +57,16 @@ pub fn Login() -> impl IntoView {
                         if !auth_providers.is_empty() {
                             view! {
                                 <LoginWithView auth_providers />
-                            }.into_view()
+                            }.into_any()
                         } else {
                             view! {
                                 <div class="w-96 bg-white rounded-lg shadow p-6">
                                     <InitAuthProvidersView />
                                 </div>
-                            }.into_view()
+                            }.into_any()
                         }
                     } else {
-                        view! {
-
-                        }.into_view()
+                        ().into_any()
                     }
                 }
             </div>
@@ -81,7 +76,7 @@ pub fn Login() -> impl IntoView {
 
 #[component]
 pub fn LoginWithView(auth_providers: Vec<AuthProvider>) -> impl IntoView {
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     view! {
         <div
             class="max-w-96 w-full"
@@ -97,7 +92,7 @@ pub fn LoginWithView(auth_providers: Vec<AuthProvider>) -> impl IntoView {
                     <button type="button"
                         class="w-full text-gray-900 bg-white hover:bg-gray-100 border border-gray-200 focus:ring-4 focus:outline-none focus:ring-gray-100 font-medium rounded-lg text-sm px-5 py-2.5 text-center inline-flex items-center"
                         class:hidden={ let auth_providers = auth_providers.clone(); move || !auth_providers.contains(&AuthProvider::Github) }
-                        on:click=move |_| { create_action(move |_| {now_login(AuthProvider::Github)}).dispatch(()) }
+                        on:click=move |_| { Action::new_local(move |_| {now_login(AuthProvider::Github)}).dispatch(()); }
                     >
                         <svg class="w-4 h-4 me-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M10 .333A9.911 9.911 0 0 0 6.866 19.65c.5.092.678-.215.678-.477 0-.237-.01-1.017-.014-1.845-2.757.6-3.338-1.169-3.338-1.169a2.627 2.627 0 0 0-1.1-1.451c-.9-.615.07-.6.07-.6a2.084 2.084 0 0 1 1.518 1.021 2.11 2.11 0 0 0 2.884.823c.044-.503.268-.973.63-1.325-2.2-.25-4.516-1.1-4.516-4.9A3.832 3.832 0 0 1 4.7 7.068a3.56 3.56 0 0 1 .095-2.623s.832-.266 2.726 1.016a9.409 9.409 0 0 1 4.962 0c1.89-1.282 2.717-1.016 2.717-1.016.366.83.402 1.768.1 2.623a3.827 3.827 0 0 1 1.02 2.659c0 3.807-2.319 4.644-4.525 4.889a2.366 2.366 0 0 1 .673 1.834c0 1.326-.012 2.394-.012 2.72 0 .263.18.572.681.475A9.911 9.911 0 0 0 10 .333Z" clip-rule="evenodd"/>
@@ -108,7 +103,7 @@ pub fn LoginWithView(auth_providers: Vec<AuthProvider>) -> impl IntoView {
                     <button type="button"
                         class="w-full text-gray-900 bg-white hover:bg-gray-100 border border-gray-200 focus:ring-4 focus:outline-none focus:ring-gray-100 font-medium rounded-lg text-sm px-5 py-2.5 text-center inline-flex items-center"
                         class:hidden=move || !auth_providers.contains(&AuthProvider::Gitlab)
-                        on:click=move |_| { create_action(move |_| {now_login(AuthProvider::Gitlab)}).dispatch(()) }
+                        on:click=move |_| { Action::new_local(move |_| {now_login(AuthProvider::Gitlab)}).dispatch(()); }
                     >
                         <svg class="w-4 h-4 me-2" viewBox="0 0 25 24" xmlns="http://www.w3.org/2000/svg"><path d="M24.507 9.5l-.034-.09L21.082.562a.896.896 0 00-1.694.091l-2.29 7.01H7.825L5.535.653a.898.898 0 00-1.694-.09L.451 9.411.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 2.56 1.935 1.554 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#E24329"/><path d="M24.507 9.5l-.034-.09a11.44 11.44 0 00-4.56 2.051l-7.447 5.632 4.742 3.584 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#FC6D26"/><path d="M7.707 20.677l2.56 1.935 1.555 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935-4.743-3.584-4.755 3.584z" fill="#FCA326"/><path d="M5.01 11.461a11.43 11.43 0 00-4.56-2.05L.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 4.745-3.584-7.444-5.632z" fill="#FC6D26"/></svg>
                         Sign in with GitLab
@@ -128,11 +123,11 @@ pub fn InitAuthProvidersView() -> impl IntoView {
 
 #[component]
 pub fn NavUserControl(user_control_hidden: RwSignal<bool>) -> impl IntoView {
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
 
     let logout = move |_| {
         user_control_hidden.set(true);
-        create_action(move |_| now_logout()).dispatch(());
+        Action::new_local(move |_| now_logout()).dispatch(());
     };
 
     view! {
@@ -142,10 +137,10 @@ pub fn NavUserControl(user_control_hidden: RwSignal<bool>) -> impl IntoView {
       >
         <div class="py-3 px-4">
           <span class="block text-sm font-semibold text-gray-900">
-            { move || login.get().flatten().and_then(|l| l.name).unwrap_or("".to_string()) }
+            { move || login.get().as_deref().flatten().and_then(|l| l.name.clone()).unwrap_or("".to_string()) }
           </span>
           <span class="block text-sm text-gray-900 truncate">
-            { move || login.get().flatten().and_then(|l| l.email).unwrap_or("".to_string()) }
+            { move || login.get().as_deref().flatten().and_then(|l| l.email.clone()).unwrap_or("".to_string()) }
           </span>
         </div>
         <ul
@@ -209,18 +204,9 @@ async fn join_org(invitation_id: String) -> Result<Option<ErrorResponse>> {
 #[component]
 pub fn JoinView() -> impl IntoView {
     let params = use_params_map();
-    let id = Signal::derive(move || {
-        params
-            .with(|params| params.get("id").cloned())
-            .unwrap_or_default()
-    });
+    let id = Signal::derive(move || params.with(|params| params.get("id")).unwrap_or_default());
 
-    let result = {
-        create_local_resource(
-            || (),
-            move |_| async move { join_org(id.get_untracked()).await },
-        )
-    };
+    let result = { LocalResource::new(move || async move { join_org(id.get_untracked()).await }) };
 
     view! {
         {
@@ -229,9 +215,9 @@ pub fn JoinView() -> impl IntoView {
                     <div class="my-2 p-4 rounded-lg bg-red-50">
                         <span class="text-sm font-medium text-red-800">{ error.error }</span>
                     </div>
-                }.into_view()
+                }.into_any()
             } else {
-                view! {}.into_view()
+                ().into_any()
             }
         }
     }

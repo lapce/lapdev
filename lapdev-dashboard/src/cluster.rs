@@ -7,12 +7,7 @@ use lapdev_common::{
     NewWorkspaceHost, OauthSettings, UpdateClusterUser, UpdateMachineType, UpdateWorkspaceHost,
     WorkspaceHost,
 };
-use leptos::{
-    component, create_action, create_effect, create_local_resource, create_rw_signal, document,
-    event_target_checked, event_target_value, expect_context, leptos_dom::helpers::location,
-    set_timeout, view, Action, For, IntoView, RwSignal, Signal, SignalGet, SignalGetUntracked,
-    SignalSet, SignalUpdate, SignalWith, SignalWithUntracked,
-};
+use leptos::prelude::*;
 use uuid::Uuid;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
@@ -29,13 +24,14 @@ async fn get_all_workspaces() -> Result<Vec<WorkspaceHost>> {
 
 #[component]
 pub fn WorkspaceHostView() -> impl IntoView {
-    let new_workspace_host_modal_hidden = create_rw_signal(true);
-    let update_counter = create_rw_signal(0);
-    let hosts = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { get_all_workspaces().await },
-    );
-    let host_filter = create_rw_signal(String::new());
+    let new_workspace_host_modal_hidden = RwSignal::new(true);
+    let update_counter = RwSignal::new(0);
+    let hosts = LocalResource::new(move || async move { get_all_workspaces().await });
+    Effect::new(move |_| {
+        update_counter.track();
+        hosts.refetch();
+    });
+    let host_filter = RwSignal::new(String::new());
     let hosts = Signal::derive(move || {
         let host_filter = host_filter.get();
         let mut hosts = hosts.with(|hosts| {
@@ -105,13 +101,13 @@ pub fn NewWorkspaceHostView(
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let host = create_rw_signal(String::new());
-    let region = create_rw_signal(String::new());
-    let zone = create_rw_signal(String::new());
-    let cpu = create_rw_signal(String::new());
-    let memory = create_rw_signal(String::new());
-    let disk = create_rw_signal(String::new());
-    let action = create_action(move |_| {
+    let host = RwSignal::new(String::new());
+    let region = RwSignal::new(String::new());
+    let zone = RwSignal::new(String::new());
+    let cpu = RwSignal::new(String::new());
+    let memory = RwSignal::new(String::new());
+    let disk = RwSignal::new(String::new());
+    let action = Action::new_local(move |_| {
         create_workspace_host(
             host.get_untracked(),
             region.get_untracked(),
@@ -151,12 +147,12 @@ pub fn UpdateWorkspaceHostModal(
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let region = create_rw_signal(host.region.clone());
-    let zone = create_rw_signal(host.zone.clone());
-    let cpu = create_rw_signal(host.cpu.to_string());
-    let memory = create_rw_signal(host.memory.to_string());
-    let disk = create_rw_signal(host.disk.to_string());
-    let action = create_action(move |_| {
+    let region = RwSignal::new(host.region.clone());
+    let zone = RwSignal::new(host.zone.clone());
+    let cpu = RwSignal::new(host.cpu.to_string());
+    let memory = RwSignal::new(host.memory.to_string());
+    let disk = RwSignal::new(host.disk.to_string());
+    let action = Action::new_local(move |_| {
         update_workspace_host(
             host.id,
             region.get_untracked(),
@@ -333,11 +329,11 @@ async fn delete_workspace_host(
 #[component]
 fn WorkspaceHostItem(host: WorkspaceHost, update_counter: RwSignal<i32>) -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let update_workspace_host_modal_hidden = create_rw_signal(true);
-    let delete_modal_hidden = create_rw_signal(true);
+    let update_workspace_host_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new(true);
     let delete_action = {
         let id = host.id;
-        create_action(move |_| async move {
+        Action::new_local(move |_| async move {
             delete_workspace_host(id, update_counter, delete_modal_hidden).await
         })
     };
@@ -380,7 +376,7 @@ fn WorkspaceHostControl(
     update_workspace_host_modal_hidden: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = create_rw_signal(true);
+    let dropdown_hidden = RwSignal::new(true);
 
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
@@ -535,13 +531,14 @@ async fn get_cpu_overcommit() -> Result<usize, ErrorResponse> {
 
 #[component]
 fn CpuOvercommitSetting() -> impl IntoView {
-    let update_counter = create_rw_signal(0);
-    let current_value = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { get_cpu_overcommit().await },
-    );
-    let value = create_rw_signal(String::new());
-    create_effect(move |_| {
+    let update_counter = RwSignal::new(0);
+    let current_value = LocalResource::new(move || async move { get_cpu_overcommit().await });
+    Effect::new(move |_| {
+        update_counter.get();
+        current_value.refetch();
+    });
+    let value = RwSignal::new(String::new());
+    Effect::new(move |_| {
         let v = current_value.with(|v| v.as_ref().and_then(|v| v.as_ref().ok().copied()));
         if let Some(v) = v {
             value.set(v.to_string());
@@ -559,7 +556,9 @@ fn CpuOvercommitSetting() -> impl IntoView {
         </div>
     };
     let save_action =
-        create_action(move |_| async move { update_cpu_overcommit(value.get_untracked()).await });
+        Action::new_local(
+            move |_| async move { update_cpu_overcommit(value.get_untracked()).await },
+        );
     view! {
         <SettingView title="CPU Overcommit Setting".to_string() action=save_action body update_counter extra=None />
     }
@@ -602,18 +601,19 @@ async fn get_oauth2() -> Result<OauthSettings> {
 
 #[component]
 pub fn OauthSettings(reload: bool) -> impl IntoView {
-    let update_counter = create_rw_signal(0);
-    let github_client_id = create_rw_signal(String::new());
-    let github_client_secret = create_rw_signal(String::new());
-    let gitlab_client_id = create_rw_signal(String::new());
-    let gitlab_client_secret = create_rw_signal(String::new());
+    let update_counter = RwSignal::new(0);
+    let github_client_id = RwSignal::new(String::new());
+    let github_client_secret = RwSignal::new(String::new());
+    let gitlab_client_id = RwSignal::new(String::new());
+    let gitlab_client_secret = RwSignal::new(String::new());
 
-    let oauth = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { get_oauth2().await },
-    );
+    let oauth = LocalResource::new(move || async move { get_oauth2().await });
+    Effect::new(move |_| {
+        update_counter.track();
+        oauth.refetch();
+    });
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         let oauth = oauth.with(|oauth| oauth.as_ref().and_then(|o| o.as_ref().ok().cloned()));
         if let Some(oauth) = oauth {
             github_client_id.set(oauth.github_client_id);
@@ -673,7 +673,7 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
             />
         </div>
     };
-    let save_action = create_action(move |_| async move {
+    let save_action = Action::new_local(move |_| async move {
         update_oauth2(
             OauthSettings {
                 github_client_id: github_client_id.get_untracked(),
@@ -722,20 +722,23 @@ async fn update_hostnames(
 pub fn ClusterHostnameSetting() -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
 
-    let update_counter = create_rw_signal(0);
+    let update_counter = RwSignal::new(0);
 
-    let set_hostnames = create_rw_signal(vec![]);
+    let set_hostnames = RwSignal::new(vec![]);
 
-    let hostnames = create_local_resource(
-        move || update_counter.get(),
-        |_| async move { get_hostnames().await.unwrap_or_default() },
-    );
+    let hostnames = LocalResource::new(|| async move { get_hostnames().await.unwrap_or_default() });
+    Effect::new(move |_| {
+        update_counter.track();
+        hostnames.refetch();
+    });
 
-    create_effect(move |_| {
-        let hostnames = hostnames.with(|h| h.clone()).unwrap_or_default();
+    Effect::new(move |_| {
+        let hostnames = hostnames
+            .with(|h| h.as_deref().cloned())
+            .unwrap_or_default();
         let mut hostnames: Vec<(String, RwSignal<String>)> = hostnames
             .into_iter()
-            .map(|(key, value)| (key, create_rw_signal(value)))
+            .map(|(key, value)| (key, RwSignal::new(value)))
             .collect();
         hostnames.sort_by_key(|(region, _)| region.to_owned());
         set_hostnames.set(hostnames);
@@ -764,7 +767,7 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
                                 }
                             }
                         />
-                    }.into_view()
+                    }.into_any()
                 } else {
                     view! {
                         <div class="mt-2">
@@ -778,13 +781,13 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
                                 class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
                             />
                         </div>
-                    }.into_view()
+                    }.into_any()
                 }
             }
         }
     };
 
-    let save_action = create_action(move |_| async move {
+    let save_action = Action::new_local(move |_| async move {
         let value = set_hostnames
             .get_untracked()
             .into_iter()
@@ -834,13 +837,10 @@ async fn update_certs(certs: Vec<(String, String)>) -> Result<(), ErrorResponse>
 
 #[component]
 pub fn ClusterCertsSetting() -> impl IntoView {
-    let certs = create_rw_signal(vec![]);
+    let certs = RwSignal::new(vec![]);
     let new_cert = move |_| {
         certs.update(|certs| {
-            certs.push((
-                create_rw_signal(String::new()),
-                create_rw_signal(String::new()),
-            ));
+            certs.push((RwSignal::new(String::new()), RwSignal::new(String::new())));
         });
     };
     let delete_cert = move |i: usize| {
@@ -849,22 +849,26 @@ pub fn ClusterCertsSetting() -> impl IntoView {
         })
     };
 
-    let update_counter = create_rw_signal(0);
-    let current_certs = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { get_certs().await.unwrap_or_default() },
-    );
-    create_effect(move |_| {
-        let current_certs = current_certs.with(|certs| certs.clone().unwrap_or_default());
+    let update_counter = RwSignal::new(0);
+    let current_certs =
+        LocalResource::new(move || async move { get_certs().await.unwrap_or_default() });
+    Effect::new(move |_| {
+        update_counter.track();
+        current_certs.refetch();
+    });
+
+    Effect::new(move |_| {
+        let current_certs =
+            current_certs.with(|certs| certs.as_deref().cloned().unwrap_or_default());
         certs.update(|certs| {
             *certs = current_certs
                 .into_iter()
-                .map(|(name, value)| (create_rw_signal(name), create_rw_signal(value)))
+                .map(|(name, value)| (RwSignal::new(name), RwSignal::new(value)))
                 .collect();
         });
     });
 
-    let save_action = create_action(move |_| async move {
+    let save_action = Action::new_local(move |_| async move {
         let certs = certs.get_untracked();
         let certs: Vec<(String, String)> = certs
             .into_iter()
@@ -931,7 +935,7 @@ pub fn ClusterCertsSetting() -> impl IntoView {
         >
             New Certificate
         </button>
-    }.into_view();
+    }.into_any();
 
     view! {
         <SettingView title="Certificate Settings".to_string() action=save_action body update_counter extra=Some(extra) />
@@ -946,17 +950,19 @@ async fn all_machine_types() -> Result<Vec<MachineType>> {
 
 #[component]
 pub fn MachineTypeView() -> impl IntoView {
-    let new_machine_type_modal_hidden = create_rw_signal(true);
-    let update_counter = create_rw_signal(0);
-    let machine_types = create_local_resource(
-        move || update_counter.get(),
-        |_| async move { all_machine_types().await.unwrap_or_default() },
-    );
-    let machine_type_filter = create_rw_signal(String::new());
+    let new_machine_type_modal_hidden = RwSignal::new(true);
+    let update_counter = RwSignal::new(0);
+    let machine_types =
+        LocalResource::new(|| async move { all_machine_types().await.unwrap_or_default() });
+    Effect::new(move |_| {
+        update_counter.track();
+        machine_types.refetch();
+    });
+    let machine_type_filter = RwSignal::new(String::new());
     let machine_types = Signal::derive(move || {
         let machine_type_filter = machine_type_filter.get();
-        let mut machine_types =
-            machine_types.with(|machine_types| machine_types.clone().unwrap_or_default());
+        let mut machine_types = machine_types
+            .with(|machine_types| machine_types.as_deref().cloned().unwrap_or_default());
         machine_types.retain(|h| h.name.contains(&machine_type_filter));
         machine_types
     });
@@ -1013,11 +1019,11 @@ pub fn MachineTypeView() -> impl IntoView {
 
 #[component]
 fn MachineTypeItem(machine_type: MachineType, update_counter: RwSignal<i32>) -> impl IntoView {
-    let update_machine_type_modal_hidden = create_rw_signal(true);
-    let delete_modal_hidden = create_rw_signal(true);
+    let update_machine_type_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new(true);
     let delete_action = {
         let id = machine_type.id;
-        create_action(move |_| async move {
+        Action::new_local(move |_| async move {
             delete_machine_type(id, update_counter, delete_modal_hidden).await
         })
     };
@@ -1050,14 +1056,14 @@ pub fn NewMachineTypeView(
     new_machine_type_modal_hidden: RwSignal<bool>,
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
-    let name = create_rw_signal(String::new());
-    let cpu = create_rw_signal(String::new());
-    let memory = create_rw_signal(String::new());
-    let disk = create_rw_signal(String::new());
-    let cost = create_rw_signal("0".to_string());
-    let shared_cpu = create_rw_signal(false);
+    let name = RwSignal::new(String::new());
+    let cpu = RwSignal::new(String::new());
+    let memory = RwSignal::new(String::new());
+    let disk = RwSignal::new(String::new());
+    let cost = RwSignal::new("0".to_string());
+    let shared_cpu = RwSignal::new(false);
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let action = create_action(move |_| {
+    let action = Action::new_local(move |_| {
         create_machine_type(
             name.get_untracked(),
             cpu.get_untracked(),
@@ -1106,10 +1112,10 @@ pub fn UpdateMachineTypeModal(
     update_machine_type_modal_hidden: RwSignal<bool>,
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
-    let name = create_rw_signal(machine_type.name.clone());
-    let cost = create_rw_signal(machine_type.cost_per_second.to_string());
+    let name = RwSignal::new(machine_type.name.clone());
+    let cost = RwSignal::new(machine_type.cost_per_second.to_string());
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let action = create_action(move |_| {
+    let action = Action::new_local(move |_| {
         update_machine_type(
             machine_type.id,
             name.get_untracked(),
@@ -1137,7 +1143,7 @@ fn MachineTypeControl(
     update_machine_type_modal_hidden: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = create_rw_signal(true);
+    let dropdown_hidden = RwSignal::new(true);
 
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
@@ -1388,7 +1394,7 @@ async fn get_cluster_users(
 async fn update_cluster_user(
     id: Uuid,
     cluster_admin: bool,
-    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>>,
+    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>, LocalStorage>,
     update_modal_hidden: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::put(&format!("/api/v1/admin/users/{id}"))
@@ -1411,12 +1417,12 @@ async fn update_cluster_user(
 
 #[component]
 pub fn ClusterUsersView() -> impl IntoView {
-    let page_size = create_rw_signal(String::new());
-    let page = create_rw_signal(0);
+    let page_size = RwSignal::new(String::new());
+    let page = RwSignal::new(0);
 
-    let error = create_rw_signal(None);
-    let user_filter = create_rw_signal(String::new());
-    let search_action = create_action(move |_| async move {
+    let error = RwSignal::new(None);
+    let user_filter = RwSignal::new(String::new());
+    let search_action = Action::new_local(move |_| async move {
         error.set(None);
         let result = get_cluster_users(
             user_filter.get_untracked(),
@@ -1497,7 +1503,7 @@ pub fn ClusterUsersView() -> impl IntoView {
                 <button
                     type="button"
                     class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
-                    on:click=move |_| search_action.dispatch(())
+                    on:click=move |_| { search_action.dispatch(()); }
                 >
                     Search User
                 </button>
@@ -1509,9 +1515,9 @@ pub fn ClusterUsersView() -> impl IntoView {
                 <div class="my-4 p-4 rounded-lg bg-red-50">
                     <span class="text-sm font-medium text-red-800">{ error }</span>
                 </div>
-            }.into_view()
+            }.into_any()
         } else {
-            view!{}.into_view()
+            ().into_any()
         }}
 
         <div class="mt-4 flex flex-row items-center justify-between">
@@ -1537,7 +1543,7 @@ pub fn ClusterUsersView() -> impl IntoView {
                     <option>200</option>
                 </select>
 
-                <span class="ml-2 p-2 rounded"
+                <button class="ml-2 p-2 rounded"
                     class=("text-gray-300", move || users.with(|a| a.page == 0))
                     class=("cursor-pointer", move || !users.with(|a| a.page == 0))
                     class=("hover:bg-gray-100", move || !users.with(|a| a.page == 0))
@@ -1547,7 +1553,7 @@ pub fn ClusterUsersView() -> impl IntoView {
                     <svg class="w-5 h-5" aria-hidden="true" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                         <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd"></path>
                     </svg>
-                </span>
+                </button>
                 <span class="p-2 rounded"
                     class=("text-gray-300", move || users.with(|a| a.page + 1 >= a.num_pages))
                     class=("cursor-pointer", move || !users.with(|a| a.page + 1 >= a.num_pages))
@@ -1592,11 +1598,11 @@ pub fn ClusterUsersView() -> impl IntoView {
 fn ClusterUserItemView(
     i: usize,
     user: ClusterUser,
-    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>>,
+    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>, LocalStorage>,
 ) -> impl IntoView {
     let user_id = user.id;
-    let update_modal_hidden = create_rw_signal(true);
-    let is_cluster_admin = create_rw_signal(user.cluster_admin);
+    let update_modal_hidden = RwSignal::new(true);
+    let is_cluster_admin = RwSignal::new(user.cluster_admin);
 
     let update_modal_body = view! {
         <div
@@ -1621,7 +1627,7 @@ fn ClusterUserItemView(
         </div>
     };
 
-    let update_action = create_action(move |()| async move {
+    let update_action = Action::new_local(move |()| async move {
         update_cluster_user(
             user_id,
             is_cluster_admin.get_untracked(),
@@ -1636,17 +1642,17 @@ fn ClusterUserItemView(
             <svg class="w-4 h-4 me-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M10 .333A9.911 9.911 0 0 0 6.866 19.65c.5.092.678-.215.678-.477 0-.237-.01-1.017-.014-1.845-2.757.6-3.338-1.169-3.338-1.169a2.627 2.627 0 0 0-1.1-1.451c-.9-.615.07-.6.07-.6a2.084 2.084 0 0 1 1.518 1.021 2.11 2.11 0 0 0 2.884.823c.044-.503.268-.973.63-1.325-2.2-.25-4.516-1.1-4.516-4.9A3.832 3.832 0 0 1 4.7 7.068a3.56 3.56 0 0 1 .095-2.623s.832-.266 2.726 1.016a9.409 9.409 0 0 1 4.962 0c1.89-1.282 2.717-1.016 2.717-1.016.366.83.402 1.768.1 2.623a3.827 3.827 0 0 1 1.02 2.659c0 3.807-2.319 4.644-4.525 4.889a2.366 2.366 0 0 1 .673 1.834c0 1.326-.012 2.394-.012 2.72 0 .263.18.572.681.475A9.911 9.911 0 0 0 10 .333Z" clip-rule="evenodd"/>
             </svg>
-        },
+        }.into_any(),
         AuthProvider::Gitlab => view! {
             <svg class="w-4 h-4 me-2" viewBox="0 0 25 24" xmlns="http://www.w3.org/2000/svg"><path d="M24.507 9.5l-.034-.09L21.082.562a.896.896 0 00-1.694.091l-2.29 7.01H7.825L5.535.653a.898.898 0 00-1.694-.09L.451 9.411.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 2.56 1.935 1.554 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#E24329"/><path d="M24.507 9.5l-.034-.09a11.44 11.44 0 00-4.56 2.051l-7.447 5.632 4.742 3.584 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#FC6D26"/><path d="M7.707 20.677l2.56 1.935 1.555 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935-4.743-3.584-4.755 3.584z" fill="#FCA326"/><path d="M5.01 11.461a11.43 11.43 0 00-4.56-2.05L.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 4.745-3.584-7.444-5.632z" fill="#FC6D26"/></svg>
-        },
+        }.into_any(),
     };
     view! {
         <tr
             class="w-full bg-white"
             class=("border-t", move || i > 0)
         >
-            <td scope="row" class="px-4 py-2">
+            <td class="px-4 py-2">
                 <div class="flex flex-row items-center">
                     {icon}
                     <p>{user.auth_provider.to_string()}</p>

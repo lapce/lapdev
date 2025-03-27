@@ -1,10 +1,7 @@
 use anyhow::Result;
 use gloo_net::http::Request;
 use lapdev_common::{NewSshKey, SshKey};
-use leptos::{
-    component, create_action, create_local_resource, create_rw_signal, event_target_value, view,
-    For, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate,
-};
+use leptos::prelude::*;
 
 use crate::modal::{CreationInput, CreationModal, DeletionModal, ErrorResponse};
 
@@ -34,9 +31,10 @@ async fn delete_ssh_key(
 pub fn SshKeyItem(key: SshKey, update_counter: RwSignal<i32>) -> impl IntoView {
     let id = key.id;
     let name = key.name.clone();
-    let delete_modal_hidden = create_rw_signal(true);
-    let delete_action =
-        create_action(move |_| delete_ssh_key(id.to_string(), delete_modal_hidden, update_counter));
+    let delete_modal_hidden = RwSignal::new(true);
+    let delete_action = Action::new_local(move |_| {
+        delete_ssh_key(id.to_string(), delete_modal_hidden, update_counter)
+    });
 
     view! {
         <div class="flex flex-row items-center border rounded-xl px-4 py-2">
@@ -61,11 +59,12 @@ async fn all_ssh_keys() -> Result<Vec<SshKey>> {
 
 #[component]
 pub fn SshKeys() -> impl IntoView {
-    let update_counter = create_rw_signal(0);
-    let ssh_keys = create_local_resource(
-        move || update_counter.get(),
-        |_| async move { all_ssh_keys().await.unwrap_or_default() },
-    );
+    let update_counter = RwSignal::new(0);
+    let ssh_keys = LocalResource::new(|| async move { all_ssh_keys().await.unwrap_or_default() });
+    Effect::new(move |_| {
+        update_counter.track();
+        ssh_keys.refetch();
+    });
 
     view! {
         <section class="w-full h-full flex flex-col">
@@ -83,7 +82,7 @@ pub fn SshKeys() -> impl IntoView {
             <div class="relative w-full basis-0 grow">
                 <div class="absolute w-full h-full flex flex-col py-4 space-y-4 overflow-y-auto">
                     <For
-                        each=move || ssh_keys.get().unwrap_or_default()
+                        each=move || ssh_keys.get().as_deref().cloned().unwrap_or_default()
                         key=|key|  key.id
                         children=move |key| {
                             view! {
@@ -130,11 +129,12 @@ async fn create_ssh_key(
 
 #[component]
 pub fn NewSshKey(update_counter: RwSignal<i32>) -> impl IntoView {
-    let name = create_rw_signal(String::new());
-    let key = create_rw_signal(String::new());
+    let name = RwSignal::new(String::new());
+    let key = RwSignal::new(String::new());
 
-    let modal_hidden = create_rw_signal(true);
-    let action = create_action(move |_| create_ssh_key(name, key, modal_hidden, update_counter));
+    let modal_hidden = RwSignal::new(true);
+    let action =
+        Action::new_local(move |_| create_ssh_key(name, key, modal_hidden, update_counter));
 
     let body = view! {
         <CreationInput label="Name".to_string() value=name placeholder="".to_string() />

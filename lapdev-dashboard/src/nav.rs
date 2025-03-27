@@ -1,12 +1,8 @@
 use std::time::Duration;
 
 use lapdev_common::{console::MeUser, ClusterInfo, UserRole};
-use leptos::{
-    component, create_rw_signal, document, expect_context, set_timeout, use_context, view,
-    IntoView, Resource, RwSignal, Signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate,
-    SignalWith,
-};
-use leptos_router::use_location;
+use leptos::prelude::*;
+use leptos_router::hooks::use_location;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
@@ -20,9 +16,9 @@ pub struct NavExpanded {
 
 #[component]
 pub fn TopNav() -> impl IntoView {
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     let config = use_context::<RwSignal<AppConfig>>().unwrap();
-    let user_control_hidden = create_rw_signal(true);
+    let user_control_hidden = RwSignal::new(true);
     let toggle_user_control = move |_| {
         if user_control_hidden.get_untracked() {
             user_control_hidden.set(false);
@@ -58,7 +54,7 @@ pub fn TopNav() -> impl IntoView {
 
     view! {
         <nav class="bg-white border-b border-gray-200 left-0 right-0 top-0 z-50">
-            <div class="container mx-auto px-8 py-4 flex flex-wrap justify-between items-center">
+            <div class="px-8 py-4 flex flex-wrap justify-between items-center">
                 <div class="flex justify-start items-center">
                     <a href="/" class="flex items-center justify-between mr-4">
                         <svg class="w-10 h-10 mr-4" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 1024 1024">
@@ -109,7 +105,7 @@ pub fn TopNav() -> impl IntoView {
                 <span class="sr-only">Open user menu</span>
                 <img
                 class="w-8 h-8 rounded-full"
-                src=move ||  { login.get().flatten().and_then(|l| l.avatar_url).unwrap_or("https://flowbite.s3.amazonaws.com/blocks/marketing-ui/avatars/michael-gough.png".to_string()) }
+                src=move ||  { login.get().as_deref().flatten().and_then(|l| l.avatar_url.clone()).unwrap_or("https://flowbite.s3.amazonaws.com/blocks/marketing-ui/avatars/michael-gough.png".to_string()) }
                 alt="user photo"
                 />
             </button>
@@ -185,7 +181,7 @@ pub fn SideNavAccount() -> impl IntoView {
 pub fn SideNavOrg() -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
     let nav_expanded: NavExpanded = expect_context();
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     let role = Signal::derive(move || {
         let role = login.with(|l| {
             l.as_ref()

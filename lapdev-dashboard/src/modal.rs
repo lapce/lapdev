@@ -1,9 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset};
-use leptos::{
-    component, create_effect, create_rw_signal, event_target_value, view, Action, IntoView,
-    RwSignal, SignalGet, SignalSet, SignalUpdate, SignalWith, View,
-};
+use leptos::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -42,27 +39,27 @@ pub fn CreationInput(label: String, value: RwSignal<String>, placeholder: String
 pub fn CreationModal<T>(
     title: String,
     modal_hidden: RwSignal<bool>,
-    action: Action<(), Result<(), ErrorResponse>>,
+    action: Action<(), Result<(), ErrorResponse>, LocalStorage>,
     body: T,
     update_text: Option<String>,
     updating_text: Option<String>,
-    create_button_hidden: Box<dyn Fn() -> bool + 'static>,
+    create_button_hidden: Box<dyn Fn() -> bool + 'static + Send>,
     width_class: Option<String>,
 ) -> impl IntoView
 where
     T: IntoView + 'static,
 {
-    let error = create_rw_signal(None);
+    let error = RwSignal::new(None);
     let handle_create = move |_| {
         error.set(None);
         action.dispatch(());
     };
     let create_pending = action.pending();
-    create_effect(move |_| {
+    Effect::new(move |_| {
         modal_hidden.track();
         error.set(None);
     });
-    create_effect(move |_| {
+    Effect::new(move |_| {
         action.value().with(|result| {
             if let Some(result) = result {
                 match result {
@@ -114,9 +111,9 @@ where
                                         <span class="text-sm font-medium text-red-800">{ error }</span>
                                     </div>
                                 </div>
-                            }.into_view()
+                            }.into_any()
                         } else {
-                            view! {}.into_view()
+                            ().into_any()
                         }
                     }
                     <div class="p-4 md:p-5 space-y-4">
@@ -156,14 +153,14 @@ where
 pub fn DeletionModal(
     resource: String,
     modal_hidden: RwSignal<bool>,
-    delete_action: Action<(), Result<(), ErrorResponse>>,
+    delete_action: Action<(), Result<(), ErrorResponse>, LocalStorage>,
 ) -> impl IntoView {
-    let error = create_rw_signal(None);
+    let error = RwSignal::new(None);
     let handle_delete = move |_| {
         delete_action.dispatch(());
     };
     let delete_pending = delete_action.pending();
-    create_effect(move |_| {
+    Effect::new(move |_| {
         delete_action.value().with(|result| {
             if let Some(result) = result {
                 match result {
@@ -176,7 +173,7 @@ pub fn DeletionModal(
         })
     });
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         if modal_hidden.get() {
             error.set(None);
         }
@@ -215,9 +212,9 @@ pub fn DeletionModal(
                                     <div class="text-left p-4 mb-4 rounded-lg bg-red-50">
                                         <span class="text-sm font-medium text-red-800">{ error }</span>
                                     </div>
-                                }.into_view()
+                                }.into_any()
                             } else {
-                                view! {}.into_view()
+                                ().into_any()
                             }
                         }
                         <button
@@ -257,7 +254,7 @@ pub fn DatetimeModal(time: DateTime<FixedOffset>) -> impl IntoView {
         time
     };
 
-    let hidden = create_rw_signal(true);
+    let hidden = RwSignal::new(true);
     let duration = chrono::Utc::now() - time.with_timezone(&chrono::Utc);
     let days = duration.num_days();
     let formatted = move || {
@@ -309,16 +306,16 @@ pub fn DatetimeModal(time: DateTime<FixedOffset>) -> impl IntoView {
 #[component]
 pub fn SettingView<T>(
     title: String,
-    action: Action<(), Result<(), ErrorResponse>>,
+    action: Action<(), Result<(), ErrorResponse>, LocalStorage>,
     body: T,
     update_counter: RwSignal<i32>,
-    extra: Option<View>,
+    extra: Option<AnyView>,
 ) -> impl IntoView
 where
     T: IntoView + 'static,
 {
-    let success = create_rw_signal(None);
-    let error = create_rw_signal(None);
+    let success = RwSignal::new(None);
+    let error = RwSignal::new(None);
     let handle_save = move |_| {
         success.set(None);
         error.set(None);
@@ -326,7 +323,7 @@ where
     };
     let save_pending = action.pending();
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         action.value().with(|result| {
             if let Some(result) = result {
                 match result {
@@ -345,9 +342,9 @@ where
     view! {
         {
             if title.is_empty() {
-                view!{}.into_view()
+                ().into_any()
             } else {
-                view!{ <h5 class="text-lg font-semibold">{title}</h5> }.into_view()
+                view!{ <h5 class="text-lg font-semibold">{title}</h5> }.into_any()
             }
         }
         { body }
@@ -369,9 +366,9 @@ where
             </button>
             {
                 if let Some(extra) = extra {
-                    extra.into_view()
+                    extra.into_any()
                 } else {
-                    view!{}.into_view()
+                    ().into_any()
                 }
             }
             { move || if let Some(error) = error.get() {
@@ -379,9 +376,9 @@ where
                         <div class="ml-4 py-2 px-4 rounded-lg bg-red-50">
                             <span class="text-sm font-medium text-red-800">{ error }</span>
                         </div>
-                    }.into_view()
+                    }.into_any()
                 } else {
-                    view! {}.into_view()
+                    ().into_any()
                 }
             }
             { move || if let Some(success) = success.get() {
@@ -389,9 +386,9 @@ where
                         <div class="ml-4 py-2 px-4 rounded-lg bg-green-50">
                             <span class="text-sm font-medium text-green-800">{ success }</span>
                         </div>
-                    }.into_view()
+                    }.into_any()
                 } else {
-                    view! {}.into_view()
+                    ().into_any()
                 }
             }
         </div>

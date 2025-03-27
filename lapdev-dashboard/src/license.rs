@@ -2,11 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, FixedOffset};
 use gloo_net::http::Request;
 use lapdev_common::{EnterpriseLicense, NewLicense, NewLicenseKey};
-use leptos::{
-    component, create_action, create_local_resource, create_rw_signal,
-    leptos_dom::helpers::location, view, IntoView, RwSignal, SignalGet, SignalGetUntracked,
-    SignalSet, SignalUpdate, SignalWith,
-};
+use leptos::prelude::*;
 
 use crate::modal::{CreationInput, CreationModal, ErrorResponse};
 
@@ -18,11 +14,12 @@ async fn get_license() -> Result<EnterpriseLicense> {
 
 #[component]
 pub fn LicenseView() -> impl IntoView {
-    let update_counter = create_rw_signal(0);
-    let license = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { get_license().await },
-    );
+    let update_counter = RwSignal::new(0);
+    let license = LocalResource::new(move || async move { get_license().await });
+    Effect::new(move |_| {
+        update_counter.track();
+        license.refetch();
+    });
 
     view! {
         <div class="border-b pb-4 mb-8">
@@ -62,11 +59,11 @@ pub fn LicenseView() -> impl IntoView {
                                 <p>{ license.expires_at.to_rfc2822() }</p>
                             </div>
                         </div>
-                    }.into_view()
+                    }.into_any()
                 } else {
                     view! {
                         <p>{"You don't have a valid Enterprise License"}</p>
-                    }.into_view()
+                    }.into_any()
                 }
             }
     }
@@ -103,12 +100,13 @@ async fn update_license(
 
 #[component]
 pub fn UpdateLicenseView(update_counter: RwSignal<i32>) -> impl IntoView {
-    let modal_hidden = create_rw_signal(true);
-    let secret = create_rw_signal(String::new());
+    let modal_hidden = RwSignal::new(true);
+    let secret = RwSignal::new(String::new());
     let body = view! {
         <CreationInput label="New License Key".to_string() value=secret placeholder="".to_string() />
     };
-    let action = create_action(move |_| update_license(secret.get(), modal_hidden, update_counter));
+    let action =
+        Action::new_local(move |_| update_license(secret.get(), modal_hidden, update_counter));
     view! {
         <button
             type="button"
@@ -170,18 +168,18 @@ async fn sign_new_license(
 
 #[component]
 pub fn SignLicenseView() -> impl IntoView {
-    let secret = create_rw_signal(String::new());
-    let expires_at = create_rw_signal(String::new());
-    let users = create_rw_signal(String::new());
-    let hostname = create_rw_signal(String::new());
-    let modal_hidden = create_rw_signal(true);
+    let secret = RwSignal::new(String::new());
+    let expires_at = RwSignal::new(String::new());
+    let users = RwSignal::new(String::new());
+    let hostname = RwSignal::new(String::new());
+    let modal_hidden = RwSignal::new(true);
     let body = view! {
         <CreationInput label="Signing Secret".to_string() value=secret placeholder="".to_string() />
         <CreationInput label="Expires".to_string() value=expires_at placeholder="".to_string() />
         <CreationInput label="Users".to_string() value=users placeholder="".to_string() />
         <CreationInput label="Hostname".to_string() value=hostname placeholder="".to_string() />
     };
-    let action = create_action(move |_| {
+    let action = Action::new_local(move |_| {
         sign_new_license(
             secret.get_untracked(),
             expires_at.get_untracked(),

@@ -7,12 +7,7 @@ use lapdev_common::{
     ClusterInfo, NewOrganization, UpdateOrganizationAutoStartStop, UpdateOrganizationMember,
     UpdateOrganizationName, UserRole,
 };
-use leptos::{
-    component, create_action, create_effect, create_local_resource, create_rw_signal, document,
-    event_target_checked, event_target_value, expect_context, leptos_dom::logging::console_log,
-    set_timeout, use_context, view, window, Action, For, IntoView, Resource, RwSignal, Signal,
-    SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith,
-};
+use leptos::{leptos_dom::logging::console_log, prelude::*};
 use uuid::Uuid;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
@@ -45,8 +40,8 @@ async fn switch_org(org_id: String) -> Result<()> {
 
 #[component]
 pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
-    let hidden = create_rw_signal(true);
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
+    let hidden = RwSignal::new(true);
     let toggle_dropdown = move |_| {
         if hidden.get_untracked() {
             hidden.set(false);
@@ -89,9 +84,9 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
         >
             <div class="flex items-center grow basis-0 min-w-0">
                 <div class="rounded-full flex items-center justify-center flex-shrink-0 w-10 h-10 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
-                    <span class="text-white font-semibold text-xl">{ move || login.get().flatten().and_then(|l| l.organization.name.chars().next()).unwrap_or('P') }</span>
+                    <span class="text-white font-semibold text-xl">{ move || login.get().as_deref().flatten().and_then(|l| l.organization.name.chars().next()).unwrap_or('P') }</span>
                 </div>
-                <span class="py-4 truncate">{ move || login.get().flatten().map(|l| l.organization.name).unwrap_or_else(|| "Personal".to_string()) }</span>
+                <span class="py-4 truncate">{ move || login.get().as_deref().flatten().map(|l| l.organization.name.clone()).unwrap_or_else(|| "Personal".to_string()) }</span>
             </div>
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 3a1 1 0 01.707.293l3 3a1 1 0 01-1.414 1.414L10 5.414 7.707 7.707a1 1 0 01-1.414-1.414l3-3A1 1 0 0110 3zm-3.707 9.293a1 1 0 011.414 0L10 14.586l2.293-2.293a1 1 0 011.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>
         </button>
@@ -104,8 +99,8 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
         >
             <ul class="py-2 text-sm text-gray-700">
                 <For
-                    each=move || login.get().flatten().map(|l| {
-                        let mut orgs = l.all_organizations;
+                    each=move || login.get().as_deref().flatten().map(|l| {
+                        let mut orgs = l.all_organizations.clone();
                         orgs.retain(|o| o.id != l.organization.id);
                         orgs
                     }).unwrap_or_default()
@@ -117,7 +112,7 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
                                     class="flex items-center px-5 hover:bg-gray-100"
                                     on:click=move |_| {
                                         hidden.set(true);
-                                        create_action(move |org_id: &String| switch_org(org_id.clone())).dispatch(org.id.to_string());
+                                        Action::new_local(move |org_id: &String| switch_org(org_id.clone())).dispatch(org.id.to_string());
                                     }
                                 >
                                     <div class="rounded-full flex items-center justify-center flex-shrink-0 w-10 h-10 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
@@ -149,8 +144,8 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
 
 #[component]
 pub fn NewOrgModal(modal_hidden: RwSignal<bool>) -> impl IntoView {
-    let org_name = create_rw_signal("".to_string());
-    let action = create_action(move |_| create_org(org_name));
+    let org_name = RwSignal::new("".to_string());
+    let action = Action::new_local(move |_| create_org(org_name));
     let handle_create_org = move |_| {
         action.dispatch(());
     };
@@ -249,9 +244,9 @@ async fn delete_org() -> Result<Option<ErrorResponse>> {
 
 #[component]
 pub fn OrgSettings() -> impl IntoView {
-    let modal_hidden = create_rw_signal(true);
-    let delete_action = create_action(|()| delete_org());
-    let login = use_context::<Resource<i32, Option<MeUser>>>().unwrap();
+    let modal_hidden = RwSignal::new(true);
+    let delete_action = Action::new_local(|()| delete_org());
+    let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
     view! {
         <div class="border-b pb-4 mb-8">
@@ -294,16 +289,16 @@ pub fn OrgSettings() -> impl IntoView {
 #[component]
 pub fn DeleteOrgModal(
     modal_hidden: RwSignal<bool>,
-    delete_action: Action<(), Result<Option<ErrorResponse>>>,
+    delete_action: Action<(), Result<Option<ErrorResponse>>, LocalStorage>,
 ) -> impl IntoView {
-    let error = create_rw_signal(None);
-    let confirmation = create_rw_signal(String::new());
+    let error = RwSignal::new(None);
+    let confirmation = RwSignal::new(String::new());
     let handle_delete = move |_| {
         delete_action.dispatch(());
     };
     let delete_pending = delete_action.pending();
     let org = use_context::<Signal<Option<Organization>>>().unwrap();
-    create_effect(move |_| {
+    Effect::new(move |_| {
         delete_action.value().with(|result| {
             if let Some(result) = result {
                 match result {
@@ -351,9 +346,9 @@ pub fn DeleteOrgModal(
                                     <div class="text-left p-4 mb-4 rounded-lg bg-red-50">
                                         <span class="text-sm font-medium text-red-800">{ error }</span>
                                     </div>
-                                }.into_view()
+                                }.into_any()
                             } else {
-                                view! {}.into_view()
+                                ().into_any()
                             }
                         }
                         <div class="text-left">
@@ -456,44 +451,44 @@ fn AutoStartStopView() -> impl IntoView {
     let org = use_context::<Signal<Option<Organization>>>().unwrap();
     let login_counter = expect_context::<RwSignal<i32>>();
 
-    let auto_start_enabled = create_rw_signal(false);
-    create_effect(move |_| {
+    let auto_start_enabled = RwSignal::new(false);
+    Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.auto_start)) {
             auto_start_enabled.set(enabled);
         }
     });
 
-    let allow_workspace_change_auto_start = create_rw_signal(false);
-    create_effect(move |_| {
+    let allow_workspace_change_auto_start = RwSignal::new(false);
+    Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.allow_workspace_change_auto_start))
         {
             allow_workspace_change_auto_start.set(enabled);
         }
     });
 
-    let auto_stop_enabled = create_rw_signal(false);
-    create_effect(move |_| {
+    let auto_stop_enabled = RwSignal::new(false);
+    Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.auto_stop.is_some())) {
             auto_stop_enabled.set(enabled);
         }
     });
 
-    let auto_stop_seconds = create_rw_signal(3600);
-    create_effect(move |_| {
+    let auto_stop_seconds = RwSignal::new(3600);
+    Effect::new(move |_| {
         if let Some(seconds) = org.with(|o| o.as_ref().map(|o| o.auto_stop)).flatten() {
             auto_stop_seconds.set(seconds);
         }
     });
 
-    let allow_workspace_change_auto_stop = create_rw_signal(false);
-    create_effect(move |_| {
+    let allow_workspace_change_auto_stop = RwSignal::new(false);
+    Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.allow_workspace_change_auto_stop))
         {
             allow_workspace_change_auto_stop.set(enabled);
         }
     });
 
-    let save_action = create_action(move |_| async move {
+    let save_action = Action::new_local(move |_| async move {
         if let Some(id) = org.with(|o| o.as_ref().map(|o| o.id)) {
             update_auto_start_stop(
                 id,
@@ -571,9 +566,9 @@ fn AutoStartStopView() -> impl IntoView {
                             // placeholder={placeholder}
                         />
                     </div>
-                }.into_view()
+                }.into_any()
             } else {
-                view! {}.into_view()
+                ().into_any()
             }
         }
     };
@@ -588,14 +583,14 @@ fn UpdateNameView() -> impl IntoView {
     let org = use_context::<Signal<Option<Organization>>>().unwrap();
     let login_counter = expect_context::<RwSignal<i32>>();
 
-    let org_name = create_rw_signal(String::new());
-    create_effect(move |_| {
+    let org_name = RwSignal::new(String::new());
+    Effect::new(move |_| {
         if let Some(name) = org.with(|o| o.as_ref().map(|o| o.name.clone())) {
             org_name.set(name);
         }
     });
 
-    let save_action = create_action(move |_| async move {
+    let save_action = Action::new_local(move |_| async move {
         if let Some(id) = org.with(|o| o.as_ref().map(|o| o.id)) {
             update_name(id, org_name.get_untracked()).await
         } else {
@@ -638,14 +633,16 @@ async fn get_org_members() -> Result<Vec<OrganizationMember>> {
 
 #[component]
 pub fn OrgMembers() -> impl IntoView {
-    let invite_member_modal_hidden = create_rw_signal(true);
-    let member_filter = create_rw_signal(String::new());
+    let invite_member_modal_hidden = RwSignal::new(true);
+    let member_filter = RwSignal::new(String::new());
 
-    let update_counter = create_rw_signal(0);
-    let members = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { get_org_members().await },
-    );
+    let update_counter = RwSignal::new(0);
+    let members = LocalResource::new(move || async move { get_org_members().await });
+    Effect::new(move |_| {
+        update_counter.track();
+        members.refetch();
+    });
+
     let members = Signal::derive(move || {
         let filter = member_filter.get();
         let mut members = members
@@ -802,9 +799,9 @@ fn MemberItemView(
     member: OrganizationMember,
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
-    let update_member_modal_hidden = create_rw_signal(true);
-    let delete_modal_hidden = create_rw_signal(true);
-    let delete_action = create_action(move |_| {
+    let update_member_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new(true);
+    let delete_action = Action::new_local(move |_| {
         delete_org_member(member.user_id, delete_modal_hidden, update_counter)
     });
 
@@ -844,8 +841,8 @@ fn UpdateMemberView(
     update_modal_hidden: RwSignal<bool>,
     update_counter: RwSignal<i32>,
 ) -> impl IntoView {
-    let role = create_rw_signal(member.role.to_string());
-    let update_action = create_action(move |_| {
+    let role = RwSignal::new(member.role.to_string());
+    let update_action = Action::new_local(move |_| {
         update_org_member(
             member.user_id,
             role.get_untracked(),
@@ -872,7 +869,7 @@ fn UpdateMemberView(
                         let current_role = r.to_string();
                         view! {
                             <option
-                                selected=move || current_role == role.get().as_ref()
+                                selected=move || current_role == role.get()
                             >{r.to_string()}</option>
                         }
                     }
@@ -891,7 +888,7 @@ fn MemberControl(
     update_member_modal_hidden: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = create_rw_signal(true);
+    let dropdown_hidden = RwSignal::new(true);
 
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
@@ -995,15 +992,18 @@ async fn create_user_invitation() -> Result<String> {
 
 #[component]
 fn InviteMemberView(invite_member_modal_hidden: RwSignal<bool>) -> impl IntoView {
-    let action = create_action(move |_| async move { Ok(()) });
+    let action = Action::new_local(move |_| async move { Ok(()) });
 
-    let update_counter = create_rw_signal(0);
-    let invitation_resource = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { create_user_invitation().await },
-    );
-    let invitation = create_rw_signal(String::new());
-    create_effect(move |_| {
+    let update_counter = RwSignal::new(0);
+    let invitation_resource =
+        LocalResource::new(move || async move { create_user_invitation().await });
+    Effect::new(move |_| {
+        update_counter.track();
+        invitation_resource.refetch();
+    });
+
+    let invitation = RwSignal::new(String::new());
+    Effect::new(move |_| {
         let hidden = invite_member_modal_hidden.get();
         invitation.set(String::new());
         if !hidden {
@@ -1011,7 +1011,7 @@ fn InviteMemberView(invite_member_modal_hidden: RwSignal<bool>) -> impl IntoView
         }
     });
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         if let Some(i) =
             invitation_resource.with(|i| i.as_ref().and_then(|i| i.as_ref().ok().cloned()))
         {

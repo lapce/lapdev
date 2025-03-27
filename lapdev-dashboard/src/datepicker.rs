@@ -1,11 +1,7 @@
 use std::{ops::Deref, time::Duration};
 
 use chrono::{Datelike, Days, Local, Month, Months, NaiveDate};
-use leptos::{
-    component, create_effect, create_memo, create_rw_signal, document, event_target_value,
-    set_timeout, untrack, view, Callable, Callback, CollectView, IntoView, RwSignal, SignalDispose,
-    SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith, SignalWithUntracked,
-};
+use leptos::prelude::*;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
@@ -34,9 +30,9 @@ impl PanelRef {
 
 #[component]
 pub fn Datepicker(value: RwSignal<Option<NaiveDate>>) -> impl IntoView {
-    let is_show_panel = create_rw_signal(false);
+    let is_show_panel = RwSignal::new(false);
 
-    let show_date_text = create_rw_signal(String::new());
+    let show_date_text = RwSignal::new(String::new());
     let show_date_format = "%Y-%m-%d";
 
     let update_show_date_text = move || {
@@ -49,8 +45,8 @@ pub fn Datepicker(value: RwSignal<Option<NaiveDate>>) -> impl IntoView {
     };
     update_show_date_text();
 
-    let panel_ref: RwSignal<Option<PanelRef>> = create_rw_signal(None);
-    let panel_selected_date = create_rw_signal(None::<NaiveDate>);
+    let panel_ref: RwSignal<Option<PanelRef>> = RwSignal::new(None);
+    let panel_selected_date = RwSignal::new(None::<NaiveDate>);
     _ = panel_selected_date.watch(move |date| {
         let text = date.as_ref().map_or(String::new(), |date| {
             date.format(show_date_format).to_string()
@@ -110,7 +106,7 @@ pub fn Datepicker(value: RwSignal<Option<NaiveDate>>) -> impl IntoView {
                     false
                 };
                 if !has_focus && is_show_panel.get_untracked() {
-                    close_panel.call(None);
+                    close_panel.run(None);
                 }
             },
             Duration::from_millis(0),
@@ -126,11 +122,11 @@ pub fn Datepicker(value: RwSignal<Option<NaiveDate>>) -> impl IntoView {
                     <path d="M20 4a2 2 0 0 0-2-2h-2V1a1 1 0 0 0-2 0v1h-3V1a1 1 0 0 0-2 0v1H6V1a1 1 0 0 0-2 0v1H2a2 2 0 0 0-2 2v2h20V4ZM0 18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8H0v10Zm5-8h10a1 1 0 0 1 0 2H5a1 1 0 0 1 0-2Z"></path>
                 </svg>
             </div>
-            <input datepicker="" datepicker-buttons="" datepicker-autoselect-today="" type="text" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full ps-10 p-2.5 datepicker-input" placeholder="Select date"
+            <input type="text" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full ps-10 p-2.5 datepicker-input" placeholder="Select date"
                 prop:value=move || show_date_text.get()
                 on:input=move |e| show_date_text.set(event_target_value(&e))
-                on:focus=move |e| open_panel.call(e)
-                on:blur=move |e| on_input_blur.call(e)
+                on:focus=move |e| open_panel.run(e)
+                on:blur=move |e| on_input_blur.run(e)
             />
             <Panel selected_date=panel_selected_date is_show_panel close_panel clear_input comp_ref=panel_ref />
         </div>
@@ -145,8 +141,8 @@ fn Panel(
     clear_input: Callback<()>,
     comp_ref: RwSignal<Option<PanelRef>>,
 ) -> impl IntoView {
-    let panel_kind = create_rw_signal(PanelKind::Date);
-    let show_date = create_rw_signal(selected_date.get_untracked().unwrap_or(now_date()));
+    let panel_kind = RwSignal::new(PanelKind::Date);
+    let show_date = RwSignal::new(selected_date.get_untracked().unwrap_or(now_date()));
 
     comp_ref.update(|current| {
         *current = Some(PanelRef {
@@ -162,9 +158,9 @@ fn Panel(
         >
         {move || {
             match panel_kind.get() {
-                PanelKind::Date => view! { <DatePanel value=selected_date show_date close_panel clear_input /> },
-                PanelKind::Month => view! { <MonthPanel /> },
-                PanelKind::Year => view! { <YearPanel /> },
+                PanelKind::Date => view! { <DatePanel value=selected_date show_date close_panel clear_input /> }.into_any(),
+                PanelKind::Month => view! { <MonthPanel /> }.into_any(),
+                PanelKind::Year => view! { <YearPanel /> }.into_any(),
             }
 
         }}
@@ -179,7 +175,7 @@ fn DatePanel(
     close_panel: Callback<Option<NaiveDate>>,
     clear_input: Callback<()>,
 ) -> impl IntoView {
-    let dates = create_memo(move |_| {
+    let dates = Memo::new(move |_| {
         let show_date = show_date.get();
         let show_date_month = show_date.month();
         let mut dates = vec![];
@@ -241,7 +237,7 @@ fn DatePanel(
     };
 
     let pick_today = move |_| {
-        close_panel.call(Some(now_date()));
+        close_panel.run(Some(now_date()));
     };
 
     view! {
@@ -302,7 +298,7 @@ fn DatePanel(
                         Today
                     </button>
                     <button type="button" class="button clear-btn text-gray-900 bg-white border border-gray-300 hover:bg-gray-100 focus:ring-4 focus:ring-blue-300 focus:!ring-primary-300 font-medium rounded-lg text-sm px-5 py-2 text-center w-1/2"
-                        on:click=move |_| clear_input.call(())
+                        on:click=move |_| clear_input.run(())
                     >
                         Clear
                     </button>
@@ -318,7 +314,7 @@ fn DatePanelItem(
     date: CalendarItemDate,
     close_panel: Callback<Option<NaiveDate>>,
 ) -> impl IntoView {
-    let is_selected = create_memo({
+    let is_selected = Memo::new({
         let date = date.clone();
         move |_| value.with(|value_date| value_date.as_ref() == Some(date.deref()))
     });
@@ -326,7 +322,7 @@ fn DatePanelItem(
     let on_click = {
         let date = date.clone();
         move |_| {
-            close_panel.call(Some(*date.deref()));
+            close_panel.run(Some(*date.deref()));
         }
     };
     view! {
@@ -351,12 +347,12 @@ fn DatePanelItem(
 
 #[component]
 fn MonthPanel() -> impl IntoView {
-    view! {}
+    {}
 }
 
 #[component]
 fn YearPanel() -> impl IntoView {
-    view! {}
+    {}
 }
 
 #[derive(Clone, PartialEq)]
@@ -403,12 +399,16 @@ pub trait SignalWatch {
     fn watch(&self, f: impl Fn(&Self::Value) + 'static) -> Box<dyn FnOnce()>;
 }
 
-impl<T> SignalWatch for RwSignal<T> {
+impl<T, S> SignalWatch for RwSignal<T, S>
+where
+    T: 'static,
+    S: Storage<ArcRwSignal<T>>,
+{
     type Value = T;
     fn watch(&self, f: impl Fn(&Self::Value) + 'static) -> Box<dyn FnOnce()> {
         let signal = *self;
 
-        let effect = create_effect(move |prev| {
+        let effect = Effect::new(move |prev: Option<()>| {
             signal.with(|value| {
                 if prev.is_some() {
                     untrack(|| f(value));

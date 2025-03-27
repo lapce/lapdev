@@ -1,10 +1,7 @@
 use anyhow::{anyhow, Result};
 use gloo_net::http::Request;
 use lapdev_common::{console::Organization, OrgQuota, OrgQuotaValue, QuotaKind, UpdateOrgQuota};
-use leptos::{
-    component, create_action, create_rw_signal, use_context, view, Action, IntoView, RwSignal,
-    Signal, SignalGet, SignalGetUntracked, SignalSet,
-};
+use leptos::prelude::*;
 
 use crate::modal::{CreationInput, CreationModal, ErrorResponse};
 
@@ -36,9 +33,9 @@ async fn get_org_quota() -> Result<OrgQuota, ErrorResponse> {
 
 #[component]
 pub fn QuotaView() -> impl IntoView {
-    let error = create_rw_signal(None);
+    let error = RwSignal::new(None);
 
-    let get_action = create_action(move |()| async move {
+    let get_action = Action::new_local(move |()| async move {
         error.set(None);
         let result = get_org_quota().await;
 
@@ -94,7 +91,7 @@ async fn update_org_quota(
     kind: QuotaKind,
     default_user_quota: String,
     org_quota: String,
-    get_action: Action<(), Result<OrgQuota, ErrorResponse>>,
+    get_action: Action<(), Result<OrgQuota, ErrorResponse>, LocalStorage>,
     update_modal_hidden: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let default_user_quota: usize = match default_user_quota.parse() {
@@ -149,7 +146,7 @@ fn QuotaItemView(
     i: usize,
     kind: QuotaKind,
     value: OrgQuotaValue,
-    get_action: Action<(), Result<OrgQuota, ErrorResponse>>,
+    get_action: Action<(), Result<OrgQuota, ErrorResponse>, LocalStorage>,
 ) -> impl IntoView {
     let percentage = if value.org_quota == 0 {
         0
@@ -163,17 +160,17 @@ fn QuotaItemView(
     } else {
         "bg-green-600"
     };
-    let update_modal_hidden = create_rw_signal(true);
+    let update_modal_hidden = RwSignal::new(true);
 
-    let org_quota = create_rw_signal(value.org_quota.to_string());
-    let default_user_quota = create_rw_signal(value.default_user_quota.to_string());
+    let org_quota = RwSignal::new(value.org_quota.to_string());
+    let default_user_quota = RwSignal::new(value.default_user_quota.to_string());
 
     let update_modal_body = view! {
         <CreationInput label="Default User Quota".to_string() value=default_user_quota placeholder="quota number, 0 means disabled".to_string() />
         <CreationInput label="Organization Quota".to_string() value=org_quota placeholder="quota number, 0 means disabled".to_string() />
     };
 
-    let update_action = create_action(move |()| async move {
+    let update_action = Action::new_local(move |()| async move {
         update_org_quota(
             kind,
             default_user_quota.get_untracked(),

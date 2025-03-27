@@ -32,10 +32,11 @@ pub async fn handler(
             vec![]
         };
         let uri = format!("ws://{host}:{port}{}", path_query);
+        let headers = headers.clone();
         let resp = websocket
             .protocols(protocols)
             .on_upgrade(move |socket| async move {
-                if let Err(e) = proxy_socket(socket, uri).await {
+                if let Err(e) = proxy_socket(socket, uri, headers).await {
                     println!("handle websocket error: {e}");
                 } else {
                     println!("handle websocket finished");
@@ -49,13 +50,19 @@ pub async fn handler(
     Some(ProxyForward::Proxy(uri))
 }
 
-async fn proxy_socket(socket: WebSocket, req: String) -> Result<()> {
+async fn proxy_socket(socket: WebSocket, req: String, headers: HeaderMap) -> Result<()> {
     let protocol = socket.protocol();
     let mut req = req.into_client_request()?;
 
     if let Some(protocol) = protocol {
         req.headers_mut()
             .insert("Sec-Websocket-Protocol", protocol.to_owned());
+    }
+
+    for (key, val) in headers {
+        if let Some(key) = key {
+            req.headers_mut().insert(key, val);
+        }
     }
 
     let (ws_stream, _) = tokio_tungstenite::connect_async(req).await?;

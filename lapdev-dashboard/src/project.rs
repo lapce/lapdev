@@ -6,13 +6,8 @@ use lapdev_common::{
     console::Organization, ClusterInfo, GitBranch, NewProject, NewProjectPrebuild,
     NewProjectResponse, PrebuildStatus, ProjectInfo, ProjectPrebuild,
 };
-use leptos::{
-    component, create_action, create_effect, create_local_resource, create_rw_signal, document,
-    event_target_value, expect_context, set_timeout, use_context, view, For, IntoView, RwSignal,
-    Signal, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate, SignalWith,
-    SignalWithUntracked,
-};
-use leptos_router::{use_navigate, use_params_map};
+use leptos::prelude::*;
+use leptos_router::hooks::{use_navigate, use_params_map};
 use uuid::Uuid;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
@@ -63,11 +58,12 @@ async fn create_project(repo: String, machine_type: Option<Uuid>) -> Result<(), 
 
 #[component]
 pub fn NewProjectView(new_project_modal_hidden: RwSignal<bool>) -> impl IntoView {
-    let repo = create_rw_signal(String::new());
-    let current_machine_type = create_rw_signal(None);
+    let repo = RwSignal::new(String::new());
+    let current_machine_type = RwSignal::new(None);
     let preferred_machine_type = Signal::derive(|| None);
-    let action =
-        create_action(move |_| create_project(repo.get_untracked(), current_machine_type.get()));
+    let action = Action::new_local(move |_| {
+        create_project(repo.get_untracked(), current_machine_type.get())
+    });
     let body = view! {
         <CreationInput label="Your repository url".to_string() value=repo placeholder="https://github.com/owner/repo".to_string() />
         <MachineTypeView current_machine_type preferred_machine_type />
@@ -86,7 +82,7 @@ fn ProjectControl(
     new_workspace_modal_hidden: RwSignal<bool>,
     create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> impl IntoView {
-    let hidden = create_rw_signal(true);
+    let hidden = RwSignal::new(true);
     let toggle_dropdown = move |_| {
         if hidden.get_untracked() {
             hidden.set(false);
@@ -131,12 +127,12 @@ fn ProjectControl(
                 });
                 project_branches_signal(
                     Signal::derive(move || project_id.to_string()),
-                    create_rw_signal("".to_string()),
+                    RwSignal::new("".to_string()),
                     create_workspace_project,
                 );
                 project_prebuilds_signal(
                     Signal::derive(move || project_id.to_string()),
-                    create_rw_signal("".to_string()),
+                    RwSignal::new("".to_string()),
                     create_workspace_project,
                 );
             } else {
@@ -295,9 +291,9 @@ pub fn ProjectItem(
 ) -> impl IntoView {
     let id = project.id;
     let local_project = project.clone();
-    let delete_modal_hidden = create_rw_signal(true);
+    let delete_modal_hidden = RwSignal::new(true);
     let delete_action =
-        create_action(move |_| delete_project(id, delete_modal_hidden, Some(update_counter)));
+        Action::new_local(move |_| delete_project(id, delete_modal_hidden, Some(update_counter)));
     view! {
         <div class="flex flex-col items-center bg-white border border-gray-200 rounded-lg shadow-lg lg:flex-row w-full">
             <div class="lg:w-1/3 flex flex-row">
@@ -350,19 +346,20 @@ async fn all_projects() -> Result<Vec<ProjectInfo>> {
 
 #[component]
 pub fn Projects() -> impl IntoView {
-    let project_filter = create_rw_signal(String::new());
-    let new_project_modal_hidden = create_rw_signal(true);
-    let new_workspace_modal_hidden = create_rw_signal(true);
-    let create_workspace_project = create_rw_signal(None);
-    let update_counter = create_rw_signal(0);
+    let project_filter = RwSignal::new(String::new());
+    let new_project_modal_hidden = RwSignal::new(true);
+    let new_workspace_modal_hidden = RwSignal::new(true);
+    let create_workspace_project = RwSignal::new(None);
+    let update_counter = RwSignal::new(0);
 
-    let projects = create_local_resource(
-        move || update_counter.get(),
-        |_| async move { all_projects().await.unwrap_or_default() },
-    );
+    let projects = LocalResource::new(|| async move { all_projects().await.unwrap_or_default() });
+    Effect::new(move |_| {
+        update_counter.track();
+        projects.refetch();
+    });
 
     let projects = Signal::derive(move || {
-        let mut projects = projects.get().unwrap_or_default();
+        let mut projects = projects.get().as_deref().cloned().unwrap_or_default();
         let project_filter = project_filter.get();
         projects
             .retain(|p| p.name.contains(&project_filter) || p.repo_url.contains(&project_filter));
@@ -454,11 +451,12 @@ fn project_prebuilds_signal(
     Signal<Vec<ProjectPrebuild>>,
     Signal<HashMap<String, ProjectPrebuild>>,
 ) {
-    let prebuilds_counter = create_rw_signal(0);
-    let prebuilds = create_local_resource(
-        move || prebuilds_counter.get(),
-        move |_| async move { project_prebuilds(&id.get()).await },
-    );
+    let prebuilds_counter = RwSignal::new(0);
+    let prebuilds = LocalResource::new(move || async move { project_prebuilds(&id.get()).await });
+    Effect::new(move |_| {
+        prebuilds_counter.track();
+        prebuilds.refetch();
+    });
 
     let prebuilds = Signal::derive(move || {
         prebuilds
@@ -476,7 +474,7 @@ fn project_prebuilds_signal(
             .collect::<HashMap<String, _>>()
     });
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         prebuilds.track();
         create_workspace_project.update(|project| {
             if let Some(project) = project.as_mut() {
@@ -531,14 +529,11 @@ fn project_branches_signal(
     branch_filter: RwSignal<String>,
     create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> Signal<Vec<GitBranch>> {
-    let branches = create_local_resource(
-        || (),
-        move |_| async move { project_branches(&id.get()).await },
-    );
+    let branches = LocalResource::new(move || async move { project_branches(&id.get()).await });
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         branches.with(|branches| {
-            if let Some(Ok(branches)) = branches {
+            if let Some(Ok(branches)) = branches.as_deref() {
                 create_workspace_project.update(|project| {
                     if let Some(project) = project.as_mut() {
                         project.branches = branches.to_owned();
@@ -643,7 +638,7 @@ pub fn ProjectBranchControl(
     new_workspace_modal_hidden: RwSignal<bool>,
     create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> impl IntoView {
-    let hidden = create_rw_signal(true);
+    let hidden = RwSignal::new(true);
     let toggle_dropdown = move |_| {
         if hidden.get_untracked() {
             hidden.set(false);
@@ -680,7 +675,7 @@ pub fn ProjectBranchControl(
             hidden.set(true);
             let project = project.clone();
             let branch = branch.clone();
-            create_action(move |_| {
+            Action::new_local(move |_| {
                 let project = project.clone();
                 let branch = branch.clone();
                 create_project_prebuild(project, branch, prebuilds_counter)
@@ -689,10 +684,10 @@ pub fn ProjectBranchControl(
         }
     };
 
-    let delete_modal_hidden = create_rw_signal(true);
+    let delete_modal_hidden = RwSignal::new(true);
     let delete_action = {
         let project = project.clone();
-        create_action(move |_| {
+        Action::new_local(move |_| {
             let prebuild = prebuild.get_untracked().unwrap();
             let id = prebuild.id;
             delete_project_prebuild(project.clone(), id, prebuilds_counter, delete_modal_hidden)
@@ -768,22 +763,23 @@ pub fn ProjectBranchControl(
 pub fn ProjectDetails() -> impl IntoView {
     let params = use_params_map();
     let id =
-        params.with_untracked(|params| params.get("id").and_then(|id| Uuid::from_str(id).ok()));
+        params.with_untracked(|params| params.get("id").and_then(|id| Uuid::from_str(&id).ok()));
     let Some(id) = id else {
-        return view! {}.into_view();
+        return ().into_any();
     };
 
-    let delete_modal_hidden = create_rw_signal(true);
-    let new_workspace_modal_hidden = create_rw_signal(true);
+    let delete_modal_hidden = RwSignal::new(true);
+    let new_workspace_modal_hidden = RwSignal::new(true);
     let create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>> =
-        create_rw_signal(None);
-    let delete_action = create_action(move |_| delete_project(id, delete_modal_hidden, None));
+        RwSignal::new(None);
+    let delete_action = Action::new_local(move |_| delete_project(id, delete_modal_hidden, None));
 
-    let project_update_counter = create_rw_signal(0);
-    let project_info = create_local_resource(
-        move || project_update_counter.get(),
-        move |_| async move { get_project(id).await },
-    );
+    let project_update_counter = RwSignal::new(0);
+    let project_info = LocalResource::new(move || async move { get_project(id).await });
+    Effect::new(move |_| {
+        project_update_counter.track();
+        project_info.refetch();
+    });
     let project_info = Signal::derive(move || {
         project_info.with(|info| {
             info.as_ref()
@@ -793,7 +789,7 @@ pub fn ProjectDetails() -> impl IntoView {
         })
     });
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         project_info.with(|info| {
             if let Some(info) = info {
                 create_workspace_project.update(|project| {
@@ -824,9 +820,9 @@ pub fn ProjectDetails() -> impl IntoView {
                 move || if let Some(info) = project_info.get() {
                     view! {
                         <ProjectInfoView info delete_modal_hidden new_workspace_modal_hidden create_workspace_project />
-                    }.into_view()
+                    }.into_any()
                 } else {
-                    view! {}.into_view()
+                    ().into_any()
                 }
             }
             <ProjectDetailsTabView project_id=id project_update_counter new_workspace_modal_hidden create_workspace_project />
@@ -834,14 +830,14 @@ pub fn ProjectDetails() -> impl IntoView {
                 move || if let Some(info) = project_info.get() {
                     view! {
                         <DeletionModal resource=info.name modal_hidden=delete_modal_hidden delete_action />
-                    }.into_view()
+                    }.into_any()
                 } else {
-                    view! {}.into_view()
+                    ().into_any()
                 }
             }
             <NewWorkspaceModal modal_hidden=new_workspace_modal_hidden project_info=create_workspace_project />
         </div>
-    }.into_view()
+    }.into_any()
 }
 
 #[component]
@@ -852,7 +848,7 @@ fn ProjectInfoView(
     create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let machine_types = create_rw_signal(cluster_info.get_untracked().map(|i| i.machine_types));
+    let machine_types = RwSignal::new(cluster_info.get_untracked().map(|i| i.machine_types));
     view! {
         <h5 class="text-semibold text-2xl mt-4">
             { info.name.clone() }
@@ -865,8 +861,8 @@ fn ProjectInfoView(
                 <svg class="w-3 h-3 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 20">
                     <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5v10M3 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm6-3.976-2-.01A4.015 4.015 0 0 1 3 7m10 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"/>
                 </svg>
-                <span class="mr-1 text-gray-500">{"Repository URL:"}</span>
-                <span>{ move || info.repo_url.clone() }</span>
+                <span class="text-gray-500 w-36">{"Repository URL"}</span>
+                <span>{ info.repo_url.clone() }</span>
             </a>
         </span>
         <span class="mt-2 text-sm flex flex-row items-center rounded me-2">
@@ -875,7 +871,7 @@ fn ProjectInfoView(
                 <path d="M5 11.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0M14 3a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM2 2a2 2 0 0 0-2 2v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
                 <path d="M5 4.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0m-2 0a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0"/>
             </svg>
-            <span class="mr-1 text-gray-500">{"Machine Type:"}</span>
+            <span class="text-gray-500 w-36">{"Machine Type"}</span>
             {
                 move || machine_types.get()
                     .and_then(|m|
@@ -890,7 +886,7 @@ fn ProjectInfoView(
             <svg class="w-2.5 h-2.5 mr-2" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
             <path d="M10 0a10 10 0 1 0 10 10A10.011 10.011 0 0 0 10 0Zm3.982 13.982a1 1 0 0 1-1.414 0l-3.274-3.274A1.012 1.012 0 0 1 9 10V6a1 1 0 0 1 2 0v3.586l2.982 2.982a1 1 0 0 1 0 1.414Z"/>
             </svg>
-            <span class="mr-1 text-gray-500">{"Created:"}</span>
+            <span class="text-gray-500 w-36">{"Created"}</span>
             <DatetimeModal time=info.created_at />
         </span>
         <div class="mt-4">
@@ -914,7 +910,7 @@ fn ProjectDetailsTabView(
     new_workspace_modal_hidden: RwSignal<bool>,
     create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> impl IntoView {
-    let tab_kind = create_rw_signal(TabKind::Branch);
+    let tab_kind = RwSignal::new(TabKind::Branch);
     let active_class =
         "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active";
     let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300";
@@ -922,7 +918,7 @@ fn ProjectDetailsTabView(
         tab_kind.set(kind);
     };
 
-    let prebuild_filter = create_rw_signal(String::new());
+    let prebuild_filter = RwSignal::new(String::new());
     let (prebuilds_counter, prebuilds, prebuilds_map) = project_prebuilds_signal(
         Signal::derive(move || project_id.to_string()),
         prebuild_filter,
@@ -978,7 +974,7 @@ fn ProjectBranchesView(
     new_workspace_modal_hidden: RwSignal<bool>,
     create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
 ) -> impl IntoView {
-    let branch_filter = create_rw_signal(String::new());
+    let branch_filter = RwSignal::new(String::new());
     let branches = project_branches_signal(
         Signal::derive(move || project_id.to_string()),
         branch_filter,
@@ -1041,7 +1037,7 @@ fn ProjectBranchesView(
                                     <div class="truncate">{branch.summary}</div>
                                     <div class="truncate text-sm mt-1">
                                         <span class="mr-2">{branch.time.to_string()}</span>
-                                        <span>{&branch.commit[..7].to_string()}</span>
+                                        <span>{branch.commit[..7].to_string()}</span>
                                     </div>
                                 </div>
                                 <span class="w-1/3 pl-2 flex flex-row items-center">
@@ -1178,10 +1174,10 @@ fn ProjectSettingsView(
 
 #[component]
 fn SaveMachineTypeView(project_id: Uuid, project_update_counter: RwSignal<i32>) -> impl IntoView {
-    let current_machine_type = create_rw_signal(None);
+    let current_machine_type = RwSignal::new(None);
     let preferred_machine_type = Signal::derive(|| None);
 
-    let save_action = create_action(move |_| async move {
+    let save_action = Action::new_local(move |_| async move {
         let machine_type_id = current_machine_type.get_untracked().unwrap_or_else(|| {
             let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
             cluster_info
@@ -1209,7 +1205,7 @@ pub fn MachineTypeView(
     preferred_machine_type: Signal<Option<Uuid>>,
 ) -> impl IntoView {
     let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let machine_types = create_rw_signal(cluster_info.get_untracked().map(|i| i.machine_types));
+    let machine_types = RwSignal::new(cluster_info.get_untracked().map(|i| i.machine_types));
     let change_machine_type = move |ev: web_sys::Event| {
         let element = ev
             .target()
@@ -1222,7 +1218,7 @@ pub fn MachineTypeView(
         }
     };
 
-    create_effect(move |_| {
+    Effect::new(move |_| {
         if let Some(uuid) = preferred_machine_type.get() {
             current_machine_type.set(Some(uuid));
         }
@@ -1314,29 +1310,29 @@ async fn update_env(project_id: Uuid, envs: Vec<(String, String)>) -> Result<(),
 
 #[component]
 fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoView {
-    let envs = create_rw_signal(vec![]);
+    let envs = RwSignal::new(vec![]);
 
-    let update_counter = create_rw_signal(0);
-    let current_envs = create_local_resource(
-        move || update_counter.get(),
-        move |_| async move { get_env(project_id).await.unwrap_or_default() },
-    );
-    create_effect(move |_| {
-        let current_envs = current_envs.with(|envs| envs.clone().unwrap_or_default());
+    let update_counter = RwSignal::new(0);
+    let current_envs =
+        LocalResource::new(move || async move { get_env(project_id).await.unwrap_or_default() });
+    Effect::new(move |_| {
+        update_counter.track();
+        current_envs.refetch();
+    });
+
+    Effect::new(move |_| {
+        let current_envs = current_envs.with(|envs| envs.as_deref().cloned().unwrap_or_default());
         envs.update(|envs| {
             *envs = current_envs
                 .into_iter()
-                .map(|(name, value)| (create_rw_signal(name), create_rw_signal(value)))
+                .map(|(name, value)| (RwSignal::new(name), RwSignal::new(value)))
                 .collect();
         });
     });
 
     let new_variable = move |_| {
         envs.update(|envs| {
-            envs.push((
-                create_rw_signal(String::new()),
-                create_rw_signal(String::new()),
-            ));
+            envs.push((RwSignal::new(String::new()), RwSignal::new(String::new())));
         });
     };
     let delete_var = move |i: usize| {
@@ -1344,7 +1340,7 @@ fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoVie
             envs.remove(i);
         })
     };
-    let save_action = create_action(move |_| async move {
+    let save_action = Action::new_local(move |_| async move {
         let envs = envs.get_untracked();
         let envs: Vec<(String, String)> = envs
             .into_iter()
@@ -1404,7 +1400,7 @@ fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoVie
         >
             New Variable
         </button>
-    }.into_view();
+    }.into_any();
     view! {
         <div
             class="p-4"

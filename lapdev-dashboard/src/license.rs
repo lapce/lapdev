@@ -14,7 +14,7 @@ async fn get_license() -> Result<EnterpriseLicense> {
 
 #[component]
 pub fn LicenseView() -> impl IntoView {
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let license = LocalResource::new(move || async move { get_license().await });
     Effect::new(move |_| {
         update_counter.track();
@@ -73,8 +73,8 @@ pub fn LicenseView() -> impl IntoView {
 
 async fn update_license(
     secret: String,
-    modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::put("/api/v1/admin/license")
         .json(&NewLicenseKey { key: secret })?
@@ -99,9 +99,9 @@ async fn update_license(
 }
 
 #[component]
-pub fn UpdateLicenseView(update_counter: RwSignal<i32>) -> impl IntoView {
-    let modal_hidden = RwSignal::new(true);
-    let secret = RwSignal::new(String::new());
+pub fn UpdateLicenseView(update_counter: RwSignal<i32, LocalStorage>) -> impl IntoView {
+    let modal_hidden = RwSignal::new_local(true);
+    let secret = RwSignal::new_local(String::new());
     let body = view! {
         <CreationInput label="New License Key".to_string() value=secret placeholder="".to_string() />
     };
@@ -168,11 +168,11 @@ async fn sign_new_license(
 
 #[component]
 pub fn SignLicenseView() -> impl IntoView {
-    let secret = RwSignal::new(String::new());
-    let expires_at = RwSignal::new(String::new());
-    let users = RwSignal::new(String::new());
-    let hostname = RwSignal::new(String::new());
-    let modal_hidden = RwSignal::new(true);
+    let secret = RwSignal::new_local(String::new());
+    let expires_at = RwSignal::new_local(String::new());
+    let users = RwSignal::new_local(String::new());
+    let hostname = RwSignal::new_local(String::new());
+    let modal_hidden = RwSignal::new_local(true);
     let body = view! {
         <CreationInput label="Signing Secret".to_string() value=secret placeholder="".to_string() />
         <CreationInput label="Expires".to_string() value=expires_at placeholder="".to_string() />

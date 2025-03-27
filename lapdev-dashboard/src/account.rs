@@ -2,12 +2,15 @@ use anyhow::Result;
 use gloo_net::http::Request;
 use lapdev_common::{
     console::{MeUser, NewSessionResponse},
-    AuthProvider, ClusterInfo,
+    AuthProvider,
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
-use crate::{cluster::OauthSettings, modal::ErrorResponse};
+use crate::{
+    cluster::{get_cluster_info, OauthSettings},
+    modal::ErrorResponse,
+};
 
 pub async fn get_login() -> Result<MeUser> {
     let resp: MeUser = Request::get("/api/private/me").send().await?.json().await?;
@@ -39,7 +42,7 @@ async fn now_logout() {
 
 #[component]
 pub fn Login() -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let cluster_info = get_cluster_info();
 
     view! {
         <section class="bg-gray-50">
@@ -122,7 +125,7 @@ pub fn InitAuthProvidersView() -> impl IntoView {
 }
 
 #[component]
-pub fn NavUserControl(user_control_hidden: RwSignal<bool>) -> impl IntoView {
+pub fn NavUserControl(user_control_hidden: RwSignal<bool, LocalStorage>) -> impl IntoView {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
 
     let logout = move |_| {

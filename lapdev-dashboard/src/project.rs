@@ -3,8 +3,8 @@ use std::{collections::HashMap, str::FromStr, time::Duration};
 use anyhow::{anyhow, Result};
 use gloo_net::http::Request;
 use lapdev_common::{
-    console::Organization, ClusterInfo, GitBranch, NewProject, NewProjectPrebuild,
-    NewProjectResponse, PrebuildStatus, ProjectInfo, ProjectPrebuild,
+    GitBranch, NewProject, NewProjectPrebuild, NewProjectResponse, PrebuildStatus, ProjectInfo,
+    ProjectPrebuild,
 };
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_params_map};
@@ -13,21 +13,19 @@ use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
 use crate::{
+    cluster::get_cluster_info,
     modal::{
         CreationInput, CreationModal, DatetimeModal, DeletionModal, ErrorResponse, SettingView,
     },
+    organization::get_current_org,
     workspace::{repo_img, CreateWorkspaceProjectInfo, NewWorkspaceModal},
 };
 
 async fn create_project(repo: String, machine_type: Option<Uuid>) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let machine_type_id = machine_type.unwrap_or_else(|| {
-        let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+        let cluster_info = get_cluster_info();
         cluster_info
             .get_untracked()
             .and_then(|i| i.machine_types.first().map(|m| m.id))
@@ -57,10 +55,10 @@ async fn create_project(repo: String, machine_type: Option<Uuid>) -> Result<(), 
 }
 
 #[component]
-pub fn NewProjectView(new_project_modal_hidden: RwSignal<bool>) -> impl IntoView {
-    let repo = RwSignal::new(String::new());
-    let current_machine_type = RwSignal::new(None);
-    let preferred_machine_type = Signal::derive(|| None);
+pub fn NewProjectView(new_project_modal_hidden: RwSignal<bool, LocalStorage>) -> impl IntoView {
+    let repo = RwSignal::new_local(String::new());
+    let current_machine_type = RwSignal::new_local(None);
+    let preferred_machine_type = Signal::derive_local(|| None);
     let action = Action::new_local(move |_| {
         create_project(repo.get_untracked(), current_machine_type.get())
     });
@@ -76,13 +74,13 @@ pub fn NewProjectView(new_project_modal_hidden: RwSignal<bool>) -> impl IntoView
 #[component]
 fn ProjectControl(
     project_info: Option<ProjectInfo>,
-    delete_modal_hidden: RwSignal<bool>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
     project_id: Uuid,
     align_right: bool,
-    new_workspace_modal_hidden: RwSignal<bool>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    new_workspace_modal_hidden: RwSignal<bool, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
-    let hidden = RwSignal::new(true);
+    let hidden = RwSignal::new_local(true);
     let toggle_dropdown = move |_| {
         if hidden.get_untracked() {
             hidden.set(false);
@@ -126,13 +124,13 @@ fn ProjectControl(
                     });
                 });
                 project_branches_signal(
-                    Signal::derive(move || project_id.to_string()),
-                    RwSignal::new("".to_string()),
+                    Signal::derive_local(move || project_id.to_string()),
+                    RwSignal::new_local("".to_string()),
                     create_workspace_project,
                 );
                 project_prebuilds_signal(
-                    Signal::derive(move || project_id.to_string()),
-                    RwSignal::new("".to_string()),
+                    Signal::derive_local(move || project_id.to_string()),
+                    RwSignal::new_local("".to_string()),
                     create_workspace_project,
                 );
             } else {
@@ -193,11 +191,7 @@ async fn update_project_machine_type(
     project_id: Uuid,
     machine_type_id: Uuid,
 ) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let resp = Request::put(&format!(
         "/api/v1/organizations/{}/projects/{project_id}/machine_type/{machine_type_id}",
@@ -221,14 +215,10 @@ async fn update_project_machine_type(
 async fn delete_project_prebuild(
     project: String,
     prebuild_id: Uuid,
-    prebuilds_counter: RwSignal<i32>,
-    delete_modal_hidden: RwSignal<bool>,
+    prebuilds_counter: RwSignal<i32, LocalStorage>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let resp = Request::delete(&format!(
         "/api/v1/organizations/{}/projects/{project}/prebuilds/{prebuild_id}",
@@ -253,14 +243,10 @@ async fn delete_project_prebuild(
 
 async fn delete_project(
     id: Uuid,
-    delete_modal_hidden: RwSignal<bool>,
-    update_counter: Option<RwSignal<i32>>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: Option<RwSignal<i32, LocalStorage>>,
 ) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::delete(&format!("/api/v1/organizations/{}/projects/{id}", org.id))
         .send()
         .await?;
@@ -285,13 +271,13 @@ async fn delete_project(
 #[component]
 pub fn ProjectItem(
     project: ProjectInfo,
-    update_counter: RwSignal<i32>,
-    new_workspace_modal_hidden: RwSignal<bool>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    update_counter: RwSignal<i32, LocalStorage>,
+    new_workspace_modal_hidden: RwSignal<bool, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
     let id = project.id;
     let local_project = project.clone();
-    let delete_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action =
         Action::new_local(move |_| delete_project(id, delete_modal_hidden, Some(update_counter)));
     view! {
@@ -332,11 +318,7 @@ pub fn ProjectItem(
 }
 
 async fn all_projects() -> Result<Vec<ProjectInfo>> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!("/api/v1/organizations/{}/projects", org.id))
         .send()
         .await?;
@@ -346,11 +328,11 @@ async fn all_projects() -> Result<Vec<ProjectInfo>> {
 
 #[component]
 pub fn Projects() -> impl IntoView {
-    let project_filter = RwSignal::new(String::new());
-    let new_project_modal_hidden = RwSignal::new(true);
-    let new_workspace_modal_hidden = RwSignal::new(true);
-    let create_workspace_project = RwSignal::new(None);
-    let update_counter = RwSignal::new(0);
+    let project_filter = RwSignal::new_local(String::new());
+    let new_project_modal_hidden = RwSignal::new_local(true);
+    let new_workspace_modal_hidden = RwSignal::new_local(true);
+    let create_workspace_project = RwSignal::new_local(None);
+    let update_counter = RwSignal::new_local(0);
 
     let projects = LocalResource::new(|| async move { all_projects().await.unwrap_or_default() });
     Effect::new(move |_| {
@@ -426,11 +408,7 @@ pub fn Projects() -> impl IntoView {
 }
 
 async fn project_prebuilds(id: &str) -> Result<Vec<ProjectPrebuild>> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!(
         "/api/v1/organizations/{}/projects/{id}/prebuilds",
         org.id
@@ -443,15 +421,15 @@ async fn project_prebuilds(id: &str) -> Result<Vec<ProjectPrebuild>> {
 
 #[allow(clippy::type_complexity)]
 fn project_prebuilds_signal(
-    id: Signal<String>,
-    prebuild_filter: RwSignal<String>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    id: Signal<String, LocalStorage>,
+    prebuild_filter: RwSignal<String, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> (
-    RwSignal<i32>,
-    Signal<Vec<ProjectPrebuild>>,
-    Signal<HashMap<String, ProjectPrebuild>>,
+    RwSignal<i32, LocalStorage>,
+    Signal<Vec<ProjectPrebuild>, LocalStorage>,
+    Signal<HashMap<String, ProjectPrebuild>, LocalStorage>,
 ) {
-    let prebuilds_counter = RwSignal::new(0);
+    let prebuilds_counter = RwSignal::new_local(0);
     let prebuilds = LocalResource::new(move || async move { project_prebuilds(&id.get()).await });
     Effect::new(move |_| {
         prebuilds_counter.track();
@@ -465,7 +443,7 @@ fn project_prebuilds_signal(
             .unwrap_or_default()
     });
 
-    let prebuilds_map = Signal::derive(move || {
+    let prebuilds_map = Signal::derive_local(move || {
         let mut prebuilds = prebuilds.get();
         prebuilds.reverse();
         prebuilds
@@ -497,7 +475,7 @@ fn project_prebuilds_signal(
         });
     });
 
-    let prebuilds = Signal::derive(move || {
+    let prebuilds = Signal::derive_local(move || {
         let mut prebuilds = prebuilds.get();
         let prebuild_filter = prebuild_filter.get();
         prebuilds
@@ -509,11 +487,7 @@ fn project_prebuilds_signal(
 }
 
 async fn project_branches(id: &str) -> Result<Vec<GitBranch>> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!(
         "/api/v1/organizations/{}/projects/{id}/branches",
         org.id
@@ -525,10 +499,10 @@ async fn project_branches(id: &str) -> Result<Vec<GitBranch>> {
 }
 
 fn project_branches_signal(
-    id: Signal<String>,
-    branch_filter: RwSignal<String>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
-) -> Signal<Vec<GitBranch>> {
+    id: Signal<String, LocalStorage>,
+    branch_filter: RwSignal<String, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
+) -> Signal<Vec<GitBranch>, LocalStorage> {
     let branches = LocalResource::new(move || async move { project_branches(&id.get()).await });
 
     Effect::new(move |_| {
@@ -557,7 +531,7 @@ fn project_branches_signal(
         });
     });
 
-    let branches = Signal::derive(move || {
+    let branches = Signal::derive_local(move || {
         let mut branches = branches
             .with(|branches| {
                 branches
@@ -579,11 +553,7 @@ fn project_branches_signal(
 }
 
 async fn get_project(id: Uuid) -> Result<ProjectInfo, ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!("/api/v1/organizations/{}/projects/{id}", org.id))
         .send()
         .await?;
@@ -606,13 +576,9 @@ async fn get_project(id: Uuid) -> Result<ProjectInfo, ErrorResponse> {
 async fn create_project_prebuild(
     project: String,
     branch: String,
-    prebuilds_counter: RwSignal<i32>,
+    prebuilds_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<()> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let resp = Request::post(&format!(
         "/api/v1/organizations/{}/projects/{project}/prebuilds",
@@ -633,12 +599,12 @@ async fn create_project_prebuild(
 pub fn ProjectBranchControl(
     project: String,
     branch: String,
-    prebuild: Signal<Option<ProjectPrebuild>>,
-    prebuilds_counter: RwSignal<i32>,
-    new_workspace_modal_hidden: RwSignal<bool>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    prebuild: Signal<Option<ProjectPrebuild>, LocalStorage>,
+    prebuilds_counter: RwSignal<i32, LocalStorage>,
+    new_workspace_modal_hidden: RwSignal<bool, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
-    let hidden = RwSignal::new(true);
+    let hidden = RwSignal::new_local(true);
     let toggle_dropdown = move |_| {
         if hidden.get_untracked() {
             hidden.set(false);
@@ -684,7 +650,7 @@ pub fn ProjectBranchControl(
         }
     };
 
-    let delete_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = {
         let project = project.clone();
         Action::new_local(move |_| {
@@ -768,13 +734,13 @@ pub fn ProjectDetails() -> impl IntoView {
         return ().into_any();
     };
 
-    let delete_modal_hidden = RwSignal::new(true);
-    let new_workspace_modal_hidden = RwSignal::new(true);
-    let create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>> =
-        RwSignal::new(None);
+    let delete_modal_hidden = RwSignal::new_local(true);
+    let new_workspace_modal_hidden = RwSignal::new_local(true);
+    let create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage> =
+        RwSignal::new_local(None);
     let delete_action = Action::new_local(move |_| delete_project(id, delete_modal_hidden, None));
 
-    let project_update_counter = RwSignal::new(0);
+    let project_update_counter = RwSignal::new_local(0);
     let project_info = LocalResource::new(move || async move { get_project(id).await });
     Effect::new(move |_| {
         project_update_counter.track();
@@ -843,12 +809,12 @@ pub fn ProjectDetails() -> impl IntoView {
 #[component]
 fn ProjectInfoView(
     info: ProjectInfo,
-    delete_modal_hidden: RwSignal<bool>,
-    new_workspace_modal_hidden: RwSignal<bool>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    new_workspace_modal_hidden: RwSignal<bool, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let machine_types = RwSignal::new(cluster_info.get_untracked().map(|i| i.machine_types));
+    let cluster_info = get_cluster_info();
+    let machine_types = RwSignal::new_local(cluster_info.get_untracked().map(|i| i.machine_types));
     view! {
         <h5 class="text-semibold text-2xl mt-4">
             { info.name.clone() }
@@ -906,11 +872,11 @@ enum TabKind {
 #[component]
 fn ProjectDetailsTabView(
     project_id: Uuid,
-    project_update_counter: RwSignal<i32>,
-    new_workspace_modal_hidden: RwSignal<bool>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    project_update_counter: RwSignal<i32, LocalStorage>,
+    new_workspace_modal_hidden: RwSignal<bool, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
-    let tab_kind = RwSignal::new(TabKind::Branch);
+    let tab_kind = RwSignal::new_local(TabKind::Branch);
     let active_class =
         "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active";
     let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300";
@@ -918,9 +884,9 @@ fn ProjectDetailsTabView(
         tab_kind.set(kind);
     };
 
-    let prebuild_filter = RwSignal::new(String::new());
+    let prebuild_filter = RwSignal::new_local(String::new());
     let (prebuilds_counter, prebuilds, prebuilds_map) = project_prebuilds_signal(
-        Signal::derive(move || project_id.to_string()),
+        Signal::derive_local(move || project_id.to_string()),
         prebuild_filter,
         create_workspace_project,
     );
@@ -967,16 +933,16 @@ fn ProjectDetailsTabView(
 
 #[component]
 fn ProjectBranchesView(
-    tab_kind: RwSignal<TabKind>,
+    tab_kind: RwSignal<TabKind, LocalStorage>,
     project_id: Uuid,
-    prebuilds: Signal<HashMap<String, ProjectPrebuild>>,
-    prebuilds_counter: RwSignal<i32>,
-    new_workspace_modal_hidden: RwSignal<bool>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    prebuilds: Signal<HashMap<String, ProjectPrebuild>, LocalStorage>,
+    prebuilds_counter: RwSignal<i32, LocalStorage>,
+    new_workspace_modal_hidden: RwSignal<bool, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
-    let branch_filter = RwSignal::new(String::new());
+    let branch_filter = RwSignal::new_local(String::new());
     let branches = project_branches_signal(
-        Signal::derive(move || project_id.to_string()),
+        Signal::derive_local(move || project_id.to_string()),
         branch_filter,
         create_workspace_project,
     );
@@ -1021,7 +987,7 @@ fn ProjectBranchesView(
                     children=move |(i,branch)| {
                         let prebuild = {
                             let branch_name = branch.name.clone();
-                            Signal::derive(move || {
+                            Signal::derive_local(move || {
                                 prebuilds.with(|prebuilds| {
                                     prebuilds.get(&branch_name).cloned()
                                 })
@@ -1071,13 +1037,13 @@ fn ProjectBranchesView(
 
 #[component]
 fn ProjectPrebuildsView(
-    tab_kind: RwSignal<TabKind>,
+    tab_kind: RwSignal<TabKind, LocalStorage>,
     project_id: Uuid,
-    prebuilds: Signal<Vec<ProjectPrebuild>>,
-    prebuilds_counter: RwSignal<i32>,
-    prebuild_filter: RwSignal<String>,
-    new_workspace_modal_hidden: RwSignal<bool>,
-    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    prebuilds: Signal<Vec<ProjectPrebuild>, LocalStorage>,
+    prebuilds_counter: RwSignal<i32, LocalStorage>,
+    prebuild_filter: RwSignal<String, LocalStorage>,
+    new_workspace_modal_hidden: RwSignal<bool, LocalStorage>,
+    create_workspace_project: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
     view! {
         <div
@@ -1144,7 +1110,7 @@ fn ProjectPrebuildsView(
                                         </span>
                                     </div>
                                     <span class="w-2/3">
-                                        <ProjectBranchControl project=project_id.to_string() branch=prebuild.branch.clone() prebuild=Signal::derive(move || {Some(prebuild.clone())}) prebuilds_counter new_workspace_modal_hidden create_workspace_project />
+                                        <ProjectBranchControl project=project_id.to_string() branch=prebuild.branch.clone() prebuild=Signal::derive_local(move || {Some(prebuild.clone())}) prebuilds_counter new_workspace_modal_hidden create_workspace_project />
                                     </span>
                                 </span>
                             </div>
@@ -1158,9 +1124,9 @@ fn ProjectPrebuildsView(
 
 #[component]
 fn ProjectSettingsView(
-    tab_kind: RwSignal<TabKind>,
+    tab_kind: RwSignal<TabKind, LocalStorage>,
     project_id: Uuid,
-    project_update_counter: RwSignal<i32>,
+    project_update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     view! {
         <div
@@ -1173,13 +1139,16 @@ fn ProjectSettingsView(
 }
 
 #[component]
-fn SaveMachineTypeView(project_id: Uuid, project_update_counter: RwSignal<i32>) -> impl IntoView {
-    let current_machine_type = RwSignal::new(None);
-    let preferred_machine_type = Signal::derive(|| None);
+fn SaveMachineTypeView(
+    project_id: Uuid,
+    project_update_counter: RwSignal<i32, LocalStorage>,
+) -> impl IntoView {
+    let current_machine_type = RwSignal::new_local(None);
+    let preferred_machine_type = Signal::derive_local(|| None);
 
     let save_action = Action::new_local(move |_| async move {
         let machine_type_id = current_machine_type.get_untracked().unwrap_or_else(|| {
-            let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+            let cluster_info = get_cluster_info();
             cluster_info
                 .get_untracked()
                 .and_then(|i| i.machine_types.first().map(|m| m.id))
@@ -1201,11 +1170,11 @@ fn SaveMachineTypeView(project_id: Uuid, project_update_counter: RwSignal<i32>) 
 
 #[component]
 pub fn MachineTypeView(
-    current_machine_type: RwSignal<Option<Uuid>>,
-    preferred_machine_type: Signal<Option<Uuid>>,
+    current_machine_type: RwSignal<Option<Uuid>, LocalStorage>,
+    preferred_machine_type: Signal<Option<Uuid>, LocalStorage>,
 ) -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let machine_types = RwSignal::new(cluster_info.get_untracked().map(|i| i.machine_types));
+    let cluster_info = get_cluster_info();
+    let machine_types = RwSignal::new_local(cluster_info.get_untracked().map(|i| i.machine_types));
     let change_machine_type = move |ev: web_sys::Event| {
         let element = ev
             .target()
@@ -1255,11 +1224,7 @@ pub fn MachineTypeView(
 }
 
 async fn get_env(project_id: Uuid) -> Result<Vec<(String, String)>, ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let resp = Request::get(&format!(
         "/api/v1/organizations/{}/projects/{project_id}/env",
@@ -1282,11 +1247,7 @@ async fn get_env(project_id: Uuid) -> Result<Vec<(String, String)>, ErrorRespons
 }
 
 async fn update_env(project_id: Uuid, envs: Vec<(String, String)>) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let resp = Request::put(&format!(
         "/api/v1/organizations/{}/projects/{project_id}/env",
@@ -1309,10 +1270,10 @@ async fn update_env(project_id: Uuid, envs: Vec<(String, String)>) -> Result<(),
 }
 
 #[component]
-fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoView {
-    let envs = RwSignal::new(vec![]);
+fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind, LocalStorage>) -> impl IntoView {
+    let envs = RwSignal::new_local(vec![]);
 
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let current_envs =
         LocalResource::new(move || async move { get_env(project_id).await.unwrap_or_default() });
     Effect::new(move |_| {
@@ -1325,14 +1286,17 @@ fn ProjectEnvView(project_id: Uuid, tab_kind: RwSignal<TabKind>) -> impl IntoVie
         envs.update(|envs| {
             *envs = current_envs
                 .into_iter()
-                .map(|(name, value)| (RwSignal::new(name), RwSignal::new(value)))
+                .map(|(name, value)| (RwSignal::new_local(name), RwSignal::new_local(value)))
                 .collect();
         });
     });
 
     let new_variable = move |_| {
         envs.update(|envs| {
-            envs.push((RwSignal::new(String::new()), RwSignal::new(String::new())));
+            envs.push((
+                RwSignal::new_local(String::new()),
+                RwSignal::new_local(String::new()),
+            ));
         });
     };
     let delete_var = move |i: usize| {

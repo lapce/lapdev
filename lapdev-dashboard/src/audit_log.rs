@@ -1,12 +1,13 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, TimeZone};
 use gloo_net::http::Request;
-use lapdev_common::{console::Organization, AuditLogRecord, AuditLogResult};
+use lapdev_common::{AuditLogRecord, AuditLogResult};
 use leptos::prelude::*;
 
 use crate::{
     datepicker::Datepicker,
     modal::{DatetimeModal, ErrorResponse},
+    organization::get_current_org,
 };
 
 async fn get_audit_logs(
@@ -40,11 +41,7 @@ async fn get_audit_logs(
         })
         .into();
 
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let page_size = page_size.parse::<u64>().unwrap_or(10);
 

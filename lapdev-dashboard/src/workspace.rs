@@ -18,7 +18,9 @@ use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
 use crate::{
+    cluster::get_cluster_info,
     modal::{CreationModal, DatetimeModal, DeletionModal, ErrorResponse},
+    organization::get_current_org,
     project::MachineTypeView,
 };
 
@@ -42,11 +44,7 @@ impl BuildMessage {
 }
 
 async fn all_workspaces() -> Result<Vec<WorkspaceInfo>> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!("/api/v1/organizations/{}/workspaces", org.id))
         .send()
         .await?;
@@ -55,11 +53,7 @@ async fn all_workspaces() -> Result<Vec<WorkspaceInfo>> {
 }
 
 async fn get_workspace(name: &str) -> Result<WorkspaceInfo> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!(
         "/api/v1/organizations/{}/workspaces/{name}",
         org.id
@@ -72,14 +66,10 @@ async fn get_workspace(name: &str) -> Result<WorkspaceInfo> {
 
 async fn delete_workspace(
     name: String,
-    delete_modal_hidden: RwSignal<bool>,
-    update_counter: Option<RwSignal<i32>>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: Option<RwSignal<i32, LocalStorage>>,
 ) -> Result<(), ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::delete(&format!(
         "/api/v1/organizations/{}/workspaces/{name}",
         org.id
@@ -108,13 +98,9 @@ async fn delete_workspace(
 
 async fn rebuild_workspace(
     name: String,
-    rebuild_modal_hidden: RwSignal<bool>,
+    rebuild_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::post(&format!(
         "/api/v1/organizations/{}/workspaces/{name}/rebuild",
         org.id
@@ -137,11 +123,7 @@ async fn rebuild_workspace(
 }
 
 async fn stop_workspace(name: String) -> Result<(), ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::post(&format!(
         "/api/v1/organizations/{}/workspaces/{name}/stop",
         org.id
@@ -161,11 +143,7 @@ async fn stop_workspace(name: String) -> Result<(), ErrorResponse> {
 }
 
 async fn start_workspace(name: String) -> Result<(), ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::post(&format!(
         "/api/v1/organizations/{}/workspaces/{name}/start",
         org.id
@@ -185,11 +163,7 @@ async fn start_workspace(name: String) -> Result<(), ErrorResponse> {
 }
 
 async fn pin_workspace(name: String) -> Result<(), ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::post(&format!(
         "/api/v1/organizations/{}/workspaces/{name}/pin",
         org.id
@@ -209,11 +183,7 @@ async fn pin_workspace(name: String) -> Result<(), ErrorResponse> {
 }
 
 async fn unpin_workspace(name: String) -> Result<(), ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::post(&format!(
         "/api/v1/organizations/{}/workspaces/{name}/unpin",
         org.id
@@ -240,7 +210,7 @@ fn OpenWorkspaceView(
     workspace_hostname: String,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = RwSignal::new(true);
+    let dropdown_hidden = RwSignal::new_local(true);
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
             dropdown_hidden.set(false);
@@ -279,7 +249,7 @@ fn OpenWorkspaceView(
     let open_button_class = format!("{open_button_class} py-2 text-sm font-medium text-white focus:ring-4 focus:ring-green-300 focus:outline-none");
 
     let workspace_hostname = workspace_hostname.clone();
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let cluster_info = get_cluster_info();
     let port =
         cluster_info.with_untracked(|i| i.as_ref().map(|i| i.ssh_proxy_port).unwrap_or(2222));
     view! {
@@ -341,12 +311,12 @@ fn WorkspaceControl(
     workspace_folder: String,
     workspace_hostname: String,
     workspace_pinned: bool,
-    rebuild_modal_hidden: RwSignal<bool>,
-    delete_modal_hidden: RwSignal<bool>,
-    error: RwSignal<Option<String>>,
+    rebuild_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    error: RwSignal<Option<String>, LocalStorage>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = RwSignal::new(true);
+    let dropdown_hidden = RwSignal::new_local(true);
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
             dropdown_hidden.set(false);
@@ -566,7 +536,7 @@ fn workspace_status_class(status: &WorkspaceStatus) -> &str {
 #[component]
 fn WorkspaceRebuildModal(
     workspace_name: String,
-    rebuild_modal_hidden: RwSignal<bool>,
+    rebuild_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> impl IntoView {
     let rebuild_action = {
         let workspace_name = workspace_name.clone();
@@ -600,11 +570,11 @@ fn WorkspaceRebuildModal(
 #[component]
 pub fn WorkspaceItem(
     workspace: WorkspaceInfo,
-    error: RwSignal<Option<String>>,
-    update_counter: RwSignal<i32>,
+    error: RwSignal<Option<String>, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let rebuild_modal_hidden = RwSignal::new(true);
-    let delete_modal_hidden = RwSignal::new(true);
+    let rebuild_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let workspace_name = workspace.name.clone();
     let workspace_folder = workspace.repo_name.clone();
     let workspace_hostname = workspace.hostname.clone();
@@ -739,7 +709,7 @@ pub fn WorkspaceItem(
 }
 
 async fn watch_all_workspace_status(
-    status_update: RwSignal<(String, WorkspaceStatus)>,
+    status_update: RwSignal<(String, WorkspaceStatus), LocalStorage>,
 ) -> Result<()> {
     let location = window().location();
     let protocol = if location.protocol().map(|p| p == "http:").unwrap_or(false) {
@@ -763,16 +733,16 @@ async fn watch_all_workspace_status(
 
 #[component]
 pub fn Workspaces() -> impl IntoView {
-    let error = RwSignal::new(None);
-    let status_update = RwSignal::new(("".to_string(), WorkspaceStatus::New));
+    let error = RwSignal::new_local(None);
+    let status_update = RwSignal::new_local(("".to_string(), WorkspaceStatus::New));
 
     spawn_local_scoped_with_cancellation(async move {
         let _ = watch_all_workspace_status(status_update).await;
     });
 
-    let new_workspace_modal_hidden = RwSignal::new(true);
+    let new_workspace_modal_hidden = RwSignal::new_local(true);
 
-    let delete_counter = RwSignal::new(0);
+    let delete_counter = RwSignal::new_local(0);
     Effect::new(move |_| {
         status_update.track();
         delete_counter.update(|c| {
@@ -787,7 +757,7 @@ pub fn Workspaces() -> impl IntoView {
         workspaces_resource.refetch();
     });
 
-    let workspace_filter = RwSignal::new(String::new());
+    let workspace_filter = RwSignal::new_local(String::new());
 
     let workspaces = Signal::derive(move || {
         let mut workspaces = workspaces_resource
@@ -808,9 +778,9 @@ pub fn Workspaces() -> impl IntoView {
         let hash = use_location().hash.get_untracked();
         if let Some(url) = hash.strip_prefix("#") {
             let url = utils::format_repo_url(url);
-            let action_dispatched = RwSignal::new(false);
-            let current_org = expect_context::<Signal<Option<Organization>>>();
-            let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+            let action_dispatched = RwSignal::new_local(false);
+            let current_org = expect_context::<Signal<Option<Organization>, LocalStorage>>();
+            let cluster_info = get_cluster_info();
             let action = Action::new_local(move |url: &String| {
                 create_workspace(RepoSource::Url(url.clone()), None, None, true)
             });
@@ -909,7 +879,7 @@ pub fn Workspaces() -> impl IntoView {
                 </div>
             </div>
 
-            <NewWorkspaceModal modal_hidden=new_workspace_modal_hidden project_info=RwSignal::new(None) />
+            <NewWorkspaceModal modal_hidden=new_workspace_modal_hidden project_info=RwSignal::new_local(None) />
 
         </section>
 
@@ -922,14 +892,10 @@ pub async fn create_workspace(
     machine_type: Option<Uuid>,
     from_hash: bool,
 ) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let machine_type_id = machine_type.unwrap_or_else(|| {
-        let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+        let cluster_info = get_cluster_info();
         cluster_info
             .get_untracked()
             .and_then(|i| i.machine_types.first().map(|m| m.id))
@@ -978,12 +944,12 @@ pub fn repo_img(repo_url: &str) -> String {
 
 #[component]
 pub fn NewWorkspaceModal(
-    modal_hidden: RwSignal<bool>,
-    project_info: RwSignal<Option<CreateWorkspaceProjectInfo>>,
+    modal_hidden: RwSignal<bool, LocalStorage>,
+    project_info: RwSignal<Option<CreateWorkspaceProjectInfo>, LocalStorage>,
 ) -> impl IntoView {
-    let repo_url = RwSignal::new("".to_string());
-    let current_branch = RwSignal::new(None);
-    let current_machine_type = RwSignal::new(None);
+    let repo_url = RwSignal::new_local("".to_string());
+    let current_branch = RwSignal::new_local(None);
+    let current_machine_type = RwSignal::new_local(None);
 
     Effect::new(move |_| {
         let branch = project_info.with(|info| {
@@ -994,7 +960,7 @@ pub fn NewWorkspaceModal(
         current_branch.set(branch);
     });
 
-    let preferred_machine_type = Signal::derive(move || {
+    let preferred_machine_type = Signal::derive_local(move || {
         project_info.with(|info| info.as_ref().map(|info| info.project.machine_type))
     });
 
@@ -1126,8 +1092,8 @@ pub fn NewWorkspaceModal(
 
 async fn watch_workspace_updates(
     name: &str,
-    status: RwSignal<WorkspaceStatus>,
-    build_messages: RwSignal<Vec<BuildMessage>>,
+    status: RwSignal<WorkspaceStatus, LocalStorage>,
+    build_messages: RwSignal<Vec<BuildMessage>, LocalStorage>,
 ) -> Result<()> {
     let location = window().location();
     let host = location.host().map_err(|_| anyhow!("can't get host"))?;
@@ -1182,23 +1148,23 @@ fn scroll_build_messages() -> Result<()> {
 
 #[component]
 pub fn WorkspaceDetails() -> impl IntoView {
-    let error = RwSignal::new(None);
+    let error = RwSignal::new_local(None);
     let params = use_params_map();
     let name = params.with_untracked(|params| params.get("name").clone().unwrap());
     let local_name = name.clone();
     let workspace_name = name.clone();
-    let rebuild_modal_hidden = RwSignal::new(true);
-    let delete_modal_hidden = RwSignal::new(true);
+    let rebuild_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = {
         let workspace_name = workspace_name.clone();
         Action::new_local(move |_| {
             delete_workspace(workspace_name.clone(), delete_modal_hidden, None)
         })
     };
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let machine_types = RwSignal::new(cluster_info.get_untracked().map(|i| i.machine_types));
+    let cluster_info = get_cluster_info();
+    let machine_types = RwSignal::new_local(cluster_info.get_untracked().map(|i| i.machine_types));
 
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let workspace_info = LocalResource::new(move || async move {
         let name = params.with_untracked(|params| params.get("name").unwrap_or_default());
         get_workspace(&name).await
@@ -1208,8 +1174,8 @@ pub fn WorkspaceDetails() -> impl IntoView {
         workspace_info.refetch();
     });
 
-    let build_messages = RwSignal::new(Vec::new());
-    let status = RwSignal::new(WorkspaceStatus::New);
+    let build_messages = RwSignal::new_local(Vec::new());
+    let status = RwSignal::new_local(WorkspaceStatus::New);
     {
         let name = local_name.clone();
         spawn_local_scoped_with_cancellation(async move {
@@ -1444,10 +1410,10 @@ fn WorkspaceServiceView(
     ws_service: WorkspaceService,
     workspace_hostname: String,
     workspace_folder: String,
-    status: RwSignal<WorkspaceStatus>,
-    cluster_info: Signal<Option<ClusterInfo>>,
+    status: RwSignal<WorkspaceStatus, LocalStorage>,
+    cluster_info: Signal<Option<ClusterInfo>, LocalStorage>,
 ) -> impl IntoView {
-    let expanded = RwSignal::new(false);
+    let expanded = RwSignal::new_local(false);
     let toggle_expand_view = move |_| {
         expanded.update(|e| {
             *e = !*e;
@@ -1523,7 +1489,7 @@ fn WorkspaceServiceView(
 fn WorkspaceSSHConnView(
     name: String,
     workspace_hostname: String,
-    cluster_info: Signal<Option<ClusterInfo>>,
+    cluster_info: Signal<Option<ClusterInfo>, LocalStorage>,
 ) -> impl IntoView {
     view! {
         <span>
@@ -1554,7 +1520,7 @@ pub fn WorkspaceTabView(
     show_build_error: bool,
     build_error: Option<RepobuildError>,
 ) -> impl IntoView {
-    let tab_kind = RwSignal::new(TabKind::Port);
+    let tab_kind = RwSignal::new_local(TabKind::Port);
     let active_class =
         "inline-block p-4 text-blue-600 border-b-2 border-blue-600 rounded-t-lg active";
     let inactive_class = "inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-gray-600 hover:border-gray-300";
@@ -1622,11 +1588,7 @@ pub fn WorkspaceTabView(
 }
 
 async fn workspace_ports(name: &str) -> Result<Vec<WorkspacePort>> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!(
         "/api/v1/organizations/{}/workspaces/{name}/ports",
         org.id
@@ -1643,11 +1605,7 @@ async fn update_workspace_port(
     shared: bool,
     public: bool,
 ) -> Result<(), ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::put(&format!(
         "/api/v1/organizations/{}/workspaces/{name}/ports/{port}",
         org.id
@@ -1683,8 +1641,8 @@ pub fn WorkspacePortsView(name: String, workspace_hostname: String) -> impl Into
             .unwrap_or_default()
     });
 
-    let success = RwSignal::new(None);
-    let error = RwSignal::new(None);
+    let success = RwSignal::new_local(None);
+    let error = RwSignal::new_local(None);
 
     view! {
         <p class="mt-2 py-2 text-sm text-gray-900">Exposed ports of your workspace</p>
@@ -1739,11 +1697,11 @@ fn WorkspacePortView(
     name: String,
     p: WorkspacePort,
     workspace_hostname: String,
-    success: RwSignal<Option<String>>,
-    error: RwSignal<Option<String>>,
+    success: RwSignal<Option<String>, LocalStorage>,
+    error: RwSignal<Option<String>, LocalStorage>,
 ) -> impl IntoView {
-    let shared = RwSignal::new(p.shared);
-    let public = RwSignal::new(p.public);
+    let shared = RwSignal::new_local(p.shared);
+    let public = RwSignal::new_local(p.public);
     let action = {
         let name = name.clone();
         let port = p.port;

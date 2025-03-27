@@ -41,7 +41,7 @@ async fn get_cluster_info() -> Result<ClusterInfo> {
 }
 
 pub fn set_context() {
-    let login_counter = RwSignal::new(0);
+    let login_counter = RwSignal::new_local(0);
     provide_context(login_counter);
 
     let login = LocalResource::new(|| async move { get_login().await.ok() });
@@ -52,10 +52,11 @@ pub fn set_context() {
     provide_context(login);
 
     let cluster_info = LocalResource::new(|| async move { get_cluster_info().await.ok() });
-    let cluster_info = Signal::derive(move || cluster_info.get().as_deref().cloned().flatten());
+    let cluster_info =
+        Signal::derive_local(move || cluster_info.get().as_deref().cloned().flatten());
     provide_context(cluster_info);
 
-    let current_org = Signal::derive(move || {
+    let current_org = Signal::derive_local(move || {
         let login = login.get().as_deref().cloned().flatten();
         login.map(|u| u.organization)
     });
@@ -63,12 +64,12 @@ pub fn set_context() {
 
     let pathname = window().location().pathname().unwrap_or_default();
     let nav_expanded = NavExpanded {
-        orgnization: RwSignal::new(pathname.starts_with("/organization")),
-        account: RwSignal::new(pathname.starts_with("/account")),
+        orgnization: RwSignal::new_local(pathname.starts_with("/organization")),
+        account: RwSignal::new_local(pathname.starts_with("/account")),
     };
     provide_context(nav_expanded);
 
-    provide_context(RwSignal::new(AppConfig {
+    provide_context(RwSignal::new_local(AppConfig {
         show_lapdev_website: false,
     }));
 }
@@ -111,7 +112,7 @@ where
     T: IntoView + Copy + 'static + Send + Sync,
 {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
-    let new_org_modal_hidden = RwSignal::new(true);
+    let new_org_modal_hidden = RwSignal::new_local(true);
     view! {
         <Show
             when=move || { login.get().as_deref().flatten().is_some() }

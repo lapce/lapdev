@@ -1,13 +1,14 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, TimeZone};
 use gloo_net::http::Request;
-use lapdev_common::{console::Organization, UsageRecord, UsageResult};
+use lapdev_common::{UsageRecord, UsageResult};
 use leptos::prelude::*;
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 
 use crate::{
     datepicker::Datepicker,
     modal::{DatetimeModal, ErrorResponse},
+    organization::get_current_org,
 };
 
 async fn get_org_usage(
@@ -41,11 +42,7 @@ async fn get_org_usage(
         })
         .into();
 
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let page_size = page_size.parse::<u64>().unwrap_or(10);
 

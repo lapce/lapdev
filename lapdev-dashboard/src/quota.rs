@@ -1,16 +1,15 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use gloo_net::http::Request;
-use lapdev_common::{console::Organization, OrgQuota, OrgQuotaValue, QuotaKind, UpdateOrgQuota};
+use lapdev_common::{OrgQuota, OrgQuotaValue, QuotaKind, UpdateOrgQuota};
 use leptos::prelude::*;
 
-use crate::modal::{CreationInput, CreationModal, ErrorResponse};
+use crate::{
+    modal::{CreationInput, CreationModal, ErrorResponse},
+    organization::get_current_org,
+};
 
 async fn get_org_quota() -> Result<OrgQuota, ErrorResponse> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let resp = Request::get(&format!("/api/v1/organizations/{}/quota", org.id))
         .send()
@@ -33,7 +32,7 @@ async fn get_org_quota() -> Result<OrgQuota, ErrorResponse> {
 
 #[component]
 pub fn QuotaView() -> impl IntoView {
-    let error = RwSignal::new(None);
+    let error = RwSignal::new_local(None);
 
     let get_action = Action::new_local(move |()| async move {
         error.set(None);
@@ -92,7 +91,7 @@ async fn update_org_quota(
     default_user_quota: String,
     org_quota: String,
     get_action: Action<(), Result<OrgQuota, ErrorResponse>, LocalStorage>,
-    update_modal_hidden: RwSignal<bool>,
+    update_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let default_user_quota: usize = match default_user_quota.parse() {
         Ok(n) => n,
@@ -111,11 +110,7 @@ async fn update_org_quota(
         }
     };
 
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let resp = Request::put(&format!("/api/v1/organizations/{}/quota", org.id))
         .json(&UpdateOrgQuota {
@@ -160,10 +155,10 @@ fn QuotaItemView(
     } else {
         "bg-green-600"
     };
-    let update_modal_hidden = RwSignal::new(true);
+    let update_modal_hidden = RwSignal::new_local(true);
 
-    let org_quota = RwSignal::new(value.org_quota.to_string());
-    let default_user_quota = RwSignal::new(value.default_user_quota.to_string());
+    let org_quota = RwSignal::new_local(value.org_quota.to_string());
+    let default_user_quota = RwSignal::new_local(value.default_user_quota.to_string());
 
     let update_modal_body = view! {
         <CreationInput label="Default User Quota".to_string() value=default_user_quota placeholder="quota number, 0 means disabled".to_string() />

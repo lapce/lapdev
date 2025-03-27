@@ -22,16 +22,20 @@ async fn get_all_workspaces() -> Result<Vec<WorkspaceHost>> {
     Ok(hosts)
 }
 
+pub fn get_cluster_info() -> Signal<Option<ClusterInfo>, LocalStorage> {
+    expect_context::<Signal<Option<ClusterInfo>, LocalStorage>>()
+}
+
 #[component]
 pub fn WorkspaceHostView() -> impl IntoView {
-    let new_workspace_host_modal_hidden = RwSignal::new(true);
-    let update_counter = RwSignal::new(0);
+    let new_workspace_host_modal_hidden = RwSignal::new_local(true);
+    let update_counter = RwSignal::new_local(0);
     let hosts = LocalResource::new(move || async move { get_all_workspaces().await });
     Effect::new(move |_| {
         update_counter.track();
         hosts.refetch();
     });
-    let host_filter = RwSignal::new(String::new());
+    let host_filter = RwSignal::new_local(String::new());
     let hosts = Signal::derive(move || {
         let host_filter = host_filter.get();
         let mut hosts = hosts.with(|hosts| {
@@ -97,16 +101,16 @@ pub fn WorkspaceHostView() -> impl IntoView {
 
 #[component]
 pub fn NewWorkspaceHostView(
-    new_workspace_host_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    new_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let host = RwSignal::new(String::new());
-    let region = RwSignal::new(String::new());
-    let zone = RwSignal::new(String::new());
-    let cpu = RwSignal::new(String::new());
-    let memory = RwSignal::new(String::new());
-    let disk = RwSignal::new(String::new());
+    let cluster_info = get_cluster_info();
+    let host = RwSignal::new_local(String::new());
+    let region = RwSignal::new_local(String::new());
+    let zone = RwSignal::new_local(String::new());
+    let cpu = RwSignal::new_local(String::new());
+    let memory = RwSignal::new_local(String::new());
+    let disk = RwSignal::new_local(String::new());
     let action = Action::new_local(move |_| {
         create_workspace_host(
             host.get_untracked(),
@@ -143,15 +147,15 @@ pub fn NewWorkspaceHostView(
 #[component]
 pub fn UpdateWorkspaceHostModal(
     host: WorkspaceHost,
-    update_workspace_host_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let region = RwSignal::new(host.region.clone());
-    let zone = RwSignal::new(host.zone.clone());
-    let cpu = RwSignal::new(host.cpu.to_string());
-    let memory = RwSignal::new(host.memory.to_string());
-    let disk = RwSignal::new(host.disk.to_string());
+    let cluster_info = get_cluster_info();
+    let region = RwSignal::new_local(host.region.clone());
+    let zone = RwSignal::new_local(host.zone.clone());
+    let cpu = RwSignal::new_local(host.cpu.to_string());
+    let memory = RwSignal::new_local(host.memory.to_string());
+    let disk = RwSignal::new_local(host.disk.to_string());
     let action = Action::new_local(move |_| {
         update_workspace_host(
             host.id,
@@ -192,8 +196,8 @@ async fn create_workspace_host(
     cpu: String,
     memory: String,
     disk: String,
-    update_counter: RwSignal<i32>,
-    new_workspace_host_modal_hidden: RwSignal<bool>,
+    update_counter: RwSignal<i32, LocalStorage>,
+    new_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let cpu: usize = match cpu.parse() {
         Ok(n) => n,
@@ -252,8 +256,8 @@ async fn update_workspace_host(
     cpu: String,
     memory: String,
     disk: String,
-    update_counter: RwSignal<i32>,
-    update_workspace_host_modal_hidden: RwSignal<bool>,
+    update_counter: RwSignal<i32, LocalStorage>,
+    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let cpu: usize = match cpu.parse() {
         Ok(n) => n,
@@ -306,8 +310,8 @@ async fn update_workspace_host(
 
 async fn delete_workspace_host(
     id: Uuid,
-    update_counter: RwSignal<i32>,
-    delete_modal_hidden: RwSignal<bool>,
+    update_counter: RwSignal<i32, LocalStorage>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::delete(&format!("/api/v1/admin/workspace_hosts/{id}"))
         .send()
@@ -327,10 +331,13 @@ async fn delete_workspace_host(
 }
 
 #[component]
-fn WorkspaceHostItem(host: WorkspaceHost, update_counter: RwSignal<i32>) -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
-    let update_workspace_host_modal_hidden = RwSignal::new(true);
-    let delete_modal_hidden = RwSignal::new(true);
+fn WorkspaceHostItem(
+    host: WorkspaceHost,
+    update_counter: RwSignal<i32, LocalStorage>,
+) -> impl IntoView {
+    let cluster_info = get_cluster_info();
+    let update_workspace_host_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = {
         let id = host.id;
         Action::new_local(move |_| async move {
@@ -372,11 +379,11 @@ fn WorkspaceHostItem(host: WorkspaceHost, update_counter: RwSignal<i32>) -> impl
 
 #[component]
 fn WorkspaceHostControl(
-    delete_modal_hidden: RwSignal<bool>,
-    update_workspace_host_modal_hidden: RwSignal<bool>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = RwSignal::new(true);
+    let dropdown_hidden = RwSignal::new_local(true);
 
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
@@ -464,7 +471,7 @@ fn WorkspaceHostControl(
 
 #[component]
 pub fn ClusterSettings() -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let cluster_info = get_cluster_info();
     view! {
         <div class="border-b pb-4 mb-8">
             <h5 class="mr-3 text-2xl font-semibold">
@@ -531,13 +538,13 @@ async fn get_cpu_overcommit() -> Result<usize, ErrorResponse> {
 
 #[component]
 fn CpuOvercommitSetting() -> impl IntoView {
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let current_value = LocalResource::new(move || async move { get_cpu_overcommit().await });
     Effect::new(move |_| {
         update_counter.get();
         current_value.refetch();
     });
-    let value = RwSignal::new(String::new());
+    let value = RwSignal::new_local(String::new());
     Effect::new(move |_| {
         let v = current_value.with(|v| v.as_ref().and_then(|v| v.as_ref().ok().copied()));
         if let Some(v) = v {
@@ -566,7 +573,7 @@ fn CpuOvercommitSetting() -> impl IntoView {
 
 async fn update_oauth2(
     update_oauth: OauthSettings,
-    update_counter: RwSignal<i32>,
+    update_counter: RwSignal<i32, LocalStorage>,
     reload: bool,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::put("/api/v1/admin/oauth")
@@ -601,11 +608,11 @@ async fn get_oauth2() -> Result<OauthSettings> {
 
 #[component]
 pub fn OauthSettings(reload: bool) -> impl IntoView {
-    let update_counter = RwSignal::new(0);
-    let github_client_id = RwSignal::new(String::new());
-    let github_client_secret = RwSignal::new(String::new());
-    let gitlab_client_id = RwSignal::new(String::new());
-    let gitlab_client_secret = RwSignal::new(String::new());
+    let update_counter = RwSignal::new_local(0);
+    let github_client_id = RwSignal::new_local(String::new());
+    let github_client_secret = RwSignal::new_local(String::new());
+    let gitlab_client_id = RwSignal::new_local(String::new());
+    let gitlab_client_secret = RwSignal::new_local(String::new());
 
     let oauth = LocalResource::new(move || async move { get_oauth2().await });
     Effect::new(move |_| {
@@ -699,7 +706,7 @@ async fn get_hostnames() -> Result<HashMap<String, String>> {
 
 async fn update_hostnames(
     value: Vec<(String, String)>,
-    update_counter: RwSignal<i32>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::put("/api/v1/admin/hostnames")
         .json(&value)?
@@ -720,11 +727,11 @@ async fn update_hostnames(
 
 #[component]
 pub fn ClusterHostnameSetting() -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let cluster_info = get_cluster_info();
 
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
 
-    let set_hostnames = RwSignal::new(vec![]);
+    let set_hostnames = RwSignal::new_local(vec![]);
 
     let hostnames = LocalResource::new(|| async move { get_hostnames().await.unwrap_or_default() });
     Effect::new(move |_| {
@@ -736,9 +743,9 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
         let hostnames = hostnames
             .with(|h| h.as_deref().cloned())
             .unwrap_or_default();
-        let mut hostnames: Vec<(String, RwSignal<String>)> = hostnames
+        let mut hostnames: Vec<(String, RwSignal<String, LocalStorage>)> = hostnames
             .into_iter()
-            .map(|(key, value)| (key, RwSignal::new(value)))
+            .map(|(key, value)| (key, RwSignal::new_local(value)))
             .collect();
         hostnames.sort_by_key(|(region, _)| region.to_owned());
         set_hostnames.set(hostnames);
@@ -837,10 +844,13 @@ async fn update_certs(certs: Vec<(String, String)>) -> Result<(), ErrorResponse>
 
 #[component]
 pub fn ClusterCertsSetting() -> impl IntoView {
-    let certs = RwSignal::new(vec![]);
+    let certs = RwSignal::new_local(vec![]);
     let new_cert = move |_| {
         certs.update(|certs| {
-            certs.push((RwSignal::new(String::new()), RwSignal::new(String::new())));
+            certs.push((
+                RwSignal::new_local(String::new()),
+                RwSignal::new_local(String::new()),
+            ));
         });
     };
     let delete_cert = move |i: usize| {
@@ -849,7 +859,7 @@ pub fn ClusterCertsSetting() -> impl IntoView {
         })
     };
 
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let current_certs =
         LocalResource::new(move || async move { get_certs().await.unwrap_or_default() });
     Effect::new(move |_| {
@@ -863,7 +873,7 @@ pub fn ClusterCertsSetting() -> impl IntoView {
         certs.update(|certs| {
             *certs = current_certs
                 .into_iter()
-                .map(|(name, value)| (RwSignal::new(name), RwSignal::new(value)))
+                .map(|(name, value)| (RwSignal::new_local(name), RwSignal::new_local(value)))
                 .collect();
         });
     });
@@ -950,15 +960,15 @@ async fn all_machine_types() -> Result<Vec<MachineType>> {
 
 #[component]
 pub fn MachineTypeView() -> impl IntoView {
-    let new_machine_type_modal_hidden = RwSignal::new(true);
-    let update_counter = RwSignal::new(0);
+    let new_machine_type_modal_hidden = RwSignal::new_local(true);
+    let update_counter = RwSignal::new_local(0);
     let machine_types =
         LocalResource::new(|| async move { all_machine_types().await.unwrap_or_default() });
     Effect::new(move |_| {
         update_counter.track();
         machine_types.refetch();
     });
-    let machine_type_filter = RwSignal::new(String::new());
+    let machine_type_filter = RwSignal::new_local(String::new());
     let machine_types = Signal::derive(move || {
         let machine_type_filter = machine_type_filter.get();
         let mut machine_types = machine_types
@@ -1018,9 +1028,12 @@ pub fn MachineTypeView() -> impl IntoView {
 }
 
 #[component]
-fn MachineTypeItem(machine_type: MachineType, update_counter: RwSignal<i32>) -> impl IntoView {
-    let update_machine_type_modal_hidden = RwSignal::new(true);
-    let delete_modal_hidden = RwSignal::new(true);
+fn MachineTypeItem(
+    machine_type: MachineType,
+    update_counter: RwSignal<i32, LocalStorage>,
+) -> impl IntoView {
+    let update_machine_type_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = {
         let id = machine_type.id;
         Action::new_local(move |_| async move {
@@ -1053,16 +1066,16 @@ fn MachineTypeItem(machine_type: MachineType, update_counter: RwSignal<i32>) -> 
 
 #[component]
 pub fn NewMachineTypeView(
-    new_machine_type_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    new_machine_type_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let name = RwSignal::new(String::new());
-    let cpu = RwSignal::new(String::new());
-    let memory = RwSignal::new(String::new());
-    let disk = RwSignal::new(String::new());
-    let cost = RwSignal::new("0".to_string());
-    let shared_cpu = RwSignal::new(false);
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let name = RwSignal::new_local(String::new());
+    let cpu = RwSignal::new_local(String::new());
+    let memory = RwSignal::new_local(String::new());
+    let disk = RwSignal::new_local(String::new());
+    let cost = RwSignal::new_local("0".to_string());
+    let shared_cpu = RwSignal::new_local(false);
+    let cluster_info = get_cluster_info();
     let action = Action::new_local(move |_| {
         create_machine_type(
             name.get_untracked(),
@@ -1109,12 +1122,12 @@ pub fn NewMachineTypeView(
 #[component]
 pub fn UpdateMachineTypeModal(
     machine_type: MachineType,
-    update_machine_type_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    update_machine_type_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let name = RwSignal::new(machine_type.name.clone());
-    let cost = RwSignal::new(machine_type.cost_per_second.to_string());
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let name = RwSignal::new_local(machine_type.name.clone());
+    let cost = RwSignal::new_local(machine_type.cost_per_second.to_string());
+    let cluster_info = get_cluster_info();
     let action = Action::new_local(move |_| {
         update_machine_type(
             machine_type.id,
@@ -1139,11 +1152,11 @@ pub fn UpdateMachineTypeModal(
 
 #[component]
 fn MachineTypeControl(
-    delete_modal_hidden: RwSignal<bool>,
-    update_machine_type_modal_hidden: RwSignal<bool>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_machine_type_modal_hidden: RwSignal<bool, LocalStorage>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = RwSignal::new(true);
+    let dropdown_hidden = RwSignal::new_local(true);
 
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
@@ -1237,8 +1250,8 @@ async fn create_machine_type(
     memory: String,
     disk: String,
     cost: String,
-    update_counter: RwSignal<i32>,
-    new_workspace_host_modal_hidden: RwSignal<bool>,
+    update_counter: RwSignal<i32, LocalStorage>,
+    new_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let cpu: usize = match cpu.parse() {
         Ok(n) => n,
@@ -1301,8 +1314,8 @@ async fn update_machine_type(
     id: Uuid,
     name: String,
     cost: String,
-    update_counter: RwSignal<i32>,
-    update_workspace_host_modal_hidden: RwSignal<bool>,
+    update_counter: RwSignal<i32, LocalStorage>,
+    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let cost: usize = match cost.parse() {
         Ok(n) => n,
@@ -1336,8 +1349,8 @@ async fn update_machine_type(
 
 async fn delete_machine_type(
     id: Uuid,
-    update_counter: RwSignal<i32>,
-    delete_modal_hidden: RwSignal<bool>,
+    update_counter: RwSignal<i32, LocalStorage>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::delete(&format!("/api/v1/admin/machine_types/{id}"))
         .send()
@@ -1395,7 +1408,7 @@ async fn update_cluster_user(
     id: Uuid,
     cluster_admin: bool,
     search_action: Action<(), Result<ClusterUserResult, ErrorResponse>, LocalStorage>,
-    update_modal_hidden: RwSignal<bool>,
+    update_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::put(&format!("/api/v1/admin/users/{id}"))
         .json(&UpdateClusterUser { cluster_admin })?
@@ -1417,11 +1430,11 @@ async fn update_cluster_user(
 
 #[component]
 pub fn ClusterUsersView() -> impl IntoView {
-    let page_size = RwSignal::new(String::new());
-    let page = RwSignal::new(0);
+    let page_size = RwSignal::new_local(String::new());
+    let page = RwSignal::new_local(0);
 
-    let error = RwSignal::new(None);
-    let user_filter = RwSignal::new(String::new());
+    let error = RwSignal::new_local(None);
+    let user_filter = RwSignal::new_local(String::new());
     let search_action = Action::new_local(move |_| async move {
         error.set(None);
         let result = get_cluster_users(
@@ -1601,8 +1614,8 @@ fn ClusterUserItemView(
     search_action: Action<(), Result<ClusterUserResult, ErrorResponse>, LocalStorage>,
 ) -> impl IntoView {
     let user_id = user.id;
-    let update_modal_hidden = RwSignal::new(true);
-    let is_cluster_admin = RwSignal::new(user.cluster_admin);
+    let update_modal_hidden = RwSignal::new_local(true);
+    let is_cluster_admin = RwSignal::new_local(user.cluster_admin);
 
     let update_modal_body = view! {
         <div

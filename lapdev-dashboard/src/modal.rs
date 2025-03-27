@@ -21,7 +21,11 @@ where
 }
 
 #[component]
-pub fn CreationInput(label: String, value: RwSignal<String>, placeholder: String) -> impl IntoView {
+pub fn CreationInput(
+    label: String,
+    value: RwSignal<String, LocalStorage>,
+    placeholder: String,
+) -> impl IntoView {
     view! {
         <div>
             <label class="block mb-2 text-sm font-medium text-gray-900">{ label }</label>
@@ -38,7 +42,7 @@ pub fn CreationInput(label: String, value: RwSignal<String>, placeholder: String
 #[component]
 pub fn CreationModal<T>(
     title: String,
-    modal_hidden: RwSignal<bool>,
+    modal_hidden: RwSignal<bool, LocalStorage>,
     action: Action<(), Result<(), ErrorResponse>, LocalStorage>,
     body: T,
     update_text: Option<String>,
@@ -49,7 +53,7 @@ pub fn CreationModal<T>(
 where
     T: IntoView + 'static,
 {
-    let error = RwSignal::new(None);
+    let error = RwSignal::new_local(None);
     let handle_create = move |_| {
         error.set(None);
         action.dispatch(());
@@ -152,10 +156,10 @@ where
 #[component]
 pub fn DeletionModal(
     resource: String,
-    modal_hidden: RwSignal<bool>,
+    modal_hidden: RwSignal<bool, LocalStorage>,
     delete_action: Action<(), Result<(), ErrorResponse>, LocalStorage>,
 ) -> impl IntoView {
-    let error = RwSignal::new(None);
+    let error = RwSignal::new_local(None);
     let handle_delete = move |_| {
         delete_action.dispatch(());
     };
@@ -254,7 +258,7 @@ pub fn DatetimeModal(time: DateTime<FixedOffset>) -> impl IntoView {
         time
     };
 
-    let hidden = RwSignal::new(true);
+    let hidden = RwSignal::new_local(true);
     let duration = chrono::Utc::now() - time.with_timezone(&chrono::Utc);
     let days = duration.num_days();
     let formatted = move || {
@@ -308,14 +312,14 @@ pub fn SettingView<T>(
     title: String,
     action: Action<(), Result<(), ErrorResponse>, LocalStorage>,
     body: T,
-    update_counter: RwSignal<i32>,
+    update_counter: RwSignal<i32, LocalStorage>,
     extra: Option<AnyView>,
 ) -> impl IntoView
 where
     T: IntoView + 'static,
 {
-    let success = RwSignal::new(None);
-    let error = RwSignal::new(None);
+    let success = RwSignal::new_local(None);
+    let error = RwSignal::new_local(None);
     let handle_save = move |_| {
         success.set(None);
         error.set(None);

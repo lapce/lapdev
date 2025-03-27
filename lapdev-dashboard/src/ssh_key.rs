@@ -7,8 +7,8 @@ use crate::modal::{CreationInput, CreationModal, DeletionModal, ErrorResponse};
 
 async fn delete_ssh_key(
     id: String,
-    delete_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::delete(&format!("/api/v1/account/ssh_keys/{id}"))
         .send()
@@ -28,10 +28,10 @@ async fn delete_ssh_key(
 }
 
 #[component]
-pub fn SshKeyItem(key: SshKey, update_counter: RwSignal<i32>) -> impl IntoView {
+pub fn SshKeyItem(key: SshKey, update_counter: RwSignal<i32, LocalStorage>) -> impl IntoView {
     let id = key.id;
     let name = key.name.clone();
-    let delete_modal_hidden = RwSignal::new(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = Action::new_local(move |_| {
         delete_ssh_key(id.to_string(), delete_modal_hidden, update_counter)
     });
@@ -59,7 +59,7 @@ async fn all_ssh_keys() -> Result<Vec<SshKey>> {
 
 #[component]
 pub fn SshKeys() -> impl IntoView {
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let ssh_keys = LocalResource::new(|| async move { all_ssh_keys().await.unwrap_or_default() });
     Effect::new(move |_| {
         update_counter.track();
@@ -97,10 +97,10 @@ pub fn SshKeys() -> impl IntoView {
 }
 
 async fn create_ssh_key(
-    name: RwSignal<String>,
-    key: RwSignal<String>,
-    modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    name: RwSignal<String, LocalStorage>,
+    key: RwSignal<String, LocalStorage>,
+    modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::post("/api/v1/account/ssh_keys")
         .json(&NewSshKey {
@@ -128,11 +128,11 @@ async fn create_ssh_key(
 }
 
 #[component]
-pub fn NewSshKey(update_counter: RwSignal<i32>) -> impl IntoView {
-    let name = RwSignal::new(String::new());
-    let key = RwSignal::new(String::new());
+pub fn NewSshKey(update_counter: RwSignal<i32, LocalStorage>) -> impl IntoView {
+    let name = RwSignal::new_local(String::new());
+    let key = RwSignal::new_local(String::new());
 
-    let modal_hidden = RwSignal::new(true);
+    let modal_hidden = RwSignal::new_local(true);
     let action =
         Action::new_local(move |_| create_ssh_key(name, key, modal_hidden, update_counter));
 

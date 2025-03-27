@@ -90,9 +90,9 @@ async fn disconnect_oauth(provider: AuthProvider) -> Result<(), ErrorResponse> {
 
 #[component]
 pub fn GitProviderView() -> impl IntoView {
-    let error = RwSignal::new(None);
+    let error = RwSignal::new_local(None);
 
-    let git_provider_counter = RwSignal::new(0);
+    let git_provider_counter = RwSignal::new_local(0);
     let git_providers =
         LocalResource::new(|| async move { get_git_providers().await.unwrap_or_default() });
     Effect::new(move |_| {
@@ -144,11 +144,11 @@ pub fn GitProviderView() -> impl IntoView {
 #[component]
 fn GitProviderControl(
     provider: AuthProvider,
-    error: RwSignal<Option<String>>,
-    git_provider_counter: RwSignal<i32>,
-    update_scope_modal_hidden: RwSignal<bool>,
+    error: RwSignal<Option<String>, LocalStorage>,
+    git_provider_counter: RwSignal<i32, LocalStorage>,
+    update_scope_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> impl IntoView {
-    let dropdown_hidden = RwSignal::new(true);
+    let dropdown_hidden = RwSignal::new_local(true);
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
             dropdown_hidden.set(false);
@@ -267,10 +267,10 @@ fn GitProviderControl(
 #[component]
 fn GitProviderItem(
     provider: GitProvider,
-    error: RwSignal<Option<String>>,
-    git_provider_counter: RwSignal<i32>,
+    error: RwSignal<Option<String>, LocalStorage>,
+    git_provider_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let update_scope_modal_hidden = RwSignal::new(true);
+    let update_scope_modal_hidden = RwSignal::new_local(true);
 
     let icon = match provider.auth_provider {
         AuthProvider::Github => view! {
@@ -346,9 +346,9 @@ fn GitProviderItem(
 pub fn UpdateScopeModal(
     provider: AuthProvider,
     read_repo: bool,
-    update_scope_modal_hidden: RwSignal<bool>,
+    update_scope_modal_hidden: RwSignal<bool, LocalStorage>,
 ) -> impl IntoView {
-    let read_repo = RwSignal::new(read_repo);
+    let read_repo = RwSignal::new_local(read_repo);
 
     let body = view! {
         <div class="block mb-2 text-sm font-medium text-gray-900">

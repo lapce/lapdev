@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use gloo_net::http::Request;
 use lapdev_common::{
     console::{MeUser, Organization, OrganizationMember},
-    ClusterInfo, NewOrganization, UpdateOrganizationAutoStartStop, UpdateOrganizationMember,
+    NewOrganization, UpdateOrganizationAutoStartStop, UpdateOrganizationMember,
     UpdateOrganizationName, UserRole,
 };
 use leptos::{leptos_dom::logging::console_log, prelude::*};
@@ -12,9 +12,12 @@ use uuid::Uuid;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
-use crate::modal::{CreationModal, DatetimeModal, DeletionModal, ErrorResponse, SettingView};
+use crate::{
+    cluster::get_cluster_info,
+    modal::{CreationModal, DatetimeModal, DeletionModal, ErrorResponse, SettingView},
+};
 
-async fn create_org(name: RwSignal<String>) -> Result<()> {
+async fn create_org(name: RwSignal<String, LocalStorage>) -> Result<()> {
     let org_name = name.get_untracked();
     let resp = Request::post("/api/v1/organizations")
         .json(&NewOrganization { name: org_name })?
@@ -38,10 +41,19 @@ async fn switch_org(org_id: String) -> Result<()> {
     Ok(())
 }
 
+pub fn get_current_org() -> Result<Organization> {
+    let current_org = use_context::<Signal<Option<Organization>, LocalStorage>>()
+        .ok_or_else(|| anyhow!("can't get org context"))?;
+    let org = current_org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+    Ok(org)
+}
+
 #[component]
-pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
+pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool, LocalStorage>) -> impl IntoView {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
-    let hidden = RwSignal::new(true);
+    let hidden = RwSignal::new_local(true);
     let toggle_dropdown = move |_| {
         if hidden.get_untracked() {
             hidden.set(false);
@@ -143,8 +155,8 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
 }
 
 #[component]
-pub fn NewOrgModal(modal_hidden: RwSignal<bool>) -> impl IntoView {
-    let org_name = RwSignal::new("".to_string());
+pub fn NewOrgModal(modal_hidden: RwSignal<bool, LocalStorage>) -> impl IntoView {
+    let org_name = RwSignal::new_local("".to_string());
     let action = Action::new_local(move |_| create_org(org_name));
     let handle_create_org = move |_| {
         action.dispatch(());
@@ -220,11 +232,7 @@ pub fn NewOrgModal(modal_hidden: RwSignal<bool>) -> impl IntoView {
 }
 
 async fn delete_org() -> Result<Option<ErrorResponse>> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::delete(&format!("/api/v1/organizations/{}", org.id))
         .send()
         .await?;
@@ -244,10 +252,10 @@ async fn delete_org() -> Result<Option<ErrorResponse>> {
 
 #[component]
 pub fn OrgSettings() -> impl IntoView {
-    let modal_hidden = RwSignal::new(true);
+    let modal_hidden = RwSignal::new_local(true);
     let delete_action = Action::new_local(|()| delete_org());
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let cluster_info = get_cluster_info();
     view! {
         <div class="border-b pb-4 mb-8">
             <h5 class="mr-3 text-2xl font-semibold">
@@ -288,16 +296,16 @@ pub fn OrgSettings() -> impl IntoView {
 
 #[component]
 pub fn DeleteOrgModal(
-    modal_hidden: RwSignal<bool>,
+    modal_hidden: RwSignal<bool, LocalStorage>,
     delete_action: Action<(), Result<Option<ErrorResponse>>, LocalStorage>,
 ) -> impl IntoView {
-    let error = RwSignal::new(None);
-    let confirmation = RwSignal::new(String::new());
+    let error = RwSignal::new_local(None);
+    let confirmation = RwSignal::new_local(String::new());
     let handle_delete = move |_| {
         delete_action.dispatch(());
     };
     let delete_pending = delete_action.pending();
-    let org = use_context::<Signal<Option<Organization>>>().unwrap();
+    let org = use_context::<Signal<Option<Organization>, LocalStorage>>().unwrap();
     Effect::new(move |_| {
         delete_action.value().with(|result| {
             if let Some(result) = result {
@@ -448,17 +456,17 @@ async fn update_auto_start_stop(
 
 #[component]
 fn AutoStartStopView() -> impl IntoView {
-    let org = use_context::<Signal<Option<Organization>>>().unwrap();
-    let login_counter = expect_context::<RwSignal<i32>>();
+    let org = use_context::<Signal<Option<Organization>, LocalStorage>>().unwrap();
+    let login_counter = expect_context::<RwSignal<i32, LocalStorage>>();
 
-    let auto_start_enabled = RwSignal::new(false);
+    let auto_start_enabled = RwSignal::new_local(false);
     Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.auto_start)) {
             auto_start_enabled.set(enabled);
         }
     });
 
-    let allow_workspace_change_auto_start = RwSignal::new(false);
+    let allow_workspace_change_auto_start = RwSignal::new_local(false);
     Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.allow_workspace_change_auto_start))
         {
@@ -466,21 +474,21 @@ fn AutoStartStopView() -> impl IntoView {
         }
     });
 
-    let auto_stop_enabled = RwSignal::new(false);
+    let auto_stop_enabled = RwSignal::new_local(false);
     Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.auto_stop.is_some())) {
             auto_stop_enabled.set(enabled);
         }
     });
 
-    let auto_stop_seconds = RwSignal::new(3600);
+    let auto_stop_seconds = RwSignal::new_local(3600);
     Effect::new(move |_| {
         if let Some(seconds) = org.with(|o| o.as_ref().map(|o| o.auto_stop)).flatten() {
             auto_stop_seconds.set(seconds);
         }
     });
 
-    let allow_workspace_change_auto_stop = RwSignal::new(false);
+    let allow_workspace_change_auto_stop = RwSignal::new_local(false);
     Effect::new(move |_| {
         if let Some(enabled) = org.with(|o| o.as_ref().map(|o| o.allow_workspace_change_auto_stop))
         {
@@ -580,10 +588,10 @@ fn AutoStartStopView() -> impl IntoView {
 
 #[component]
 fn UpdateNameView() -> impl IntoView {
-    let org = use_context::<Signal<Option<Organization>>>().unwrap();
-    let login_counter = expect_context::<RwSignal<i32>>();
+    let org = use_context::<Signal<Option<Organization>, LocalStorage>>().unwrap();
+    let login_counter = expect_context::<RwSignal<i32, LocalStorage>>();
 
-    let org_name = RwSignal::new(String::new());
+    let org_name = RwSignal::new_local(String::new());
     Effect::new(move |_| {
         if let Some(name) = org.with(|o| o.as_ref().map(|o| o.name.clone())) {
             org_name.set(name);
@@ -619,11 +627,7 @@ fn UpdateNameView() -> impl IntoView {
 }
 
 async fn get_org_members() -> Result<Vec<OrganizationMember>> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::get(&format!("/api/v1/organizations/{}/members", org.id))
         .send()
         .await?;
@@ -633,10 +637,10 @@ async fn get_org_members() -> Result<Vec<OrganizationMember>> {
 
 #[component]
 pub fn OrgMembers() -> impl IntoView {
-    let invite_member_modal_hidden = RwSignal::new(true);
-    let member_filter = RwSignal::new(String::new());
+    let invite_member_modal_hidden = RwSignal::new_local(true);
+    let member_filter = RwSignal::new_local(String::new());
 
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let members = LocalResource::new(move || async move { get_org_members().await });
     Effect::new(move |_| {
         update_counter.track();
@@ -723,14 +727,10 @@ pub fn OrgMembers() -> impl IntoView {
 
 async fn delete_org_member(
     user_id: Uuid,
-    delete_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::delete(&format!(
         "/api/v1/organizations/{}/members/{user_id}",
         org.id
@@ -754,14 +754,10 @@ async fn delete_org_member(
 async fn update_org_member(
     user_id: Uuid,
     role: String,
-    update_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    update_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
-    let current_org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = current_org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
 
     let role: UserRole = match UserRole::from_str(&role) {
         Ok(r) => r,
@@ -797,10 +793,10 @@ async fn update_org_member(
 fn MemberItemView(
     i: usize,
     member: OrganizationMember,
-    update_counter: RwSignal<i32>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let update_member_modal_hidden = RwSignal::new(true);
-    let delete_modal_hidden = RwSignal::new(true);
+    let update_member_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = Action::new_local(move |_| {
         delete_org_member(member.user_id, delete_modal_hidden, update_counter)
     });
@@ -838,10 +834,10 @@ fn MemberItemView(
 #[component]
 fn UpdateMemberView(
     member: OrganizationMember,
-    update_modal_hidden: RwSignal<bool>,
-    update_counter: RwSignal<i32>,
+    update_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let role = RwSignal::new(member.role.to_string());
+    let role = RwSignal::new_local(member.role.to_string());
     let update_action = Action::new_local(move |_| {
         update_org_member(
             member.user_id,
@@ -884,11 +880,11 @@ fn UpdateMemberView(
 
 #[component]
 fn MemberControl(
-    delete_modal_hidden: RwSignal<bool>,
-    update_member_modal_hidden: RwSignal<bool>,
+    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_member_modal_hidden: RwSignal<bool, LocalStorage>,
     align_right: bool,
 ) -> impl IntoView {
-    let dropdown_hidden = RwSignal::new(true);
+    let dropdown_hidden = RwSignal::new_local(true);
 
     let toggle_dropdown = move |_| {
         if dropdown_hidden.get_untracked() {
@@ -975,11 +971,7 @@ fn MemberControl(
 }
 
 async fn create_user_invitation() -> Result<String> {
-    let org =
-        use_context::<Signal<Option<Organization>>>().ok_or_else(|| anyhow!("can't get org"))?;
-    let org = org
-        .get_untracked()
-        .ok_or_else(|| anyhow!("can't get org"))?;
+    let org = get_current_org()?;
     let resp = Request::post(&format!("/api/v1/organizations/{}/invitations", org.id))
         .send()
         .await?;
@@ -991,10 +983,10 @@ async fn create_user_invitation() -> Result<String> {
 }
 
 #[component]
-fn InviteMemberView(invite_member_modal_hidden: RwSignal<bool>) -> impl IntoView {
+fn InviteMemberView(invite_member_modal_hidden: RwSignal<bool, LocalStorage>) -> impl IntoView {
     let action = Action::new_local(move |_| async move { Ok(()) });
 
-    let update_counter = RwSignal::new(0);
+    let update_counter = RwSignal::new_local(0);
     let invitation_resource =
         LocalResource::new(move || async move { create_user_invitation().await });
     Effect::new(move |_| {
@@ -1002,7 +994,7 @@ fn InviteMemberView(invite_member_modal_hidden: RwSignal<bool>) -> impl IntoView
         invitation_resource.refetch();
     });
 
-    let invitation = RwSignal::new(String::new());
+    let invitation = RwSignal::new_local(String::new());
     Effect::new(move |_| {
         let hidden = invite_member_modal_hidden.get();
         invitation.set(String::new());

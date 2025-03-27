@@ -1,24 +1,26 @@
 use std::time::Duration;
 
-use lapdev_common::{console::MeUser, ClusterInfo, UserRole};
+use lapdev_common::{console::MeUser, UserRole};
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
-use crate::{account::NavUserControl, app::AppConfig, organization::OrgSelector};
+use crate::{
+    account::NavUserControl, app::AppConfig, cluster::get_cluster_info, organization::OrgSelector,
+};
 
 #[derive(Clone, Copy)]
 pub struct NavExpanded {
-    pub orgnization: RwSignal<bool>,
-    pub account: RwSignal<bool>,
+    pub orgnization: RwSignal<bool, LocalStorage>,
+    pub account: RwSignal<bool, LocalStorage>,
 }
 
 #[component]
 pub fn TopNav() -> impl IntoView {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     let config = use_context::<RwSignal<AppConfig>>().unwrap();
-    let user_control_hidden = RwSignal::new(true);
+    let user_control_hidden = RwSignal::new_local(true);
     let toggle_user_control = move |_| {
         if user_control_hidden.get_untracked() {
             user_control_hidden.set(false);
@@ -179,7 +181,7 @@ pub fn SideNavAccount() -> impl IntoView {
 
 #[component]
 pub fn SideNavOrg() -> impl IntoView {
-    let cluster_info = expect_context::<Signal<Option<ClusterInfo>>>();
+    let cluster_info = get_cluster_info();
     let nav_expanded: NavExpanded = expect_context();
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     let role = Signal::derive(move || {
@@ -309,7 +311,7 @@ pub fn SideNavOrg() -> impl IntoView {
 }
 
 #[component]
-pub fn SideNav(new_org_modal_hidden: RwSignal<bool>) -> impl IntoView {
+pub fn SideNav(new_org_modal_hidden: RwSignal<bool, LocalStorage>) -> impl IntoView {
     view! {
         <aside class="top-0 left-0 z-40 w-64 h-full transition-transform -translate-x-full sm:translate-x-0" aria-label="Sidenav">
             <div class="overflow-y-auto py-5 px-3 h-full bg-white border-r border-gray-200">

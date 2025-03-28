@@ -19,7 +19,7 @@ pub struct NavExpanded {
 #[component]
 pub fn TopNav() -> impl IntoView {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
-    let config = use_context::<RwSignal<AppConfig>>().unwrap();
+    let config = use_context::<RwSignal<AppConfig, LocalStorage>>().unwrap();
     let user_control_hidden = RwSignal::new_local(true);
     let toggle_user_control = move |_| {
         if user_control_hidden.get_untracked() {

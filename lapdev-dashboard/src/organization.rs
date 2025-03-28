@@ -86,17 +86,17 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool, LocalStorage>) -> impl I
 
     view! {
         <div
-            class="w-full mb-5"
+            class="w-full mb-5 border-b"
             on:focusout=on_focusout
         >
         <button
-            class="flex items-center justify-between w-full border rounded-xl px-5"
+            class="flex items-center justify-between w-full px-5"
             type="button"
             on:click=toggle_dropdown
         >
             <div class="flex items-center grow basis-0 min-w-0">
-                <div class="rounded-full flex items-center justify-center flex-shrink-0 w-10 h-10 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
-                    <span class="text-white font-semibold text-xl">{ move || login.get().as_deref().flatten().and_then(|l| l.organization.name.chars().next()).unwrap_or('P') }</span>
+                <div class="rounded-full flex items-center justify-center flex-shrink-0 w-6 h-6 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
+                    <span class="text-white font-semibold text-lg">{ move || login.get().as_deref().flatten().and_then(|l| l.organization.name.chars().next()).unwrap_or('P') }</span>
                 </div>
                 <span class="py-4 truncate">{ move || login.get().as_deref().flatten().map(|l| l.organization.name.clone()).unwrap_or_else(|| "Personal".to_string()) }</span>
             </div>

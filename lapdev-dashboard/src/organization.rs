@@ -86,70 +86,69 @@ pub fn OrgSelector(new_org_modal_hidden: RwSignal<bool, LocalStorage>) -> impl I
 
     view! {
         <div
-            class="w-full mb-5 border-b"
+            class="w-full px-6 h-16 mb-5 border-b flex flex-row items-center"
             on:focusout=on_focusout
         >
-        <button
-            class="flex items-center justify-between w-full px-5"
-            type="button"
-            on:click=toggle_dropdown
-        >
-            <div class="flex items-center grow basis-0 min-w-0">
-                <div class="rounded-full flex items-center justify-center flex-shrink-0 w-6 h-6 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
-                    <span class="text-white font-semibold text-lg">{ move || login.get().as_deref().flatten().and_then(|l| l.organization.name.chars().next()).unwrap_or('P') }</span>
+            <div
+                class:hidden=move || hidden.get()
+            >
+                <div
+                    class="absolute w-64 -ml-2 mt-6 z-50 bg-white divide-y divide-gray-100 rounded-xl border shadow"
+                >
+                    <ul class="py-2 text-sm text-gray-700">
+                        <For
+                            each=move || login.get().as_deref().flatten().map(|l| {
+                                let mut orgs = l.all_organizations.clone();
+                                orgs.retain(|o| o.id != l.organization.id);
+                                orgs
+                            }).unwrap_or_default()
+                            key=|o| o.id
+                            children=move |org| {
+                                view! {
+                                    <li>
+                                        <a href="#"
+                                            class="flex items-center px-5 hover:bg-gray-100"
+                                            on:click=move |_| {
+                                                hidden.set(true);
+                                                Action::new_local(move |org_id: &String| switch_org(org_id.clone())).dispatch(org.id.to_string());
+                                            }
+                                        >
+                                            <div class="rounded-full flex items-center justify-center flex-shrink-0 w-6 h-6 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
+                                                <span class="text-white font-semibold text-sm">{ org.name.chars().next().unwrap_or('O') }</span>
+                                            </div>
+                                            <span class="py-4 truncate">{org.name}</span>
+                                        </a>
+                                    </li>
+                                }
+                            }
+                        />
+                        <li>
+                            <a href="#"
+                                class="flex items-center justify-between px-5 py-4 hover:bg-gray-100"
+                                on:click=move |_| { new_org_modal_hidden.set(false); hidden.set(true); }
+                            >
+                                Create New Organization
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 14" class="w-3.5">
+                                    <path fill="currentColor" fill-rule="evenodd" d="M7 0a1 1 0 011 1v5h5a1 1 0 110 2H8v5a1 1 0 11-2 0V8H1a1 1 0 010-2h5V1a1 1 0 011-1z" clip-rule="evenodd" />
+                                </svg>
+                            </a>
+                        </li>
+                    </ul>
                 </div>
-                <span class="py-4 truncate">{ move || login.get().as_deref().flatten().map(|l| l.organization.name.clone()).unwrap_or_else(|| "Personal".to_string()) }</span>
             </div>
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 3a1 1 0 01.707.293l3 3a1 1 0 01-1.414 1.414L10 5.414 7.707 7.707a1 1 0 01-1.414-1.414l3-3A1 1 0 0110 3zm-3.707 9.293a1 1 0 011.414 0L10 14.586l2.293-2.293a1 1 0 011.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>
-        </button>
-        <div
-            class="relative"
-            class:hidden=move || hidden.get()
-        >
-        <div
-            class="absolute w-full mr-4 mt-2 z-10 bg-white divide-y divide-gray-100 rounded-xl border shadow w-full"
-        >
-            <ul class="py-2 text-sm text-gray-700">
-                <For
-                    each=move || login.get().as_deref().flatten().map(|l| {
-                        let mut orgs = l.all_organizations.clone();
-                        orgs.retain(|o| o.id != l.organization.id);
-                        orgs
-                    }).unwrap_or_default()
-                    key=|o| o.id
-                    children=move |org| {
-                        view! {
-                            <li>
-                                <a href="#"
-                                    class="flex items-center px-5 hover:bg-gray-100"
-                                    on:click=move |_| {
-                                        hidden.set(true);
-                                        Action::new_local(move |org_id: &String| switch_org(org_id.clone())).dispatch(org.id.to_string());
-                                    }
-                                >
-                                    <div class="rounded-full flex items-center justify-center flex-shrink-0 w-10 h-10 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
-                                        <span class="text-white font-semibold text-xl">{ org.name.chars().next().unwrap_or('O') }</span>
-                                    </div>
-                                    <span class="py-4 truncate">{org.name}</span>
-                                </a>
-                            </li>
-                        }
-                    }
-                />
-                <li>
-                    <a href="#"
-                        class="flex items-center justify-between px-5 py-4 hover:bg-gray-100"
-                        on:click=move |_| { new_org_modal_hidden.set(false); hidden.set(true); }
-                    >
-                        Create New Organization
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 14" class="w-3.5">
-                            <path fill="currentColor" fill-rule="evenodd" d="M7 0a1 1 0 011 1v5h5a1 1 0 110 2H8v5a1 1 0 11-2 0V8H1a1 1 0 010-2h5V1a1 1 0 011-1z" clip-rule="evenodd" />
-                        </svg>
-                    </a>
-                </li>
-            </ul>
-        </div>
-        </div>
+            <button
+                class="flex items-center justify-between w-full"
+                type="button"
+                on:click=toggle_dropdown
+            >
+                <div class="flex items-center grow basis-0 min-w-0">
+                    <div class="rounded-full flex items-center justify-center flex-shrink-0 w-6 h-6 bg-gradient-to-tr from-sky-500 to-indigo-500 from-30% to-70% mr-2">
+                        <span class="text-white font-semibold text-sm">{ move || login.get().as_deref().flatten().and_then(|l| l.organization.name.chars().next()).unwrap_or('P') }</span>
+                    </div>
+                    <span class="truncate">{ move || login.get().as_deref().flatten().map(|l| l.organization.name.clone()).unwrap_or_else(|| "Personal".to_string()) }</span>
+                </div>
+                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 3a1 1 0 01.707.293l3 3a1 1 0 01-1.414 1.414L10 5.414 7.707 7.707a1 1 0 01-1.414-1.414l3-3A1 1 0 0110 3zm-3.707 9.293a1 1 0 011.414 0L10 14.586l2.293-2.293a1 1 0 011.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>
+            </button>
         </div>
     }
 }

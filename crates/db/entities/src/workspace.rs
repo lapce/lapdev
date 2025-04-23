@@ -38,6 +38,8 @@ pub struct Model {
     pub compose_parent: Option<Uuid>,
     pub updated_at: Option<DateTimeWithTimeZone>,
     pub pinned: bool,
+    pub shared: Option<bool>,
+    pub public: Option<bool>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -1236,6 +1236,8 @@ impl Conductor {
             is_compose: ActiveValue::Set(false),
             compose_parent: ActiveValue::Set(None),
             pinned: ActiveValue::Set(false),
+            shared: ActiveValue::Set(None),
+            public: ActiveValue::Set(None),
         };
         let ws = ws.insert(&txn).await?;
         self.enterprise
@@ -1957,6 +1959,8 @@ impl Conductor {
                     is_compose: ActiveValue::Set(is_compose),
                     compose_parent: ActiveValue::Set(Some(ws.id)),
                     pinned: ActiveValue::Set(false),
+                    shared: ActiveValue::Set(None),
+                    public: ActiveValue::Set(None),
                 }
                 .insert(&self.db.conn)
                 .await?;

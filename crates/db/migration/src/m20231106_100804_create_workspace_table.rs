@@ -57,6 +57,8 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Workspace::IsCompose).boolean().not_null())
                     .col(ColumnDef::new(Workspace::ComposeParent).uuid())
                     .col(ColumnDef::new(Workspace::Pinned).boolean().not_null())
+                    .col(ColumnDef::new(Workspace::Shared).boolean())
+                    .col(ColumnDef::new(Workspace::Public).boolean())
                     .foreign_key(
                         ForeignKey::create()
                             .from_tbl(Workspace::Table)
@@ -173,4 +175,6 @@ pub enum Workspace {
     IsCompose,
     ComposeParent,
     Pinned,
+    Shared,
+    Public,
 }

@@ -67,8 +67,19 @@ pub async fn forward_workspace(
         .get_workspace_by_name(prefix)
         .await
         .map_err(|_| WorkspaceForwardError::WorkspaceNotFound)?;
+
+    if ws.public == Some(true) {
+        return Ok((ws, None));
+    }
+
     if let Some(user) = user {
-        if user.id == ws.user_id {
+        if user.id == ws.user_id
+            || (ws.shared == Some(true)
+                && db
+                    .get_organization_member(user.id, ws.organization_id)
+                    .await
+                    .is_ok())
+        {
             return Ok((ws, None));
         }
     }

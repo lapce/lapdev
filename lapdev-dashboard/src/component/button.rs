@@ -4,6 +4,7 @@ use leptos::prelude::*;
 // use leptos_struct_component::{struct_component, StructComponent};
 // use leptos_style::Style;
 use tailwind_fuse::*;
+use web_sys::MouseEvent;
 
 #[derive(TwClass)]
 #[tw(
@@ -159,6 +160,7 @@ pub fn Button(
     #[prop(into, optional)] variant: Signal<ButtonVariant>,
     #[prop(into, optional)] size: Signal<ButtonSize>,
     #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(into, optional)] onclick: Option<Callback<MouseEvent>>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     let class = Memo::new(move |_| {
@@ -173,6 +175,9 @@ pub fn Button(
         .map(|c| c().into_any())
         .unwrap_or_else(|| ().into_any());
     view! {
-        <button class={move || class.get()}>{ children }</button>
+        <button
+            class={move || class.get()}
+            on:click=move |e| onclick.unwrap().run(e)
+        >{ children }</button>
     }
 }

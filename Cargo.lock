@@ -2713,6 +2713,7 @@ dependencies = [
  "lapdev-common",
  "leptos",
  "leptos_router",
+ "lucide-leptos",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -3128,6 +3129,15 @@ name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
+
+[[package]]
+name = "lucide-leptos"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3db922e7d66e3101f85ae818376945bbf7b78c5d94ff72f95d11daa5205cbe5"
+dependencies = [
+ "leptos",
+]
 
 [[package]]
 name = "manyhow"

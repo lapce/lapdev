@@ -274,7 +274,7 @@ fn OpenWorkspaceView(
                 </svg>
             </button>
             <div
-                class="absolute pt-2 z-10 divide-y divide-gray-100"
+                class="absolute pt-2 z-5 divide-y divide-gray-100"
                 class:hidden=move || dropdown_hidden.get()
                 class=("right-0", move || align_right)
             >
@@ -446,7 +446,7 @@ fn WorkspaceControl(
                     </svg>
                 </button>
                 <div
-                    class="absolute pt-2 z-10 divide-y divide-gray-100"
+                    class="absolute pt-2 z-5 divide-y divide-gray-100"
                     class:hidden=move || dropdown_hidden.get()
                     class=("right-0", move || align_right)
                 >
@@ -865,8 +865,8 @@ pub fn Workspaces() -> impl IntoView {
                 ().into_any()
             }}
 
-            <div class="relative w-full basis-0 grow">
-                <div class="absolute w-full h-full flex flex-col py-4 overflow-y-auto">
+            <div class="w-full basis-0 grow">
+                <div class="w-full h-full flex flex-col py-4 overflow-y-auto">
                     <For
                         each=move || workspaces.get()
                         key=|w|  (w.name.clone(), w.status, w.pinned)

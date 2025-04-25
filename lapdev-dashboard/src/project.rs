@@ -388,7 +388,7 @@ pub fn Projects() -> impl IntoView {
             </div>
 
             <div class="relative w-full basis-0 grow">
-                <div class="absolute w-full h-full flex flex-col py-4 gap-y-8 overflow-y-auto">
+                <div class="w-full h-full flex flex-col py-4 gap-y-8 overflow-y-auto">
                     <For
                         each=move || projects.get()
                         key=|p| p.clone()

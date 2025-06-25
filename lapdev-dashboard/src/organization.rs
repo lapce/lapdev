@@ -25,7 +25,7 @@ use crate::{
         label::Label,
         sidebar::{SidebarButtonSize, SidebarMenu, SidebarMenuButton},
     },
-    modal::{DatetimeModal, DeletionModal, ErrorResponse, Modal, SettingView},
+    modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal, SettingView},
 };
 
 async fn create_org(name: RwSignal<String, LocalStorage>) -> Result<(), ErrorResponse> {
@@ -879,7 +879,7 @@ pub fn OrgMembers() -> impl IntoView {
 async fn delete_org_member(
     org: Signal<Option<Organization>>,
     user_id: Uuid,
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
@@ -898,7 +898,7 @@ async fn delete_org_member(
             });
         return Err(error);
     }
-    delete_modal_hidden.set(true);
+    delete_modal_open.set(false);
     update_counter.update(|c| *c += 1);
     Ok(())
 }
@@ -949,10 +949,10 @@ fn MemberItemView(
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     let update_member_modal_open = RwSignal::new(false);
-    let delete_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_open = RwSignal::new(false);
     let org = get_current_org();
     let delete_action = Action::new_local(move |_| {
-        delete_org_member(org, member.user_id, delete_modal_hidden, update_counter)
+        delete_org_member(org, member.user_id, delete_modal_open, update_counter)
     });
 
     view! {
@@ -979,13 +979,13 @@ fn MemberItemView(
                     <span>{member.role.to_string()}</span>
                 </div>
                 <span class="w-1/3">
-                    <MemberControl delete_modal_hidden update_member_modal_open align_right=true />
+                    <MemberControl delete_modal_open update_member_modal_open align_right=true />
                 </span>
             </span>
         </div>
-        <DeletionModal
+        <DeleteModal
             resource=member.name.clone().unwrap_or_default()
-            modal_hidden=delete_modal_hidden
+            open=delete_modal_open
             delete_action
         />
         <UpdateMemberView
@@ -1050,7 +1050,7 @@ fn UpdateMemberView(
 
 #[component]
 fn MemberControl(
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
     update_member_modal_open: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
@@ -1089,7 +1089,7 @@ fn MemberControl(
     let delete_member = {
         move |_| {
             dropdown_hidden.set(true);
-            delete_modal_hidden.set(false);
+            delete_modal_open.set(true);
         }
     };
 

@@ -24,9 +24,7 @@ use crate::{
         input::Input,
         label::Label,
     },
-    modal::{
-        CreationInput, DatetimeModal, DeleteModal, DeletionModal, ErrorResponse, Modal, SettingView,
-    },
+    modal::{CreationInput, DatetimeModal, DeleteModal, ErrorResponse, Modal, SettingView},
     organization::get_current_org,
     workspace::{repo_img, CreateWorkspaceProjectInfo, NewWorkspaceModal},
 };
@@ -208,7 +206,7 @@ async fn delete_project_prebuild(
     project: String,
     prebuild_id: Uuid,
     prebuilds_counter: RwSignal<i32, LocalStorage>,
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
 
@@ -227,7 +225,7 @@ async fn delete_project_prebuild(
             });
         return Err(error);
     }
-    delete_modal_hidden.set(true);
+    delete_modal_open.set(false);
     prebuilds_counter.update(|c| *c += 1);
 
     Ok(())
@@ -668,7 +666,7 @@ pub fn ProjectBranchControl(
         }
     };
 
-    let delete_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_open = RwSignal::new(false);
     let delete_action = {
         let project = project.clone();
         Action::new_local(move |_| {
@@ -679,7 +677,7 @@ pub fn ProjectBranchControl(
                 project.clone(),
                 id,
                 prebuilds_counter,
-                delete_modal_hidden,
+                delete_modal_open,
             )
         })
     };
@@ -737,14 +735,14 @@ pub fn ProjectBranchControl(
                             <a
                                 href="#"
                                 class="block px-4 py-2 hover:bg-gray-100"
-                                on:click=move |_| delete_modal_hidden.set(false)
+                                on:click=move |_| delete_modal_open.set(true)
                             >Delete Prebuild</a>
                         </li>
                     </ul>
                 </div>
             </div>
         </div>
-        <DeletionModal resource=format!("prebuild for {}", branch.clone()) modal_hidden=delete_modal_hidden delete_action />
+        <DeleteModal resource=format!("prebuild for {}", branch.clone()) open=delete_modal_open delete_action />
     }
 }
 

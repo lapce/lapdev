@@ -14,7 +14,7 @@ use web_sys::FocusEvent;
 
 use crate::{
     component::input::Input,
-    modal::{CreationInput, DatetimeModal, DeletionModal, ErrorResponse, Modal, SettingView},
+    modal::{CreationInput, DatetimeModal, DeleteModal, ErrorResponse, Modal, SettingView},
 };
 
 async fn get_all_workspaces() -> Result<Vec<WorkspaceHost>> {
@@ -320,7 +320,7 @@ async fn update_workspace_host(
 async fn delete_workspace_host(
     id: Uuid,
     update_counter: RwSignal<i32, LocalStorage>,
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::delete(&format!("/api/v1/admin/workspace_hosts/{id}"))
         .send()
@@ -335,7 +335,7 @@ async fn delete_workspace_host(
         return Err(error);
     }
     update_counter.update(|c| *c += 1);
-    delete_modal_hidden.set(true);
+    delete_modal_open.set(false);
     Ok(())
 }
 
@@ -346,11 +346,11 @@ fn WorkspaceHostItem(
 ) -> impl IntoView {
     let cluster_info = get_cluster_info();
     let update_workspace_host_modal_open = RwSignal::new(false);
-    let delete_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_open = RwSignal::new(false);
     let delete_action = {
         let id = host.id;
         Action::new_local(move |_| async move {
-            delete_workspace_host(id, update_counter, delete_modal_hidden).await
+            delete_workspace_host(id, update_counter, delete_modal_open).await
         })
     };
     view! {
@@ -377,18 +377,18 @@ fn WorkspaceHostItem(
                     <p><span class="text-gray-500 mr-1">{"Disk:"}</span>{format!("{}GB/{}GB", host.disk - host.available_disk, host.disk)}</p>
                 </div>
                 <div class="w-1/6">
-                    <WorkspaceHostControl delete_modal_hidden update_workspace_host_modal_open align_right=true />
+                    <WorkspaceHostControl delete_modal_open update_workspace_host_modal_open align_right=true />
                 </div>
             </div>
         </div>
-        <DeletionModal resource=host.host.clone() modal_hidden=delete_modal_hidden delete_action />
+        <DeleteModal resource=host.host.clone() open=delete_modal_open delete_action />
         <UpdateWorkspaceHostModal host=host.clone() update_workspace_host_modal_open update_counter />
     }
 }
 
 #[component]
 fn WorkspaceHostControl(
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
     update_workspace_host_modal_open: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
@@ -427,7 +427,7 @@ fn WorkspaceHostControl(
     let delete_workspace_host = {
         move |_| {
             dropdown_hidden.set(true);
-            delete_modal_hidden.set(false);
+            delete_modal_open.set(true);
         }
     };
 
@@ -1038,11 +1038,11 @@ fn MachineTypeItem(
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     let update_machine_type_modal_open = RwSignal::new(false);
-    let delete_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_open = RwSignal::new(false);
     let delete_action = {
         let id = machine_type.id;
         Action::new_local(move |_| async move {
-            delete_machine_type(id, update_counter, delete_modal_hidden).await
+            delete_machine_type(id, update_counter, delete_modal_open).await
         })
     };
     view! {
@@ -1060,11 +1060,13 @@ fn MachineTypeItem(
                     <p><span class="text-gray-500 mr-1">{"Disk:"}</span>{format!("{}GB", machine_type.disk)}</p>
                 </div>
                 <div class="w-1/6">
-                    <MachineTypeControl delete_modal_hidden update_machine_type_modal_open align_right=true />
+                    <MachineTypeControl delete_modal_open update_machine_type_modal_open align_right=true />
                 </div>
             </div>
         </div>
-        <DeletionModal resource=machine_type.name.clone() modal_hidden=delete_modal_hidden delete_action />
+        <DeleteModal
+        resource=machine_type.name.clone()
+        open=delete_modal_open delete_action />
         <UpdateMachineTypeModal machine_type=machine_type.clone() update_machine_type_modal_open update_counter />
     }
 }
@@ -1165,7 +1167,7 @@ pub fn UpdateMachineTypeModal(
 
 #[component]
 fn MachineTypeControl(
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
     update_machine_type_modal_open: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
@@ -1204,7 +1206,7 @@ fn MachineTypeControl(
     let delete_workspace_host = {
         move |_| {
             dropdown_hidden.set(true);
-            delete_modal_hidden.set(false);
+            delete_modal_open.set(true);
         }
     };
 
@@ -1363,7 +1365,7 @@ async fn update_machine_type(
 async fn delete_machine_type(
     id: Uuid,
     update_counter: RwSignal<i32, LocalStorage>,
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::delete(&format!("/api/v1/admin/machine_types/{id}"))
         .send()
@@ -1378,7 +1380,7 @@ async fn delete_machine_type(
         return Err(error);
     }
     update_counter.update(|c| *c += 1);
-    delete_modal_hidden.set(true);
+    delete_modal_open.set(false);
     Ok(())
 }
 

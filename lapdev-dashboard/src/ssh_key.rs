@@ -5,12 +5,12 @@ use leptos::prelude::*;
 
 use crate::{
     component::button::{Button, ButtonVariant},
-    modal::{CreationInput, DeletionModal, ErrorResponse, Modal},
+    modal::{CreationInput, DeleteModal, ErrorResponse, Modal},
 };
 
 async fn delete_ssh_key(
     id: String,
-    delete_modal_hidden: RwSignal<bool, LocalStorage>,
+    delete_modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::delete(&format!("/api/v1/account/ssh_keys/{id}"))
@@ -25,7 +25,7 @@ async fn delete_ssh_key(
             });
         return Err(error);
     }
-    delete_modal_hidden.set(true);
+    delete_modal_open.set(false);
     update_counter.update(|c| *c += 1);
     Ok(())
 }
@@ -34,9 +34,9 @@ async fn delete_ssh_key(
 pub fn SshKeyItem(key: SshKey, update_counter: RwSignal<i32, LocalStorage>) -> impl IntoView {
     let id = key.id;
     let name = key.name.clone();
-    let delete_modal_hidden = RwSignal::new_local(true);
+    let delete_modal_open = RwSignal::new(false);
     let delete_action = Action::new_local(move |_| {
-        delete_ssh_key(id.to_string(), delete_modal_hidden, update_counter)
+        delete_ssh_key(id.to_string(), delete_modal_open, update_counter)
     });
 
     view! {
@@ -46,10 +46,12 @@ pub fn SshKeyItem(key: SshKey, update_counter: RwSignal<i32, LocalStorage>) -> i
             <div class="w-1/6 truncate p-2">{key.created_at.to_rfc2822()}</div>
             <div class="w-1/6 flex justify-end items-center">
                 <Button variant=ButtonVariant::Destructive
-                    on:click=move |_| delete_modal_hidden.set(false)
+                    on:click=move |_| delete_modal_open.set(true)
                 >Delete</Button>
             </div>
-            <DeletionModal resource=name  modal_hidden=delete_modal_hidden delete_action=delete_action />
+            <DeleteModal
+            resource=name
+            open=delete_modal_open delete_action />
         </div>
     }
 }

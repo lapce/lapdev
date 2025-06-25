@@ -140,10 +140,10 @@ pub fn NavUserControl(user_control_hidden: RwSignal<bool, LocalStorage>) -> impl
       >
         <div class="py-3 px-4">
           <span class="block text-sm font-semibold text-gray-900">
-            { move || login.get().as_deref().flatten().and_then(|l| l.name.clone()).unwrap_or("".to_string()) }
+            { move || login.get().flatten().and_then(|l| l.name.clone()).unwrap_or("".to_string()) }
           </span>
           <span class="block text-sm text-gray-900 truncate">
-            { move || login.get().as_deref().flatten().and_then(|l| l.email.clone()).unwrap_or("".to_string()) }
+            { move || login.get().flatten().and_then(|l| l.email.clone()).unwrap_or("".to_string()) }
           </span>
         </div>
         <ul

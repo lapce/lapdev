@@ -1,15 +1,16 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use gloo_net::http::Request;
-use lapdev_common::{OrgQuota, OrgQuotaValue, QuotaKind, UpdateOrgQuota};
+use lapdev_common::{console::Organization, OrgQuota, OrgQuotaValue, QuotaKind, UpdateOrgQuota};
 use leptos::prelude::*;
 
 use crate::{
-    modal::{CreationInput, CreationModal, ErrorResponse},
+    component::button::Button,
+    modal::{CreationInput, ErrorResponse, Modal},
     organization::get_current_org,
 };
 
-async fn get_org_quota() -> Result<OrgQuota, ErrorResponse> {
-    let org = get_current_org()?;
+async fn get_org_quota(org: Signal<Option<Organization>>) -> Result<OrgQuota, ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
 
     let resp = Request::get(&format!("/api/v1/organizations/{}/quota", org.id))
         .send()
@@ -33,10 +34,11 @@ async fn get_org_quota() -> Result<OrgQuota, ErrorResponse> {
 #[component]
 pub fn QuotaView() -> impl IntoView {
     let error = RwSignal::new_local(None);
+    let org = get_current_org();
 
     let get_action = Action::new_local(move |()| async move {
         error.set(None);
-        let result = get_org_quota().await;
+        let result = get_org_quota(org).await;
 
         if let Err(e) = &result {
             error.set(Some(e.error.clone()));
@@ -87,11 +89,12 @@ pub fn QuotaView() -> impl IntoView {
 }
 
 async fn update_org_quota(
+    org: Signal<Option<Organization>>,
     kind: QuotaKind,
     default_user_quota: String,
     org_quota: String,
-    get_action: Action<(), Result<OrgQuota, ErrorResponse>, LocalStorage>,
-    update_modal_hidden: RwSignal<bool, LocalStorage>,
+    get_action: Action<(), Result<OrgQuota, ErrorResponse>>,
+    update_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let default_user_quota: usize = match default_user_quota.parse() {
         Ok(n) => n,
@@ -110,7 +113,7 @@ async fn update_org_quota(
         }
     };
 
-    let org = get_current_org()?;
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
 
     let resp = Request::put(&format!("/api/v1/organizations/{}/quota", org.id))
         .json(&UpdateOrgQuota {
@@ -130,7 +133,7 @@ async fn update_org_quota(
         return Err(error);
     }
 
-    update_modal_hidden.set(true);
+    update_modal_open.set(false);
     get_action.dispatch(());
 
     Ok(())
@@ -141,7 +144,7 @@ fn QuotaItemView(
     i: usize,
     kind: QuotaKind,
     value: OrgQuotaValue,
-    get_action: Action<(), Result<OrgQuota, ErrorResponse>, LocalStorage>,
+    get_action: Action<(), Result<OrgQuota, ErrorResponse>>,
 ) -> impl IntoView {
     let percentage = if value.org_quota == 0 {
         0
@@ -155,23 +158,20 @@ fn QuotaItemView(
     } else {
         "bg-green-600"
     };
-    let update_modal_hidden = RwSignal::new_local(true);
+    let update_modal_open = RwSignal::new(false);
 
     let org_quota = RwSignal::new_local(value.org_quota.to_string());
     let default_user_quota = RwSignal::new_local(value.default_user_quota.to_string());
-
-    let update_modal_body = view! {
-        <CreationInput label="Default User Quota".to_string() value=default_user_quota placeholder="quota number, 0 means disabled".to_string() />
-        <CreationInput label="Organization Quota".to_string() value=org_quota placeholder="quota number, 0 means disabled".to_string() />
-    };
+    let org = get_current_org();
 
     let update_action = Action::new_local(move |()| async move {
         update_org_quota(
+            org,
             kind,
             default_user_quota.get_untracked(),
             org_quota.get_untracked(),
             get_action,
-            update_modal_hidden,
+            update_modal_open,
         )
         .await
     });
@@ -186,8 +186,7 @@ fn QuotaItemView(
 
     view! {
         <div
-            class="flex items-center w-full px-4 py-2"
-            class=("border-t", move || i > 0)
+            class=format!("flex items-center w-full px-4 py-2 {}", if i > 0 {"border-t"} else {""})
         >
             <div class="w-1/4 flex flex-col">
                 <p>{kind.to_string()}</p>
@@ -196,7 +195,7 @@ fn QuotaItemView(
                 <p><span class="text-gray-500 mr-1">{"Default User Quota:"}</span>{value.default_user_quota}</p>
                 <p><span class="text-gray-500 mr-1">{"Organization Quota:"}</span>{value.org_quota}</p>
             </div>
-            <div class="w-1/2 flex flex-row">
+            <div class="w-1/2 flex flex-row items-center">
                 <div class="w-1/3 flex flex-col">
                     <p>{current_usage}</p>
                 </div>
@@ -207,15 +206,23 @@ fn QuotaItemView(
                         </div>
                         <span class="ml-2">{format!("{percentage}%")}</span>
                     </div>
-                    <button
-                        class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
-                        on:click=move |_| update_modal_hidden.set(false)
+                    <Button
+                        on:click=move |_| update_modal_open.set(true)
                     >
                         Update
-                    </button>
+                    </Button>
                 </div>
             </div>
         </div>
-        <CreationModal title=format!("Update {kind} Quota") modal_hidden=update_modal_hidden action=update_action body=update_modal_body update_text=None updating_text=None width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title=format!("Update {kind} Quota")
+            open=update_modal_open
+            action=update_action
+            action_text="Update"
+            action_progress_text="Updating"
+        >
+            <CreationInput label="Default User Quota".to_string() value=default_user_quota placeholder="quota number, 0 means disabled".to_string() />
+            <CreationInput label="Organization Quota".to_string() value=org_quota placeholder="quota number, 0 means disabled".to_string() />
+        </Modal>
     }
 }

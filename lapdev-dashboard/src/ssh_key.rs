@@ -3,7 +3,10 @@ use gloo_net::http::Request;
 use lapdev_common::{NewSshKey, SshKey};
 use leptos::prelude::*;
 
-use crate::modal::{CreationInput, CreationModal, DeletionModal, ErrorResponse};
+use crate::{
+    component::button::{Button, ButtonVariant},
+    modal::{CreationInput, DeletionModal, ErrorResponse, Modal},
+};
 
 async fn delete_ssh_key(
     id: String,
@@ -38,13 +41,13 @@ pub fn SshKeyItem(key: SshKey, update_counter: RwSignal<i32, LocalStorage>) -> i
 
     view! {
         <div class="flex flex-row items-center border rounded-xl px-4 py-2">
-            <span class="w-1/6">{key.name}</span>
-            <span class="w-3/6 truncate p-2">{key.key}</span>
-            <span class="w-1/6 truncate p-2">{key.created_at.to_rfc2822()}</span>
+            <div class="w-1/6">{key.name}</div>
+            <div class="w-3/6 truncate p-2">{key.key}</div>
+            <div class="w-1/6 truncate p-2">{key.created_at.to_rfc2822()}</div>
             <div class="w-1/6 flex justify-end items-center">
-                <button class="px-4 py-2 text-sm text-white rounded-lg bg-red-700 hover:bg-red-800 focus:ring-4 focus:ring-red-300 focus:outline-none"
+                <Button variant=ButtonVariant::Destructive
                     on:click=move |_| delete_modal_hidden.set(false)
-                >Delete</button>
+                >Delete</Button>
             </div>
             <DeletionModal resource=name  modal_hidden=delete_modal_hidden delete_action=delete_action />
         </div>
@@ -67,8 +70,8 @@ pub fn SshKeys() -> impl IntoView {
     });
 
     view! {
-        <section class="w-full h-full flex flex-col">
-            <div class="border-b pb-4">
+        <section class="w-full flex flex-col">
+            <div class="border-b pb-4 w-full">
                 <div class="flex items-end justify-between">
                     <div class="min-w-0 mr-4">
                         <h5 class="mr-3 text-2xl font-semibold">
@@ -79,18 +82,16 @@ pub fn SshKeys() -> impl IntoView {
                     <NewSshKey update_counter />
                 </div>
             </div>
-            <div class="relative w-full basis-0 grow">
-                <div class="absolute w-full h-full flex flex-col py-4 space-y-4 overflow-y-auto">
-                    <For
-                        each=move || ssh_keys.get().as_deref().cloned().unwrap_or_default()
-                        key=|key|  key.id
-                        children=move |key| {
-                            view! {
-                                <SshKeyItem key update_counter />
-                            }
+            <div class="flex flex-col py-4 space-y-4">
+                <For
+                    each=move || ssh_keys.get().unwrap_or_default()
+                    key=|key|  key.id
+                    children=move |key| {
+                        view! {
+                            <SshKeyItem key update_counter />
                         }
-                    />
-                </div>
+                    }
+                />
             </div>
         </section>
     }
@@ -99,7 +100,7 @@ pub fn SshKeys() -> impl IntoView {
 async fn create_ssh_key(
     name: RwSignal<String, LocalStorage>,
     key: RwSignal<String, LocalStorage>,
-    modal_hidden: RwSignal<bool, LocalStorage>,
+    modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::post("/api/v1/account/ssh_keys")
@@ -119,7 +120,7 @@ async fn create_ssh_key(
         return Err(error);
     }
 
-    modal_hidden.set(true);
+    modal_open.set(false);
     update_counter.update(|c| *c += 1);
     name.set(String::new());
     key.set(String::new());
@@ -132,31 +133,30 @@ pub fn NewSshKey(update_counter: RwSignal<i32, LocalStorage>) -> impl IntoView {
     let name = RwSignal::new_local(String::new());
     let key = RwSignal::new_local(String::new());
 
-    let modal_hidden = RwSignal::new_local(true);
-    let action =
-        Action::new_local(move |_| create_ssh_key(name, key, modal_hidden, update_counter));
-
-    let body = view! {
-        <CreationInput label="Name".to_string() value=name placeholder="".to_string() />
-        <div>
-            <label class="block mb-2 text-sm font-medium text-gray-900">SSH Public Key</label>
-            <textarea
-                rows=4
-                prop:value={move || key.get()}
-                on:input=move |ev| { key.set(event_target_value(&ev)); }
-                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
-            />
-        </div>
-    };
+    let modal_open = RwSignal::new(false);
+    let action = Action::new_local(move |_| create_ssh_key(name, key, modal_open, update_counter));
 
     view! {
-        <button
-            type="button"
-            class="flex items-center justify-center whitespace-nowrap px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
-            on:click=move |_| modal_hidden.set(false)
+        <Button
+            on:click=move |_| modal_open.set(true)
         >
             New SSH Key
-        </button>
-        <CreationModal title="New SSH Key".to_string() modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=Box::new(|| false) />
+        </Button>
+        <Modal
+            title="New SSH Key"
+            open=modal_open
+            action
+        >
+            <CreationInput label="Name".to_string() value=name placeholder="".to_string() />
+            <div>
+                <label class="block mb-2 text-sm font-medium text-gray-900">SSH Public Key</label>
+                <textarea
+                    rows=4
+                    prop:value={move || key.get()}
+                    on:input=move |ev| { key.set(event_target_value(&ev)); }
+                    class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                />
+            </div>
+        </Modal>
     }
 }

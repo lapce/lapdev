@@ -12,14 +12,14 @@ use crate::{
 
 #[derive(Clone, Copy)]
 pub struct NavExpanded {
-    pub orgnization: RwSignal<bool, LocalStorage>,
-    pub account: RwSignal<bool, LocalStorage>,
+    pub orgnization: RwSignal<bool>,
+    pub account: RwSignal<bool>,
 }
 
 #[component]
 pub fn TopNav() -> impl IntoView {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
-    let config = use_context::<RwSignal<AppConfig, LocalStorage>>().unwrap();
+    let config = use_context::<AppConfig>().unwrap();
     let user_control_hidden = RwSignal::new_local(true);
     let toggle_user_control = move |_| {
         if user_control_hidden.get_untracked() {
@@ -72,12 +72,12 @@ pub fn TopNav() -> impl IntoView {
                 class="font-medium flex flex-row space-x-8 mr-8"
             >
                 <li
-                    class:hidden=move || !config.get().show_lapdev_website
+                    class:hidden=move || !config.show_lapdev_website.get()
                 >
                     <a href="https://lap.dev/">Home</a>
                 </li>
                 <li
-                    class:hidden=move || !config.get().show_lapdev_website
+                    class:hidden=move || !config.show_lapdev_website.get()
                 >
                     <a href="https://docs.lap.dev/">Docs</a>
                 </li>
@@ -107,7 +107,7 @@ pub fn TopNav() -> impl IntoView {
                 <span class="sr-only">Open user menu</span>
                 <img
                 class="w-8 h-8 rounded-full"
-                src=move ||  { login.get().as_deref().flatten().and_then(|l| l.avatar_url.clone()).unwrap_or("https://flowbite.s3.amazonaws.com/blocks/marketing-ui/avatars/michael-gough.png".to_string()) }
+                src=move ||  { login.get().flatten().and_then(|l| l.avatar_url.clone()).unwrap_or("https://flowbite.s3.amazonaws.com/blocks/marketing-ui/avatars/michael-gough.png".to_string()) }
                 alt="user photo"
                 />
             </button>
@@ -311,11 +311,11 @@ pub fn SideNavOrg() -> impl IntoView {
 }
 
 #[component]
-pub fn SideNav(new_org_modal_hidden: RwSignal<bool, LocalStorage>) -> impl IntoView {
+pub fn SideNav() -> impl IntoView {
     view! {
         <aside class="top-0 left-0 z-40 w-64 h-full transition-transform -translate-x-full sm:translate-x-0" aria-label="Sidenav">
             <div class="overflow-y-auto py-5 px-3 h-full bg-white border-r border-gray-200">
-                <OrgSelector new_org_modal_hidden />
+                <OrgSelector />
                 <SideNavMain />
                 <ul class="pt-5 mt-5 space-y-2 border-t border-gray-200">
                     <SideNavAccount />

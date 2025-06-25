@@ -4,6 +4,11 @@ use tailwind_fuse::*;
 
 use crate::component::button::{Button, ButtonSize, ButtonVariant};
 
+#[derive(Clone)]
+pub struct SidebarData {
+    pub open: RwSignal<bool>,
+}
+
 #[component]
 pub fn SidebarProvider(
     #[prop(into, optional)] class: MaybeProp<String>,
@@ -37,9 +42,16 @@ pub fn Sidebar(
         .map(|c| c().into_any())
         .unwrap_or_else(|| ().into_any());
 
+    let data: SidebarData = expect_context();
+
     view! {
         <div
             class="group peer text-sidebar-foreground hidden md:block"
+            data-state=move || match data.open.get() {
+                true => "expanded",
+                false => "collapsed",
+            }
+            data-collapsible=move || if !data.open.get() { "offcanvas" } else { "" }
             data-slot="sidebar"
             data-side="left"
             data-variant="sidebar"
@@ -96,6 +108,26 @@ pub fn SidebarHeader(
 }
 
 #[component]
+pub fn SidebarFooter(
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(optional)] children: Option<Children>,
+) -> impl IntoView {
+    let children = children
+        .map(|c| c().into_any())
+        .unwrap_or_else(|| ().into_any());
+
+    view! {
+        <div
+            class=move || tw_merge!("flex flex-col gap-2 p-2", class.get())
+            data-slot="sidebar-footer"
+            data-sidebar="footer"
+        >
+            {children}
+        </div>
+    }
+}
+
+#[component]
 pub fn SidebarContent(
     #[prop(into, optional)] class: MaybeProp<String>,
     #[prop(optional)] children: Option<Children>,
@@ -129,6 +161,29 @@ pub fn SidebarGroup(
             class=move || tw_merge!("relative flex w-full min-w-0 flex-col p-2", class.get())
             data-slot="sidebar-group"
             data-sidebar="group"
+        >
+            {children}
+        </div>
+    }
+}
+
+#[component]
+pub fn SidebarGroupContent(
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(optional)] children: Option<Children>,
+) -> impl IntoView {
+    let children = children
+        .map(|c| c().into_any())
+        .unwrap_or_else(|| ().into_any());
+
+    view! {
+        <div
+            class=move || tw_merge!(
+                "w-full text-sm",
+                class.get()
+            )
+            data-slot="sidebar-group-content"
+            data-sidebar="group-content"
         >
             {children}
         </div>
@@ -205,6 +260,84 @@ pub fn SidebarMenuItem(
     }
 }
 
+#[component]
+pub fn SidebarMenuSub(
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(optional)] children: Option<Children>,
+) -> impl IntoView {
+    let children = children
+        .map(|c| c().into_any())
+        .unwrap_or_else(|| ().into_any());
+
+    view! {
+        <ul
+            class=move || tw_merge!(
+                "border-sidebar-border mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l px-2.5 py-0.5",
+                "group-data-[collapsible=icon]:hidden",
+                class.get()
+            )
+            data-slot="sidebar-menu-sub"
+            data-sidebar="menu-sub"
+        >
+            {children}
+        </ul>
+    }
+}
+
+#[component]
+pub fn SidebarMenuSubItem(
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(optional)] children: Option<Children>,
+) -> impl IntoView {
+    let children = children
+        .map(|c| c().into_any())
+        .unwrap_or_else(|| ().into_any());
+
+    view! {
+        <li
+            class=move || tw_merge!(
+                "group/menu-sub-item relative",
+                class.get()
+            )
+            data-slot="sidebar-menu-sub-item"
+            data-sidebar="menu-sub-item"
+        >
+            {children}
+        </li>
+    }
+}
+
+#[component]
+pub fn SidebarMenuSubButton(
+    #[prop(into, optional)] size: Signal<SidebarSubButtonSize>,
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(into, optional)] href: MaybeProp<String>,
+    #[prop(optional)] children: Option<Children>,
+) -> impl IntoView {
+    let class = Memo::new(move |_| {
+        tw_merge!(
+            "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground [&>svg]:text-sidebar-accent-foreground flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 outline-hidden focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
+            "data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground",
+            "group-data-[collapsible=icon]:hidden",
+            size.get(),
+            class.get()
+        )
+    });
+
+    let children = children
+        .map(|c| c().into_any())
+        .unwrap_or_else(|| ().into_any());
+
+    view! {
+        <a
+            class={move || class.get()}
+            href=move || href.get().unwrap_or_default()
+        >
+            { children }
+        </a>
+    }
+}
+
 #[derive(TwClass)]
 #[tw(
     class = "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-hidden ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0"
@@ -235,6 +368,14 @@ pub enum SidebarButtonSize {
     Sm,
     #[tw(class = "h-12 text-sm group-data-[collapsible=icon]:p-0!")]
     Lg,
+}
+
+#[derive(PartialEq, TwVariant)]
+pub enum SidebarSubButtonSize {
+    #[tw(default, class = "text-sm")]
+    Md,
+    #[tw(class = "text-xs")]
+    Sm,
 }
 
 #[component]

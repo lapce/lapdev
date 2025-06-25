@@ -1,21 +1,24 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, TimeZone};
 use gloo_net::http::Request;
-use lapdev_common::{AuditLogRecord, AuditLogResult};
+use lapdev_common::{console::Organization, AuditLogRecord, AuditLogResult};
 use leptos::prelude::*;
 
 use crate::{
+    component::button::Button,
     datepicker::Datepicker,
     modal::{DatetimeModal, ErrorResponse},
     organization::get_current_org,
 };
 
 async fn get_audit_logs(
+    org: Signal<Option<Organization>>,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
     page_size: String,
     page: u64,
 ) -> Result<AuditLogResult, ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let start: DateTime<FixedOffset> = start
         .and_then(|t| {
             Local
@@ -40,8 +43,6 @@ async fn get_audit_logs(
                 .unwrap()
         })
         .into();
-
-    let org = get_current_org()?;
 
     let page_size = page_size.parse::<u64>().unwrap_or(10);
 
@@ -76,12 +77,14 @@ pub fn AuditLogView() -> impl IntoView {
     let to_date = RwSignal::new(Some(Local::now().date_naive()));
     let page_size = RwSignal::new(String::new());
     let page = RwSignal::new(0);
+    let org = get_current_org();
 
     let error = RwSignal::new(None);
 
     let get_action = Action::new_local(move |()| async move {
         error.set(None);
         let result = get_audit_logs(
+            org,
             from_date.get_untracked(),
             to_date.get_untracked(),
             page_size.get_untracked(),
@@ -148,13 +151,12 @@ pub fn AuditLogView() -> impl IntoView {
                 <Datepicker value=from_date />
                 <span class="mx-2">to</span>
                 <Datepicker value=to_date />
-                <button
-                    type="button"
-                    class="ml-4 px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
+                <Button
+                    class="ml-4"
                     on:click=move |_| {get_action.dispatch(());}
                 >
                     Search
-                </button>
+                </Button>
             </div>
             { move || if let Some(error) = error.get() {
                 view! {

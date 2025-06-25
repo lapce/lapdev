@@ -4,7 +4,7 @@ use gloo_net::http::Request;
 use lapdev_common::{EnterpriseLicense, NewLicense, NewLicenseKey};
 use leptos::prelude::*;
 
-use crate::modal::{CreationInput, CreationModal, ErrorResponse};
+use crate::modal::{CreationInput, ErrorResponse, Modal};
 
 async fn get_license() -> Result<EnterpriseLicense> {
     let resp = Request::get("/api/v1/admin/license").send().await?;
@@ -73,7 +73,7 @@ pub fn LicenseView() -> impl IntoView {
 
 async fn update_license(
     secret: String,
-    modal_hidden: RwSignal<bool, LocalStorage>,
+    modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::put("/api/v1/admin/license")
@@ -91,7 +91,7 @@ async fn update_license(
         return Err(error);
     }
 
-    modal_hidden.set(true);
+    modal_open.set(false);
     update_counter.update(|c| *c += 1);
     let _ = location().reload();
 
@@ -100,22 +100,27 @@ async fn update_license(
 
 #[component]
 pub fn UpdateLicenseView(update_counter: RwSignal<i32, LocalStorage>) -> impl IntoView {
-    let modal_hidden = RwSignal::new_local(true);
+    let modal_open = RwSignal::new(false);
     let secret = RwSignal::new_local(String::new());
-    let body = view! {
-        <CreationInput label="New License Key".to_string() value=secret placeholder="".to_string() />
-    };
     let action =
-        Action::new_local(move |_| update_license(secret.get(), modal_hidden, update_counter));
+        Action::new_local(move |_| update_license(secret.get(), modal_open, update_counter));
     view! {
         <button
             type="button"
             class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
-            on:click=move |_| modal_hidden.set(false)
+            on:click=move |_| modal_open.set(true)
         >
             Update Enterprise License
         </button>
-        <CreationModal title="Update Enterprise License".to_string() modal_hidden body action update_text=None updating_text=None  width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title="Update Enterprise License"
+            open=modal_open
+            action
+            action_text="Update"
+            action_progress_text="Updating"
+        >
+            <CreationInput label="New License Key".to_string() value=secret placeholder="".to_string() />
+        </Modal>
     }
 }
 
@@ -172,13 +177,7 @@ pub fn SignLicenseView() -> impl IntoView {
     let expires_at = RwSignal::new_local(String::new());
     let users = RwSignal::new_local(String::new());
     let hostname = RwSignal::new_local(String::new());
-    let modal_hidden = RwSignal::new_local(true);
-    let body = view! {
-        <CreationInput label="Signing Secret".to_string() value=secret placeholder="".to_string() />
-        <CreationInput label="Expires".to_string() value=expires_at placeholder="".to_string() />
-        <CreationInput label="Users".to_string() value=users placeholder="".to_string() />
-        <CreationInput label="Hostname".to_string() value=hostname placeholder="".to_string() />
-    };
+    let modal_open = RwSignal::new(false);
     let action = Action::new_local(move |_| {
         sign_new_license(
             secret.get_untracked(),
@@ -196,10 +195,19 @@ pub fn SignLicenseView() -> impl IntoView {
         <button
             type="button"
             class="flex items-center justify-center px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
-            on:click=move |_| modal_hidden.set(false)
+            on:click=move |_| modal_open.set(true)
         >
             Sign New License
         </button>
-        <CreationModal title="Sign Enterprise License".to_string() modal_hidden body action update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title="Sign Enterprise License"
+            open=modal_open
+            action
+        >
+            <CreationInput label="Signing Secret".to_string() value=secret placeholder="".to_string() />
+            <CreationInput label="Expires".to_string() value=expires_at placeholder="".to_string() />
+            <CreationInput label="Users".to_string() value=users placeholder="".to_string() />
+            <CreationInput label="Hostname".to_string() value=hostname placeholder="".to_string() />
+        </Modal>
     }
 }

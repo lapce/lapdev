@@ -12,8 +12,9 @@ use uuid::Uuid;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
-use crate::modal::{
-    CreationInput, CreationModal, DatetimeModal, DeletionModal, ErrorResponse, SettingView,
+use crate::{
+    component::input::Input,
+    modal::{CreationInput, DatetimeModal, DeletionModal, ErrorResponse, Modal, SettingView},
 };
 
 async fn get_all_workspaces() -> Result<Vec<WorkspaceHost>> {
@@ -28,7 +29,7 @@ pub fn get_cluster_info() -> Signal<Option<ClusterInfo>, LocalStorage> {
 
 #[component]
 pub fn WorkspaceHostView() -> impl IntoView {
-    let new_workspace_host_modal_hidden = RwSignal::new_local(true);
+    let new_workspace_host_modal_open = RwSignal::new(false);
     let update_counter = RwSignal::new_local(0);
     let hosts = LocalResource::new(move || async move { get_all_workspaces().await });
     Effect::new(move |_| {
@@ -77,7 +78,7 @@ pub fn WorkspaceHostView() -> impl IntoView {
                 <button
                     type="button"
                     class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300"
-                    on:click=move |_| new_workspace_host_modal_hidden.set(false)
+                    on:click=move |_| new_workspace_host_modal_open.set(true)
                 >
                     New Workspace Host
                 </button>
@@ -95,13 +96,13 @@ pub fn WorkspaceHostView() -> impl IntoView {
                 }
             />
         </div>
-        <NewWorkspaceHostView new_workspace_host_modal_hidden update_counter />
+        <NewWorkspaceHostView new_workspace_host_modal_open update_counter />
     }
 }
 
 #[component]
 pub fn NewWorkspaceHostView(
-    new_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    new_workspace_host_modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     let cluster_info = get_cluster_info();
@@ -120,34 +121,37 @@ pub fn NewWorkspaceHostView(
             memory.get_untracked(),
             disk.get_untracked(),
             update_counter,
-            new_workspace_host_modal_hidden,
+            new_workspace_host_modal_open,
         )
     });
-    let body = view! {
-        <CreationInput label="The host".to_string() value=host placeholder="IP or hostname".to_string() />
-        <div
-            class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-        >
-            <CreationInput label="Region of the workspace host".to_string() value=region placeholder="".to_string() />
-        </div>
-        <div
-            class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-        >
-            <CreationInput label="Zone of the workspace host".to_string() value=zone placeholder="".to_string() />
-        </div>
-        <CreationInput label="CPU Cores".to_string() value=cpu placeholder="number of CPU cores".to_string() />
-        <CreationInput label="Memory (GB)".to_string() value=memory placeholder="memory in GB".to_string() />
-        <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
-    };
     view! {
-        <CreationModal title="Create New Workspace Host".to_string() modal_hidden=new_workspace_host_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string()) width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title="Create New Workspace Host"
+            open=new_workspace_host_modal_open
+            action
+        >
+            <CreationInput label="The host".to_string() value=host placeholder="IP or hostname".to_string() />
+            <div
+                class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            >
+                <CreationInput label="Region of the workspace host".to_string() value=region placeholder="".to_string() />
+            </div>
+            <div
+                class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            >
+                <CreationInput label="Zone of the workspace host".to_string() value=zone placeholder="".to_string() />
+            </div>
+            <CreationInput label="CPU Cores".to_string() value=cpu placeholder="number of CPU cores".to_string() />
+            <CreationInput label="Memory (GB)".to_string() value=memory placeholder="memory in GB".to_string() />
+            <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
+        </Modal>
     }
 }
 
 #[component]
 pub fn UpdateWorkspaceHostModal(
     host: WorkspaceHost,
-    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_workspace_host_modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     let cluster_info = get_cluster_info();
@@ -165,26 +169,31 @@ pub fn UpdateWorkspaceHostModal(
             memory.get_untracked(),
             disk.get_untracked(),
             update_counter,
-            update_workspace_host_modal_hidden,
+            update_workspace_host_modal_open,
         )
     });
-    let body = view! {
-        <div
-            class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-        >
-            <CreationInput label="Region of the workspace host".to_string() value=region placeholder="".to_string() />
-        </div>
-        <div
-            class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-        >
-            <CreationInput label="Zone of the workspace host".to_string() value=zone placeholder="".to_string() />
-        </div>
-        <CreationInput label="CPU Cores".to_string() value=cpu placeholder="number of CPU cores".to_string() />
-        <CreationInput label="Memory (GB)".to_string() value=memory placeholder="memory in GB".to_string() />
-        <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
-    };
     view! {
-        <CreationModal title="Update Workspace Host".to_string() modal_hidden=update_workspace_host_modal_hidden action body update_text=None updating_text=None  width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title="Update Workspace Host"
+            open=update_workspace_host_modal_open
+            action
+            action_text="Update"
+            action_progress_text="Updating"
+        >
+            <div
+                class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            >
+                <CreationInput label="Region of the workspace host".to_string() value=region placeholder="".to_string() />
+            </div>
+            <div
+                class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            >
+                <CreationInput label="Zone of the workspace host".to_string() value=zone placeholder="".to_string() />
+            </div>
+            <CreationInput label="CPU Cores".to_string() value=cpu placeholder="number of CPU cores".to_string() />
+            <CreationInput label="Memory (GB)".to_string() value=memory placeholder="memory in GB".to_string() />
+            <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
+        </Modal>
     }
 }
 
@@ -197,7 +206,7 @@ async fn create_workspace_host(
     memory: String,
     disk: String,
     update_counter: RwSignal<i32, LocalStorage>,
-    new_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    new_workspace_host_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let cpu: usize = match cpu.parse() {
         Ok(n) => n,
@@ -244,7 +253,7 @@ async fn create_workspace_host(
         return Err(error);
     }
     update_counter.update(|c| *c += 1);
-    new_workspace_host_modal_hidden.set(true);
+    new_workspace_host_modal_open.set(false);
     Ok(())
 }
 
@@ -257,7 +266,7 @@ async fn update_workspace_host(
     memory: String,
     disk: String,
     update_counter: RwSignal<i32, LocalStorage>,
-    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_workspace_host_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let cpu: usize = match cpu.parse() {
         Ok(n) => n,
@@ -304,7 +313,7 @@ async fn update_workspace_host(
         return Err(error);
     }
     update_counter.update(|c| *c += 1);
-    update_workspace_host_modal_hidden.set(true);
+    update_workspace_host_modal_open.set(false);
     Ok(())
 }
 
@@ -336,7 +345,7 @@ fn WorkspaceHostItem(
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     let cluster_info = get_cluster_info();
-    let update_workspace_host_modal_hidden = RwSignal::new_local(true);
+    let update_workspace_host_modal_open = RwSignal::new(false);
     let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = {
         let id = host.id;
@@ -368,19 +377,19 @@ fn WorkspaceHostItem(
                     <p><span class="text-gray-500 mr-1">{"Disk:"}</span>{format!("{}GB/{}GB", host.disk - host.available_disk, host.disk)}</p>
                 </div>
                 <div class="w-1/6">
-                    <WorkspaceHostControl delete_modal_hidden update_workspace_host_modal_hidden align_right=true />
+                    <WorkspaceHostControl delete_modal_hidden update_workspace_host_modal_open align_right=true />
                 </div>
             </div>
         </div>
         <DeletionModal resource=host.host.clone() modal_hidden=delete_modal_hidden delete_action />
-        <UpdateWorkspaceHostModal host=host.clone() update_workspace_host_modal_hidden update_counter />
+        <UpdateWorkspaceHostModal host=host.clone() update_workspace_host_modal_open update_counter />
     }
 }
 
 #[component]
 fn WorkspaceHostControl(
     delete_modal_hidden: RwSignal<bool, LocalStorage>,
-    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_workspace_host_modal_open: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
     let dropdown_hidden = RwSignal::new_local(true);
@@ -448,7 +457,7 @@ fn WorkspaceHostControl(
                             class="block px-4 py-2 hover:bg-gray-100"
                             on:click=move |_| {
                                 dropdown_hidden.set(true);
-                                update_workspace_host_modal_hidden.set(false);
+                                update_workspace_host_modal_open.set(true);
                             }
                         >
                             Update
@@ -553,12 +562,12 @@ fn CpuOvercommitSetting() -> impl IntoView {
     });
     let body = view! {
         <div class="mt-2">
-            <input
+            <Input
                 prop:value={move || value.get()}
                 on:input=move |ev| {
                     value.set(event_target_value(&ev));
                 }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                class="max-w-96"
             />
         </div>
     };
@@ -638,10 +647,10 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
                 </svg>
                 <span>GitHub Client Id</span>
             </div>
-            <input
+            <Input
                 prop:value={move || github_client_id.get()}
                 on:input=move |ev| { github_client_id.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                class="max-w-96"
             />
         </div>
         <div class="mt-2">
@@ -651,10 +660,10 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
                 </svg>
                 <span>GitHub Client Secret</span>
             </div>
-            <input
+            <Input
                 prop:value={move || github_client_secret.get()}
                 on:input=move |ev| { github_client_secret.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                class="max-w-96"
             />
         </div>
         <div class="mt-2">
@@ -662,10 +671,10 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
                 <svg class="w-4 h-4 me-2" viewBox="0 0 25 24" xmlns="http://www.w3.org/2000/svg"><path d="M24.507 9.5l-.034-.09L21.082.562a.896.896 0 00-1.694.091l-2.29 7.01H7.825L5.535.653a.898.898 0 00-1.694-.09L.451 9.411.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 2.56 1.935 1.554 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#E24329"/><path d="M24.507 9.5l-.034-.09a11.44 11.44 0 00-4.56 2.051l-7.447 5.632 4.742 3.584 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#FC6D26"/><path d="M7.707 20.677l2.56 1.935 1.555 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935-4.743-3.584-4.755 3.584z" fill="#FCA326"/><path d="M5.01 11.461a11.43 11.43 0 00-4.56-2.05L.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 4.745-3.584-7.444-5.632z" fill="#FC6D26"/></svg>
                 <span>GitLab Client Id</span>
             </div>
-            <input
+            <Input
                 prop:value={move || gitlab_client_id.get()}
                 on:input=move |ev| { gitlab_client_id.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                class="max-w-96"
             />
         </div>
         <div class="mt-2">
@@ -673,10 +682,10 @@ pub fn OauthSettings(reload: bool) -> impl IntoView {
                 <svg class="w-4 h-4 me-2" viewBox="0 0 25 24" xmlns="http://www.w3.org/2000/svg"><path d="M24.507 9.5l-.034-.09L21.082.562a.896.896 0 00-1.694.091l-2.29 7.01H7.825L5.535.653a.898.898 0 00-1.694-.09L.451 9.411.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 2.56 1.935 1.554 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#E24329"/><path d="M24.507 9.5l-.034-.09a11.44 11.44 0 00-4.56 2.051l-7.447 5.632 4.742 3.584 5.197-3.89.014-.01A6.297 6.297 0 0024.507 9.5z" fill="#FC6D26"/><path d="M7.707 20.677l2.56 1.935 1.555 1.176a1.051 1.051 0 001.268 0l1.555-1.176 2.56-1.935-4.743-3.584-4.755 3.584z" fill="#FCA326"/><path d="M5.01 11.461a11.43 11.43 0 00-4.56-2.05L.416 9.5a6.297 6.297 0 002.09 7.278l.012.01.03.022 5.16 3.867 4.745-3.584-7.444-5.632z" fill="#FC6D26"/></svg>
                 <span>GitLab Client Secret</span>
             </div>
-            <input
+            <Input
                 prop:value={move || gitlab_client_secret.get()}
                 on:input=move |ev| { gitlab_client_secret.set(event_target_value(&ev)) }
-                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                class="max-w-96"
             />
         </div>
     };
@@ -740,9 +749,7 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
     });
 
     Effect::new(move |_| {
-        let hostnames = hostnames
-            .with(|h| h.as_deref().cloned())
-            .unwrap_or_default();
+        let hostnames = hostnames.get().unwrap_or_default();
         let mut hostnames: Vec<(String, RwSignal<String, LocalStorage>)> = hostnames
             .into_iter()
             .map(|(key, value)| (key, RwSignal::new_local(value)))
@@ -765,10 +772,10 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
                                         <div class="flex flex-row items-center mb-2 text-sm font-medium text-gray-900">
                                             <span>{format!("Region: {region}")}</span>
                                         </div>
-                                        <input
+                                        <Input
                                             prop:value={move || hostname.get()}
                                             on:input=move |ev| { hostname.set(event_target_value(&ev)) }
-                                            class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                                            class="max-w-96"
                                         />
                                     </div>
                                 }
@@ -778,14 +785,14 @@ pub fn ClusterHostnameSetting() -> impl IntoView {
                 } else {
                     view! {
                         <div class="mt-2">
-                            <input
+                            <Input
                                 prop:value={move || set_hostnames.get().iter().find(|(k,_)| k.is_empty()).map(|(_,v)| v.get()).unwrap_or_default()}
                                 on:input=move |ev| {
                                     if let Some(h) = set_hostnames.get().iter().find(|(k,_)| k.is_empty()).map(|(_,v)| *v) {
                                         h.set(event_target_value(&ev))
                                     }
                                 }
-                                class="max-w-96 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
+                                class="max-w-96"
                             />
                         </div>
                     }.into_any()
@@ -868,8 +875,7 @@ pub fn ClusterCertsSetting() -> impl IntoView {
     });
 
     Effect::new(move |_| {
-        let current_certs =
-            current_certs.with(|certs| certs.as_deref().cloned().unwrap_or_default());
+        let current_certs = current_certs.get().unwrap_or_default();
         certs.update(|certs| {
             *certs = current_certs
                 .into_iter()
@@ -960,7 +966,7 @@ async fn all_machine_types() -> Result<Vec<MachineType>> {
 
 #[component]
 pub fn MachineTypeView() -> impl IntoView {
-    let new_machine_type_modal_hidden = RwSignal::new_local(true);
+    let new_machine_type_modal_open = RwSignal::new(false);
     let update_counter = RwSignal::new_local(0);
     let machine_types =
         LocalResource::new(|| async move { all_machine_types().await.unwrap_or_default() });
@@ -971,8 +977,7 @@ pub fn MachineTypeView() -> impl IntoView {
     let machine_type_filter = RwSignal::new_local(String::new());
     let machine_types = Signal::derive(move || {
         let machine_type_filter = machine_type_filter.get();
-        let mut machine_types = machine_types
-            .with(|machine_types| machine_types.as_deref().cloned().unwrap_or_default());
+        let mut machine_types = machine_types.get().unwrap_or_default();
         machine_types.retain(|h| h.name.contains(&machine_type_filter));
         machine_types
     });
@@ -1005,7 +1010,7 @@ pub fn MachineTypeView() -> impl IntoView {
                 <button
                     type="button"
                     class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 focus:outline-none"
-                    on:click=move |_| new_machine_type_modal_hidden.set(false)
+                    on:click=move |_| new_machine_type_modal_open.set(true)
                 >
                     New Machine Type
                 </button>
@@ -1023,7 +1028,7 @@ pub fn MachineTypeView() -> impl IntoView {
                 }
             />
         </div>
-        <NewMachineTypeView new_machine_type_modal_hidden update_counter />
+        <NewMachineTypeView new_machine_type_modal_open update_counter />
     }
 }
 
@@ -1032,7 +1037,7 @@ fn MachineTypeItem(
     machine_type: MachineType,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let update_machine_type_modal_hidden = RwSignal::new_local(true);
+    let update_machine_type_modal_open = RwSignal::new(false);
     let delete_modal_hidden = RwSignal::new_local(true);
     let delete_action = {
         let id = machine_type.id;
@@ -1055,18 +1060,18 @@ fn MachineTypeItem(
                     <p><span class="text-gray-500 mr-1">{"Disk:"}</span>{format!("{}GB", machine_type.disk)}</p>
                 </div>
                 <div class="w-1/6">
-                    <MachineTypeControl delete_modal_hidden update_machine_type_modal_hidden align_right=true />
+                    <MachineTypeControl delete_modal_hidden update_machine_type_modal_open align_right=true />
                 </div>
             </div>
         </div>
         <DeletionModal resource=machine_type.name.clone() modal_hidden=delete_modal_hidden delete_action />
-        <UpdateMachineTypeModal machine_type=machine_type.clone() update_machine_type_modal_hidden update_counter />
+        <UpdateMachineTypeModal machine_type=machine_type.clone() update_machine_type_modal_open update_counter />
     }
 }
 
 #[component]
 pub fn NewMachineTypeView(
-    new_machine_type_modal_hidden: RwSignal<bool, LocalStorage>,
+    new_machine_type_modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     let name = RwSignal::new_local(String::new());
@@ -1085,44 +1090,47 @@ pub fn NewMachineTypeView(
             disk.get_untracked(),
             cost.get_untracked(),
             update_counter,
-            new_machine_type_modal_hidden,
+            new_machine_type_modal_open,
         )
     });
-    let body = view! {
-        <CreationInput label="Name".to_string() value=name placeholder="name of the machine type".to_string() />
-        <div
-            class="flex items-start mb-6"
-            class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-        >
-            <div class="flex items-center h-5">
-            <input
-                type="checkbox"
-                value=""
-                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
-                prop:checked=move || shared_cpu.get()
-                on:change=move |e| shared_cpu.set(event_target_checked(&e))
-            />
-            </div>
-            <label for="remember" class="ml-2 text-sm font-medium text-gray-900">Shared cpu cores</label>
-        </div>
-        <CreationInput label="CPU Cores".to_string() value=cpu placeholder="number of CPU cores".to_string() />
-        <CreationInput label="Memory (GB)".to_string() value=memory placeholder="memory in GB".to_string() />
-        <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
-        <div
-            class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-        >
-            <CreationInput label="Cost per second".to_string() value=cost placeholder="cost per second of the machine type".to_string() />
-        </div>
-    };
     view! {
-        <CreationModal title="Create New Machine Type".to_string() modal_hidden=new_machine_type_modal_hidden action body update_text=Some("Create".to_string()) updating_text=Some("Creating".to_string())  width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title="Create New Machine Type"
+            open=new_machine_type_modal_open
+            action
+        >
+            <CreationInput label="Name".to_string() value=name placeholder="name of the machine type".to_string() />
+            <div
+                class="flex items-start mb-6"
+                class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            >
+                <div class="flex items-center h-5">
+                <input
+                    type="checkbox"
+                    value=""
+                    class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
+                    prop:checked=move || shared_cpu.get()
+                    on:change=move |e| shared_cpu.set(event_target_checked(&e))
+                />
+                </div>
+                <label for="remember" class="ml-2 text-sm font-medium text-gray-900">Shared cpu cores</label>
+            </div>
+            <CreationInput label="CPU Cores".to_string() value=cpu placeholder="number of CPU cores".to_string() />
+            <CreationInput label="Memory (GB)".to_string() value=memory placeholder="memory in GB".to_string() />
+            <CreationInput label="Disk (GB)".to_string() value=disk placeholder="disk in GB".to_string() />
+            <div
+                class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            >
+                <CreationInput label="Cost per second".to_string() value=cost placeholder="cost per second of the machine type".to_string() />
+            </div>
+        </Modal>
     }
 }
 
 #[component]
 pub fn UpdateMachineTypeModal(
     machine_type: MachineType,
-    update_machine_type_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_machine_type_modal_open: RwSignal<bool>,
     update_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
     let name = RwSignal::new_local(machine_type.name.clone());
@@ -1134,26 +1142,31 @@ pub fn UpdateMachineTypeModal(
             name.get_untracked(),
             cost.get_untracked(),
             update_counter,
-            update_machine_type_modal_hidden,
+            update_machine_type_modal_open,
         )
     });
-    let body = view! {
-        <CreationInput label="Name".to_string() value=name placeholder="name of the machine type".to_string() />
-        <div
-            class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-        >
-            <CreationInput label="Cost per second".to_string() value=cost placeholder="cost per second of the machine type".to_string() />
-        </div>
-    };
     view! {
-        <CreationModal title="Update Workspace Host".to_string() modal_hidden=update_machine_type_modal_hidden action body update_text=None updating_text=None  width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title="Update Workspace Host"
+            open=update_machine_type_modal_open
+            action
+            action_text="Update"
+            action_progress_text="Updating"
+        >
+            <CreationInput label="Name".to_string() value=name placeholder="name of the machine type".to_string() />
+            <div
+                class:hidden=move || !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            >
+                <CreationInput label="Cost per second".to_string() value=cost placeholder="cost per second of the machine type".to_string() />
+            </div>
+        </Modal>
     }
 }
 
 #[component]
 fn MachineTypeControl(
     delete_modal_hidden: RwSignal<bool, LocalStorage>,
-    update_machine_type_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_machine_type_modal_open: RwSignal<bool>,
     align_right: bool,
 ) -> impl IntoView {
     let dropdown_hidden = RwSignal::new_local(true);
@@ -1221,7 +1234,7 @@ fn MachineTypeControl(
                             class="block px-4 py-2 hover:bg-gray-100"
                             on:click=move |_| {
                                 dropdown_hidden.set(true);
-                                update_machine_type_modal_hidden.set(false);
+                                update_machine_type_modal_open.set(true);
                             }
                         >
                             Update
@@ -1251,7 +1264,7 @@ async fn create_machine_type(
     disk: String,
     cost: String,
     update_counter: RwSignal<i32, LocalStorage>,
-    new_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    new_workspace_host_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let cpu: usize = match cpu.parse() {
         Ok(n) => n,
@@ -1306,7 +1319,7 @@ async fn create_machine_type(
         return Err(error);
     }
     update_counter.update(|c| *c += 1);
-    new_workspace_host_modal_hidden.set(true);
+    new_workspace_host_modal_open.set(false);
     Ok(())
 }
 
@@ -1315,7 +1328,7 @@ async fn update_machine_type(
     name: String,
     cost: String,
     update_counter: RwSignal<i32, LocalStorage>,
-    update_workspace_host_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_workspace_host_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let cost: usize = match cost.parse() {
         Ok(n) => n,
@@ -1343,7 +1356,7 @@ async fn update_machine_type(
         return Err(error);
     }
     update_counter.update(|c| *c += 1);
-    update_workspace_host_modal_hidden.set(true);
+    update_workspace_host_modal_open.set(false);
     Ok(())
 }
 
@@ -1407,8 +1420,8 @@ async fn get_cluster_users(
 async fn update_cluster_user(
     id: Uuid,
     cluster_admin: bool,
-    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>, LocalStorage>,
-    update_modal_hidden: RwSignal<bool, LocalStorage>,
+    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>>,
+    update_modal_open: RwSignal<bool>,
 ) -> Result<(), ErrorResponse> {
     let resp = Request::put(&format!("/api/v1/admin/users/{id}"))
         .json(&UpdateClusterUser { cluster_admin })?
@@ -1424,7 +1437,7 @@ async fn update_cluster_user(
         return Err(error);
     }
     search_action.dispatch(());
-    update_modal_hidden.set(true);
+    update_modal_open.set(false);
     Ok(())
 }
 
@@ -1611,41 +1624,18 @@ pub fn ClusterUsersView() -> impl IntoView {
 fn ClusterUserItemView(
     i: usize,
     user: ClusterUser,
-    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>, LocalStorage>,
+    search_action: Action<(), Result<ClusterUserResult, ErrorResponse>>,
 ) -> impl IntoView {
     let user_id = user.id;
-    let update_modal_hidden = RwSignal::new_local(true);
+    let update_modal_open = RwSignal::new(false);
     let is_cluster_admin = RwSignal::new_local(user.cluster_admin);
-
-    let update_modal_body = view! {
-        <div
-            class="flex items-start"
-        >
-            <div class="flex items-center h-5">
-            <input
-                id={user_id.to_string()}
-                type="checkbox"
-                value=""
-                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
-                prop:checked=move || is_cluster_admin.get()
-                on:change=move |e| is_cluster_admin.set(event_target_checked(&e))
-            />
-            </div>
-            <label
-                for={move || user_id.to_string()}
-                class="ml-2 text-sm font-medium text-gray-900"
-            >
-                Is Cluster Admin
-            </label>
-        </div>
-    };
 
     let update_action = Action::new_local(move |()| async move {
         update_cluster_user(
             user_id,
             is_cluster_admin.get_untracked(),
             search_action,
-            update_modal_hidden,
+            update_modal_open,
         )
         .await
     });
@@ -1693,12 +1683,39 @@ fn ClusterUserItemView(
             <td class="px-4 py-2">
                 <button
                     class="px-4 py-2 text-sm font-medium text-white rounded-lg bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 focus:outline-none"
-                    on:click=move |_| update_modal_hidden.set(false)
+                    on:click=move |_| update_modal_open.set(true)
                 >
                     Update
                 </button>
             </td>
         </tr>
-        <CreationModal title=format!("Update Cluster User") modal_hidden=update_modal_hidden action=update_action body=update_modal_body update_text=None updating_text=None  width_class=None create_button_hidden=Box::new(|| false) />
+        <Modal
+            title="Update Cluster User"
+            open=update_modal_open
+            action=update_action
+            action_text="Update"
+            action_progress_text="Updating"
+        >
+            <div
+                class="flex items-start"
+            >
+                <div class="flex items-center h-5">
+                <input
+                    id={user_id.to_string()}
+                    type="checkbox"
+                    value=""
+                    class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
+                    prop:checked=move || is_cluster_admin.get()
+                    on:change=move |e| is_cluster_admin.set(event_target_checked(&e))
+                />
+                </div>
+                <label
+                    for={move || user_id.to_string()}
+                    class="ml-2 text-sm font-medium text-gray-900"
+                >
+                    Is Cluster Admin
+                </label>
+            </div>
+        </Modal>
     }
 }

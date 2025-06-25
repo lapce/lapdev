@@ -4,11 +4,11 @@ use anyhow::Result;
 use gloo_net::http::Request;
 use lapdev_common::{console::NewSessionResponse, AuthProvider, GitProvider};
 use leptos::prelude::*;
-use leptos_router::hooks::use_location;
+use leptos_router::{hooks::use_location, location::Location};
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::FocusEvent;
 
-use crate::modal::{CreationModal, ErrorResponse};
+use crate::modal::{ErrorResponse, Modal};
 
 async fn get_git_providers() -> Result<Vec<GitProvider>> {
     let resp = Request::get("/api/v1/account/git_providers").send().await?;
@@ -61,8 +61,7 @@ async fn connect_oauth(
     Ok(())
 }
 
-async fn disconnect_oauth(provider: AuthProvider) -> Result<(), ErrorResponse> {
-    let location = use_location();
+async fn disconnect_oauth(location: Location, provider: AuthProvider) -> Result<(), ErrorResponse> {
     let next = format!(
         "{}{}{}",
         window().location().origin().unwrap_or_default(),
@@ -99,8 +98,7 @@ pub fn GitProviderView() -> impl IntoView {
         git_provider_counter.track();
         git_providers.refetch();
     });
-    let git_providers =
-        Signal::derive(move || git_providers.get().map(|v| v.take()).unwrap_or_default());
+    let git_providers = Signal::derive(move || git_providers.get().unwrap_or_default());
 
     view! {
         <section class="w-full h-full flex flex-col">
@@ -146,7 +144,7 @@ fn GitProviderControl(
     provider: AuthProvider,
     error: RwSignal<Option<String>, LocalStorage>,
     git_provider_counter: RwSignal<i32, LocalStorage>,
-    update_scope_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_scope_modal_open: RwSignal<bool>,
 ) -> impl IntoView {
     let dropdown_hidden = RwSignal::new_local(true);
     let toggle_dropdown = move |_| {
@@ -168,13 +166,17 @@ fn GitProviderControl(
         connect_action.dispatch(());
     };
 
-    let disconnect_action = Action::new_local(move |_| async move {
-        if let Err(e) = disconnect_oauth(provider).await {
-            error.set(Some(e.error));
-        } else {
-            git_provider_counter.update(|c| {
-                *c += 1;
-            });
+    let location = use_location();
+    let disconnect_action = Action::new_local(move |_| {
+        let location = location.clone();
+        async move {
+            if let Err(e) = disconnect_oauth(location.clone(), provider).await {
+                error.set(Some(e.error));
+            } else {
+                git_provider_counter.update(|c| {
+                    *c += 1;
+                });
+            }
         }
     });
     let disconnect = move |_| {
@@ -251,7 +253,7 @@ fn GitProviderControl(
                             class="block px-4 py-2 hover:bg-gray-100 text-red-700"
                             on:click=move |_| {
                                 dropdown_hidden.set(true);
-                                update_scope_modal_hidden.set(false);
+                                update_scope_modal_open.set(true);
                             }
                         >
                             Update Permission
@@ -270,7 +272,7 @@ fn GitProviderItem(
     error: RwSignal<Option<String>, LocalStorage>,
     git_provider_counter: RwSignal<i32, LocalStorage>,
 ) -> impl IntoView {
-    let update_scope_modal_hidden = RwSignal::new_local(true);
+    let update_scope_modal_open = RwSignal::new(false);
 
     let icon = match provider.auth_provider {
         AuthProvider::Github => view! {
@@ -329,7 +331,7 @@ fn GitProviderItem(
                         provider=provider.auth_provider
                         error
                         git_provider_counter
-                        update_scope_modal_hidden
+                        update_scope_modal_open
                     />
                 </div>
             </div>
@@ -337,7 +339,7 @@ fn GitProviderItem(
         <UpdateScopeModal
             provider=provider.auth_provider
             read_repo=provider.read_repo.unwrap_or(false)
-            update_scope_modal_hidden
+            update_scope_modal_open
         />
     }
 }
@@ -346,43 +348,38 @@ fn GitProviderItem(
 pub fn UpdateScopeModal(
     provider: AuthProvider,
     read_repo: bool,
-    update_scope_modal_hidden: RwSignal<bool, LocalStorage>,
+    update_scope_modal_open: RwSignal<bool>,
 ) -> impl IntoView {
     let read_repo = RwSignal::new_local(read_repo);
-
-    let body = view! {
-        <div class="block mb-2 text-sm font-medium text-gray-900">
-            Turn this option on if you want to open private repo in Lapdev
-        </div>
-        <div
-            class="flex items-start"
-        >
-            <div class="flex items-center h-5">
-            <input
-                id={format!("read_repo_{provider}")}
-                type="checkbox"
-                value=""
-                class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
-                prop:checked=move || read_repo.get()
-                on:change=move |e| read_repo.set(event_target_checked(&e))
-            />
-            </div>
-            <label for={format!("read_repo_{provider}")} class="ml-2 text-sm font-medium text-gray-900">Can read private repo</label>
-        </div>
-    };
 
     let action =
         Action::new_local(move |_| connect_oauth(provider, Some(read_repo.get_untracked())));
     view! {
-        <CreationModal
-            title="Update Permission".to_string()
-            modal_hidden=update_scope_modal_hidden
+        <Modal
+            title="Update Permission"
+            open=update_scope_modal_open
             action
-            body
-            update_text=None
-            updating_text=None
-            create_button_hidden=Box::new(|| false)
-            width_class=None
-        />
+            action_text="Update"
+            action_progress_text="Updating"
+        >
+            <div class="block mb-2 text-sm font-medium text-gray-900">
+                Turn this option on if you want to open private repo in Lapdev
+            </div>
+            <div
+                class="flex items-start"
+            >
+                <div class="flex items-center h-5">
+                <input
+                    id={format!("read_repo_{provider}")}
+                    type="checkbox"
+                    value=""
+                    class="w-4 h-4 border border-gray-300 rounded bg-gray-50 focus:ring-3 focus:ring-blue-300"
+                    prop:checked=move || read_repo.get()
+                    on:change=move |e| read_repo.set(event_target_checked(&e))
+                />
+                </div>
+                <label for={format!("read_repo_{provider}")} class="ml-2 text-sm font-medium text-gray-900">Can read private repo</label>
+            </div>
+        </Modal>
     }
 }

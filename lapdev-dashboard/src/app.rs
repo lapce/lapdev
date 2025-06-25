@@ -11,6 +11,7 @@ use crate::{
     account::{get_login, AccountSettings, JoinView, Login},
     audit_log::AuditLogView,
     cluster::{ClusterSettings, ClusterUsersView, MachineTypeView, WorkspaceHostView},
+    component::sidebar::SidebarData,
     git_provider::GitProviderView,
     license::{LicenseView, SignLicenseView},
     nav::{AdminSideNav, NavExpanded, SideNav, TopNav},
@@ -24,7 +25,8 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppConfig {
-    pub show_lapdev_website: bool,
+    pub show_lapdev_website: RwSignal<bool>,
+    pub current_page: RwSignal<String>,
 }
 
 #[component]
@@ -52,26 +54,30 @@ pub fn set_context() {
     provide_context(login);
 
     let cluster_info = LocalResource::new(|| async move { get_cluster_info().await.ok() });
-    let cluster_info =
-        Signal::derive_local(move || cluster_info.get().as_deref().cloned().flatten());
+    let cluster_info = Signal::derive_local(move || cluster_info.get().flatten());
     provide_context(cluster_info);
 
     let current_org = Signal::derive_local(move || {
-        let login = login.get().as_deref().cloned().flatten();
+        let login = login.get().flatten();
         login.map(|u| u.organization)
     });
     provide_context(current_org);
 
     let pathname = window().location().pathname().unwrap_or_default();
     let nav_expanded = NavExpanded {
-        orgnization: RwSignal::new_local(pathname.starts_with("/organization")),
-        account: RwSignal::new_local(pathname.starts_with("/account")),
+        orgnization: RwSignal::new(pathname.starts_with("/organization")),
+        account: RwSignal::new(pathname.starts_with("/account")),
     };
     provide_context(nav_expanded);
 
-    provide_context(RwSignal::new_local(AppConfig {
-        show_lapdev_website: false,
-    }));
+    provide_context(AppConfig {
+        show_lapdev_website: RwSignal::new(false),
+        current_page: RwSignal::new(String::new()),
+    });
+
+    provide_context(SidebarData {
+        open: RwSignal::new(true),
+    });
 }
 
 #[component]
@@ -115,13 +121,13 @@ where
     let new_org_modal_hidden = RwSignal::new_local(true);
     view! {
         <Show
-            when=move || { login.get().as_deref().flatten().is_some() }
+            when=move || { login.get().flatten().is_some() }
             fallback=move || view! { <Login /> }
         >
             <div class="flex flex-col h-screen">
                 <TopNav />
                 <div class="container mx-auto flex flex-row basis-0 grow">
-                    <SideNav new_org_modal_hidden />
+                    <SideNav />
                     <div class="p-8 w-[calc(100%-16rem)] h-full">
                         {element}
                     </div>
@@ -140,7 +146,7 @@ where
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     view! {
         <Show
-            when=move || { login.get().as_deref().flatten().is_some() }
+            when=move || { login.get().flatten().is_some() }
             fallback=move || view! { <Login /> }
         >
             <div class="flex flex-col h-screen">

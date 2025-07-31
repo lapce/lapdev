@@ -1,0 +1,62 @@
+[package]
+name = "lapdev-ws"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+parking_lot = "0.12.3"
+crossbeam-channel = "0.5.13"
+notify = "6.1.1"
+git2.workspace = true
+toml.workspace = true
+clap.workspace = true
+uuid.workspace = true
+procfs.workspace = true
+chrono.workspace = true
+json5.workspace = true
+serde_yaml.workspace = true
+docker-compose-types.workspace = true
+tempfile.workspace = true
+async-compression.workspace = true
+zstd.workspace = true
+tar.workspace = true
+tarpc.workspace = true
+anyhow.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lapdev-common.workspace = true
+lapdev-rpc.workspace = true
+lapdev-guest-agent.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+fs4 = { version = "0.13", features = ["tokio"] }
+hyperlocal = { git = "https://github.com/softprops/hyperlocal", rev = "70c0b8e4007b96ed392be7561b21add719d1dbce" }
+
+[package.metadata.deb]
+depends = "$auto, passwd"
+maintainer-scripts = "../pkg/deb/"
+systemd-units = { unit-name = "lapdev-ws", enable = false }
+assets = [
+    ["target/release/lapdev-ws", "/usr/bin/lapdev-ws", "755"],
+    ["../pkg/common/lapdev-ws.service.preset", "/lib/systemd/system-preset/50-lapdev-ws.preset", "644"],
+]
+
+[package.metadata.generate-rpm]
+post_install_script = "pkg/rpm/lapdev-ws.postinst"
+post_uninstall_script = "pkg/rpm/lapdev-ws.postuninst"
+assets = [
+    { source = "target/release/lapdev-ws", dest = "/usr/bin/lapdev-ws", mode = "755" },
+    { source = "pkg/deb/lapdev-ws.service", dest = "/lib/systemd/system/lapdev-ws.service", mode = "644" },
+    { source = "pkg/common/lapdev-ws.service.preset", dest = "/lib/systemd/system-preset/50-lapdev-ws.preset", mode = "644" },
+]

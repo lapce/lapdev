@@ -1,0 +1,18 @@
+[package]
+name = "lapdev-hrpc-proc-macro"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
+[dev-dependencies]
+lapdev-hrpc = { path = "../hrpc" }
+
+

@@ -1,0 +1,23 @@
+[package]
+name = "lapdev-enterprise"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license = "Lapdev Enterprise License"
+
+[dependencies]
+chrono.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+serde.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+base64.workspace = true
+anyhow.workspace = true
+pasetors.workspace = true
+serde_json.workspace = true
+sea-orm.workspace = true
+lapdev-db.workspace = true
+lapdev-db-entities.workspace = true
+lapdev-rpc.workspace = true
+lapdev-common.workspace = true

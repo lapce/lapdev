@@ -1,0 +1,24 @@
+[package]
+name = "lapdev-kube-manager"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+yup-oauth2 = "12.1.0"
+pem = "3.0.5"
+base64.workspace = true
+serde.workspace = true
+reqwest.workspace = true
+tarpc.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-tungstenite.workspace = true
+lapdev-rpc.workspace = true
+lapdev-common.workspace = true

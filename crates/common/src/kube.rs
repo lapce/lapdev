@@ -1,0 +1,97 @@
+use serde::{Deserialize, Serialize};
+use strum_macros::EnumString;
+use uuid::Uuid;
+
+pub const KUBE_CLUSTER_TOKEN_HEADER: &str = "X-Cluster-Token";
+pub const KUBE_CLUSTER_TOKEN_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_TOKEN";
+pub const KUBE_CLUSTER_URL_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_URL";
+pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/ws";
+
+#[derive(
+    Serialize, Deserialize, Debug, EnumString, strum_macros::Display, Clone, Eq, PartialEq, Hash,
+)]
+pub enum K8sProviderKind {
+    GCP,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct K8sProvider {
+    pub id: Uuid,
+    pub name: String,
+    pub provider: K8sProviderKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeClusterInfo {
+    pub cluster_id: Option<String>,
+    pub cluster_name: Option<String>,
+    pub cluster_version: String,
+    pub node_count: u32,
+    pub available_cpu: String,
+    pub available_memory: String,
+    pub provider: Option<String>,
+    pub region: Option<String>,
+    pub status: KubeClusterStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+pub enum KubeClusterStatus {
+    Ready,
+    #[strum(to_string = "Not Ready")]
+    NotReady,
+    Provisioning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeWorkload {
+    pub name: String,
+    pub namespace: String,
+    pub kind: KubeWorkloadKind,
+    pub replicas: Option<i32>,
+    pub ready_replicas: Option<i32>,
+    pub status: KubeWorkloadStatus,
+    pub created_at: Option<String>,
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, strum_macros::Display)]
+pub enum KubeWorkloadKind {
+    Deployment,
+    StatefulSet,
+    DaemonSet,
+    ReplicaSet,
+    Pod,
+    Job,
+    CronJob,
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, strum_macros::EnumString, strum_macros::Display,
+)]
+pub enum KubeWorkloadStatus {
+    Running,
+    Pending,
+    Failed,
+    Succeeded,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeWorkloadList {
+    pub workloads: Vec<KubeWorkload>,
+    pub next_cursor: Option<String>,
+    pub has_next: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginationParams {
+    pub cursor: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateKubeClusterResponse {
+    pub cluster_id: Uuid,
+    pub token: String,
+}

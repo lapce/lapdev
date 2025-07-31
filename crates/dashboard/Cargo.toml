@@ -1,0 +1,25 @@
+[package]
+name = "lapdev-dashboard"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+gloo-net = "0.6.0"
+wasm-bindgen = "0.2.100"
+web-sys = { version = "0.3.77", features = ["Navigator", "Clipboard"] }
+urlencoding = "2.1.3"
+lucide-leptos = "1.2.0"
+uuid = { version = "1.16.0", features = ["v4", "serde", "js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+tailwind_fuse = { version = "0.3.2", features = ["variant"] }
+leptos = { version = "0.8.2", features = ["csr"] }
+leptos_router = { version = "0.8.2" }
+rust_decimal.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+lapdev-common.workspace = true
+lapdev-api-hrpc.workspace = true

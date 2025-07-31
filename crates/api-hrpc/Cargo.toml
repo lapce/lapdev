@@ -1,0 +1,13 @@
+[package]
+name = "lapdev-api-hrpc" 
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+uuid.workspace = true
+serde.workspace = true
+lapdev-common.workspace = true
+lapdev-hrpc.workspace = true

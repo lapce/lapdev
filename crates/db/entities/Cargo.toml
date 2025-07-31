@@ -1,0 +1,12 @@
+[package]
+name = "lapdev-db-entities"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio.workspace = true
+sea-orm.workspace = true
+sea-orm-cli.workspace = true

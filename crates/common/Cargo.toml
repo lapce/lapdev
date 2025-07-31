@@ -1,0 +1,18 @@
+[package]
+name = "lapdev-common"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+base16ct.workspace = true
+sha2.workspace = true
+secrecy.workspace = true
+rand.workspace = true
+strum.workspace = true
+strum_macros.workspace = true

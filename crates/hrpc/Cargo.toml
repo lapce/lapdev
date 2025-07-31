@@ -1,0 +1,14 @@
+[package]
+name = "lapdev-hrpc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+gloo-net = "0.6.0"
+http = "1.2"
+reqwest.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lapdev-hrpc-proc-macro.workspace = true

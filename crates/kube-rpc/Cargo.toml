@@ -1,0 +1,8 @@
+[package]
+name = "lapdev-kube-rpc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+tarpc.workspace = true

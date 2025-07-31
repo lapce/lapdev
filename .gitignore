@@ -2,3 +2,4 @@
 /lapdev-dashboard/dist
 .lapce
 .env
+.git-credentials

@@ -15,15 +15,19 @@ description.workspace = true
 
 [[bin]]
 name = "lapdev-ws"
-path = "lapdev-ws/src/main.rs"
+path = "crates/ws/src/main.rs"
 
 [[bin]]
 name = "lapdev-guest-agent"
-path = "lapdev-guest-agent/src/main.rs"
+path = "crates/guest-agent/src/main.rs"
+
+[[bin]]
+name = "lapdev-kube-manager"
+path = "crates/kube-manager/src/main.rs"
 
 [[bin]]
 name = "lapdev-db"
-path = "lapdev-db/src/main.rs"
+path = "crates/db/src/main.rs"
 
 [dependencies]
 tokio.workspace = true
@@ -32,26 +36,34 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
-sea-orm-migration.workspace = true
+sea-orm-cli.workspace = true
 lapdev-db.workspace = true
 lapdev-ws.workspace = true
 lapdev-guest-agent.workspace = true
 lapdev-kube.workspace = true
+lapdev-kube-manager.workspace = true
 
 [workspace]
 members = [
-  "lapdev-api",
-  "lapdev-conductor",
-  "lapdev-ws",
-  "lapdev-rpc",
-  "lapdev-kube",
-  "lapdev-dashboard",
-  "lapdev-db",
-  "lapdev-common",
-  "lapdev-enterprise",
-  "lapdev-proxy-ssh",
-  "lapdev-proxy-http",
-  "lapdev-guest-agent",
+  "crates/api",
+  "crates/api-hrpc",
+  "crates/conductor",
+  "crates/ws",
+  "crates/rpc",
+  "crates/kube",
+  "crates/kube-rpc",
+  "crates/kube-manager",
+  "crates/dashboard",
+  "crates/db",
+  "crates/db/migration",
+  "crates/db/entities",
+  "crates/common",
+  "crates/enterprise",
+  "crates/proxy-ssh",
+  "crates/proxy-http",
+  "crates/guest-agent",
+  "crates/hrpc",
+  "crates/hrpc-proc-macro",
 ]
 
 [workspace.dependencies]
@@ -65,7 +77,7 @@ git2 = { version = "0.18.2", features = ["vendored-libgit2", "vendored-openssl"]
 anyhow = "1.0.66"
 thiserror = "1.0.58"
 async-trait = "0.1.74"
-serde = "1.0.219"
+serde = { version = "1.0.219", features = ["derive"] }
 pasetors = "0.6.8"
 futures = "0.3.31"
 futures-util = "0.3.31"
@@ -83,45 +95,56 @@ tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4.40", features = ["serde"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5.2", features = ["fs", "trace"] }
-tokio-tungstenite = "0.26.1"
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.6", features = ["fs", "trace"] }
+tokio-tungstenite = { version = "0.27.0", features = ["native-tls-vendored"] }
 data-encoding = "2.4.0"
+secrecy = "0.10.3"
 sha2 = "0.10.8"
 rand = "0.9.0"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 procfs = "0.17.0"
 base16ct = { version = "0.2.0", features = ["alloc"] }
-axum = { version = "0.7.4", features = ["ws"] }
-axum-extra = { version = "0.9.2", features = ["typed-header"] }
-axum-client-ip = "0.5.0"
+axum = { version = "0.8.4", features = ["ws", "macros"] }
+axum-extra = { version = "0.10.1", features = ["typed-header"] }
+axum-client-ip = "1.0.0"
 bytes = "1.5.0"
 hyper = { version = "1.2.0", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1.2", features = ["tokio", "client-legacy", "server", "server-auto"] }
 http-body-util = "0.1.1"
-tarpc = { version = "0.34.0", features = ["full"] }
+kube = { version = "1.1.0", features = [] }
+k8s-openapi = { version = "0.25.0", features = ["latest"] }
+tarpc = { version = "0.36.0", features = ["full"] }
 rustls-webpki = "0.102.2"
 rustls-pemfile = "2.1.0"
 tokio-rustls = "0.25.0"
 tokio-util = "0.7.10"
 tokio = { version = "1.36.0", features = ["full"] }
-sqlx = { version = "0.7.3", default-features = false, features = ["sqlx-postgres"] }
-sea-orm = { version = "0.12.12", features = [ "sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
-sea-orm-migration = { version = "0.12.6", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlx-postgres"] }
+sea-orm = { version = "1.1.14", features = [ "sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
+sea-orm-migration = { version = "1.1.14", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
+sea-orm-cli = { version = "1.1.14", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
-russh = {version = "0.50.4" }
-lapdev-api = { path = "./lapdev-api" }
-lapdev-ws = { path = "./lapdev-ws" }
-lapdev-db = { path = "./lapdev-db" }
-lapdev-rpc = { path = "./lapdev-rpc" }
-lapdev-conductor = { path = "./lapdev-conductor" }
-lapdev-proxy-ssh = { path = "./lapdev-proxy-ssh" }
-lapdev-proxy-http = { path = "./lapdev-proxy-http" }
-lapdev-common = { path = "./lapdev-common" }
-lapdev-enterprise = { path = "./lapdev-enterprise" }
-lapdev-guest-agent = { path = "./lapdev-guest-agent" }
-lapdev-kube = { path = "./lapdev-kube" }
+russh = {version = "0.53.0" }
+lapdev-api = { path = "./crates/api" }
+lapdev-api-hrpc = { path = "./crates/api-hrpc" }
+lapdev-ws = { path = "./crates/ws" }
+lapdev-db = { path = "./crates/db" }
+lapdev-db-entities = { path = "./crates/db/entities" }
+lapdev-db-migration = { path = "./crates/db/migration" }
+lapdev-rpc = { path = "./crates/rpc" }
+lapdev-conductor = { path = "./crates/conductor" }
+lapdev-proxy-ssh = { path = "./crates/proxy-ssh" }
+lapdev-proxy-http = { path = "./crates/proxy-http" }
+lapdev-common = { path = "./crates/common" }
+lapdev-enterprise = { path = "./crates/enterprise" }
+lapdev-guest-agent = { path = "./crates/guest-agent" }
+lapdev-kube = { path = "./crates/kube" }
+lapdev-kube-rpc = { path = "./crates/kube-rpc" }
+lapdev-kube-manager = { path = "./crates/kube-manager" }
+lapdev-hrpc = { path = "./crates/hrpc" }
+lapdev-hrpc-proc-macro = { path = "./crates/hrpc-proc-macro" }
 
 [package.metadata.deb]
 depends = "$auto, passwd"

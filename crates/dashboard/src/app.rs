@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use gloo_net::http::Request;
+use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{console::MeUser, ClusterInfo};
 use leptos::prelude::*;
 use leptos_router::{
@@ -13,7 +16,9 @@ use crate::{
     cluster::{ClusterSettings, ClusterUsersView, MachineTypeView, WorkspaceHostView},
     component::sidebar::SidebarData,
     git_provider::GitProviderView,
+    kube_app_catalog::KubeAppCatalog,
     kube_cluster::KubeCluster,
+    kube_environment::KubeEnvironment,
     kube_resource::KubeResource,
     license::{LicenseView, SignLicenseView},
     nav::{AdminSideNav, NavExpanded, SideNav, TopNav},
@@ -36,6 +41,10 @@ fn Root() -> impl IntoView {
     view! {
         <Workspaces />
     }
+}
+
+pub fn get_hrpc_client() -> HrpcServiceClient {
+    HrpcServiceClient::new("/api/rpc".to_string())
 }
 
 async fn get_cluster_info() -> Result<ClusterInfo> {
@@ -80,6 +89,8 @@ pub fn set_context() {
     provide_context(SidebarData {
         open: RwSignal::new(true),
     });
+
+    provide_context(Arc::new(HrpcServiceClient::new("/api/rpc".to_string())));
 }
 
 #[component]
@@ -98,6 +109,8 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/organization/quota") view=move || view! { <WrappedView element=QuotaView /> } />
                 <Route path=path!("/organization/audit_log") view=move || view! { <WrappedView element=AuditLogView /> } />
                 <Route path=path!("/organization/settings") view=move || view! { <WrappedView element=OrgSettings /> } />
+                <Route path=path!("/kubernetes/catalogs") view=move || view! { <WrappedView element=KubeAppCatalog /> } />
+                <Route path=path!("/kubernetes/environments") view=move || view! { <WrappedView element=KubeEnvironment /> } />
                 <Route path=path!("/kubernetes/clusters/:cluster_id") view=move || view! { <WrappedView element=KubeResource /> } />
                 <Route path=path!("/kubernetes/clusters") view=move || view! { <WrappedView element=KubeCluster /> } />
                 <Route path=path!("/account") view=move || view! { <WrappedView element=AccountSettings /> } />

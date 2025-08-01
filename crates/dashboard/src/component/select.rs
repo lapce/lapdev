@@ -1,16 +1,17 @@
-use leptos::{leptos_dom::logging::console_log, prelude::*};
+use leptos::{context::Provider, leptos_dom::logging::console_log, prelude::*};
 use tailwind_fuse::*;
 
-use crate::component::fade_effect::fade_effect;
+use crate::component::{fade_effect::fade_effect, input::Input};
 
 #[derive(Clone)]
-pub struct SelectContext<T: PartialEq + Clone + Send + Sync + 'static> {
+pub struct SelectValueContext<T: PartialEq + Clone + Send + Sync + 'static> {
     value: RwSignal<T>,
 }
 
 #[derive(Clone)]
-pub struct SelectOpenContext {
+pub struct SelectContext {
     open: RwSignal<bool>,
+    search_filter: RwSignal<String>,
 }
 
 #[derive(TwVariant)]
@@ -27,42 +28,31 @@ pub fn Select<T>(
     // #[prop()] on_change: impl Fn(String) + 'static + Send + Sync,
     #[prop()] open: RwSignal<bool>,
     #[prop(into, optional)] class: MaybeProp<String>,
-    #[prop(optional)] children: Option<ChildrenFn>,
+    #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView
 where
     T: PartialEq + Clone + Send + Sync + 'static,
 {
-    // let is_open = RwSignal::new(false);
-    // let current_value = RwSignal::new(value.get_untracked());
-
-    // Update current_value when the external value changes
-    // Effect::new(move |_| {
-    //     current_value.set(value.get());
-    // });
-
-    // let context = SelectContext {
-    //     on_change: StoredValue::new(Box::new(move |val: String| {
-    //         current_value.set(val.clone());
-    //         on_change(val);
-    //         is_open.set(false);
-    //     })),
-    //     is_open,
-    //     current_value,
-    // };
-    provide_context(SelectContext { value });
-    provide_context(SelectOpenContext { open });
-
+    let search_filter = RwSignal::new("".to_string());
+    Effect::new(move |_| {
+        open.track();
+        search_filter.set("".to_string());
+    });
     view! {
-        <div class=move || tw_merge!("relative", class.get()) data-slot="select">
-            <Show when=move || open.get() fallback=|| ()>
-                <div
-                    class="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center w-full h-full"
-                    on:click=move |_| open.set(false)
-                >
+        <Provider value=SelectValueContext { value }>
+            <Provider value=SelectContext { open, search_filter }>
+                <div class=move || tw_merge!("relative", class.get()) data-slot="select">
+                    <Show when=move || open.get() fallback=|| ()>
+                        <div
+                            class="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center w-full h-full"
+                            on:click=move |_| open.set(false)
+                        >
+                        </div>
+                    </Show>
+                    { children.map(|c| c().into_any()).unwrap_or_else(|| ().into_any())}
                 </div>
-            </Show>
-            {move || children.clone().map(|c| c().into_any()) .unwrap_or_else(|| ().into_any()) }
-        </div>
+            </Provider>
+        </Provider>
     }
 }
 
@@ -72,8 +62,7 @@ pub fn SelectTrigger(
     #[prop(into, optional)] class: MaybeProp<String>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
-    let context =
-        use_context::<SelectOpenContext>().expect("SelectItem must be used within Select");
+    let context = use_context::<SelectContext>().expect("SelectItem must be used within Select");
 
     let children = children
         .map(|c| c().into_any())
@@ -110,7 +99,7 @@ pub fn SelectContent(
     #[prop(optional)] children: Option<ChildrenFn>,
 ) -> impl IntoView {
     let open_context =
-        use_context::<SelectOpenContext>().expect("SelectItem needs to have SelectOpenContext");
+        use_context::<SelectContext>().expect("SelectItem needs to have SelectOpenContext");
     let open = open_context.open;
     let show = fade_effect(open.read_only());
 
@@ -143,15 +132,16 @@ pub fn SelectContent(
 pub fn SelectItem<T>(
     #[prop()] value: T,
     #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(into, optional)] display: MaybeProp<String>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView
 where
     T: PartialEq + std::fmt::Debug + Clone + Send + Sync + 'static,
 {
-    let context = use_context::<SelectContext<T>>();
-    let open_context =
-        use_context::<SelectOpenContext>().expect("SelectItem needs to have SelectOpenContext");
-    if context.is_none() {
+    let value_context = use_context::<SelectValueContext<T>>();
+    let context =
+        use_context::<SelectContext>().expect("SelectItem needs to have SelectOpenContext");
+    if value_context.is_none() {
         console_log(&format!(
             "Select Item {value:?} won't be selected because it's the different type of value in Select"
         ));
@@ -160,7 +150,7 @@ where
     // let display_value = value.clone();
 
     let is_selected = {
-        let context = context.clone();
+        let context = value_context.clone();
         let value = value.clone();
         Signal::derive(move || context.as_ref().map(|c| c.value.get()).as_ref() == Some(&value))
     };
@@ -176,14 +166,22 @@ where
                 // if is_selected.get() { "bg-accent text-accent-foreground" } else { "" },
                 class.get()
             )
+            class:hidden=move || {
+                if let Some(display) = display.get() {
+                    if !display.contains(context.search_filter.get().as_str()) {
+                        return true
+                    }
+                }
+                false
+            }
             // data-value=display_value.clone()
             // data-selected=move || is_selected.get()
             data-slot="select-item"
             on:click=move |_| {
-                if let Some(context) = &context {
+                if let Some(context) = &value_context {
                     context.value.set(value.clone());
                 }
-                open_context.open.set(false);
+                context.open.set(false);
             }
         >
             <span class="absolute right-2 flex size-3.5 items-center justify-center">
@@ -210,6 +208,35 @@ pub fn SelectLabel(
             data-slot="select-label"
         >
             {children()}
+        </div>
+    }
+}
+
+#[component]
+pub fn SelectSearchInput(
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(into, optional)] placeholder: MaybeProp<String>,
+) -> impl IntoView {
+    let class = Signal::derive(move || {
+        tw_merge!(
+            "w-full px-2 border-none focus-visible:ring-[0px] focus-visible:border-0 shadow-none",
+            class.get()
+        )
+    });
+
+    let context = use_context::<SelectContext>().expect("SelectItem must be used within Select");
+
+    view! {
+        <div class="flex items-center pl-2 [&_svg:not([class*='text-'])]:text-muted-foreground [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
+            <lucide_leptos::Search />
+            <Input
+                class
+                attr:placeholder=move || placeholder.get().unwrap_or_else(|| "Search ...".to_string())
+                prop:value=move || context.search_filter.get()
+                on:input=move |ev| {
+                    context.search_filter.set(event_target_value(&ev));
+                }
+            />
         </div>
     }
 }

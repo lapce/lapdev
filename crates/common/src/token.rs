@@ -2,7 +2,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use sha2::{Digest, Sha256};
 
-const TOKEN_LENGTH: usize = 32;
+const TOKEN_LENGTH: usize = 64;
 
 pub struct HashedToken(SecretSlice<u8>);
 

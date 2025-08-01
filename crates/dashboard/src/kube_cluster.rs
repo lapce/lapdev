@@ -14,7 +14,7 @@ use crate::{
         label::Label,
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         textarea::Textarea,
-        typography::{H3, P},
+        typography::{H3, H4, P},
     },
     modal::Modal,
     organization::get_current_org,
@@ -100,6 +100,25 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
                         />
                     </TableBody>
                 </Table>
+
+                {move || {
+                    let cluster_list = clusters.get();
+                    if cluster_list.is_empty() {
+                        view! {
+                            <div class="flex flex-col items-center justify-center py-12 text-center">
+                                <div class="rounded-full bg-muted p-3 mb-4">
+                                    <lucide_leptos::Server />
+                                </div>
+                                <H4 class="mb-2">No Kubernetes Clusters</H4>
+                                <P class="text-muted-foreground mb-4 max-w-sm">
+                                    Connect your first Kubernetes cluster to start deploying workspaces and managing resources.
+                                </P>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }
+                }}
             </div>
         </div>
 
@@ -264,10 +283,10 @@ pub fn TokenDisplayModal(
 
                 <div class="flex flex-col gap-2 p-4 bg-muted rounded-lg">
                     <P class="font-medium text-sm">Next Steps:</P>
-                    <ul class="text-sm text-muted-foreground space-y-1">
-                        <li>- Install lapdev-kube-manager in your cluster</li>
-                        <li>- Configure it with this token</li>
-                        <li>- Your cluster will appear in the list once connected</li>
+                    <ul class="text-sm space-y-1">
+                        <li>{"- Install lapdev-kube-manager in your cluster"}</li>
+                        <li>{"- Configure it with this token"}</li>
+                        <li>{"- Your cluster will appear in the list once connected"}</li>
                     </ul>
                 </div>
             </div>

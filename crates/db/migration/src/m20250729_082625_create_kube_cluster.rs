@@ -41,7 +41,7 @@ impl MigrationTrait for Migration {
 }
 
 #[derive(DeriveIden)]
-enum KubeCluster {
+pub enum KubeCluster {
     Table,
     Id,
     CreatedAt,

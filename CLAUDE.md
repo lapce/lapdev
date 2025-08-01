@@ -78,3 +78,6 @@ cargo run --bin lapdev-kube-manager
 
 ## Service Details
 - lapdev-kube-manager is a service which runs inside k8s cluster itself
+
+## Development Tips
+- For checking compile error, only do cargo check instead of cargo build, because it's much faster

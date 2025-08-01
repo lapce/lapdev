@@ -3,16 +3,20 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::StreamExt;
-use k8s_openapi::api::{
-    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
-    batch::v1::{CronJob, Job},
-    core::v1::Pod,
+use k8s_openapi::{
+    api::{
+        apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
+        batch::v1::{CronJob, Job},
+        core::v1::{Namespace, Pod},
+    },
+    NamespaceResourceScope,
 };
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
-    KubeClusterInfo, KubeClusterStatus, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-    KubeWorkloadStatus, PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
-    KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
+    KubeClusterInfo, KubeClusterStatus, KubeNamespace, KubeWorkload, KubeWorkloadKind,
+    KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
+    DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER,
+    KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_rpc::{
     kube::{KubeClusterRpcClient, KubeManagerRpc},
@@ -467,13 +471,11 @@ impl KubeManager {
     async fn collect_workloads(
         &self,
         namespace: Option<String>,
+        workload_kind_filter: Option<KubeWorkloadKind>,
+        include_system_workloads: bool,
         pagination: Option<PaginationParams>,
     ) -> Result<KubeWorkloadList> {
         println!("pagination is {pagination:?}");
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
 
         let (cursor, limit) = if let Some(pagination) = pagination {
             (pagination.cursor, pagination.limit.max(1))
@@ -481,552 +483,251 @@ impl KubeManager {
             (None, 50) // Default reasonable limit
         };
 
-        // Parse cursor to determine resource type and position
-        let (resource_type, cursor_position) = Self::parse_cursor(&cursor);
-
-        println!("resource_type {resource_type} cursor_postion {cursor_position:?}");
+        println!("cursor {cursor:?}");
 
         // Collect workloads sequentially by resource type, starting from the cursor position
         let mut all_workloads = Vec::new();
-        let mut remaining_limit = limit;
-        let resource_types = [
-            "deployment",
-            "statefulset",
-            "daemonset",
-            "replicaset",
-            "pod",
-            "job",
-            "cronjob",
+        let all_resource_types = [
+            KubeWorkloadKind::Deployment,
+            KubeWorkloadKind::StatefulSet,
+            KubeWorkloadKind::DaemonSet,
+            KubeWorkloadKind::ReplicaSet,
+            KubeWorkloadKind::Pod,
+            KubeWorkloadKind::Job,
+            KubeWorkloadKind::CronJob,
         ];
+        
+        // Filter resource types based on workload_kind_filter
+        let resource_types: Vec<KubeWorkloadKind> = if let Some(filter_kind) = workload_kind_filter {
+            vec![filter_kind]
+        } else {
+            all_resource_types.to_vec()
+        };
 
         // Find starting resource type index
-        let start_index = resource_types
-            .iter()
-            .position(|&rt| rt == resource_type)
-            .unwrap_or(0);
+        let start_index = if let Some(cursor) = &cursor {
+            resource_types
+                .iter()
+                .position(|rt| *rt == cursor.workload_kind)
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
-        for (i, &current_resource_type) in resource_types.iter().enumerate().skip(start_index) {
-            if remaining_limit == 0 {
-                break;
-            }
-
+        let mut resource_types_iter = resource_types.iter().skip(start_index).peekable();
+        while let Some(current_resource_type) = resource_types_iter.next() {
             // Use cursor only for the first resource type we're collecting from
-            let current_cursor = if i == start_index {
-                cursor_position.clone()
+            let current_cursor = if let Some(cursor) = &cursor {
+                if *current_resource_type == cursor.workload_kind {
+                    cursor.continue_token.clone()
+                } else {
+                    None
+                }
             } else {
                 None
             };
-            let collect_limit = remaining_limit;
+            let collect_limit = limit.saturating_sub(all_workloads.len());
 
-            let collected_workloads = match current_resource_type {
-                "deployment" => {
-                    self.collect_deployments_with_cursor(
-                        client.clone(),
-                        namespace.clone(),
+            let (collected_workloads, resource_continue_token) = match *current_resource_type {
+                KubeWorkloadKind::Deployment => {
+                    self.collect_resources_with_cursor(
+                        namespace.as_deref(),
                         current_cursor,
                         collect_limit,
+                        include_system_workloads,
+                        Self::deployment_to_workload,
                     )
                     .await?
                 }
-                "statefulset" => {
-                    self.collect_statefulsets_with_cursor(
-                        client.clone(),
-                        namespace.clone(),
+                KubeWorkloadKind::StatefulSet => {
+                    self.collect_resources_with_cursor(
+                        namespace.as_deref(),
                         current_cursor,
                         collect_limit,
+                        include_system_workloads,
+                        Self::statefulset_to_workload,
                     )
                     .await?
                 }
-                "daemonset" => {
-                    self.collect_daemonsets_with_cursor(
-                        client.clone(),
-                        namespace.clone(),
+                KubeWorkloadKind::DaemonSet => {
+                    self.collect_resources_with_cursor(
+                        namespace.as_deref(),
                         current_cursor,
                         collect_limit,
+                        include_system_workloads,
+                        Self::daemonset_to_workload,
                     )
                     .await?
                 }
-                "replicaset" => {
-                    self.collect_replicasets_with_cursor(
-                        client.clone(),
-                        namespace.clone(),
+                KubeWorkloadKind::ReplicaSet => {
+                    self.collect_resources_with_cursor(
+                        namespace.as_deref(),
                         current_cursor,
                         collect_limit,
+                        include_system_workloads,
+                        Self::replicaset_to_workload,
                     )
                     .await?
                 }
-                "pod" => {
-                    self.collect_pods_with_cursor(
-                        client.clone(),
-                        namespace.clone(),
+                KubeWorkloadKind::Pod => {
+                    self.collect_resources_with_cursor(
+                        namespace.as_deref(),
                         current_cursor,
                         collect_limit,
+                        include_system_workloads,
+                        Self::pod_to_workload,
                     )
                     .await?
                 }
-                "job" => {
-                    self.collect_jobs_with_cursor(
-                        client.clone(),
-                        namespace.clone(),
+                KubeWorkloadKind::Job => {
+                    self.collect_resources_with_cursor(
+                        namespace.as_deref(),
                         current_cursor,
                         collect_limit,
+                        include_system_workloads,
+                        Self::job_to_workload,
                     )
                     .await?
                 }
-                "cronjob" => {
-                    self.collect_cronjobs_with_cursor(
-                        client.clone(),
-                        namespace.clone(),
+                KubeWorkloadKind::CronJob => {
+                    self.collect_resources_with_cursor(
+                        namespace.as_deref(),
                         current_cursor,
                         collect_limit,
+                        include_system_workloads,
+                        Self::cronjob_to_workload,
                     )
                     .await?
                 }
-                _ => Vec::new(),
             };
 
-            remaining_limit = remaining_limit.saturating_sub(collected_workloads.len());
             all_workloads.extend(collected_workloads);
+            if all_workloads.len() >= limit {
+                let next_cursor = if let Some(continue_token) = resource_continue_token {
+                    // If we have a continue token for this resource type,
+                    // we know that we filled our limit,
+                    // so we are done for the collection
+                    // and we should use this token for the next request
+                    Some(PaginationCursor {
+                        workload_kind: current_resource_type.clone(),
+                        continue_token: Some(continue_token),
+                    })
+                } else {
+                    // if we don't have a continue token
+                    // we know that we had everything from this current resource type
+                    // so we need to set the cursor to the next workload kind
+                    resource_types_iter.peek().map(|next| PaginationCursor {
+                        workload_kind: (**next).clone(),
+                        continue_token: None,
+                    })
+                };
+                return Ok(KubeWorkloadList {
+                    workloads: all_workloads,
+                    next_cursor,
+                });
+            }
         }
 
-        // Sort all workloads by creation timestamp for consistent ordering
-        all_workloads.sort_by(|a, b| {
-            let a_time = a.created_at.as_deref().unwrap_or("0");
-            let b_time = b.created_at.as_deref().unwrap_or("0");
-            b_time.cmp(a_time) // Newest first
-        });
-
-        // Determine if there are more items
-        let has_next = all_workloads.len() == limit;
-        let next_cursor = if has_next && !all_workloads.is_empty() {
-            Some(Self::workload_to_cursor(all_workloads.last().unwrap()))
-        } else {
-            None
-        };
-
+        // at this point, we should already iter over all the resources we can find
+        // so we know there no more
         Ok(KubeWorkloadList {
             workloads: all_workloads,
-            next_cursor,
-            has_next,
+            next_cursor: None,
         })
     }
 
-    // Helper function to create a cursor from a workload
-    fn workload_to_cursor(workload: &KubeWorkload) -> String {
-        // Use resource type + creation timestamp + name + namespace as cursor for uniqueness
-        let resource_type = match workload.kind {
-            KubeWorkloadKind::Deployment => "deployment",
-            KubeWorkloadKind::StatefulSet => "statefulset",
-            KubeWorkloadKind::DaemonSet => "daemonset",
-            KubeWorkloadKind::Pod => "pod",
-            KubeWorkloadKind::Job => "job",
-            KubeWorkloadKind::ReplicaSet => "replicaset",
-            KubeWorkloadKind::CronJob => "cronjob",
-        };
-        format!(
-            "{}:{}:{}:{}",
-            resource_type,
-            workload.created_at.as_deref().unwrap_or(""),
-            workload.name,
-            workload.namespace
-        )
-    }
+    async fn collect_namespaces(&self) -> Result<Vec<KubeNamespace>> {
+        let client = Self::new_kube_client().await?;
+        let namespaces: kube::Api<Namespace> = kube::Api::all(client);
+        
+        let namespace_list = namespaces.list(&ListParams::default()).await?;
+        
+        let mut kube_namespaces = Vec::new();
+        for namespace in namespace_list.items {
+            let name = namespace.metadata.name.unwrap_or_default();
+            let status = namespace
+                .status
+                .as_ref()
+                .and_then(|s| s.phase.as_ref())
+                .map(|p| p.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+            let created_at = namespace
+                .metadata
+                .creation_timestamp
+                .map(|t| format!("{t:?}"));
 
-    // Helper function to parse a cursor
-    fn parse_cursor(cursor: &Option<String>) -> (String, Option<String>) {
-        if let Some(cursor_str) = cursor {
-            let parts: Vec<&str> = cursor_str.splitn(2, ':').collect();
-            if parts.len() >= 2 {
-                (parts[0].to_string(), Some(parts[1].to_string()))
-            } else {
-                ("deployment".to_string(), None)
-            }
-        } else {
-            ("deployment".to_string(), None)
+            kube_namespaces.push(KubeNamespace {
+                name,
+                status,
+                created_at,
+            });
         }
+
+        kube_namespaces.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(kube_namespaces)
     }
 
-    // Helper method to collect deployments with cursor-based pagination
-    async fn collect_deployments_with_cursor(
+    // Generic helper method for collecting resources with cursor-based pagination
+    // Only includes top-level resources (those without owner references)
+    async fn collect_resources_with_cursor<T, F>(
         &self,
-        client: Arc<kube::Client>,
-        namespace: Option<String>,
+        namespace: Option<&str>,
         cursor: Option<String>,
         limit: usize,
-    ) -> Result<Vec<KubeWorkload>> {
-        let deployments: kube::Api<Deployment> = if let Some(ns) = &namespace {
-            kube::Api::namespaced((*client).clone(), ns)
+        include_system_workloads: bool,
+        converter: F,
+    ) -> Result<(Vec<KubeWorkload>, Option<String>)>
+    where
+        T: kube::Resource<Scope = NamespaceResourceScope>
+            + Clone
+            + serde::de::DeserializeOwned
+            + std::fmt::Debug,
+        T::DynamicType: Default,
+        F: Fn(T) -> KubeWorkload,
+    {
+        let client = self
+            .kube_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let api: kube::Api<T> = if let Some(ns) = namespace {
+            kube::Api::namespaced((**client).clone(), ns)
         } else {
-            kube::Api::all((*client).clone())
+            kube::Api::all((**client).clone())
         };
 
+        let batch_size = 50;
         let mut all_workloads = Vec::new();
         let mut continue_token = cursor;
 
-        while all_workloads.len() < limit {
-            let remaining = limit - all_workloads.len();
-            let batch_size = std::cmp::min(remaining, 100);
-
+        loop {
             let list_params = ListParams {
-                limit: Some(batch_size as u32),
+                limit: Some(batch_size),
                 continue_token: continue_token.clone(),
                 ..Default::default()
             };
 
-            println!("list_params {list_params:?}");
-            match deployments.list(&list_params).await {
-                Ok(list) => {
-                    for deployment in list.items {
-                        if all_workloads.len() >= limit {
-                            break;
-                        }
-                        if let Some(workload) =
-                            Self::deployment_to_workload_filter_top_level(deployment)
-                        {
-                            all_workloads.push(workload);
-                        }
+            let list = api.list(&list_params).await?;
+            for item in list.items {
+                // Only include top-level resources (no owner references)
+                if !Self::has_owner_references(&item) {
+                    let is_system_workload = Self::is_system_workload(&item);
+                    
+                    // Include workload based on system workloads filter
+                    if include_system_workloads || !is_system_workload {
+                        let workload = converter(item);
+                        all_workloads.push(workload);
                     }
+                }
+            }
 
-                    continue_token = list.metadata.continue_;
-                    println!("continue token is {continue_token:?}");
-                    if continue_token.is_none() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to collect deployments: {}", e);
-                    break;
-                }
+            continue_token = list.metadata.continue_;
+            if continue_token.is_none() || all_workloads.len() >= limit {
+                break;
             }
         }
 
-        Ok(all_workloads)
-    }
-
-    // Helper method to collect statefulsets with cursor-based pagination
-    async fn collect_statefulsets_with_cursor(
-        &self,
-        client: Arc<kube::Client>,
-        namespace: Option<String>,
-        cursor: Option<String>,
-        limit: usize,
-    ) -> Result<Vec<KubeWorkload>> {
-        let statefulsets: kube::Api<StatefulSet> = if let Some(ns) = &namespace {
-            kube::Api::namespaced((*client).clone(), ns)
-        } else {
-            kube::Api::all((*client).clone())
-        };
-
-        let mut all_workloads = Vec::new();
-        let mut continue_token = cursor;
-
-        while all_workloads.len() < limit {
-            let remaining = limit - all_workloads.len();
-            let batch_size = std::cmp::min(remaining, 100);
-
-            let list_params = ListParams {
-                limit: Some(batch_size as u32),
-                continue_token: continue_token.clone(),
-                ..Default::default()
-            };
-
-            match statefulsets.list(&list_params).await {
-                Ok(list) => {
-                    for statefulset in list.items {
-                        if all_workloads.len() >= limit {
-                            break;
-                        }
-                        if let Some(workload) =
-                            Self::statefulset_to_workload_filter_top_level(statefulset)
-                        {
-                            all_workloads.push(workload);
-                        }
-                    }
-
-                    continue_token = list.metadata.continue_;
-                    if continue_token.is_none() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to collect statefulsets: {}", e);
-                    break;
-                }
-            }
-        }
-
-        Ok(all_workloads)
-    }
-
-    // Helper method to collect daemonsets with cursor-based pagination
-    async fn collect_daemonsets_with_cursor(
-        &self,
-        client: Arc<kube::Client>,
-        namespace: Option<String>,
-        cursor: Option<String>,
-        limit: usize,
-    ) -> Result<Vec<KubeWorkload>> {
-        let daemonsets: kube::Api<DaemonSet> = if let Some(ns) = &namespace {
-            kube::Api::namespaced((*client).clone(), ns)
-        } else {
-            kube::Api::all((*client).clone())
-        };
-
-        let mut all_workloads = Vec::new();
-        let mut continue_token = cursor;
-
-        while all_workloads.len() < limit {
-            let remaining = limit - all_workloads.len();
-            let batch_size = std::cmp::min(remaining, 100);
-
-            let list_params = ListParams {
-                limit: Some(batch_size as u32),
-                continue_token: continue_token.clone(),
-                ..Default::default()
-            };
-
-            match daemonsets.list(&list_params).await {
-                Ok(list) => {
-                    for daemonset in list.items {
-                        if all_workloads.len() >= limit {
-                            break;
-                        }
-                        if let Some(workload) =
-                            Self::daemonset_to_workload_filter_top_level(daemonset)
-                        {
-                            all_workloads.push(workload);
-                        }
-                    }
-
-                    continue_token = list.metadata.continue_;
-                    if continue_token.is_none() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to collect daemonsets: {}", e);
-                    break;
-                }
-            }
-        }
-
-        Ok(all_workloads)
-    }
-
-    // Helper method to collect pods with cursor-based pagination
-    // Only collects top-level pods (not owned by deployments, statefulsets, etc.)
-    async fn collect_pods_with_cursor(
-        &self,
-        client: Arc<kube::Client>,
-        namespace: Option<String>,
-        cursor: Option<String>,
-        limit: usize,
-    ) -> Result<Vec<KubeWorkload>> {
-        let pods: kube::Api<Pod> = if let Some(ns) = &namespace {
-            kube::Api::namespaced((*client).clone(), ns)
-        } else {
-            kube::Api::all((*client).clone())
-        };
-
-        let mut all_workloads = Vec::new();
-        let mut continue_token = cursor;
-
-        while all_workloads.len() < limit {
-            let remaining = limit - all_workloads.len();
-            let batch_size = std::cmp::min(remaining, 100);
-
-            let list_params = ListParams {
-                limit: Some(batch_size as u32),
-                continue_token: continue_token.clone(),
-                ..Default::default()
-            };
-
-            match pods.list(&list_params).await {
-                Ok(list) => {
-                    for pod in list.items {
-                        if all_workloads.len() >= limit {
-                            break;
-                        }
-                        if let Some(workload) = Self::pod_to_workload_filter_top_level(pod) {
-                            all_workloads.push(workload);
-                        }
-                    }
-
-                    continue_token = list.metadata.continue_;
-                    if continue_token.is_none() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to collect pods: {}", e);
-                    break;
-                }
-            }
-        }
-
-        Ok(all_workloads)
-    }
-
-    // Helper method to collect jobs with cursor-based pagination
-    async fn collect_jobs_with_cursor(
-        &self,
-        client: Arc<kube::Client>,
-        namespace: Option<String>,
-        cursor: Option<String>,
-        limit: usize,
-    ) -> Result<Vec<KubeWorkload>> {
-        let jobs: kube::Api<Job> = if let Some(ns) = &namespace {
-            kube::Api::namespaced((*client).clone(), ns)
-        } else {
-            kube::Api::all((*client).clone())
-        };
-
-        let mut all_workloads = Vec::new();
-        let mut continue_token = cursor;
-
-        while all_workloads.len() < limit {
-            let remaining = limit - all_workloads.len();
-            let batch_size = std::cmp::min(remaining, 100);
-
-            let list_params = ListParams {
-                limit: Some(batch_size as u32),
-                continue_token: continue_token.clone(),
-                ..Default::default()
-            };
-
-            match jobs.list(&list_params).await {
-                Ok(list) => {
-                    for job in list.items {
-                        if all_workloads.len() >= limit {
-                            break;
-                        }
-                        if let Some(workload) = Self::job_to_workload_filter_top_level(job) {
-                            all_workloads.push(workload);
-                        }
-                    }
-
-                    continue_token = list.metadata.continue_;
-                    if continue_token.is_none() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to collect jobs: {}", e);
-                    break;
-                }
-            }
-        }
-
-        Ok(all_workloads)
-    }
-
-    // Helper method to collect replicasets with cursor-based pagination
-    async fn collect_replicasets_with_cursor(
-        &self,
-        client: Arc<kube::Client>,
-        namespace: Option<String>,
-        cursor: Option<String>,
-        limit: usize,
-    ) -> Result<Vec<KubeWorkload>> {
-        let replicasets: kube::Api<ReplicaSet> = if let Some(ns) = &namespace {
-            kube::Api::namespaced((*client).clone(), ns)
-        } else {
-            kube::Api::all((*client).clone())
-        };
-
-        let mut all_workloads = Vec::new();
-        let mut continue_token = cursor;
-
-        while all_workloads.len() < limit {
-            let remaining = limit - all_workloads.len();
-            let batch_size = std::cmp::min(remaining, 100);
-
-            let list_params = ListParams {
-                limit: Some(batch_size as u32),
-                continue_token: continue_token.clone(),
-                ..Default::default()
-            };
-
-            match replicasets.list(&list_params).await {
-                Ok(list) => {
-                    for replicaset in list.items {
-                        if all_workloads.len() >= limit {
-                            break;
-                        }
-                        if let Some(workload) =
-                            Self::replicaset_to_workload_filter_top_level(replicaset)
-                        {
-                            all_workloads.push(workload);
-                        }
-                    }
-
-                    continue_token = list.metadata.continue_;
-                    if continue_token.is_none() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to collect replicasets: {}", e);
-                    break;
-                }
-            }
-        }
-
-        Ok(all_workloads)
-    }
-
-    // Helper method to collect cronjobs with cursor-based pagination
-    async fn collect_cronjobs_with_cursor(
-        &self,
-        client: Arc<kube::Client>,
-        namespace: Option<String>,
-        cursor: Option<String>,
-        limit: usize,
-    ) -> Result<Vec<KubeWorkload>> {
-        let cronjobs: kube::Api<CronJob> = if let Some(ns) = &namespace {
-            kube::Api::namespaced((*client).clone(), ns)
-        } else {
-            kube::Api::all((*client).clone())
-        };
-
-        let mut all_workloads = Vec::new();
-        let mut continue_token = cursor;
-
-        while all_workloads.len() < limit {
-            let remaining = limit - all_workloads.len();
-            let batch_size = std::cmp::min(remaining, 100);
-
-            let list_params = ListParams {
-                limit: Some(batch_size as u32),
-                continue_token: continue_token.clone(),
-                ..Default::default()
-            };
-
-            match cronjobs.list(&list_params).await {
-                Ok(list) => {
-                    for cronjob in list.items {
-                        if all_workloads.len() >= limit {
-                            break;
-                        }
-                        if let Some(workload) = Self::cronjob_to_workload_filter_top_level(cronjob)
-                        {
-                            all_workloads.push(workload);
-                        }
-                    }
-
-                    continue_token = list.metadata.continue_;
-                    if continue_token.is_none() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to collect cronjobs: {}", e);
-                    break;
-                }
-            }
-        }
-
-        Ok(all_workloads)
+        Ok((all_workloads, continue_token))
     }
 
     fn deployment_to_workload(deployment: Deployment) -> KubeWorkload {
@@ -1052,7 +753,7 @@ impl KubeManager {
             created_at: deployment
                 .metadata
                 .creation_timestamp
-                .map(|t| format!("{:?}", t)),
+                .map(|t| format!("{t:?}")),
             labels: deployment
                 .metadata
                 .labels
@@ -1085,7 +786,7 @@ impl KubeManager {
             created_at: statefulset
                 .metadata
                 .creation_timestamp
-                .map(|t| format!("{:?}", t)),
+                .map(|t| format!("{t:?}")),
             labels: statefulset
                 .metadata
                 .labels
@@ -1121,7 +822,7 @@ impl KubeManager {
             created_at: daemonset
                 .metadata
                 .creation_timestamp
-                .map(|t| format!("{:?}", t)),
+                .map(|t| format!("{t:?}")),
             labels: daemonset
                 .metadata
                 .labels
@@ -1161,90 +862,31 @@ impl KubeManager {
         }
     }
 
-    // Filter function that only converts top-level pods (not owned by higher-level controllers)
-    fn pod_to_workload_filter_top_level(pod: Pod) -> Option<KubeWorkload> {
-        // Check if this pod is owned by a higher-level controller
-        if let Some(owner_refs) = &pod.metadata.owner_references {
-            for owner in owner_refs {
-                // Skip pods owned by these controller types as they are managed by higher-level resources
-                match owner.kind.as_str() {
-                    "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" | "Job"
-                    | "CronJob" => {
-                        return None; // Skip this pod
-                    }
-                    _ => {
-                        // Allow pods owned by other types or continue checking other owners
-                    }
-                }
-            }
-        }
-
-        // This is a top-level pod, convert it
-        Some(Self::pod_to_workload(pod))
-    }
-
-    // Filter function that only converts top-level deployments (not owned by any controller)
-    fn deployment_to_workload_filter_top_level(deployment: Deployment) -> Option<KubeWorkload> {
-        // If there are any owner references, this is not a top-level resource
-        if deployment
-            .metadata
+    // Generic helper function to check if a resource has owner references (not top-level)
+    fn has_owner_references<T>(resource: &T) -> bool
+    where
+        T: kube::Resource,
+    {
+        resource
+            .meta()
             .owner_references
             .as_ref()
-            .map_or(false, |refs| !refs.is_empty())
-        {
-            return None;
-        }
-
-        // This is a top-level deployment, convert it
-        Some(Self::deployment_to_workload(deployment))
+            .is_some_and(|refs| !refs.is_empty())
     }
 
-    // Filter function that only converts top-level statefulsets (not owned by any controller)
-    fn statefulset_to_workload_filter_top_level(statefulset: StatefulSet) -> Option<KubeWorkload> {
-        // If there are any owner references, this is not a top-level resource
-        if statefulset
-            .metadata
-            .owner_references
-            .as_ref()
-            .map_or(false, |refs| !refs.is_empty())
-        {
-            return None;
+    // Helper function to check if a workload is a system workload
+    fn is_system_workload<T>(resource: &T) -> bool
+    where
+        T: kube::Resource,
+    {
+        let meta = resource.meta();
+        
+        // Check if in kube-system namespace
+        if let Some(namespace) = &meta.namespace {
+            return namespace == "kube-system";
         }
-
-        // This is a top-level statefulset, convert it
-        Some(Self::statefulset_to_workload(statefulset))
-    }
-
-    // Filter function that only converts top-level daemonsets (not owned by any controller)
-    fn daemonset_to_workload_filter_top_level(daemonset: DaemonSet) -> Option<KubeWorkload> {
-        // If there are any owner references, this is not a top-level resource
-        if daemonset
-            .metadata
-            .owner_references
-            .as_ref()
-            .map_or(false, |refs| !refs.is_empty())
-        {
-            return None;
-        }
-
-        // This is a top-level daemonset, convert it
-        Some(Self::daemonset_to_workload(daemonset))
-    }
-
-    // Filter function that only converts top-level jobs (not owned by any controller)
-    fn job_to_workload_filter_top_level(job: Job) -> Option<KubeWorkload> {
-        // If there are any owner references, this is not a top-level resource
-        if job
-            .metadata
-            .owner_references
-            .as_ref()
-            .map_or(false, |refs| !refs.is_empty())
-        {
-            return None;
-        }
-
-        // This is a top-level job, convert it
-        Some(Self::job_to_workload(job))
+        
+        false
     }
 
     fn job_to_workload(job: Job) -> KubeWorkload {
@@ -1263,7 +905,7 @@ impl KubeManager {
             replicas: job.spec.as_ref().and_then(|s| s.parallelism),
             ready_replicas: job.status.as_ref().and_then(|s| s.succeeded),
             status,
-            created_at: job.metadata.creation_timestamp.map(|t| format!("{:?}", t)),
+            created_at: job.metadata.creation_timestamp.map(|t| format!("{t:?}")),
             labels: job
                 .metadata
                 .labels
@@ -1296,7 +938,7 @@ impl KubeManager {
             created_at: replicaset
                 .metadata
                 .creation_timestamp
-                .map(|t| format!("{:?}", t)),
+                .map(|t| format!("{t:?}")),
             labels: replicaset
                 .metadata
                 .labels
@@ -1323,7 +965,7 @@ impl KubeManager {
             created_at: cronjob
                 .metadata
                 .creation_timestamp
-                .map(|t| format!("{:?}", t)),
+                .map(|t| format!("{t:?}")),
             labels: cronjob
                 .metadata
                 .labels
@@ -1331,38 +973,6 @@ impl KubeManager {
                 .into_iter()
                 .collect(),
         }
-    }
-
-    // Filter function that only converts top-level replicasets (not owned by any controller)
-    fn replicaset_to_workload_filter_top_level(replicaset: ReplicaSet) -> Option<KubeWorkload> {
-        // If there are any owner references, this is not a top-level resource
-        if replicaset
-            .metadata
-            .owner_references
-            .as_ref()
-            .map_or(false, |refs| !refs.is_empty())
-        {
-            return None;
-        }
-
-        // This is a top-level replicaset, convert it
-        Some(Self::replicaset_to_workload(replicaset))
-    }
-
-    // Filter function that only converts top-level cronjobs (not owned by any controller)
-    fn cronjob_to_workload_filter_top_level(cronjob: CronJob) -> Option<KubeWorkload> {
-        // If there are any owner references, this is not a top-level resource
-        if cronjob
-            .metadata
-            .owner_references
-            .as_ref()
-            .map_or(false, |refs| !refs.is_empty())
-        {
-            return None;
-        }
-
-        // This is a top-level cronjob, convert it
-        Some(Self::cronjob_to_workload(cronjob))
     }
 
     async fn get_workload_by_name(
@@ -1418,9 +1028,14 @@ impl KubeManagerRpc for KubeManager {
         self,
         _context: ::tarpc::context::Context,
         namespace: Option<String>,
+        workload_kind_filter: Option<KubeWorkloadKind>,
+        include_system_workloads: bool,
         pagination: Option<PaginationParams>,
     ) -> Result<KubeWorkloadList, String> {
-        match self.collect_workloads(namespace, pagination).await {
+        match self
+            .collect_workloads(namespace, workload_kind_filter, include_system_workloads, pagination)
+            .await
+        {
             Ok(workloads) => {
                 println!(
                     "Successfully collected {} workloads",
@@ -1429,8 +1044,8 @@ impl KubeManagerRpc for KubeManager {
                 Ok(workloads)
             }
             Err(e) => {
-                println!("Failed to collect workloads: {}", e);
-                Err(format!("Failed to collect workloads: {}", e))
+                println!("Failed to collect workloads: {e}");
+                Err(format!("Failed to collect workloads: {e}"))
             }
         }
     }
@@ -1447,18 +1062,34 @@ impl KubeManagerRpc for KubeManager {
         {
             Ok(workload) => {
                 if workload.is_some() {
-                    println!("Successfully found workload: {}/{}", namespace, name);
+                    println!("Successfully found workload: {namespace}/{name}");
                 } else {
-                    println!("Workload not found: {}/{}", namespace, name);
+                    println!("Workload not found: {namespace}/{name}");
                 }
                 Ok(workload)
             }
             Err(e) => {
+                println!("Failed to get workload details for {namespace}/{name}: {e}");
+                Err(format!("Failed to get workload details: {e}"))
+            }
+        }
+    }
+
+    async fn get_namespaces(
+        self,
+        _context: ::tarpc::context::Context,
+    ) -> Result<Vec<KubeNamespace>, String> {
+        match self.collect_namespaces().await {
+            Ok(namespaces) => {
                 println!(
-                    "Failed to get workload details for {}/{}: {}",
-                    namespace, name, e
+                    "Successfully collected {} namespaces",
+                    namespaces.len()
                 );
-                Err(format!("Failed to get workload details: {}", e))
+                Ok(namespaces)
+            }
+            Err(e) => {
+                println!("Failed to collect namespaces: {e}");
+                Err(format!("Failed to collect namespaces: {e}"))
             }
         }
     }

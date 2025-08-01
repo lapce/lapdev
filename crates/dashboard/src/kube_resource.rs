@@ -1,12 +1,11 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
-use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
     kube::{
-        KubeClusterInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus,
-        PaginationParams,
+        KubeClusterInfo, KubeClusterStatus, KubeNamespace, KubeWorkload, KubeWorkloadKind,
+        KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
     },
 };
 use leptos::prelude::*;
@@ -14,16 +13,22 @@ use leptos_router::hooks::use_params_map;
 use uuid::Uuid;
 
 use crate::{
+    app::{get_hrpc_client, AppConfig},
     component::{
         badge::{Badge, BadgeVariant},
         button::{Button, ButtonSize, ButtonVariant},
+        card::Card,
+        checkbox::Checkbox,
         input::Input,
         label::Label,
-        select::{Select, SelectContent, SelectItem, SelectTrigger},
+        select::{
+            Select, SelectContent, SelectItem, SelectSearchInput, SelectSeparator, SelectTrigger,
+        },
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
-        typography::{H3, P},
+        textarea::Textarea,
+        typography::{H3, H4, P},
     },
-    modal::Modal,
+    modal::{ErrorResponse, Modal},
     organization::get_current_org,
 };
 
@@ -35,36 +40,140 @@ pub fn KubeResource() -> impl IntoView {
     let cluster_id = Uuid::from_str(&cluster_id).unwrap_or_default();
 
     view! {
-        <div class="flex flex-col gap-2 items-start">
-            <H3>Kubernetes Resources</H3>
-            <P>View and manage workloads, services, and configurations in your Kubernetes clusters.</P>
-            <a href="https://docs.lap.dev/">
-                <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
-            </a>
-        </div>
+        <div class="flex flex-col gap-6">
+            <div class="flex flex-col gap-2 items-start">
+                <H3>Kubernetes Resources</H3>
+                <P>
+                    View and manage workloads, services, and configurations in your Kubernetes clusters.
+                </P>
+                <a href="https://docs.lap.dev/">
+                    <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
+                </a>
+            </div>
 
-        <KubeResourceList update_counter cluster_id />
+            <ClusterInfo cluster_id />
+
+            <KubeResourceList update_counter cluster_id />
+        </div>
     }
 }
 
-async fn get_workloads(
+async fn get_workloads_from_api(
     org: Signal<Option<Organization>>,
     cluster_id: uuid::Uuid,
-    namespace_filter: String,
+    namespace_filter: Option<String>,
+    workload_kind_filter: Option<KubeWorkloadKind>,
+    include_system_workloads: bool,
     pagination: PaginationParams,
 ) -> Result<KubeWorkloadList> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
-    let client = HrpcServiceClient::new("/api/rpc".to_string());
-
-    let namespace = if namespace_filter.is_empty() {
-        None
-    } else {
-        Some(namespace_filter)
-    };
+    let client = get_hrpc_client();
 
     Ok(client
-        .get_workloads(org.id, cluster_id, namespace, Some(pagination))
+        .get_workloads(
+            org.id,
+            cluster_id,
+            namespace_filter,
+            workload_kind_filter,
+            include_system_workloads,
+            Some(pagination),
+        )
         .await??)
+}
+
+async fn get_namespaces_from_api(
+    org: Signal<Option<Organization>>,
+    cluster_id: uuid::Uuid,
+) -> Result<Vec<KubeNamespace>> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = get_hrpc_client();
+
+    Ok(client.get_namespaces(org.id, cluster_id).await??)
+}
+
+async fn get_cluster_info_from_api(
+    org: Signal<Option<Organization>>,
+    cluster_id: uuid::Uuid,
+) -> Result<KubeClusterInfo> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = get_hrpc_client();
+
+    Ok(client.get_cluster_info(org.id, cluster_id).await??)
+}
+
+#[component]
+pub fn ClusterInfo(cluster_id: Uuid) -> impl IntoView {
+    let org = get_current_org();
+
+    let config = use_context::<AppConfig>().unwrap();
+    let cluster_info =
+        LocalResource::new(
+            move || async move { get_cluster_info_from_api(org, cluster_id).await.ok() },
+        );
+    let cluster_info = Signal::derive(move || {
+        let cluster_info = cluster_info.get();
+        if let Some(Some(info)) = cluster_info.as_ref() {
+            config
+                .current_page
+                .set(info.cluster_name.clone().unwrap_or_default());
+        }
+        cluster_info.flatten().unwrap_or_else(|| KubeClusterInfo {
+            cluster_id: Some(cluster_id.to_string()),
+            cluster_name: Some("Unknown".to_string()),
+            cluster_version: "Unknown".to_string(),
+            node_count: 0,
+            available_cpu: "N/A".to_string(),
+            available_memory: "N/A".to_string(),
+            provider: None,
+            region: None,
+            status: KubeClusterStatus::NotReady,
+        })
+    });
+
+    view! {
+        <Card class="my-4 p-4 flex flex-col gap-4">
+            <H4>Cluster Information</H4>
+            {move || {
+                let info = cluster_info.get();
+
+                let status_variant = match info.status {
+                    KubeClusterStatus::Ready => BadgeVariant::Secondary,
+                    KubeClusterStatus::NotReady => BadgeVariant::Destructive,
+                    KubeClusterStatus::Error => BadgeVariant::Destructive,
+                    KubeClusterStatus::Provisioning => BadgeVariant::Outline,
+                };
+
+                view! {
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div>
+                            <div class="flex flex-col gap-1">
+                                <Label>Name</Label>
+                                <P class="font-medium">{info.cluster_name.unwrap_or("N/A".to_string())}</P>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex flex-col gap-1">
+                                <Label>Version</Label>
+                                <P class="font-medium">{info.cluster_version}</P>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex flex-col gap-1">
+                                <Label>Status</Label>
+                                <Badge variant=status_variant>{info.status.to_string()}</Badge>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex flex-col gap-1">
+                                <Label>Region</Label>
+                                <P class="font-medium">{info.region.unwrap_or("N/A".to_string())}</P>
+                            </div>
+                        </div>
+                    </div>
+                }
+            }}
+        </Card>
+    }
 }
 
 #[component]
@@ -73,117 +182,143 @@ pub fn KubeResourceList(
     cluster_id: Uuid,
 ) -> impl IntoView {
     let org = get_current_org();
-    let namespace_filter = RwSignal::new_local("".to_string());
-    let kind_filter = RwSignal::new_local("All".to_string());
-    let current_cursor = RwSignal::new_local(None::<String>);
+    let namespace_filter = RwSignal::new_local(None);
+    let kind_filter = RwSignal::new_local(None::<KubeWorkloadKind>);
     let limit = RwSignal::new_local(20usize);
     let is_loading = RwSignal::new(false);
+    let workload_cache = RwSignal::new_local(WorkloadCache::new(kind_filter.get_untracked()));
+    let cache_offset = RwSignal::new_local(0usize);
 
-    let workloads = LocalResource::new(move || {
-        let namespace = if namespace_filter.get().is_empty() {
-            None
-        } else {
-            Some(namespace_filter.get())
-        };
+    let namespace_select_value = RwSignal::new(None::<String>);
+    let workload_kind_select_value = RwSignal::new(None::<KubeWorkloadKind>);
+    let limit_select_value = RwSignal::new(20usize);
+    let include_system_workloads = RwSignal::new(false);
 
-        async move {
-            is_loading.set(true);
-            let result = get_workloads(
+    let cluster_info =
+        LocalResource::new(
+            move || async move { get_cluster_info_from_api(org, cluster_id).await.ok() },
+        );
+    let cluster_status = Signal::derive(move || {
+        cluster_info
+            .get()
+            .flatten()
+            .map(|info| info.status)
+            .unwrap_or(KubeClusterStatus::NotReady)
+    });
+
+    let workloads = LocalResource::new(move || async move {
+        is_loading.set(true);
+        let offset = cache_offset.get_untracked();
+        let limit = limit.get_untracked();
+        let needs_more_retrieve =
+            workload_cache.with_untracked(|c| c.needs_more_retrieve(offset, limit));
+
+        if needs_more_retrieve {
+            let pagination_params = PaginationParams {
+                cursor: workload_cache.with_untracked(|c| c.cursor.clone()),
+                limit,
+            };
+            let result = get_workloads_from_api(
                 org,
                 cluster_id,
-                namespace.unwrap_or_default(),
-                PaginationParams {
-                    cursor: current_cursor.get(),
-                    limit: limit.get(),
-                },
+                namespace_filter.get_untracked(),
+                kind_filter.get_untracked(),
+                include_system_workloads.get_untracked(),
+                pagination_params,
             )
             .await
             .unwrap_or_else(|_| KubeWorkloadList {
                 workloads: vec![],
                 next_cursor: None,
-                has_next: false,
             });
-            is_loading.set(false);
-            result
+
+            workload_cache.update(|c| {
+                c.update_cache(result);
+            });
         }
+
+        is_loading.set(false);
+        workload_cache.with_untracked(|c| c.retrieve_list(offset, limit))
     });
 
     Effect::new(move |_| {
         update_counter.track();
         namespace_filter.track();
         kind_filter.track();
-        current_cursor.track();
+        include_system_workloads.track();
         limit.track();
+
+        // Clear cache when filters change or limit changes
+        workload_cache.set(WorkloadCache::new(kind_filter.get_untracked()));
+        cache_offset.set(0);
         workloads.refetch();
     });
 
-    let workload_list = Signal::derive(move || {
-        workloads.get().unwrap_or_else(|| KubeWorkloadList {
-            workloads: vec![],
-            next_cursor: None,
-            has_next: false,
-        })
+    Effect::new(move |_| {
+        cache_offset.track();
+        workloads.refetch();
     });
 
-    let filtered_workloads = Signal::derive(move || {
-        let list = workload_list.get();
-        let kind_filter_val = kind_filter.get();
+    let workload_list = Signal::derive(move || workloads.get().unwrap_or_default());
 
-        if kind_filter_val == "All" {
-            list.workloads
-        } else {
-            list.workloads
-                .into_iter()
-                .filter(|w| format!("{:?}", w.kind) == kind_filter_val)
-                .collect()
-        }
-    });
+    let filtered_workloads = Signal::derive(move || workload_list.get());
 
     let detail_modal_open = RwSignal::new(false);
     let selected_workload = RwSignal::new_local(None::<KubeWorkload>);
 
-    let workload_kind_select_open = RwSignal::new(false);
-    let workload_kind_select_value = RwSignal::new(None::<KubeWorkloadKind>);
+    // Sync namespace select with namespace filter
+    Effect::new(move |_| {
+        let selected_namespace = namespace_select_value.get();
+        let current_filter = namespace_filter.get_untracked();
+        if selected_namespace != current_filter {
+            namespace_filter.set(selected_namespace);
+        }
+    });
 
-    let limit_select_open = RwSignal::new(false);
-    let limit_select_value = RwSignal::new(20usize);
+    // Sync workload kind select with kind filter
+    Effect::new(move |_| {
+        let selected_kind = workload_kind_select_value.get();
+        let current_filter = kind_filter.get_untracked();
+        if selected_kind != current_filter {
+            kind_filter.set(selected_kind);
+        }
+    });
 
     // Sync limit select with limit signal
     Effect::new(move |_| {
         let selected_limit = limit_select_value.get();
-        if selected_limit != limit.get() {
+        if selected_limit != limit.get_untracked() {
             limit.set(selected_limit);
-            current_cursor.set(None); // Reset cursor when changing limit
         }
     });
 
     view! {
-        <div class="mt-8 flex flex-col gap-4">
-            <WorkloadFilters
-                workload_kind_select_open
-                workload_kind_select_value
-            />
+        <div class="flex flex-col gap-4">
+            <div class="flex flex-wrap gap-4 items-center">
+               <NamespaceFilters namespace_select_value cluster_id />
+               <WorkloadFilters workload_kind_select_value />
+               <SystemWorkloadsCheckbox include_system_workloads />
+            </div>
             <WorkloadPagination
                 workload_list
-                current_cursor
-                limit_select_open
                 limit_select_value
+                workload_cache
+                cache_offset
+                is_loading=is_loading.read_only().into()
             />
-
 
             <WorkloadTable
                 filtered_workloads
                 is_loading=is_loading.read_only().into()
+                cluster_status
+                cluster_id
                 on_view_details=Callback::new(move |w| {
                     selected_workload.set(Some(w));
                     detail_modal_open.set(true);
                 })
             />
 
-            <WorkloadDetailModal
-                modal_open=detail_modal_open
-                workload=selected_workload
-            />
+            <WorkloadDetailModal modal_open=detail_modal_open workload=selected_workload />
         </div>
     }
 }
@@ -191,6 +326,7 @@ pub fn KubeResourceList(
 #[component]
 pub fn KubeResourceItem(
     workload: KubeWorkload,
+    selected_workloads: RwSignal<std::collections::HashSet<WorkloadKey>>,
     on_view_details: impl Fn(KubeWorkload) + 'static,
 ) -> impl IntoView {
     let status_variant = match workload.status {
@@ -214,14 +350,32 @@ pub fn KubeResourceItem(
         .map(|_| "TODO: calculate age".to_string())
         .unwrap_or_else(|| "-".to_string());
 
-    let workload_clone = workload.clone();
-    // let view_details = move |_| {
-    //     on_view_details(workload_clone.clone());
-    // };
+    let workload_key = WorkloadKey::from_workload(&workload);
+    let workload_key_clone = workload_key.clone();
+    let is_selected =
+        Signal::derive(move || selected_workloads.with(|s| s.contains(&workload_key)));
+
+    let toggle_selection = move |_| {
+        selected_workloads.update(|selected| {
+            if selected.contains(&workload_key_clone) {
+                selected.remove(&workload_key_clone);
+            } else {
+                selected.insert(workload_key_clone.clone());
+            }
+        });
+    };
 
     view! {
         <TableRow>
-            <TableCell class="pl-4">
+            <TableCell class="w-10">
+                <div class="flex items-center justify-center">
+                    <Checkbox
+                        prop:checked=move || is_selected.get()
+                        on:change=toggle_selection
+                    />
+                </div>
+            </TableCell>
+            <TableCell>
                 <span class="font-medium">{workload.name.clone()}</span>
             </TableCell>
             <TableCell>
@@ -234,11 +388,8 @@ pub fn KubeResourceItem(
             <TableCell>{replica_text}</TableCell>
             <TableCell>{age_text}</TableCell>
             <TableCell class="pr-4">
-                <Button
-                    variant=ButtonVariant::Outline
-                    size=ButtonSize::Sm
+                <Button variant=ButtonVariant::Outline size=ButtonSize::Sm>
                     // on:click=view_details
-                >
                     <lucide_leptos::Eye />
                     Details
                 </Button>
@@ -280,66 +431,74 @@ pub fn WorkloadDetailModal(
                                     <Label>Status</Label>
                                     <P class="font-mono text-sm">{w.status.to_string()}</P>
                                 </div>
-                                {
-                                    if let (Some(ready), Some(total)) = (w.ready_replicas, w.replicas) {
-                                        view! {
-                                            <div>
-                                                <Label>Replicas</Label>
-                                                <P class="font-mono text-sm">{format!("{}/{}", ready, total)}</P>
-                                            </div>
-                                        }.into_any()
-                                    } else {
-                                        view! { <div></div> }.into_any()
-                                    }
-                                }
-                                {
-                                    if let Some(created) = &w.created_at {
-                                        let created_str = created.clone();
-                                        view! {
-                                            <div>
-                                                <Label>Created</Label>
-                                                <P class="font-mono text-sm">{created_str}</P>
-                                            </div>
-                                        }.into_any()
-                                    } else {
-                                        view! { <div></div> }.into_any()
-                                    }
-                                }
-                            </div>
-
-                            {
-                                if !w.labels.is_empty() {
-                                    let labels_vec: Vec<_> = w.labels.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                                {if let (Some(ready), Some(total)) = (
+                                    w.ready_replicas,
+                                    w.replicas,
+                                ) {
                                     view! {
                                         <div>
-                                            <Label>Labels</Label>
-                                            <div class="mt-2 space-y-1">
-                                                <For
-                                                    each=move || labels_vec.clone()
-                                                    key=|(k, _)| k.clone()
-                                                    children=move |(key, value)| {
-                                                        view! {
-                                                            <div class="flex items-center gap-2">
-                                                                <Badge variant=BadgeVariant::Outline class="font-mono text-xs">
-                                                                    {format!("{}={}", key, value)}
-                                                                </Badge>
-                                                            </div>
-                                                        }
-                                                    }
-                                                />
-                                            </div>
+                                            <Label>Replicas</Label>
+                                            <P class="font-mono text-sm">
+                                                {format!("{}/{}", ready, total)}
+                                            </P>
                                         </div>
-                                    }.into_any()
+                                    }
+                                        .into_any()
                                 } else {
                                     view! { <div></div> }.into_any()
+                                }}
+                                {if let Some(created) = &w.created_at {
+                                    let created_str = created.clone();
+                                    view! {
+                                        <div>
+                                            <Label>Created</Label>
+                                            <P class="font-mono text-sm">{created_str}</P>
+                                        </div>
+                                    }
+                                        .into_any()
+                                } else {
+                                    view! { <div></div> }.into_any()
+                                }}
+                            </div>
+
+                            {if !w.labels.is_empty() {
+                                let labels_vec: Vec<_> = w
+                                    .labels
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
+                                view! {
+                                    <div>
+                                        <Label>Labels</Label>
+                                        <div class="mt-2 space-y-1">
+                                            <For
+                                                each=move || labels_vec.clone()
+                                                key=|(k, _)| k.clone()
+                                                children=move |(key, value)| {
+                                                    view! {
+                                                        <div class="flex items-center gap-2">
+                                                            <Badge
+                                                                variant=BadgeVariant::Outline
+                                                                class="font-mono text-xs"
+                                                            >
+                                                                {format!("{}={}", key, value)}
+                                                            </Badge>
+                                                        </div>
+                                                    }
+                                                }
+                                            />
+                                        </div>
+                                    </div>
                                 }
-                            }
+                                    .into_any()
+                            } else {
+                                view! { <div></div> }.into_any()
+                            }}
                         </div>
-                    }.into_any()
+                    }
+                        .into_any()
                 } else {
-                    view! {
-                        <P>No workload selected</P>
-                    }.into_any()
+                    view! { <P>No workload selected</P> }.into_any()
                 }
             }}
         </Modal>
@@ -347,20 +506,43 @@ pub fn WorkloadDetailModal(
 }
 
 #[component]
+pub fn SystemWorkloadsCheckbox(include_system_workloads: RwSignal<bool>) -> impl IntoView {
+    view! {
+        <div class="flex items-center gap-2">
+            <Checkbox
+                attr:id="system-workloads"
+                prop:checked=move || include_system_workloads.get()
+                on:change=move |ev| {
+                    let checked = event_target_checked(&ev);
+                    include_system_workloads.set(checked);
+                }
+            />
+            <label for="system-workloads" class="text-sm text-gray-700">
+                "Show System Workloads"
+            </label>
+        </div>
+    }
+}
+
+#[component]
 pub fn WorkloadFilters(
-    workload_kind_select_open: RwSignal<bool>,
     workload_kind_select_value: RwSignal<Option<KubeWorkloadKind>>,
 ) -> impl IntoView {
+    let workload_kind_select_open = RwSignal::new(false);
+
     view! {
-        <Select
-            open=workload_kind_select_open
-            value=workload_kind_select_value
-        >
-            <SelectTrigger>{move || match workload_kind_select_value.get() {
-                Some(k) => k.to_string(),
-                None => "All Types".to_string(),
-            }}</SelectTrigger>
-            <SelectContent>
+        <Select open=workload_kind_select_open value=workload_kind_select_value>
+            <SelectTrigger
+                class="w-48"
+            >
+                {move || match workload_kind_select_value.get() {
+                    Some(k) => k.to_string(),
+                    None => "All Workload Types".to_string(),
+                }}
+            </SelectTrigger>
+            <SelectContent
+                class="w-48"
+            >
                 <SelectItem value={None::<KubeWorkloadKind>}>All Types</SelectItem>
                 <SelectItem value=Some(KubeWorkloadKind::Deployment)>Deployment</SelectItem>
                 <SelectItem value=Some(KubeWorkloadKind::StatefulSet)>StatefulSet</SelectItem>
@@ -374,17 +556,340 @@ pub fn WorkloadFilters(
 }
 
 #[component]
+pub fn NamespaceFilters(
+    namespace_select_value: RwSignal<Option<String>>,
+    cluster_id: Uuid,
+) -> impl IntoView {
+    let namespace_select_open = RwSignal::new(false);
+    let org = get_current_org();
+
+    let namespaces = LocalResource::new(move || async move {
+        get_namespaces_from_api(org, cluster_id)
+            .await
+            .unwrap_or_default()
+    });
+
+    view! {
+        <Select
+            open=namespace_select_open
+            value=namespace_select_value
+        >
+            <SelectTrigger
+                class="w-64"
+            >
+                {move || match namespace_select_value.get() {
+                    Some(ns) => ns,
+                    None => "All Namespaces".to_string(),
+                }}
+            </SelectTrigger>
+            <SelectContent
+                class="w-64"
+            >
+                <SelectSearchInput />
+                <SelectSeparator />
+                <SelectItem value={None::<String>}>All Namespaces</SelectItem>
+                <For
+                    each=move || namespaces.get().unwrap_or_default()
+                    key=|ns| ns.name.clone()
+                    children=move |namespace| {
+                        let name = namespace.name.clone();
+                        view! {
+                            <SelectItem value=Some(name.clone()) display=name.clone()>{name}</SelectItem>
+                        }
+                    }
+                />
+            </SelectContent>
+        </Select>
+    }
+}
+
+async fn create_app_catalog_api(
+    org: Signal<Option<Organization>>,
+    cluster_id: Uuid,
+    name: String,
+    description: String,
+    selected_workloads: std::collections::HashSet<WorkloadKey>,
+    filtered_workloads: Vec<KubeWorkload>,
+) -> Result<(), ErrorResponse> {
+    let org = org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+
+    let workloads: Vec<KubeWorkload> = filtered_workloads
+        .into_iter()
+        .filter(|w| selected_workloads.contains(&WorkloadKey::from_workload(w)))
+        .collect();
+
+    if name.trim().is_empty() {
+        return Err(anyhow!("Catalog name is required"))?;
+    }
+
+    // Serialize workloads to JSON
+    let resources_json = serde_json::to_string(&workloads)
+        .map_err(|e| anyhow!("Failed to serialize workloads: {}", e))?;
+
+    let client = get_hrpc_client();
+    client
+        .create_app_catalog(
+            org.id,
+            cluster_id,
+            name.clone(),
+            if description.trim().is_empty() {
+                None
+            } else {
+                Some(description)
+            },
+            resources_json,
+        )
+        .await??;
+
+    Ok(())
+}
+
+#[component]
+pub fn AppCatalogModal(
+    modal_open: RwSignal<bool>,
+    selected_workloads: RwSignal<std::collections::HashSet<WorkloadKey>>,
+    filtered_workloads: Signal<Vec<KubeWorkload>>,
+    cluster_id: Uuid,
+) -> impl IntoView {
+    let catalog_name = RwSignal::new_local("".to_string());
+    let catalog_description = RwSignal::new_local("".to_string());
+    let org = get_current_org();
+
+    let create_action = Action::new_local(move |_| async move {
+        let name = catalog_name.get_untracked();
+        let description = catalog_description.get_untracked();
+        let selected = selected_workloads.get_untracked();
+        let workloads = filtered_workloads.get_untracked();
+
+        create_app_catalog_api(org, cluster_id, name, description, selected, workloads).await?;
+
+        // Clear form and close modal
+        catalog_name.set("".to_string());
+        catalog_description.set("".to_string());
+        modal_open.set(false);
+
+        // Clear selections after successful creation
+        selected_workloads.set(std::collections::HashSet::new());
+
+        Ok(())
+    });
+
+    view! {
+        <Modal
+            title="Create App Catalog"
+            open=modal_open
+            action=create_action
+        >
+            <div class="flex flex-col gap-4">
+                <div class="flex flex-col gap-2">
+                    <Label>Catalog Name</Label>
+                    <Input
+                        prop:value=move || catalog_name.get()
+                        on:input=move |ev| {
+                            catalog_name.set(event_target_value(&ev));
+                        }
+                        attr:placeholder="Enter catalog name"
+                        attr:required=true
+                    />
+                </div>
+
+                <div class="flex flex-col gap-2">
+                    <Label>Description</Label>
+                    <Textarea
+                        prop:value=move || catalog_description.get()
+                        on:input=move |ev| {
+                            catalog_description.set(event_target_value(&ev));
+                        }
+                        attr:placeholder="Describe what this app does..."
+                        class="min-h-20"
+                    />
+                </div>
+
+                <div class="flex flex-col gap-2">
+                    <Label>
+                        {move || {
+                            let count = selected_workloads.with(|s| s.len());
+                            format!("Selected Workloads ({})", count)
+                        }}
+                    </Label>
+                    <div class="h-64 overflow-y-auto border rounded p-2 bg-muted/30">
+                        {move || {
+                            let selected = selected_workloads.get();
+                            let workloads: Vec<KubeWorkload> = filtered_workloads
+                                .get()
+                                .into_iter()
+                                .filter(|w| selected.contains(&WorkloadKey::from_workload(w)))
+                                .collect();
+
+                            if workloads.is_empty() {
+                                view! {
+                                    <P class="text-sm text-muted-foreground">No workloads selected</P>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <div class="flex flex-col gap-1">
+                                        <For
+                                            each=move || workloads.clone()
+                                            key=|w| WorkloadKey::from_workload(w)
+                                            children=move |workload| {
+                                                view! {
+                                                    <div class="flex items-center gap-2 text-sm">
+                                                        <Badge variant=BadgeVariant::Outline class="text-xs">
+                                                            {format!("{:?}", workload.kind)}
+                                                        </Badge>
+                                                        <span class="font-medium">{workload.name}</span>
+                                                        <span class="text-muted-foreground">
+                                                            "in " {workload.namespace}
+                                                        </span>
+                                                    </div>
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                }.into_any()
+                            }
+                        }}
+                    </div>
+                </div>
+            </div>
+        </Modal>
+    }
+}
+
+#[component]
+pub fn AppCatalogActions(
+    selected_workloads: RwSignal<std::collections::HashSet<WorkloadKey>>,
+    filtered_workloads: Signal<Vec<KubeWorkload>>,
+    cluster_id: Uuid,
+) -> impl IntoView {
+    let modal_open = RwSignal::new(false);
+
+    let create_app_catalog = move |_| {
+        modal_open.set(true);
+    };
+
+    let clear_selections = move |_| {
+        selected_workloads.set(std::collections::HashSet::new());
+    };
+
+    view! {
+        <AppCatalogModal
+            modal_open
+            selected_workloads
+            filtered_workloads
+            cluster_id
+        />
+
+        // Action buttons row - only show when workloads are selected
+        {move || {
+            let selected_count = selected_workloads.with(|s| s.len());
+            if selected_count > 0 {
+                view! {
+                    <div class="flex items-center gap-2 p-3 bg-muted/50 rounded-lg border">
+                        <Button
+                            variant=ButtonVariant::Default
+                            on:click=create_app_catalog
+                        >
+                            <lucide_leptos::Plus />
+                            "Create App Catalog"
+                        </Button>
+                        <Button
+                            variant=ButtonVariant::Outline
+                            on:click=clear_selections
+                        >
+                            <lucide_leptos::X />
+                            "Clear Selections"
+                        </Button>
+                        <span class="text-sm text-muted-foreground">
+                            {format!("{} selected", selected_count)}
+                        </span>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }
+        }}
+    }
+}
+
+#[component]
 pub fn WorkloadTable(
     filtered_workloads: Signal<Vec<KubeWorkload>>,
     is_loading: Signal<bool>,
+    cluster_status: Signal<KubeClusterStatus>,
+    cluster_id: Uuid,
     #[prop(into)] on_view_details: Callback<KubeWorkload>,
 ) -> impl IntoView {
+    let selected_workloads = RwSignal::new(std::collections::HashSet::<WorkloadKey>::new());
+
+    let all_selected = Signal::derive(move || {
+        let workloads = filtered_workloads.get();
+        let selected = selected_workloads.get();
+        if workloads.is_empty() {
+            false
+        } else {
+            workloads
+                .iter()
+                .all(|w| selected.contains(&WorkloadKey::from_workload(w)))
+        }
+    });
+
+    let some_selected = Signal::derive(move || {
+        let workloads = filtered_workloads.get();
+        let selected = selected_workloads.get();
+        workloads
+            .iter()
+            .any(|w| selected.contains(&WorkloadKey::from_workload(w)))
+    });
+
+    let toggle_all = move |_| {
+        let workloads = filtered_workloads.get_untracked();
+        if all_selected.get_untracked() {
+            // Unselect only the workloads currently visible in the table
+            let current_workload_keys: std::collections::HashSet<WorkloadKey> = workloads
+                .iter()
+                .map(|w| WorkloadKey::from_workload(w))
+                .collect();
+
+            selected_workloads.update(|selected| {
+                for key in &current_workload_keys {
+                    selected.remove(key);
+                }
+            });
+        } else {
+            // Select all current workloads
+            let all_keys: std::collections::HashSet<WorkloadKey> = workloads
+                .iter()
+                .map(|w| WorkloadKey::from_workload(w))
+                .collect();
+
+            selected_workloads.update(|selected| {
+                for key in all_keys {
+                    selected.insert(key);
+                }
+            });
+        }
+    };
     view! {
-        <div class="relative rounded-lg border">
+        <div class="flex flex-col gap-4">
+            <AppCatalogActions selected_workloads filtered_workloads cluster_id />
+
+            <div class="relative rounded-lg border">
             <Table class="table-auto">
                 <TableHeader class="bg-muted">
                     <TableRow>
-                        <TableHead class="pl-4">Name</TableHead>
+                        <TableHead class="w-10">
+                            <div class="flex items-center justify-center">
+                                <Checkbox
+                                    prop:checked=move || all_selected.get()
+                                    prop:indeterminate=move || some_selected.get() && !all_selected.get()
+                                    on:change=toggle_all
+                                />
+                            </div>
+                        </TableHead>
+                        <TableHead>Name</TableHead>
                         <TableHead>Namespace</TableHead>
                         <TableHead>Kind</TableHead>
                         <TableHead>Status</TableHead>
@@ -396,11 +901,12 @@ pub fn WorkloadTable(
                 <TableBody>
                     <For
                         each=move || filtered_workloads.get()
-                        key=|w| format!("{}_{}", w.namespace, w.name)
+                        key=|w| WorkloadKey::from_workload(w)
                         children=move |workload| {
                             view! {
                                 <KubeResourceItem
                                     workload=workload.clone()
+                                    selected_workloads
                                     on_view_details=move |w| {
                                         on_view_details.run(w);
                                     }
@@ -410,6 +916,45 @@ pub fn WorkloadTable(
                     />
                 </TableBody>
             </Table>
+
+            {move || {
+                let workload_list = filtered_workloads.get();
+                if workload_list.is_empty() && !is_loading.get() {
+                    let status = cluster_status.get();
+                    let (title, message) = match status {
+                        KubeClusterStatus::Ready => (
+                            "No Workloads Found",
+                            "No workloads match your current filters. Try adjusting your namespace or workload type filters."
+                        ),
+                        KubeClusterStatus::NotReady => (
+                            "Cluster Not Ready",
+                            "The cluster is not ready yet. Workloads will appear once the cluster is fully connected and operational."
+                        ),
+                        KubeClusterStatus::Error => (
+                            "Cluster Error",
+                            "The cluster is experiencing issues. Please check the cluster status and connection before workloads can be displayed."
+                        ),
+                        KubeClusterStatus::Provisioning => (
+                            "Cluster Provisioning",
+                            "The cluster is still being provisioned. Workloads will be available once the cluster setup is complete."
+                        ),
+                    };
+
+                    view! {
+                        <div class="flex flex-col items-center justify-center py-12 text-center">
+                            <div class="rounded-full bg-muted p-3 mb-4">
+                                <lucide_leptos::Layers />
+                            </div>
+                            <H4 class="mb-2">{title}</H4>
+                            <P class="text-muted-foreground mb-4 max-w-sm">
+                                {message}
+                            </P>
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <div></div> }.into_any()
+                }
+            }}
 
             // Loading overlay
             {move || {
@@ -421,46 +966,73 @@ pub fn WorkloadTable(
                                 "Loading workloads..."
                             </div>
                         </div>
-                    }.into_any()
+                    }
+                        .into_any()
                 } else {
                     view! { <div></div> }.into_any()
                 }
             }}
+            </div>
         </div>
     }
 }
 
 #[component]
 pub fn WorkloadPagination(
-    workload_list: Signal<KubeWorkloadList>,
-    current_cursor: RwSignal<Option<String>, LocalStorage>,
-    limit_select_open: RwSignal<bool>,
+    workload_list: Signal<Vec<KubeWorkload>>,
     limit_select_value: RwSignal<usize>,
+    workload_cache: RwSignal<WorkloadCache, LocalStorage>,
+    cache_offset: RwSignal<usize, LocalStorage>,
+    is_loading: Signal<bool>,
 ) -> impl IntoView {
-    let cursor_history = RwSignal::new_local(Vec::<Option<String>>::new());
-
+    let limit_select_open = RwSignal::new(false);
     view! {
         {move || {
             let list = workload_list.get();
-            let has_previous = !cursor_history.get().is_empty();
-            let has_next = list.has_next;
+            let has_previous = cache_offset.get() > 0;
+            let has_next = workload_cache
+                .with(|c| c.has_next(cache_offset.get(), limit_select_value.get()));
 
             view! {
-                <div class="flex items-center justify-between mt-4">
+                <div class="flex items-center justify-between flex-wrap gap-4">
                     <div class="flex items-center gap-4">
                         <div class="text-sm text-muted-foreground">
-                            {format!("Showing {} workloads", list.workloads.len())}
+                            {
+                                let offset = cache_offset.get();
+                                let count = list.len();
+                                let total_count = workload_cache
+                                    .with(|c| {
+                                        if c.cursor.is_none() {
+                                            Some(c.workloads.len())
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if count > 0 {
+                                    format!(
+                                        "Showing {}-{} of {}workloads",
+                                        offset + 1,
+                                        offset + count,
+                                        if let Some(total_count) = total_count {
+                                            format!("{total_count} ")
+                                        } else {
+                                            "".to_string()
+                                        },
+                                    )
+                                } else {
+                                    "No workloads found".to_string()
+                                }
+                            }
                         </div>
+                    </div>
+                    <div class="flex items-center gap-2">
                         <div class="flex items-center gap-2">
                             <span class="text-sm text-muted-foreground">"Rows per page:"</span>
                             <div class="w-20">
-                                <Select
-                                    open=limit_select_open
-                                    value=limit_select_value
-                                >
-                                    <SelectTrigger class="h-8 text-sm">{move || {
-                                        limit_select_value.get().to_string()
-                                    }}</SelectTrigger>
+                                <Select open=limit_select_open value=limit_select_value>
+                                    <SelectTrigger class="h-8 text-sm">
+                                        {move || { limit_select_value.get().to_string() }}
+                                    </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value=10usize>10</SelectItem>
                                         <SelectItem value=20usize>20</SelectItem>
@@ -470,18 +1042,17 @@ pub fn WorkloadPagination(
                                 </Select>
                             </div>
                         </div>
-                    </div>
-                    <div class="flex items-center gap-2">
                         <Button
                             variant=ButtonVariant::Outline
                             size=ButtonSize::Sm
-                            disabled=!has_previous
+                            disabled=!has_previous || is_loading.get()
                             on:click=move |_| {
-                                let mut history = cursor_history.get();
-                                if let Some(prev_cursor) = history.pop() {
-                                    current_cursor.set(prev_cursor);
-                                    cursor_history.set(history);
-                                }
+                                cache_offset
+                                    .set(
+                                        cache_offset
+                                            .get_untracked()
+                                            .saturating_sub(limit_select_value.get_untracked()),
+                                    );
                             }
                         >
                             <lucide_leptos::ChevronLeft />
@@ -490,12 +1061,9 @@ pub fn WorkloadPagination(
                         <Button
                             variant=ButtonVariant::Outline
                             size=ButtonSize::Sm
-                            disabled=!has_next
+                            disabled=!has_next || is_loading.get()
                             on:click=move |_| {
-                                let mut history = cursor_history.get();
-                                history.push(current_cursor.get());
-                                cursor_history.set(history);
-                                current_cursor.set(list.next_cursor.clone());
+                                cache_offset.set(cache_offset.get() + limit_select_value.get());
                             }
                         >
                             Next
@@ -503,7 +1071,69 @@ pub fn WorkloadPagination(
                         </Button>
                     </div>
                 </div>
-            }.into_any()
+            }
+                .into_any()
         }}
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkloadKey {
+    pub namespace: String,
+    pub name: String,
+}
+
+impl WorkloadKey {
+    pub fn from_workload(workload: &KubeWorkload) -> Self {
+        Self {
+            namespace: workload.namespace.clone(),
+            name: workload.name.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkloadKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}_{}", self.namespace, self.name)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkloadCache {
+    workloads: Vec<KubeWorkload>,
+    cursor: Option<PaginationCursor>, // The next cursor from API response
+}
+
+impl WorkloadCache {
+    fn new(kind_filter: Option<KubeWorkloadKind>) -> Self {
+        Self {
+            workloads: vec![],
+            cursor: Some(PaginationCursor {
+                workload_kind: kind_filter.unwrap_or(KubeWorkloadKind::Deployment),
+                continue_token: None,
+            }),
+        }
+    }
+
+    fn has_next(&self, offset: usize, limit: usize) -> bool {
+        offset + limit < self.workloads.len() || self.cursor.is_some()
+    }
+
+    fn needs_more_retrieve(&self, offset: usize, limit: usize) -> bool {
+        if self.cursor.is_none() {
+            // cursor is none, which means there's no more from the api
+            return false;
+        }
+
+        self.workloads.len() < offset + limit
+    }
+
+    fn update_cache(&mut self, list: KubeWorkloadList) {
+        self.workloads.extend(list.workloads);
+        self.cursor = list.next_cursor;
+    }
+
+    fn retrieve_list(&self, offset: usize, limit: usize) -> Vec<KubeWorkload> {
+        self.workloads[offset..(offset + limit).min(self.workloads.len())].to_vec()
     }
 }

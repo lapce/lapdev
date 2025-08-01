@@ -1,3 +1,4 @@
+use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use uuid::Uuid;
@@ -55,7 +56,9 @@ pub struct KubeWorkload {
     pub labels: std::collections::HashMap<String, String>,
 }
 
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, strum_macros::Display)]
+#[derive(
+    PartialEq, Debug, Clone, Serialize, Deserialize, strum_macros::Display, strum_macros::EnumString,
+)]
 pub enum KubeWorkloadKind {
     Deployment,
     StatefulSet,
@@ -80,13 +83,18 @@ pub enum KubeWorkloadStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeWorkloadList {
     pub workloads: Vec<KubeWorkload>,
-    pub next_cursor: Option<String>,
-    pub has_next: bool,
+    pub next_cursor: Option<PaginationCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaginationCursor {
+    pub workload_kind: KubeWorkloadKind,
+    pub continue_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginationParams {
-    pub cursor: Option<String>,
+    pub cursor: Option<PaginationCursor>,
     pub limit: usize,
 }
 
@@ -94,4 +102,34 @@ pub struct PaginationParams {
 pub struct CreateKubeClusterResponse {
     pub cluster_id: Uuid,
     pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeNamespace {
+    pub name: String,
+    pub status: String,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeAppCatalog {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<FixedOffset>,
+    pub created_by: Uuid,
+    pub cluster_id: Uuid,
+    pub cluster_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeEnvironment {
+    pub id: Uuid,
+    pub name: String,
+    pub namespace: String,
+    pub app_catalog_id: Uuid,
+    pub app_catalog_name: String,
+    pub status: Option<String>,
+    pub created_at: String,
+    pub created_by: Uuid,
 }

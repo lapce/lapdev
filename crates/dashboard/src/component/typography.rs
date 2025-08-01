@@ -42,6 +42,26 @@ pub fn H3(
 }
 
 #[component]
+pub fn H4(
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(optional)] children: Option<Children>,
+) -> impl IntoView {
+    let children = children
+        .map(|c| c().into_any())
+        .unwrap_or_else(|| ().into_any());
+    view! {
+        <h4
+            class=move || tw_merge!(
+                "scroll-m-20 text-xl font-semibold tracking-tight",
+                class.get()
+            )
+        >
+            {children}
+        </h4>
+    }
+}
+
+#[component]
 pub fn Lead(
     #[prop(into, optional)] class: MaybeProp<String>,
     #[prop(optional)] children: Option<Children>,

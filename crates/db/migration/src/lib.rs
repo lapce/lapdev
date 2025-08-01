@@ -21,6 +21,8 @@ mod m20240823_165223_create_oauth_table;
 mod m20250725_082239_create_k8s_provider;
 mod m20250729_082625_create_kube_cluster;
 mod m20250729_091307_create_kube_cluster_token;
+mod m20250801_000000_create_kube_app_catalog;
+mod m20250801_000001_create_kube_environment;
 
 pub struct Migrator;
 
@@ -49,6 +51,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20250725_082239_create_k8s_provider::Migration),
             Box::new(m20250729_082625_create_kube_cluster::Migration),
             Box::new(m20250729_091307_create_kube_cluster_token::Migration),
+            Box::new(m20250801_000000_create_kube_app_catalog::Migration),
+            Box::new(m20250801_000001_create_kube_environment::Migration),
         ]
     }
 }

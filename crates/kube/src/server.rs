@@ -1,4 +1,4 @@
-use lapdev_common::kube::{KubeClusterInfo, PaginationParams};
+use lapdev_common::kube::KubeClusterInfo;
 use lapdev_db::api::DbApi;
 use lapdev_rpc::kube::{KubeClusterRpc, KubeManagerRpcClient};
 use std::collections::HashMap;

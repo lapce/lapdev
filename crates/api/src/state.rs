@@ -14,8 +14,9 @@ use lapdev_api_hrpc::HrpcService;
 use lapdev_common::{
     hrpc::HrpcError,
     kube::{
-        CreateKubeClusterResponse, K8sProvider, K8sProviderKind, KubeClusterInfo,
-        KubeClusterStatus, KubeWorkload, KubeWorkloadList, PaginationParams,
+        CreateKubeClusterResponse, K8sProvider, K8sProviderKind, KubeAppCatalog, KubeClusterInfo,
+        KubeClusterStatus, KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
+        PaginationParams,
     },
     token::PlainToken,
     UserRole, LAPDEV_BASE_HOSTNAME,
@@ -510,6 +511,8 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         cluster_id: Uuid,
         namespace: Option<String>,
+        workload_kind_filter: Option<KubeWorkloadKind>,
+        include_system_workloads: bool,
         pagination: Option<PaginationParams>,
     ) -> Result<KubeWorkloadList, HrpcError> {
         let _ = self.authorize(headers, org_id, None).await?;
@@ -542,7 +545,13 @@ impl HrpcService for CoreState {
         // Call KubeManager to get workloads
         match server
             .rpc_client
-            .get_workloads(tarpc::context::current(), namespace, Some(pagination))
+            .get_workloads(
+                tarpc::context::current(),
+                namespace,
+                workload_kind_filter,
+                include_system_workloads,
+                Some(pagination),
+            )
             .await
         {
             Ok(Ok(workload_list)) => Ok(workload_list),
@@ -591,5 +600,183 @@ impl HrpcService for CoreState {
             Ok(Err(e)) => Err(ApiError::InvalidRequest(format!("KubeManager error: {}", e)).into()),
             Err(e) => Err(ApiError::InvalidRequest(format!("Connection error: {}", e)).into()),
         }
+    }
+
+    async fn get_namespaces(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        cluster_id: Uuid,
+    ) -> Result<Vec<KubeNamespace>, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+
+        // Verify cluster belongs to the organization
+        let cluster = self
+            .db
+            .get_kube_cluster(cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        if cluster.organization_id != org_id {
+            return Err(ApiError::Unauthorized.into());
+        }
+
+        // Get a connected KubeClusterServer for this cluster
+        let server = self
+            .get_random_kube_cluster_server(cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest("No connected KubeManager for this cluster".to_string())
+            })?;
+
+        // Call KubeManager to get namespaces
+        match server
+            .rpc_client
+            .get_namespaces(tarpc::context::current())
+            .await
+        {
+            Ok(Ok(namespaces)) => Ok(namespaces),
+            Ok(Err(e)) => Err(ApiError::InvalidRequest(format!("KubeManager error: {}", e)).into()),
+            Err(e) => Err(ApiError::InvalidRequest(format!("Connection error: {}", e)).into()),
+        }
+    }
+
+    async fn get_cluster_info(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        cluster_id: Uuid,
+    ) -> Result<KubeClusterInfo, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+
+        // Get cluster from database
+        let cluster = self
+            .db
+            .get_kube_cluster(cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        if cluster.organization_id != org_id {
+            return Err(ApiError::Unauthorized.into());
+        }
+
+        // Convert database cluster to KubeClusterInfo
+        let cluster_info = KubeClusterInfo {
+            cluster_id: Some(cluster.id.to_string()),
+            cluster_name: Some(cluster.name),
+            cluster_version: cluster.cluster_version.unwrap_or("Unknown".to_string()),
+            node_count: 0, // TODO: Get actual node count from kube-manager
+            available_cpu: "N/A".to_string(), // TODO: Get actual CPU from kube-manager
+            available_memory: "N/A".to_string(), // TODO: Get actual memory from kube-manager
+            provider: None, // TODO: Get provider info
+            region: cluster.region,
+            status: cluster
+                .status
+                .as_deref()
+                .and_then(|s| KubeClusterStatus::from_str(s).ok())
+                .unwrap_or(KubeClusterStatus::NotReady),
+        };
+
+        Ok(cluster_info)
+    }
+
+    async fn create_app_catalog(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        cluster_id: Uuid,
+        name: String,
+        description: Option<String>,
+        resources: String,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+
+        lapdev_db_entities::kube_app_catalog::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            created_at: ActiveValue::Set(Utc::now().into()),
+            name: ActiveValue::Set(name),
+            description: ActiveValue::Set(description),
+            resources: ActiveValue::Set(resources),
+            cluster_id: ActiveValue::Set(cluster_id),
+            created_by: ActiveValue::Set(user.id),
+            organization_id: ActiveValue::Set(org_id),
+            deleted_at: ActiveValue::Set(None),
+        }
+        .insert(&self.db.conn)
+        .await
+        .map_err(ApiError::from)?;
+
+        Ok(())
+    }
+
+    async fn all_app_catalogs(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+    ) -> Result<Vec<KubeAppCatalog>, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+        
+        let catalogs_with_clusters = lapdev_db_entities::kube_app_catalog::Entity::find()
+            .filter(lapdev_db_entities::kube_app_catalog::Column::OrganizationId.eq(org_id))
+            .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
+            .find_also_related(lapdev_db_entities::kube_cluster::Entity)
+            .all(&self.db.conn)
+            .await
+            .map_err(ApiError::from)?;
+
+        let app_catalogs = catalogs_with_clusters
+            .into_iter()
+            .filter_map(|(catalog, cluster)| {
+                let cluster = cluster?;
+                Some(KubeAppCatalog {
+                    id: catalog.id,
+                    name: catalog.name,
+                    description: catalog.description,
+                    created_at: catalog.created_at,
+                    created_by: catalog.created_by,
+                    cluster_id: catalog.cluster_id,
+                    cluster_name: cluster.name,
+                })
+            })
+            .collect();
+
+        Ok(app_catalogs)
+    }
+
+    async fn all_kube_environments(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+    ) -> Result<Vec<KubeEnvironment>, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+        
+        let environments = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(lapdev_db_entities::kube_environment::Column::OrganizationId.eq(org_id))
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .find_also_related(lapdev_db_entities::kube_app_catalog::Entity)
+            .all(&self.db.conn)
+            .await
+            .map_err(ApiError::from)?;
+
+        let kube_environments = environments
+            .into_iter()
+            .filter_map(|(env, catalog)| {
+                let catalog = catalog?;
+                Some(KubeEnvironment {
+                    id: env.id,
+                    name: env.name,
+                    namespace: env.namespace,
+                    app_catalog_id: env.app_catalog_id,
+                    app_catalog_name: catalog.name,
+                    status: env.status,
+                    created_at: env.created_at.to_string(),
+                    created_by: env.created_by,
+                })
+            })
+            .collect();
+
+        Ok(kube_environments)
     }
 }

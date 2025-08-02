@@ -210,7 +210,7 @@ impl KubeManager {
                 }
             })
             .collect::<Vec<_>>();
-        println!("{:?}", cluster.control_plane_endpoints_config);
+        println!("{:?}", cluster);
         let mut config = kube::Config::new(
             format!(
                 "https://{}/",
@@ -268,7 +268,6 @@ impl KubeManager {
         let region = detected_region.or_else(|| std::env::var("CLUSTER_REGION").ok());
 
         Ok(KubeClusterInfo {
-            cluster_id,
             cluster_name,
             cluster_version: format!("{}.{}", version.major, version.minor),
             node_count,
@@ -496,9 +495,10 @@ impl KubeManager {
             KubeWorkloadKind::Job,
             KubeWorkloadKind::CronJob,
         ];
-        
+
         // Filter resource types based on workload_kind_filter
-        let resource_types: Vec<KubeWorkloadKind> = if let Some(filter_kind) = workload_kind_filter {
+        let resource_types: Vec<KubeWorkloadKind> = if let Some(filter_kind) = workload_kind_filter
+        {
             vec![filter_kind]
         } else {
             all_resource_types.to_vec()
@@ -637,11 +637,14 @@ impl KubeManager {
     }
 
     async fn collect_namespaces(&self) -> Result<Vec<KubeNamespace>> {
-        let client = Self::new_kube_client().await?;
-        let namespaces: kube::Api<Namespace> = kube::Api::all(client);
-        
+        let client = self
+            .kube_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let namespaces: kube::Api<Namespace> = kube::Api::all((**client).clone());
+
         let namespace_list = namespaces.list(&ListParams::default()).await?;
-        
+
         let mut kube_namespaces = Vec::new();
         for namespace in namespace_list.items {
             let name = namespace.metadata.name.unwrap_or_default();
@@ -712,7 +715,7 @@ impl KubeManager {
                 // Only include top-level resources (no owner references)
                 if !Self::has_owner_references(&item) {
                     let is_system_workload = Self::is_system_workload(&item);
-                    
+
                     // Include workload based on system workloads filter
                     if include_system_workloads || !is_system_workload {
                         let workload = converter(item);
@@ -880,12 +883,12 @@ impl KubeManager {
         T: kube::Resource,
     {
         let meta = resource.meta();
-        
+
         // Check if in kube-system namespace
         if let Some(namespace) = &meta.namespace {
             return namespace == "kube-system";
         }
-        
+
         false
     }
 
@@ -1033,7 +1036,12 @@ impl KubeManagerRpc for KubeManager {
         pagination: Option<PaginationParams>,
     ) -> Result<KubeWorkloadList, String> {
         match self
-            .collect_workloads(namespace, workload_kind_filter, include_system_workloads, pagination)
+            .collect_workloads(
+                namespace,
+                workload_kind_filter,
+                include_system_workloads,
+                pagination,
+            )
             .await
         {
             Ok(workloads) => {
@@ -1081,10 +1089,7 @@ impl KubeManagerRpc for KubeManager {
     ) -> Result<Vec<KubeNamespace>, String> {
         match self.collect_namespaces().await {
             Ok(namespaces) => {
-                println!(
-                    "Successfully collected {} namespaces",
-                    namespaces.len()
-                );
+                println!("Successfully collected {} namespaces", namespaces.len());
                 Ok(namespaces)
             }
             Err(e) => {

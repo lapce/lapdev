@@ -20,7 +20,10 @@ use crate::{
     cluster::get_cluster_info,
     component::{
         button::{Button, ButtonVariant},
-        dropdown_menu::{DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger},
+        dropdown_menu::{
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+            DropdownPlacement,
+        },
         input::Input,
         label::Label,
     },
@@ -151,14 +154,17 @@ fn ProjectControl(
                 New Workspace
             </Button>
             <DropdownMenu class="ml-2" open=dropdown_expanded>
-                <DropdownMenuTrigger open=dropdown_expanded>
+                <DropdownMenuTrigger
+                    open=dropdown_expanded
+                    placement={if align_right {DropdownPlacement::BottomRight} else {DropdownPlacement::BottomLeft} }
+                >
                     <Button variant=ButtonVariant::Ghost class="px-2">
                         <lucide_leptos::EllipsisVertical />
                     </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
                     open=dropdown_expanded.read_only()
-                    class=format!("{} mt-2 min-w-56", if align_right { "right-0" } else { "" })
+                    class="mt-2 min-w-56"
                 >
                     <DropdownMenuItem
                         on:click=move |_| {

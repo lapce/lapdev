@@ -11,7 +11,9 @@ pub struct Model {
     pub deleted_at: Option<DateTimeWithTimeZone>,
     pub organization_id: Uuid,
     pub created_by: Uuid,
+    pub user_id: Uuid,
     pub app_catalog_id: Uuid,
+    pub cluster_id: Uuid,
     pub name: String,
     pub namespace: String,
     pub status: Option<String>,
@@ -22,14 +24,30 @@ pub enum Relation {
     #[sea_orm(
         belongs_to = "super::kube_app_catalog::Entity",
         from = "Column::AppCatalogId",
-        to = "super::kube_app_catalog::Column::Id"
+        to = "super::kube_app_catalog::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
     )]
     KubeAppCatalog,
+    #[sea_orm(
+        belongs_to = "super::kube_cluster::Entity",
+        from = "Column::ClusterId",
+        to = "super::kube_cluster::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    KubeCluster,
 }
 
 impl Related<super::kube_app_catalog::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::KubeAppCatalog.def()
+    }
+}
+
+impl Related<super::kube_cluster::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::KubeCluster.def()
     }
 }
 

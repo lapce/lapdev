@@ -23,8 +23,15 @@ pub struct K8sProvider {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeCluster {
+    pub id: Uuid,
+    pub name: String,
+    pub can_deploy: bool,
+    pub info: KubeClusterInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeClusterInfo {
-    pub cluster_id: Option<String>,
     pub cluster_name: Option<String>,
     pub cluster_version: String,
     pub node_count: u32,
@@ -96,6 +103,35 @@ pub struct PaginationCursor {
 pub struct PaginationParams {
     pub cursor: Option<PaginationCursor>,
     pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PagePaginationParams {
+    pub page: usize,
+    pub page_size: usize,
+}
+
+impl Default for PagePaginationParams {
+    fn default() -> Self {
+        Self {
+            page: 1,
+            page_size: 20,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedResult<T> {
+    pub data: Vec<T>,
+    pub pagination_info: PaginatedInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedInfo {
+    pub total_count: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

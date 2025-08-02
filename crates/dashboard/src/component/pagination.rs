@@ -1,381 +1,365 @@
+use lapdev_common::kube::PaginatedInfo;
 use leptos::prelude::*;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
+use tailwind_fuse::*;
 
-// Pagination component with optional debouncing
-#[component]
-pub fn SimplePagination(
-    current_page: Signal<usize>,
-    total_pages: Signal<usize>,
-    #[prop(into)] on_page_change: Callback<usize>,
-    #[prop(optional)] debounce_ms: Option<u32>,
-) -> impl IntoView {
-    // Create a local UI state that updates immediately
-    let ui_current_page = RwSignal::new(current_page.get());
-    let timeout_handle = RwSignal::new(None::<i32>);
+use crate::component::{
+    button::{ButtonClass, ButtonVariant},
+    select::{Select, SelectContent, SelectItem, SelectTrigger},
+};
 
-    // Sync UI state with the external signal when it changes
-    Effect::new(move || {
-        ui_current_page.set(current_page.get());
-    });
+use super::button::ButtonSize;
 
-    // Helper function to execute page change with debouncing
-    let execute_page_change = {
-        let on_page_change = on_page_change.clone();
-        move |new_page: usize| {
-            // IMMEDIATELY update the UI state
-            ui_current_page.set(new_page);
-            
-            if let Some(debounce_delay) = debounce_ms {
-                // Cancel any existing timeout
-                if let Some(handle) = timeout_handle.get() {
-                    web_sys::window().unwrap().clear_timeout_with_handle(handle);
-                }
-                
-                // Set new timeout to fire the actual callback
-                let timeout_callback = Closure::wrap(Box::new({
-                    let timeout_handle = timeout_handle.clone();
-                    let on_page_change = on_page_change.clone();
-                    move || {
-                        timeout_handle.set(None);
-                        on_page_change.run(new_page);
-                    }
-                }) as Box<dyn Fn()>);
-                
-                let handle = web_sys::window()
-                    .unwrap()
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                        timeout_callback.as_ref().unchecked_ref(),
-                        debounce_delay as i32,
-                    )
-                    .unwrap();
-                    
-                timeout_handle.set(Some(handle));
-                timeout_callback.forget();
-            } else {
-                // No debouncing - fire immediately
-                on_page_change.run(new_page);
-            }
+// Pagination component variants
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PaginationSize {
+    Default,
+    Sm,
+    Lg,
+}
+
+impl PaginationSize {
+    fn to_class(&self) -> &'static str {
+        match self {
+            PaginationSize::Default => "h-9 px-3",
+            PaginationSize::Sm => "h-8 px-2 text-xs",
+            PaginationSize::Lg => "h-11 px-4",
         }
-    };
-
-    let handle_previous = {
-        let execute_page_change = execute_page_change.clone();
-        move |_| {
-            let current = ui_current_page.get();
-            if current > 1 {
-                execute_page_change(current - 1);
-            }
-        }
-    };
-
-    let handle_next = {
-        let execute_page_change = execute_page_change.clone();
-        move |_| {
-            let current = ui_current_page.get();
-            let total = total_pages.get();
-            if current < total {
-                execute_page_change(current + 1);
-            }
-        }
-    };
-
-    let handle_page_click = {
-        let execute_page_change = execute_page_change.clone();
-        move |page: usize| {
-            move |_| {
-                execute_page_change(page);
-            }
-        }
-    };
-
-    view! {
-        {move || {
-            let current = ui_current_page.get();
-            let total = total_pages.get();
-
-            if total <= 1 {
-                return view! { <div></div> }.into_any();
-            }
-
-            // Get visible pages using the corrected logic
-            let visible_pages = get_visible_pages(current, total);
-
-            view! {
-                <nav class="flex items-center justify-center space-x-1" aria-label="Pagination">
-                    // Previous button
-                    <button
-                        class=format!(
-                            "px-3 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-50 {}",
-                            if current == 1 { "cursor-not-allowed opacity-50" } else { "" }
-                        )
-                        disabled=current == 1
-                        on:click=handle_previous
-                    >
-                        "Previous"
-                    </button>
-
-                    // Render visible pages with proper ellipsis handling
-                    {visible_pages
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &page)| {
-                            let mut elements = Vec::new();
-
-                            // Add ellipsis before this page if there's a gap
-                            if i > 0 && page > visible_pages[i-1] + 1 {
-                                elements.push(view! {
-                                    <span class="px-3 py-2 text-sm font-medium text-gray-500 bg-white border-t border-b border-gray-300">
-                                        "..."
-                                    </span>
-                                }.into_any());
-                            }
-
-                            // Add the page button
-                            elements.push(view! {
-                                <button
-                                    class=format!(
-                                        "px-3 py-2 text-sm font-medium border-t border-b border-gray-300 {}",
-                                        if page == current {
-                                            "bg-primary text-primary-foreground"
-                                        } else {
-                                            "text-gray-700 bg-white hover:bg-gray-50"
-                                        }
-                                    )
-                                    on:click=handle_page_click(page)
-                                >
-                                    {page.to_string()}
-                                </button>
-                            }.into_any());
-
-                            elements
-                        })
-                        .flatten()
-                        .collect::<Vec<_>>()
-                    }
-
-                    // Next button
-                    <button
-                        class=format!(
-                            "px-3 py-2 text-sm font-medium text-gray-500 bg-white border border-gray-300 rounded-r-md hover:bg-gray-50 {}",
-                            if current == total { "cursor-not-allowed opacity-50" } else { "" }
-                        )
-                        disabled=current == total
-                        on:click=handle_next
-                    >
-                        "Next"
-                    </button>
-                </nav>
-            }.into_any()
-        }}
     }
 }
 
+// Base Pagination container
 #[component]
 pub fn Pagination(
     #[prop(into, optional)] class: MaybeProp<String>,
-    children: Children,
+    #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
-    // let pagination_class = PaginationClass;
-
     view! {
         <nav
             role="navigation"
             aria-label="pagination"
-            // class=move || format!("{} {}", pagination_class.to_class(), class.get().unwrap_or_default())
+            data-slot="pagination"
+            class=move || class.get()
         >
-            {children()}
+
+            {children.map(|c| c().into_any()).unwrap_or_else(|| ().into_any())}
         </nav>
     }
 }
 
+// Pagination content wrapper - contains all pagination items
 #[component]
 pub fn PaginationContent(
     #[prop(into, optional)] class: MaybeProp<String>,
-    children: Children,
+    #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
-    // let content_class = PaginationContentClass;
-
     view! {
-        <ul>
-        // class=move || format!("{} {}", content_class.to_class(), class.get().unwrap_or_default())>
-            {children()}
+        <ul
+            data-slot="pagination-content"
+            class=move || {
+                tw_merge!("flex flex-row items-center gap-1",
+                    class.get())
+            }
+        >
+            {children.map(|c| c().into_any()).unwrap_or_else(|| ().into_any())}
         </ul>
     }
 }
 
+// Individual pagination item wrapper
 #[component]
 pub fn PaginationItem(
     #[prop(into, optional)] class: MaybeProp<String>,
-    children: Children,
+    #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     view! {
-        <li class=move || class.get().unwrap_or_default()>
-            {children()}
+        <li data-slot="pagination-item" class=move || class.get()>
+            {children.map(|c| c().into_any()).unwrap_or_else(|| ().into_any())}
         </li>
     }
 }
 
+// Base pagination link/button component
 #[component]
-pub fn PaginationLink(
-    // #[prop(into)] href: MaybeSignal<String>,
-    // #[prop(default = PaginationItemVariant::Default)] variant: PaginationItemVariant,
-    // #[prop(into, optional)] class: MaybeProp<String>,
-    #[prop(into, optional)] size: MaybeProp<String>,
-    #[prop(default = false)] disabled: bool,
-    children: Children,
+pub fn PaginationButton(
+    #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(into, optional)] size: MaybeProp<ButtonSize>,
+    #[prop(into, optional)] is_active: MaybeProp<bool>,
+    #[prop(into, optional)] disabled: MaybeProp<bool>,
+    #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
-    // let item_class = PaginationItemClass { variant };
-
+    let class = Memo::new(move |_| {
+        tw_merge!(
+            ButtonClass {
+                variant: if is_active.get().unwrap_or(false) {
+                    ButtonVariant::Outline
+                } else {
+                    ButtonVariant::Ghost
+                },
+                size: size.get().unwrap_or_default(),
+            }
+            .to_class(),
+            "cursor-pointer",
+            class.get(),
+        )
+    });
     view! {
-        <a
-            // href=move || href.get()
-            // class=move || {
-            //     format!(
-            //         "{} {} {}",
-            //         item_class.to_class(),
-            //         if disabled { "pointer-events-none opacity-50" } else { "" },
-            //         class.get().unwrap_or_default()
-            //     )
-            // }
-            aria-disabled=disabled
+        <button
+            class=move || class.get()
+            disabled=move || disabled.get().unwrap_or(false)
+            aria-current=move || if is_active.get().unwrap_or(false) { Some("page") } else { None }
+            data-slot="pagination-link"
+            data-active=move || is_active.get()
         >
-            {children()}
-        </a>
+            {children.map(|c| c().into_any()).unwrap_or_else(|| ().into_any())}
+        </button>
     }
 }
 
+// Previous button component
 #[component]
 pub fn PaginationPrevious(
-    #[prop(into, optional)] href: MaybeProp<String>,
     #[prop(into, optional)] class: MaybeProp<String>,
-    #[prop(default = false)] disabled: bool,
+    #[prop(into, optional)] is_active: MaybeProp<bool>,
 ) -> impl IntoView {
-    // let href = href.unwrap_or_else(|| MaybeProp::Static("#".to_string()));
-
+    let class = Signal::derive(move || tw_merge!("gap-1 px-2.5 sm:pl-2.5", class.get()));
     view! {
-        <PaginationLink
-            // href=href
-            // variant=PaginationItemVariant::Ghost
-            // class=move || format!("gap-1 pl-2.5 {}", class.get().unwrap_or_default())
-            disabled=disabled
+        <PaginationButton
+            class
+            is_active
+            disabled=Memo::new(move |_| !is_active.get().unwrap_or(false))
+            attr:aria-label="Go to previous page"
         >
-            <ChevronLeft class="size-4" />
-            <span>"Previous"</span>
-        </PaginationLink>
+            <lucide_leptos::ChevronLeft />
+            <span class="hidden sm:block">Previous</span>
+        </PaginationButton>
     }
 }
 
+// Next button component
 #[component]
 pub fn PaginationNext(
-    #[prop(into, optional)] href: MaybeProp<String>,
     #[prop(into, optional)] class: MaybeProp<String>,
-    #[prop(default = false)] disabled: bool,
+    #[prop(into, optional)] is_active: MaybeProp<bool>,
 ) -> impl IntoView {
-    // let href = href.unwrap_or_else(|| MaybeProp::Static("#".to_string()));
-
+    let class = Signal::derive(move || tw_merge!("gap-1 px-2.5 sm:pr-2.5", class.get()));
     view! {
-        <PaginationLink
-            // href=href
-            // variant=PaginationItemVariant::Ghost
-            // class=move || format!("gap-1 pr-2.5 {}", class.get().unwrap_or_default())
-            disabled=disabled
+        <PaginationButton
+            class
+            is_active
+            disabled=Memo::new(move |_| !is_active.get().unwrap_or(false))
+            attr:aria-label="Go to next page"
         >
-            <span>"Next"</span>
-            <ChevronRight class="size-4" />
-        </PaginationLink>
+            <span class="hidden sm:block">Next</span>
+            <lucide_leptos::ChevronRight />
+        </PaginationButton>
     }
 }
 
+// Ellipsis component for indicating more pages
 #[component]
 pub fn PaginationEllipsis(#[prop(into, optional)] class: MaybeProp<String>) -> impl IntoView {
     view! {
         <span
-            aria-hidden="true"
-            class=move || format!("flex h-9 w-9 items-center justify-center {}", class.get().unwrap_or_default())
+            aria-hidden
+            data-slot="pagination-ellipsis"
+            class=move || {
+                tw_merge!(
+                    "flex size-9 items-center justify-center",
+                                        class.get()
+                )
+            }
         >
-            <MoreHorizontal class="size-4" />
-            <span class="sr-only">"More pages"</span>
+            <lucide_leptos::Ellipsis />
         </span>
     }
 }
 
-// Icon components - these would typically be imported from an icon library
-#[component]
-pub fn ChevronLeft(#[prop(into, optional)] class: MaybeProp<String>) -> impl IntoView {
-    view! {
-        <svg
-            class=move || class.get().unwrap_or_default()
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            xmlns="http://www.w3.org/2000/svg"
-        >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-        </svg>
+#[derive(Debug, Clone)]
+enum PageItem {
+    Page(usize),
+    Ellipsis(String),
+}
+
+impl PageItem {
+    fn key(&self) -> String {
+        match self {
+            PageItem::Page(page) => format!("page-{}", page),
+            PageItem::Ellipsis(id) => id.clone(),
+        }
     }
 }
 
+// Page-based pagination component
 #[component]
-pub fn ChevronRight(#[prop(into, optional)] class: MaybeProp<String>) -> impl IntoView {
-    view! {
-        <svg
-            class=move || class.get().unwrap_or_default()
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            xmlns="http://www.w3.org/2000/svg"
-        >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-        </svg>
-    }
-}
-
-#[component]
-pub fn MoreHorizontal(#[prop(into, optional)] class: MaybeProp<String>) -> impl IntoView {
-    view! {
-        <svg
-            class=move || class.get().unwrap_or_default()
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            xmlns="http://www.w3.org/2000/svg"
-        >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h.01M12 12h.01M19 12h.01" />
-        </svg>
-    }
-}
-
-// Utility component for building complete pagination
-#[component]
-pub fn CompletePagination(
-    current_page: i32,
-    total_pages: i32,
-    #[prop(into)] on_page_change: Callback<i32>,
-    #[prop(into, optional)] base_url: MaybeProp<String>,
+pub fn PagePagination(
+    pagination_info: Signal<PaginatedInfo>,
+    page_size: RwSignal<usize>,
+    current_page: Signal<usize>,
+    total_pages: Signal<usize>,
+    #[prop(into)] on_page_change: Callback<usize>,
 ) -> impl IntoView {
-    // let base_url = base_url.unwrap_or_else(|| MaybeProp::Static("".to_string()));
+    // Separate visual state that updates immediately
+    let visual_current_page = RwSignal::new(current_page.get_untracked());
 
-    // let get_page_url = move |page: i32| {
-    //     let base = base_url.get();
-    //     if base.is_empty() {
-    //         "#".to_string()
-    //     } else {
-    //         format!("{}?page={}", base, page)
-    //     }
-    // };
+    // Sync visual state when actual current_page changes (from external sources)
+    Effect::new(move |_| {
+        visual_current_page.set(current_page.get());
+    });
 
-    // let handle_page_click = move |page: i32| {
-    //     move |_| {
-    //         on_page_change.run(page);
-    //     }
-    // };
+    // Create memoized signals for navigation state based on visual state
+    let has_previous = Memo::new(move |_| visual_current_page.get() > 1);
+    let has_next = Memo::new(move |_| {
+        let current = visual_current_page.get();
+        let total = total_pages.get();
+        current < total && total > 1
+    });
+    let visible_pages = Memo::new(move |_| {
+        let current = visual_current_page.get();
+        let total = total_pages.get();
+        get_visible_pages(current, total)
+    });
 
-    // Calculate visible page range
-    // let start_page = (current_page - 2).max(1);
-    // let end_page = (current_page + 2).min(total_pages);
+    // Debounced page change with 300ms delay
+    let debounce_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
+        StoredValue::new(None);
 
-    view! {}
+    let debounced_page_change = move |new_page: usize| {
+        // Update visual state immediately
+        visual_current_page.set(new_page);
+
+        // Clear any existing timeout
+        if let Some(h) = debounce_timeout_handle.get_value() {
+            h.clear();
+        }
+
+        // Set new timeout for debounced action
+        let h = leptos::leptos_dom::helpers::set_timeout_with_handle(
+            move || {
+                on_page_change.run(new_page);
+            },
+            std::time::Duration::from_millis(300),
+        )
+        .expect("set timeout for page change debounce");
+        debounce_timeout_handle.set_value(Some(h));
+    };
+
+    let handle_previous = move |_| {
+        let current = visual_current_page.get();
+        if current > 1 {
+            debounced_page_change(current - 1);
+        }
+    };
+
+    let handle_next = move |_| {
+        let current = visual_current_page.get_untracked();
+        let total = total_pages.get_untracked();
+        if current < total {
+            debounced_page_change(current + 1);
+        }
+    };
+
+    let handle_page_click = move |page: usize| {
+        debounced_page_change(page);
+    };
+
+    // Cleanup debounce timeout on component destroy
+    on_cleanup(move || {
+        if let Some(Some(h)) = debounce_timeout_handle.try_get_value() {
+            h.clear();
+        }
+    });
+
+    let page_size_select_open = RwSignal::new(false);
+
+    view! {
+        <div class="flex flex-wrap items-center justify-between gap-4">
+            <div class="text-sm text-muted-foreground">
+                {move || {
+                    let info = pagination_info.get();
+                    let start = ((info.page - 1) * info.page_size) + 1;
+                    let end = std::cmp::min(info.page * info.page_size, info.total_count);
+                    if info.total_count > 0 {
+                        format!("Showing {}-{} of {} results", start, end, info.total_count)
+                    } else {
+                        "No results found".to_string()
+                    }
+                }}
+            </div>
+            <div class="flex items-center gap-4 flex-wrap">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm text-muted-foreground">"Rows per page:"</span>
+                    <div class="w-20">
+                        <Select open=page_size_select_open value=page_size>
+                            <SelectTrigger class="h-8 text-sm">
+                                {move || page_size.get().to_string()}
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value=10usize>10</SelectItem>
+                                <SelectItem value=20usize>20</SelectItem>
+                                <SelectItem value=50usize>50</SelectItem>
+                                <SelectItem value=100usize>100</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </div>
+                <Pagination>
+                    <PaginationContent>
+                        // Previous button
+                        <PaginationPrevious
+                            is_active=Memo::new(move |_| has_previous.get())
+                            on:click=handle_previous
+                        />
+
+                        // Render visible pages with ellipsis handling
+                        <For
+                            each=move || {
+                                let current = visual_current_page.get();
+                                let pages = visible_pages.get();
+                                let mut page_items = Vec::new();
+                                for (i, &page) in pages.iter().enumerate() {
+                                    if i > 0 && page > pages[i - 1] + 1 {
+                                        page_items
+                                            .push(PageItem::Ellipsis(format!("ellipsis-{}", i)));
+                                    }
+                                    page_items.push(PageItem::Page(page));
+                                }
+                                page_items
+                            }
+                            key=|item| item.key()
+                            children=move |item| {
+                                match item {
+                                    PageItem::Ellipsis(_) => {
+                                        view! { <PaginationEllipsis /> }.into_any()
+                                    }
+                                    PageItem::Page(page) => {
+                                        view! {
+                                            <PaginationItem>
+                                                <PaginationButton
+                                                    is_active=Memo::new(move |_| {
+                                                        page == visual_current_page.get()
+                                                    })
+                                                    on:click=move |_| { handle_page_click(page) }
+                                                >
+                                                    {page.to_string()}
+                                                </PaginationButton>
+                                            </PaginationItem>
+                                        }
+                                            .into_any()
+                                    }
+                                }
+                            }
+                        />
+
+                        // Next button
+                        <PaginationNext
+                            is_active=Memo::new(move |_| has_next.get())
+                            on:click=handle_next
+                        />
+                    </PaginationContent>
+                </Pagination>
+            </div>
+        </div>
+    }
 }
 
 // Utility functions for pagination logic (extracted for testing)

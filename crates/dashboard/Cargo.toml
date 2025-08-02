@@ -7,7 +7,7 @@ edition.workspace = true
 [dependencies]
 gloo-net = "0.6.0"
 wasm-bindgen = "0.2.100"
-web-sys = { version = "0.3.77", features = ["Navigator", "Clipboard"] }
+web-sys = { version = "0.3.77", features = ["Navigator", "Clipboard", "DomRect", "Element"] }
 urlencoding = "2.1.3"
 lucide-leptos = "1.2.0"
 uuid = { version = "1.16.0", features = ["v4", "serde", "js"] }

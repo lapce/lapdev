@@ -1,6 +1,6 @@
 use lapdev_common::kube::{
-    CreateKubeClusterResponse, K8sProvider, KubeClusterInfo, KubeNamespace, KubeWorkload,
-    KubeWorkloadKind, KubeWorkloadList, PaginationParams,
+    CreateKubeClusterResponse, K8sProvider, KubeCluster, KubeClusterInfo, KubeNamespace, KubeWorkload,
+    KubeWorkloadKind, KubeWorkloadList, PaginationParams, PagePaginationParams, PaginatedResult,
 };
 use uuid::Uuid;
 
@@ -21,13 +21,26 @@ pub trait HrpcService {
         key: String,
     ) -> Result<(), HrpcError>;
 
-    async fn all_kube_clusters(&self, org_id: Uuid) -> Result<Vec<KubeClusterInfo>, HrpcError>;
+    async fn all_kube_clusters(&self, org_id: Uuid) -> Result<Vec<KubeCluster>, HrpcError>;
 
     async fn create_kube_cluster(
         &self,
         org_id: Uuid,
         name: String,
     ) -> Result<CreateKubeClusterResponse, HrpcError>;
+
+    async fn delete_kube_cluster(
+        &self,
+        org_id: Uuid,
+        cluster_id: Uuid,
+    ) -> Result<(), HrpcError>;
+
+    async fn set_cluster_deployable(
+        &self,
+        org_id: Uuid,
+        cluster_id: Uuid,
+        can_deploy: bool,
+    ) -> Result<(), HrpcError>;
 
     async fn get_workloads(
         &self,
@@ -68,7 +81,22 @@ pub trait HrpcService {
         resources: String,
     ) -> Result<(), HrpcError>;
 
-    async fn all_app_catalogs(&self, org_id: Uuid) -> Result<Vec<KubeAppCatalog>, HrpcError>;
+    async fn all_app_catalogs(&self, org_id: Uuid, search: Option<String>, pagination: Option<PagePaginationParams>) -> Result<PaginatedResult<KubeAppCatalog>, HrpcError>;
 
-    async fn all_kube_environments(&self, org_id: Uuid) -> Result<Vec<KubeEnvironment>, HrpcError>;
+    async fn delete_app_catalog(
+        &self,
+        org_id: Uuid,
+        catalog_id: Uuid,
+    ) -> Result<(), HrpcError>;
+
+    async fn create_kube_environment(
+        &self,
+        org_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        name: String,
+        namespace: String,
+    ) -> Result<(), HrpcError>;
+
+    async fn all_kube_environments(&self, org_id: Uuid, search: Option<String>, pagination: Option<PagePaginationParams>) -> Result<PaginatedResult<KubeEnvironment>, HrpcError>;
 }

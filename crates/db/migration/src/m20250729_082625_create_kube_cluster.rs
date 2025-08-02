@@ -34,6 +34,7 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(KubeCluster::Status).string())
                     .col(ColumnDef::new(KubeCluster::Region).string())
                     .col(ColumnDef::new(KubeCluster::LastReportedAt).timestamp_with_time_zone())
+                    .col(ColumnDef::new(KubeCluster::CanDeploy).boolean().not_null())
                     .to_owned(),
             )
             .await
@@ -53,4 +54,5 @@ pub enum KubeCluster {
     Status,
     Region,
     LastReportedAt,
+    CanDeploy,
 }

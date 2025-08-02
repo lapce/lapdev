@@ -16,9 +16,27 @@ pub struct Model {
     pub status: Option<String>,
     pub region: Option<String>,
     pub last_reported_at: Option<DateTimeWithTimeZone>,
+    pub can_deploy: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(has_many = "super::kube_app_catalog::Entity")]
+    KubeAppCatalog,
+    #[sea_orm(has_many = "super::kube_environment::Entity")]
+    KubeEnvironment,
+}
+
+impl Related<super::kube_app_catalog::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::KubeAppCatalog.def()
+    }
+}
+
+impl Related<super::kube_environment::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::KubeEnvironment.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}

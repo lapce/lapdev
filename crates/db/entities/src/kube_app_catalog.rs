@@ -24,14 +24,24 @@ pub enum Relation {
     #[sea_orm(
         belongs_to = "super::kube_cluster::Entity",
         from = "Column::ClusterId",
-        to = "super::kube_cluster::Column::Id"
+        to = "super::kube_cluster::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
     )]
     KubeCluster,
+    #[sea_orm(has_many = "super::kube_environment::Entity")]
+    KubeEnvironment,
 }
 
 impl Related<super::kube_cluster::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::KubeCluster.def()
+    }
+}
+
+impl Related<super::kube_environment::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::KubeEnvironment.def()
     }
 }
 

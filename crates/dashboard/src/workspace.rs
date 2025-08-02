@@ -26,7 +26,7 @@ use crate::{
         button::{Button, ButtonVariant},
         dropdown_menu::{
             DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
-            DropdownMenuTrigger,
+            DropdownMenuTrigger, DropdownPlacement,
         },
         input::Input,
         label::Label,
@@ -264,6 +264,7 @@ fn OpenWorkspaceView(
                     </Button>
                 </a>
                 <DropdownMenuTrigger
+                    placement={if align_right {DropdownPlacement::BottomRight} else {DropdownPlacement::BottomLeft} }
                     open=dropdown_expanded
                     disabled=workspace_status != WorkspaceStatus::Running
                 >
@@ -277,7 +278,7 @@ fn OpenWorkspaceView(
             </div>
             <DropdownMenuContent
                 open=dropdown_expanded.read_only()
-                class=format!("{} mt-2 min-w-56", if align_right { "right-0" } else { "" })
+                class="mt-2 min-w-56"
             >
                 {
                     let workspace_hostname = workspace_hostname.clone();
@@ -411,14 +412,16 @@ fn WorkspaceControl(
             />
 
             <DropdownMenu class="ml-2" open=dropdown_expanded>
-                <DropdownMenuTrigger open=dropdown_expanded>
+                <DropdownMenuTrigger open=dropdown_expanded
+                    placement={if align_right {DropdownPlacement::BottomRight} else {DropdownPlacement::BottomLeft} }
+                >
                     <Button variant=ButtonVariant::Ghost class="px-2">
                         <lucide_leptos::EllipsisVertical />
                     </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
                     open=dropdown_expanded.read_only()
-                    class=format!("{} mt-2 min-w-56", if align_right { "right-0" } else { "" })
+                    class="mt-2 min-w-56"
                 >
                     <DropdownMenuItem
                         on:click=start_workspace

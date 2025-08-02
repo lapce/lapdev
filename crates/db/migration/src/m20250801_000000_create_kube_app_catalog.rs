@@ -38,11 +38,59 @@ impl MigrationTrait for Migration {
                     .foreign_key(
                         ForeignKey::create()
                             .from(KubeAppCatalog::Table, KubeAppCatalog::ClusterId)
-                            .to(KubeCluster::Table, KubeCluster::Id)
+                            .to(KubeCluster::Table, KubeCluster::Id),
                     )
                     .to_owned(),
             )
-            .await
+            .await?;
+
+        // Enable extensions for trigram text search and btree types in GIN
+        manager
+            .get_connection()
+            .execute_unprepared("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+            .await?;
+
+        manager
+            .get_connection()
+            .execute_unprepared("CREATE EXTENSION IF NOT EXISTS btree_gin;")
+            .await?;
+
+        // Create B-tree index for exact lookups without name search
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_app_catalog_org_deleted_created_idx")
+                    .table(KubeAppCatalog::Table)
+                    .col(KubeAppCatalog::OrganizationId)
+                    .col(KubeAppCatalog::DeletedAt)
+                    .col(KubeAppCatalog::CreatedAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Create GIN index for case-insensitive wildcard name searches
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX kube_app_catalog_gin_search_idx ON kube_app_catalog 
+                 USING gin (organization_id, LOWER(name) gin_trgm_ops)
+                 WHERE deleted_at IS NULL;",
+            )
+            .await?;
+
+        // Create index for cluster dependency checks (used when deleting clusters)
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_app_catalog_cluster_deleted_idx")
+                    .table(KubeAppCatalog::Table)
+                    .col(KubeAppCatalog::ClusterId)
+                    .col(KubeAppCatalog::DeletedAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        Ok(())
     }
 }
 

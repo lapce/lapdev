@@ -2,21 +2,26 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{CreateKubeClusterResponse, KubeClusterInfo, KubeClusterStatus},
+    kube::{CreateKubeClusterResponse, KubeCluster, KubeClusterStatus},
 };
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 
 use crate::{
     component::{
         badge::{Badge, BadgeVariant},
         button::{Button, ButtonVariant},
+        dropdown_menu::{
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+            DropdownPlacement,
+        },
         input::Input,
         label::Label,
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         textarea::Textarea,
         typography::{H3, H4, P},
     },
-    modal::Modal,
+    modal::{DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
 };
 
@@ -36,10 +41,27 @@ pub fn KubeCluster() -> impl IntoView {
     }
 }
 
-async fn all_kube_clusters(org: Signal<Option<Organization>>) -> Result<Vec<KubeClusterInfo>> {
+async fn all_kube_clusters(org: Signal<Option<Organization>>) -> Result<Vec<KubeCluster>> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     Ok(client.all_kube_clusters(org.id).await??)
+}
+
+async fn delete_kube_cluster(
+    org: Signal<Option<Organization>>,
+    cluster_id: uuid::Uuid,
+    delete_modal_open: RwSignal<bool>,
+    update_counter: RwSignal<usize, LocalStorage>,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client.delete_kube_cluster(org.id, cluster_id).await??;
+
+    delete_modal_open.set(false);
+    update_counter.update(|c| *c += 1);
+
+    Ok(())
 }
 
 #[component]
@@ -88,14 +110,16 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
                             <TableHead>Version</TableHead>
                             <TableHead>Region</TableHead>
                             <TableHead>Nodes</TableHead>
+                            <TableHead>Can Deploy Environment</TableHead>
+                            <TableHead class="w-24">Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         <For
                             each=move || clusters.get()
-                            key=|c| c.cluster_id.clone().unwrap_or_default()
+                            key=|c| format!("{}_{}", c.id, c.can_deploy)
                             children=move |cluster| {
-                                view! { <KubeClusterItem cluster /> }
+                                view! { <KubeClusterItem cluster update_counter /> }
                             }
                         />
                     </TableBody>
@@ -126,30 +150,152 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
 }
 
 #[component]
-pub fn KubeClusterItem(cluster: KubeClusterInfo) -> impl IntoView {
-    let status_variant = match cluster.status {
+pub fn KubeClusterItem(
+    cluster: KubeCluster,
+    update_counter: RwSignal<usize, LocalStorage>,
+) -> impl IntoView {
+    let status_variant = match cluster.info.status {
         KubeClusterStatus::Ready => BadgeVariant::Secondary,
         KubeClusterStatus::Provisioning => BadgeVariant::Secondary,
         KubeClusterStatus::NotReady | KubeClusterStatus::Error => BadgeVariant::Destructive,
     };
 
-    let status_text = cluster.status.to_string();
+    let status_text = cluster.info.status.to_string();
+    let dropdown_expanded = RwSignal::new(false);
+    let delete_modal_open = RwSignal::new(false);
+    let org = get_current_org();
+
+    let cluster_id = cluster.id;
+    let cluster_id_for_delete = cluster_id;
+    let cluster_id_for_resources = cluster_id;
+    let cluster_name = cluster.name.clone();
+    let cluster_name_clone = cluster_name.clone();
+
+    let delete_action = Action::new_local(move |_| {
+        delete_kube_cluster(
+            org,
+            cluster_id_for_delete.clone(),
+            delete_modal_open,
+            update_counter,
+        )
+    });
 
     view! {
         <TableRow>
             <TableCell class="pl-4">
-                <a href={ format!("/kubernetes/clusters/{}", cluster.cluster_id.unwrap_or_default()) }>
-                    <Button variant=ButtonVariant::Link>
-                        <span class="font-medium">{cluster.cluster_name.clone().unwrap_or("Unknown".to_string())}</span>
+                <a href={ format!("/kubernetes/clusters/{}", cluster.id) }>
+                    <Button variant=ButtonVariant::Link class="p-0">
+                        <span class="font-medium">{cluster_name.clone()}</span>
                     </Button>
                 </a>
             </TableCell>
             <TableCell>
                 <Badge variant=status_variant>{status_text}</Badge>
             </TableCell>
-            <TableCell>{cluster.cluster_version}</TableCell>
-            <TableCell>{cluster.region.unwrap_or("N/A".to_string())}</TableCell>
-            <TableCell>{cluster.node_count.to_string()}</TableCell>
+            <TableCell>{cluster.info.cluster_version}</TableCell>
+            <TableCell>{cluster.info.region.unwrap_or("N/A".to_string())}</TableCell>
+            <TableCell>{cluster.info.node_count.to_string()}</TableCell>
+            <TableCell>
+                <Badge variant={
+                    if cluster.can_deploy {
+                        BadgeVariant::Secondary
+                    } else {
+                        BadgeVariant::Destructive
+                    }
+                }>
+                    {if cluster.can_deploy { "Yes" } else { "No" }}
+                </Badge>
+            </TableCell>
+            <TableCell>
+                <DropdownMenu open=dropdown_expanded>
+                    <div class="flex">
+                        <DropdownMenuTrigger
+                            open=dropdown_expanded
+                            placement=DropdownPlacement::BottomRight
+                        >
+                            <Button variant=ButtonVariant::Ghost class="px-2">
+                                <lucide_leptos::EllipsisVertical />
+                            </Button>
+                        </DropdownMenuTrigger>
+                    </div>
+                    <DropdownMenuContent
+                        open=dropdown_expanded.read_only()
+                        class="min-w-56 -translate-x-2"
+                    >
+                        <a href=format!("/kubernetes/clusters/{}", cluster_id_for_resources)>
+                            <DropdownMenuItem class="cursor-pointer">
+                                <lucide_leptos::Box />
+                                View Resources
+                            </DropdownMenuItem>
+                        </a>
+                        <DropdownMenuItem
+                            on:click=move |_| {
+                                if !cluster.can_deploy {
+                                    dropdown_expanded.set(false);
+                                    // Enable deployment
+                                    let org = org.get_untracked();
+                                    let cluster_id = cluster.id;
+                                    spawn_local(async move {
+                                        if let Some(org) = org {
+                                            let client = HrpcServiceClient::new("/api/rpc".to_string());
+                                            let _ = client.set_cluster_deployable(org.id, cluster_id, true).await;
+                                            update_counter.update(|c| *c += 1);
+                                        }
+                                    });
+                                }
+                            }
+                            class=if cluster.can_deploy {
+                                "cursor-not-allowed opacity-50"
+                            } else {
+                                "cursor-pointer"
+                            }
+                        >
+                            <lucide_leptos::Check />
+                            "Enable Deployment"
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            on:click=move |_| {
+                                if cluster.can_deploy {
+                                    dropdown_expanded.set(false);
+                                    // Disable deployment
+                                    let org = org.get_untracked();
+                                    let cluster_id = cluster.id;
+                                    spawn_local(async move {
+                                        if let Some(org) = org {
+                                            let client = HrpcServiceClient::new("/api/rpc".to_string());
+                                            let _ = client.set_cluster_deployable(org.id, cluster_id, false).await;
+                                            update_counter.update(|c| *c += 1);
+                                        }
+                                    });
+                                }
+                            }
+                            class=if !cluster.can_deploy {
+                                "cursor-not-allowed opacity-50"
+                            } else {
+                                "cursor-pointer"
+                            }
+                        >
+                            <lucide_leptos::X />
+                            "Disable Deployment"
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            on:click=move |_| {
+                                dropdown_expanded.set(false);
+                                delete_modal_open.set(true);
+                            }
+                            class="cursor-pointer text-destructive focus:text-destructive"
+                        >
+                            <lucide_leptos::Trash2 />
+                            Delete
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
+                <DeleteModal
+                    resource=cluster_name_clone
+                    open=delete_modal_open
+                    delete_action
+                />
+            </TableCell>
         </TableRow>
     }
 }

@@ -11,7 +11,7 @@ use crate::component::{
     },
     button::{Button, ButtonVariant},
     dialog::{DialogContent, DialogFooter, DialogHeader, DialogTitle},
-    hover_card::{HoverCard, HoverCardContent},
+    hover_card::{HoverCard, HoverCardContent, HoverCardPlacement, HoverCardTrigger},
     icon,
     input::Input,
     label::Label,
@@ -96,7 +96,7 @@ pub fn Modal(
     view! {
         <DialogContent class open>
             <DialogHeader>
-                <DialogTitle>{move || title.get()}</DialogTitle>
+                <DialogTitle class="text-wrap">{move || title.get()}</DialogTitle>
             </DialogHeader>
             <div class="py-4 gap-4 flex flex-col sm:min-w-116 max-w-full">
                 {move || {
@@ -200,7 +200,7 @@ pub fn DeleteModal(
                             <Alert variant=AlertVariant::Destructive>
                                 <lucide_leptos::CircleAlert />
                                 <AlertTitle>Error</AlertTitle>
-                                <AlertDescription>{error}</AlertDescription>
+                                <AlertDescription class="text-wrap">{error}</AlertDescription>
                             </Alert>
                         }
                             .into_any()
@@ -235,8 +235,8 @@ pub fn DeleteModal(
 #[component]
 pub fn DatetimeModal(time: DateTime<FixedOffset>) -> impl IntoView {
     let offset = web_sys::js_sys::Date::new_0().get_timezone_offset();
-    let time = if let Some(offset) = FixedOffset::east_opt((offset * 60.0) as i32) {
-        time.with_timezone(&offset)
+    let time = if let Some(offset) = FixedOffset::west_opt((offset * 60.0) as i32) {
+        time.to_utc().with_timezone(&offset)
     } else {
         time
     };
@@ -273,10 +273,10 @@ pub fn DatetimeModal(time: DateTime<FixedOffset>) -> impl IntoView {
     };
     view! {
         <HoverCard open>
-            // <HoverCardTrigger open>
-            <span>{formatted}</span>
-            // </HoverCardTrigger>
-            <HoverCardContent open class="w-auto bottom-7">
+            <HoverCardTrigger placement=HoverCardPlacement::TopLeft>
+                <span>{formatted}</span>
+            </HoverCardTrigger>
+            <HoverCardContent class="w-auto -translate-y-2">
                 <span class="text-nowrap">{format!("{}", time.format("%Y-%m-%d %H:%M:%S"))}</span>
             </HoverCardContent>
         </HoverCard>

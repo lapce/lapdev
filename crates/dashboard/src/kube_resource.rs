@@ -9,7 +9,7 @@ use lapdev_common::{
     },
 };
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_params_map, use_location};
 use uuid::Uuid;
 
 use crate::{
@@ -118,7 +118,6 @@ pub fn ClusterInfo(cluster_id: Uuid) -> impl IntoView {
                 .set(info.cluster_name.clone().unwrap_or_default());
         }
         cluster_info.flatten().unwrap_or_else(|| KubeClusterInfo {
-            cluster_id: Some(cluster_id.to_string()),
             cluster_name: Some("Unknown".to_string()),
             cluster_version: "Unknown".to_string(),
             node_count: 0,
@@ -182,14 +181,23 @@ pub fn KubeResourceList(
     cluster_id: Uuid,
 ) -> impl IntoView {
     let org = get_current_org();
-    let namespace_filter = RwSignal::new_local(None);
+    let location = use_location();
+    
+    // Initialize from URL search parameters
+    let initial_namespace = move || {
+        let search = location.search.get_untracked();
+        let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+        params.get("namespace")
+    };
+    
+    let namespace_filter = RwSignal::new_local(initial_namespace());
     let kind_filter = RwSignal::new_local(None::<KubeWorkloadKind>);
     let limit = RwSignal::new_local(20usize);
     let is_loading = RwSignal::new(false);
     let workload_cache = RwSignal::new_local(WorkloadCache::new(kind_filter.get_untracked()));
     let cache_offset = RwSignal::new_local(0usize);
 
-    let namespace_select_value = RwSignal::new(None::<String>);
+    let namespace_select_value = RwSignal::new(initial_namespace());
     let workload_kind_select_value = RwSignal::new(None::<KubeWorkloadKind>);
     let limit_select_value = RwSignal::new(20usize);
     let include_system_workloads = RwSignal::new(false);
@@ -266,12 +274,35 @@ pub fn KubeResourceList(
     let detail_modal_open = RwSignal::new(false);
     let selected_workload = RwSignal::new_local(None::<KubeWorkload>);
 
-    // Sync namespace select with namespace filter
+    // Sync namespace select with namespace filter and update URL
     Effect::new(move |_| {
         let selected_namespace = namespace_select_value.get();
         let current_filter = namespace_filter.get_untracked();
         if selected_namespace != current_filter {
-            namespace_filter.set(selected_namespace);
+            namespace_filter.set(selected_namespace.clone());
+            
+            // Update URL with new namespace parameter (without navigation)
+            let current_path = location.pathname.get_untracked();
+            let search = location.search.get_untracked();
+            let params = web_sys::UrlSearchParams::new_with_str(&search).unwrap_or_else(|_| web_sys::UrlSearchParams::new().unwrap());
+            
+            if let Some(ns) = &selected_namespace {
+                params.set("namespace", ns);
+            } else {
+                params.delete("namespace");
+            }
+            
+            let new_search = params.to_string().as_string().unwrap_or_default();
+            let new_url = if new_search.is_empty() {
+                current_path
+            } else {
+                format!("{}?{}", current_path, new_search)
+            };
+            
+            // Use replaceState to update URL without navigation
+            if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+                let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&new_url));
+            }
         }
     });
 

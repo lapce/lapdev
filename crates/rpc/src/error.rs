@@ -28,6 +28,9 @@ where
 
 impl From<ApiError> for HrpcError {
     fn from(err: ApiError) -> Self {
+        if let ApiError::InternalError(e) = &err {
+            tracing::error!("internal server error: {e:#}");
+        }
         HrpcError {
             error: err.to_string(),
         }

@@ -3,8 +3,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED, 
-    kube::{CreateKubeClusterResponse, KubeAppCatalog, KubeEnvironment, KubeClusterStatus, PagePaginationParams, PaginatedInfo, PaginatedResult},
-    token::PlainToken,
+    kube::PagePaginationParams,
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus,
     LAPDEV_BASE_HOSTNAME, LAPDEV_ISOLATE_CONTAINER,
 };
@@ -16,9 +15,8 @@ use pasetors::{
 use sea_orm::{
     sea_query::{Expr, Func, OnConflict},
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, DatabaseTransaction,
-    EntityTrait, QueryFilter, QueryOrder, QuerySelect, PaginatorTrait, TransactionTrait,
+    EntityTrait, QueryFilter, QueryOrder, QuerySelect, PaginatorTrait,
 };
-use secrecy::ExposeSecret;
 use sea_orm_migration::MigratorTrait;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -820,27 +818,20 @@ impl DbApi {
     }
 
     // Kubernetes cluster operations
-    pub async fn create_kube_cluster_with_token(
+    pub async fn create_kube_cluster(
         &self,
+        cluster_id: Uuid,
         org_id: Uuid,
         user_id: Uuid,
         name: String,
-    ) -> Result<CreateKubeClusterResponse> {
-        let cluster_id = Uuid::new_v4();
-        let token = PlainToken::generate();
-        let hashed_token = token.hashed();
-        let token_name = format!("{name}-default");
-
-        // Use a transaction to ensure both cluster and token are created atomically
-        let txn = self.conn.begin().await?;
-
-        // Create the cluster
-        lapdev_db_entities::kube_cluster::ActiveModel {
+        status: Option<String>,
+    ) -> Result<lapdev_db_entities::kube_cluster::Model> {
+        let cluster = lapdev_db_entities::kube_cluster::ActiveModel {
             id: ActiveValue::Set(cluster_id),
             created_at: ActiveValue::Set(Utc::now().into()),
             name: ActiveValue::Set(name),
             cluster_version: ActiveValue::Set(None),
-            status: ActiveValue::Set(Some(KubeClusterStatus::Provisioning.to_string())),
+            status: ActiveValue::Set(status),
             region: ActiveValue::Set(None),
             created_by: ActiveValue::Set(user_id),
             organization_id: ActiveValue::Set(org_id),
@@ -848,71 +839,34 @@ impl DbApi {
             last_reported_at: ActiveValue::Set(None),
             can_deploy: ActiveValue::Set(true),
         }
-        .insert(&txn)
+        .insert(&self.conn)
         .await?;
+        Ok(cluster)
+    }
 
-        // Create the cluster token
-        lapdev_db_entities::kube_cluster_token::ActiveModel {
+    pub async fn create_kube_cluster_token(
+        &self,
+        cluster_id: Uuid,
+        user_id: Uuid,
+        name: String,
+        token_hash: Vec<u8>,
+    ) -> Result<lapdev_db_entities::kube_cluster_token::Model> {
+        let token = lapdev_db_entities::kube_cluster_token::ActiveModel {
             id: ActiveValue::Set(Uuid::new_v4()),
             created_at: ActiveValue::Set(Utc::now().into()),
             deleted_at: ActiveValue::Set(None),
             last_used_at: ActiveValue::Set(None),
             cluster_id: ActiveValue::Set(cluster_id),
             created_by: ActiveValue::Set(user_id),
-            name: ActiveValue::Set(token_name),
-            token: ActiveValue::Set(hashed_token.expose_secret().to_vec()),
+            name: ActiveValue::Set(name),
+            token: ActiveValue::Set(token_hash),
         }
-        .insert(&txn)
+        .insert(&self.conn)
         .await?;
-
-        txn.commit().await?;
-
-        Ok(CreateKubeClusterResponse {
-            cluster_id,
-            token: token.expose_secret().to_string(),
-        })
+        Ok(token)
     }
 
-    pub async fn delete_kube_cluster(&self, org_id: Uuid, cluster_id: Uuid) -> Result<()> {
-        // Verify cluster belongs to the organization
-        let cluster = self
-            .get_kube_cluster(cluster_id)
-            .await?
-            .ok_or_else(|| anyhow!("Cluster not found"))?;
-
-        if cluster.organization_id != org_id {
-            return Err(anyhow!("Unauthorized"));
-        }
-
-        // Check for dependencies - kube_app_catalog
-        let has_app_catalogs = lapdev_db_entities::kube_app_catalog::Entity::find()
-            .filter(lapdev_db_entities::kube_app_catalog::Column::ClusterId.eq(cluster_id))
-            .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
-            .one(&self.conn)
-            .await?
-            .is_some();
-
-        if has_app_catalogs {
-            return Err(anyhow!(
-                "Cannot delete cluster: it has active app catalogs. Please delete them first."
-            ));
-        }
-
-        // Check for dependencies - kube_environment
-        let has_environments = lapdev_db_entities::kube_environment::Entity::find()
-            .filter(lapdev_db_entities::kube_environment::Column::ClusterId.eq(cluster_id))
-            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
-            .one(&self.conn)
-            .await?
-            .is_some();
-
-        if has_environments {
-            return Err(anyhow!(
-                "Cannot delete cluster: it has active environments. Please delete them first."
-            ));
-        }
-
-        // Soft delete by setting deleted_at timestamp
+    pub async fn delete_kube_cluster(&self, cluster_id: Uuid) -> Result<()> {
         lapdev_db_entities::kube_cluster::ActiveModel {
             id: ActiveValue::Set(cluster_id),
             deleted_at: ActiveValue::Set(Some(Utc::now().into())),
@@ -920,38 +874,41 @@ impl DbApi {
         }
         .update(&self.conn)
         .await?;
-
         Ok(())
+    }
+
+    pub async fn check_kube_cluster_has_app_catalogs(&self, cluster_id: Uuid) -> Result<bool> {
+        let has_catalogs = lapdev_db_entities::kube_app_catalog::Entity::find()
+            .filter(lapdev_db_entities::kube_app_catalog::Column::ClusterId.eq(cluster_id))
+            .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?
+            .is_some();
+        Ok(has_catalogs)
+    }
+
+    pub async fn check_kube_cluster_has_environments(&self, cluster_id: Uuid) -> Result<bool> {
+        let has_environments = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(lapdev_db_entities::kube_environment::Column::ClusterId.eq(cluster_id))
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?
+            .is_some();
+        Ok(has_environments)
     }
 
     pub async fn set_cluster_deployable(
         &self,
-        org_id: Uuid,
         cluster_id: Uuid,
         can_deploy: bool,
-    ) -> Result<()> {
-        // Find the cluster
-        let cluster = lapdev_db_entities::kube_cluster::Entity::find_by_id(cluster_id)
-            .one(&self.conn)
-            .await?;
-
-        let cluster = cluster.ok_or_else(|| anyhow!("Cluster not found"))?;
-
-        // Verify the cluster belongs to the organization
-        if cluster.organization_id != org_id {
-            return Err(anyhow!("Unauthorized"));
-        }
-
-        // Update the can_deploy field
+    ) -> Result<lapdev_db_entities::kube_cluster::Model> {
         let active_model = lapdev_db_entities::kube_cluster::ActiveModel {
-            id: ActiveValue::Set(cluster.id),
+            id: ActiveValue::Set(cluster_id),
             can_deploy: ActiveValue::Set(can_deploy),
             ..Default::default()
         };
-        
-        active_model.update(&self.conn).await?;
-
-        Ok(())
+        let updated = active_model.update(&self.conn).await?;
+        Ok(updated)
     }
 
     // App catalog operations
@@ -986,7 +943,7 @@ impl DbApi {
         org_id: Uuid,
         search: Option<String>,
         pagination: Option<PagePaginationParams>,
-    ) -> Result<PaginatedResult<KubeAppCatalog>> {
+    ) -> Result<(Vec<(lapdev_db_entities::kube_app_catalog::Model, Option<lapdev_db_entities::kube_cluster::Model>)>, usize)> {
         let pagination = pagination.unwrap_or_default();
 
         // Build base query
@@ -1026,70 +983,39 @@ impl DbApi {
             .all(&self.conn)
             .await?;
 
-        let app_catalogs = catalogs_with_clusters
-            .into_iter()
-            .filter_map(|(catalog, cluster)| {
-                let cluster = cluster?;
-                Some(KubeAppCatalog {
-                    id: catalog.id,
-                    name: catalog.name,
-                    description: catalog.description,
-                    created_at: catalog.created_at,
-                    created_by: catalog.created_by,
-                    cluster_id: catalog.cluster_id,
-                    cluster_name: cluster.name,
-                })
-            })
-            .collect();
-
-        let total_pages = (total_count + pagination.page_size - 1) / pagination.page_size;
-
-        Ok(PaginatedResult {
-            data: app_catalogs,
-            pagination_info: PaginatedInfo {
-                total_count,
-                page: pagination.page,
-                page_size: pagination.page_size,
-                total_pages,
-            },
-        })
+        Ok((catalogs_with_clusters, total_count))
     }
 
-    pub async fn delete_app_catalog(&self, org_id: Uuid, catalog_id: Uuid) -> Result<()> {
-        // Verify catalog belongs to the organization
+    pub async fn delete_app_catalog(&self, catalog_id: Uuid) -> Result<()> {
+        lapdev_db_entities::kube_app_catalog::ActiveModel {
+            id: ActiveValue::Set(catalog_id),
+            deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_app_catalog(
+        &self,
+        catalog_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_app_catalog::Model>> {
         let catalog = lapdev_db_entities::kube_app_catalog::Entity::find_by_id(catalog_id)
             .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
             .one(&self.conn)
-            .await?
-            .ok_or_else(|| anyhow!("App catalog not found"))?;
+            .await?;
+        Ok(catalog)
+    }
 
-        if catalog.organization_id != org_id {
-            return Err(anyhow!("Unauthorized"));
-        }
-
-        // Check for dependencies - kube_environment (any user's environments using this catalog)
+    pub async fn check_app_catalog_has_environments(&self, catalog_id: Uuid) -> Result<bool> {
         let has_environments = lapdev_db_entities::kube_environment::Entity::find()
             .filter(lapdev_db_entities::kube_environment::Column::AppCatalogId.eq(catalog_id))
             .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
             .one(&self.conn)
             .await?
             .is_some();
-
-        if has_environments {
-            return Err(anyhow!(
-                "Cannot delete app catalog: it has active environments. Please delete them first."
-            ));
-        }
-
-        // Soft delete the app catalog
-        let mut active_catalog: lapdev_db_entities::kube_app_catalog::ActiveModel = catalog.into();
-        active_catalog.deleted_at = ActiveValue::Set(Some(Utc::now().into()));
-
-        active_catalog
-            .update(&self.conn)
-            .await?;
-
-        Ok(())
+        Ok(has_environments)
     }
 
     // Environment operations
@@ -1099,7 +1025,7 @@ impl DbApi {
         user_id: Uuid,
         search: Option<String>,
         pagination: Option<PagePaginationParams>,
-    ) -> Result<PaginatedResult<KubeEnvironment>> {
+    ) -> Result<(Vec<(lapdev_db_entities::kube_environment::Model, Option<lapdev_db_entities::kube_app_catalog::Model>)>, usize)> {
         let pagination = pagination.unwrap_or_default();
 
         // Build base query - filter by user ID so users only see their own environments
@@ -1141,34 +1067,7 @@ impl DbApi {
             .all(&self.conn)
             .await?;
 
-        let kube_environments = environments_with_catalogs
-            .into_iter()
-            .filter_map(|(env, catalog)| {
-                let catalog = catalog?;
-                Some(KubeEnvironment {
-                    id: env.id,
-                    name: env.name,
-                    namespace: env.namespace,
-                    app_catalog_id: env.app_catalog_id,
-                    app_catalog_name: catalog.name,
-                    status: env.status,
-                    created_at: env.created_at.to_string(),
-                    created_by: env.created_by,
-                })
-            })
-            .collect();
-
-        let total_pages = (total_count + pagination.page_size - 1) / pagination.page_size;
-
-        Ok(PaginatedResult {
-            data: kube_environments,
-            pagination_info: PaginatedInfo {
-                total_count,
-                page: pagination.page,
-                page_size: pagination.page_size,
-                total_pages,
-            },
-        })
+        Ok((environments_with_catalogs, total_count))
     }
 
     pub async fn create_kube_environment(
@@ -1179,50 +1078,23 @@ impl DbApi {
         cluster_id: Uuid,
         name: String,
         namespace: String,
-    ) -> Result<lapdev_db_entities::kube_app_catalog::Model> {
-        // Verify app catalog belongs to the organization
-        let app_catalog = lapdev_db_entities::kube_app_catalog::Entity::find_by_id(app_catalog_id)
-            .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
-            .one(&self.conn)
-            .await?
-            .ok_or_else(|| anyhow!("App catalog not found"))?;
-
-        if app_catalog.organization_id != org_id {
-            return Err(anyhow!("Unauthorized"));
-        }
-
-        // Verify cluster belongs to the organization
-        let cluster = self
-            .get_kube_cluster(cluster_id)
-            .await?
-            .ok_or_else(|| anyhow!("Cluster not found"))?;
-
-        if cluster.organization_id != org_id {
-            return Err(anyhow!("Unauthorized"));
-        }
-
-        // Check if the cluster allows deployments
-        if !cluster.can_deploy {
-            return Err(anyhow!("Deployments are not allowed on this cluster"));
-        }
-
-        // Create the kube environment
-        lapdev_db_entities::kube_environment::ActiveModel {
+        status: Option<String>,
+    ) -> Result<lapdev_db_entities::kube_environment::Model> {
+        let environment = lapdev_db_entities::kube_environment::ActiveModel {
             id: ActiveValue::Set(Uuid::new_v4()),
             created_at: ActiveValue::Set(Utc::now().into()),
             deleted_at: ActiveValue::Set(None),
             organization_id: ActiveValue::Set(org_id),
             created_by: ActiveValue::Set(user_id),
-            user_id: ActiveValue::Set(user_id), // Environment belongs to the user who created it
+            user_id: ActiveValue::Set(user_id),
             app_catalog_id: ActiveValue::Set(app_catalog_id),
             cluster_id: ActiveValue::Set(cluster_id),
             name: ActiveValue::Set(name),
             namespace: ActiveValue::Set(namespace),
-            status: ActiveValue::Set(Some("Pending".to_string())),
+            status: ActiveValue::Set(status),
         }
         .insert(&self.conn)
         .await?;
-
-        Ok(app_catalog)
+        Ok(environment)
     }
 }

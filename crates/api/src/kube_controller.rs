@@ -3,14 +3,18 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use anyhow::Result;
-use lapdev_common::kube::{
-    CreateKubeClusterResponse, KubeAppCatalog, KubeCluster, KubeClusterInfo, KubeClusterStatus,
-    KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-    PagePaginationParams, PaginatedResult, PaginationParams,
+use lapdev_common::{
+    kube::{
+        CreateKubeClusterResponse, KubeAppCatalog, KubeCluster, KubeClusterInfo, KubeClusterStatus,
+        KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
+        PagePaginationParams, PaginatedInfo, PaginatedResult, PaginationParams,
+    },
+    token::PlainToken,
 };
 use lapdev_db::api::DbApi;
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_rpc::error::ApiError;
+use secrecy::ExposeSecret;
 
 #[derive(Clone)]
 pub struct KubeController {
@@ -72,10 +76,39 @@ impl KubeController {
         user_id: Uuid,
         name: String,
     ) -> Result<CreateKubeClusterResponse, ApiError> {
+        // Generate cluster ID and token
+        let cluster_id = Uuid::new_v4();
+        let token = PlainToken::generate();
+        let hashed_token = token.hashed();
+        let token_name = format!("{name}-default");
+
+        // Create the cluster
         self.db
-            .create_kube_cluster_with_token(org_id, user_id, name)
+            .create_kube_cluster(
+                cluster_id,
+                org_id,
+                user_id,
+                name,
+                Some(KubeClusterStatus::Provisioning.to_string()),
+            )
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        // Create the cluster token
+        self.db
+            .create_kube_cluster_token(
+                cluster_id,
+                user_id,
+                token_name,
+                hashed_token.expose_secret().to_vec(),
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(CreateKubeClusterResponse {
+            cluster_id,
+            token: token.expose_secret().to_string(),
+        })
     }
 
     pub async fn delete_kube_cluster(
@@ -83,8 +116,47 @@ impl KubeController {
         org_id: Uuid,
         cluster_id: Uuid,
     ) -> Result<(), ApiError> {
+        // Verify cluster belongs to the organization
+        let cluster = self
+            .db
+            .get_kube_cluster(cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        if cluster.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Check for dependencies - kube_app_catalog
+        let has_app_catalogs = self
+            .db
+            .check_kube_cluster_has_app_catalogs(cluster_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if has_app_catalogs {
+            return Err(ApiError::InvalidRequest(
+                "Cannot delete cluster: it has active app catalogs. Please delete them first.".to_string()
+            ));
+        }
+
+        // Check for dependencies - kube_environment
+        let has_environments = self
+            .db
+            .check_kube_cluster_has_environments(cluster_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if has_environments {
+            return Err(ApiError::InvalidRequest(
+                "Cannot delete cluster: it has active environments. Please delete them first.".to_string()
+            ));
+        }
+
+        // Soft delete the cluster
         self.db
-            .delete_kube_cluster(org_id, cluster_id)
+            .delete_kube_cluster(cluster_id)
             .await
             .map_err(ApiError::from)
     }
@@ -95,10 +167,25 @@ impl KubeController {
         cluster_id: Uuid,
         can_deploy: bool,
     ) -> Result<(), ApiError> {
-        self.db
-            .set_cluster_deployable(org_id, cluster_id, can_deploy)
+        // Verify cluster belongs to the organization
+        let cluster = self
+            .db
+            .get_kube_cluster(cluster_id)
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        if cluster.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Update the can_deploy field
+        self.db
+            .set_cluster_deployable(cluster_id, can_deploy)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(())
     }
 
     pub async fn get_workloads(
@@ -295,10 +382,41 @@ impl KubeController {
         search: Option<String>,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeAppCatalog>, ApiError> {
-        self.db
-            .get_all_app_catalogs_paginated(org_id, search, pagination)
+        let pagination = pagination.unwrap_or_default();
+        
+        let (catalogs_with_clusters, total_count) = self
+            .db
+            .get_all_app_catalogs_paginated(org_id, search, Some(pagination.clone()))
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        let app_catalogs = catalogs_with_clusters
+            .into_iter()
+            .filter_map(|(catalog, cluster)| {
+                let cluster = cluster?;
+                Some(KubeAppCatalog {
+                    id: catalog.id,
+                    name: catalog.name,
+                    description: catalog.description,
+                    created_at: catalog.created_at,
+                    created_by: catalog.created_by,
+                    cluster_id: catalog.cluster_id,
+                    cluster_name: cluster.name,
+                })
+            })
+            .collect();
+
+        let total_pages = (total_count + pagination.page_size - 1) / pagination.page_size;
+
+        Ok(PaginatedResult {
+            data: app_catalogs,
+            pagination_info: PaginatedInfo {
+                total_count,
+                page: pagination.page,
+                page_size: pagination.page_size,
+                total_pages,
+            },
+        })
     }
 
     pub async fn get_all_kube_environments(
@@ -308,15 +426,73 @@ impl KubeController {
         search: Option<String>,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, ApiError> {
-        self.db
-            .get_all_kube_environments_paginated(org_id, user_id, search, pagination)
+        let pagination = pagination.unwrap_or_default();
+        
+        let (environments_with_catalogs, total_count) = self
+            .db
+            .get_all_kube_environments_paginated(org_id, user_id, search, Some(pagination.clone()))
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        let kube_environments = environments_with_catalogs
+            .into_iter()
+            .filter_map(|(env, catalog)| {
+                let catalog = catalog?;
+                Some(KubeEnvironment {
+                    id: env.id,
+                    name: env.name,
+                    namespace: env.namespace,
+                    app_catalog_id: env.app_catalog_id,
+                    app_catalog_name: catalog.name,
+                    status: env.status,
+                    created_at: env.created_at.to_string(),
+                    created_by: env.created_by,
+                })
+            })
+            .collect();
+
+        let total_pages = (total_count + pagination.page_size - 1) / pagination.page_size;
+
+        Ok(PaginatedResult {
+            data: kube_environments,
+            pagination_info: PaginatedInfo {
+                total_count,
+                page: pagination.page,
+                page_size: pagination.page_size,
+                total_pages,
+            },
+        })
     }
 
     pub async fn delete_app_catalog(&self, org_id: Uuid, catalog_id: Uuid) -> Result<(), ApiError> {
+        // Verify catalog belongs to the organization
+        let catalog = self
+            .db
+            .get_app_catalog(catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        if catalog.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Check for dependencies - kube_environment (any user's environments using this catalog)
+        let has_environments = self
+            .db
+            .check_app_catalog_has_environments(catalog_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if has_environments {
+            return Err(ApiError::InvalidRequest(
+                "Cannot delete app catalog: it has active environments. Please delete them first.".to_string()
+            ));
+        }
+
+        // Soft delete the app catalog
         self.db
-            .delete_app_catalog(org_id, catalog_id)
+            .delete_app_catalog(catalog_id)
             .await
             .map_err(ApiError::from)
     }
@@ -330,9 +506,39 @@ impl KubeController {
         name: String,
         namespace: String,
     ) -> Result<(), ApiError> {
-        // Create the environment in database and get the app catalog
+        // Verify app catalog belongs to the organization
         let app_catalog = self
             .db
+            .get_app_catalog(app_catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        if app_catalog.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Verify cluster belongs to the organization
+        let cluster = self
+            .db
+            .get_kube_cluster(cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        if cluster.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Check if the cluster allows deployments
+        if !cluster.can_deploy {
+            return Err(ApiError::InvalidRequest(
+                "Deployments are not allowed on this cluster".to_string()
+            ));
+        }
+
+        // Create the environment in database
+        self.db
             .create_kube_environment(
                 org_id,
                 user_id,
@@ -340,6 +546,7 @@ impl KubeController {
                 cluster_id,
                 name.clone(),
                 namespace.clone(),
+                Some("Pending".to_string()),
             )
             .await
             .map_err(ApiError::from)?;

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use futures::StreamExt;
+use futures::{StreamExt, TryFutureExt};
 use k8s_openapi::{
     api::{
         apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
@@ -178,7 +178,19 @@ impl KubeManager {
         Ok(client)
     }
 
+    async fn retrieve_cluster_config_from_home() -> Result<kube::Config> {
+        Ok(kube::Config::infer().await?)
+    }
+
     async fn retrieve_cluster_config() -> Result<kube::Config> {
+        let retrive_from_home = std::env::var("KUBE_CLUSTER_FROM_HOME")
+            .ok()
+            .map(|v| v == "yes")
+            .unwrap_or(false);
+        if retrive_from_home {
+            return Self::retrieve_cluster_config_from_home().await;
+        }
+
         let key = yup_oauth2::read_service_account_key("/workspaces/key.json").await?;
         let project_id = key
             .project_id

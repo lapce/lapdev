@@ -105,7 +105,7 @@ pub fn Modal(
                             <Alert variant=AlertVariant::Destructive>
                                 <lucide_leptos::CircleAlert />
                                 <AlertTitle>Error</AlertTitle>
-                                <AlertDescription>{error}</AlertDescription>
+                                <AlertDescription class="text-wrap">{error}</AlertDescription>
                             </Alert>
                         }
                             .into_any()

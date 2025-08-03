@@ -1201,6 +1201,11 @@ impl DbApi {
             return Err(anyhow!("Unauthorized"));
         }
 
+        // Check if the cluster allows deployments
+        if !cluster.can_deploy {
+            return Err(anyhow!("Deployments are not allowed on this cluster"));
+        }
+
         // Create the kube environment
         lapdev_db_entities::kube_environment::ActiveModel {
             id: ActiveValue::Set(Uuid::new_v4()),

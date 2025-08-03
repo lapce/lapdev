@@ -622,7 +622,7 @@ impl KubeController {
         // Step 4: Deploy each workload (retrieve YAML from source, deploy to target)
         for workload in workloads {
             // First, retrieve the original YAML manifest from the source cluster
-            let yaml_manifest = match source_server
+            let workload_yaml = match source_server
                 .rpc_client
                 .get_workload_yaml(
                     tarpc::context::current(),
@@ -632,7 +632,7 @@ impl KubeController {
                 )
                 .await
             {
-                Ok(Ok(yaml)) => yaml,
+                Ok(Ok(workload_yaml)) => workload_yaml,
                 Ok(Err(e)) => {
                     tracing::error!(
                         "Failed to get YAML for workload '{}' from source cluster: {}",
@@ -658,7 +658,7 @@ impl KubeController {
                 .deploy_workload_yaml(
                     tarpc::context::current(),
                     namespace.to_string(),
-                    yaml_manifest,
+                    workload_yaml,
                     environment_labels.clone(),
                 )
                 .await

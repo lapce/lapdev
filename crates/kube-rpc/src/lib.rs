@@ -1,8 +1,3 @@
-use k8s_openapi::api::{
-    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
-    batch::v1::{CronJob, Job},
-    core::v1::Pod,
-};
 use lapdev_common::kube::{
     KubeClusterInfo, KubeNamespace, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };

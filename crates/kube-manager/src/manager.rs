@@ -18,7 +18,7 @@ use lapdev_common::kube::{
     DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER,
     KUBE_CLUSTER_URL_ENV_VAR,
 };
-use lapdev_kube_rpc::{KubeClusterRpcClient, KubeManagerRpc};
+use lapdev_kube_rpc::{KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadYaml};
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;
 use tarpc::server::{BaseChannel, Channel};
@@ -1038,12 +1038,25 @@ impl KubeManager {
         Ok(None)
     }
 
+    fn clean_metadata(&self, metadata: &mut k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta) {
+        // Remove server-managed fields that should not be set on object creation
+        metadata.resource_version = None;
+        metadata.uid = None;
+        metadata.self_link = None;
+        metadata.creation_timestamp = None;
+        metadata.deletion_timestamp = None;
+        metadata.deletion_grace_period_seconds = None;
+        metadata.generation = None;
+        metadata.managed_fields = None;
+        metadata.owner_references = None;
+    }
+
     async fn retrieve_workload_yaml(
         &self,
         name: String,
         namespace: String,
         kind: KubeWorkloadKind,
-    ) -> Result<String> {
+    ) -> Result<KubeWorkloadYaml> {
         let client = self
             .kube_client
             .as_ref()
@@ -1053,56 +1066,78 @@ impl KubeManager {
             KubeWorkloadKind::Deployment => {
                 let api: kube::Api<Deployment> =
                     kube::Api::namespaced((**client).clone(), &namespace);
-                let deployment = api.get(&name).await?;
-                serde_yaml::to_string(&deployment)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+                let mut deployment = api.get(&name).await?;
+                // Clean server-managed fields
+                self.clean_metadata(&mut deployment.metadata);
+                deployment.status = None;
+                let yaml = serde_yaml::to_string(&deployment)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
+                Ok(KubeWorkloadYaml::Deployment(yaml))
             }
             KubeWorkloadKind::StatefulSet => {
                 let api: kube::Api<StatefulSet> =
                     kube::Api::namespaced((**client).clone(), &namespace);
-                let statefulset = api.get(&name).await?;
-                serde_yaml::to_string(&statefulset)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+                let mut statefulset = api.get(&name).await?;
+                self.clean_metadata(&mut statefulset.metadata);
+                statefulset.status = None;
+                let yaml = serde_yaml::to_string(&statefulset)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
+                Ok(KubeWorkloadYaml::StatefulSet(yaml))
             }
             KubeWorkloadKind::DaemonSet => {
                 let api: kube::Api<DaemonSet> =
                     kube::Api::namespaced((**client).clone(), &namespace);
-                let daemonset = api.get(&name).await?;
-                serde_yaml::to_string(&daemonset)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+                let mut daemonset = api.get(&name).await?;
+                self.clean_metadata(&mut daemonset.metadata);
+                daemonset.status = None;
+                let yaml = serde_yaml::to_string(&daemonset)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
+                Ok(KubeWorkloadYaml::DaemonSet(yaml))
             }
             KubeWorkloadKind::Pod => {
                 let api: kube::Api<Pod> = kube::Api::namespaced((**client).clone(), &namespace);
-                let pod = api.get(&name).await?;
-                serde_yaml::to_string(&pod)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+                let mut pod = api.get(&name).await?;
+                self.clean_metadata(&mut pod.metadata);
+                pod.status = None;
+                let yaml = serde_yaml::to_string(&pod)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
+                Ok(KubeWorkloadYaml::Pod(yaml))
             }
             KubeWorkloadKind::Job => {
                 let api: kube::Api<Job> = kube::Api::namespaced((**client).clone(), &namespace);
-                let job = api.get(&name).await?;
-                serde_yaml::to_string(&job)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+                let mut job = api.get(&name).await?;
+                self.clean_metadata(&mut job.metadata);
+                job.status = None;
+                let yaml = serde_yaml::to_string(&job)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
+                Ok(KubeWorkloadYaml::Job(yaml))
             }
             KubeWorkloadKind::CronJob => {
                 let api: kube::Api<CronJob> = kube::Api::namespaced((**client).clone(), &namespace);
-                let cronjob = api.get(&name).await?;
-                serde_yaml::to_string(&cronjob)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+                let mut cronjob = api.get(&name).await?;
+                self.clean_metadata(&mut cronjob.metadata);
+                cronjob.status = None;
+                let yaml = serde_yaml::to_string(&cronjob)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
+                Ok(KubeWorkloadYaml::CronJob(yaml))
             }
             KubeWorkloadKind::ReplicaSet => {
                 let api: kube::Api<ReplicaSet> =
                     kube::Api::namespaced((**client).clone(), &namespace);
-                let replicaset = api.get(&name).await?;
-                serde_yaml::to_string(&replicaset)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+                let mut replicaset = api.get(&name).await?;
+                self.clean_metadata(&mut replicaset.metadata);
+                replicaset.status = None;
+                let yaml = serde_yaml::to_string(&replicaset)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
+                Ok(KubeWorkloadYaml::ReplicaSet(yaml))
             }
         }
     }
 
-    async fn apply_yaml_manifest(
+    async fn apply_workload_yaml(
         &self,
         namespace: String,
-        yaml_manifest: String,
+        workload_yaml: KubeWorkloadYaml,
         labels: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         let client = self
@@ -1110,65 +1145,49 @@ impl KubeManager {
             .as_ref()
             .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
 
-        // Step 1: Parse the YAML to determine resource type
-        let resource_info: serde_yaml::Value = serde_yaml::from_str(&yaml_manifest)
-            .map_err(|e| anyhow!("Failed to parse YAML manifest: {}", e))?;
-
-        let api_version = resource_info["apiVersion"]
-            .as_str()
-            .ok_or_else(|| anyhow!("Missing apiVersion in YAML manifest"))?;
-        let kind = resource_info["kind"]
-            .as_str()
-            .ok_or_else(|| anyhow!("Missing kind in YAML manifest"))?;
-
-        println!(
-            "Applying {} ({}) to namespace '{}' with labels: {:?}",
-            kind, api_version, namespace, labels
-        );
-
-        // Step 2: Ensure namespace exists
+        // Step 1: Ensure namespace exists
         self.ensure_namespace_exists(&namespace).await?;
 
-        // Step 3: Apply the resource based on its type
-        match (api_version, kind) {
-            ("apps/v1", "Deployment") => {
-                self.apply_deployment(client, &namespace, &yaml_manifest, &labels)
+        // Step 2: Apply the resource based on workload type
+        match workload_yaml {
+            KubeWorkloadYaml::Deployment(yaml) => {
+                println!("Applying Deployment to namespace '{}' with labels: {:?}", namespace, labels);
+                self.apply_deployment(client, &namespace, &yaml, &labels)
                     .await?;
             }
-            ("apps/v1", "StatefulSet") => {
-                self.apply_statefulset(client, &namespace, &yaml_manifest, &labels)
+            KubeWorkloadYaml::StatefulSet(yaml) => {
+                println!("Applying StatefulSet to namespace '{}' with labels: {:?}", namespace, labels);
+                self.apply_statefulset(client, &namespace, &yaml, &labels)
                     .await?;
             }
-            ("apps/v1", "DaemonSet") => {
-                self.apply_daemonset(client, &namespace, &yaml_manifest, &labels)
+            KubeWorkloadYaml::DaemonSet(yaml) => {
+                println!("Applying DaemonSet to namespace '{}' with labels: {:?}", namespace, labels);
+                self.apply_daemonset(client, &namespace, &yaml, &labels)
                     .await?;
             }
-            ("v1", "Pod") => {
-                self.apply_pod(client, &namespace, &yaml_manifest, &labels)
+            KubeWorkloadYaml::Pod(yaml) => {
+                println!("Applying Pod to namespace '{}' with labels: {:?}", namespace, labels);
+                self.apply_pod(client, &namespace, &yaml, &labels)
                     .await?;
             }
-            ("batch/v1", "Job") => {
-                self.apply_job(client, &namespace, &yaml_manifest, &labels)
+            KubeWorkloadYaml::Job(yaml) => {
+                println!("Applying Job to namespace '{}' with labels: {:?}", namespace, labels);
+                self.apply_job(client, &namespace, &yaml, &labels)
                     .await?;
             }
-            ("batch/v1", "CronJob") => {
-                self.apply_cronjob(client, &namespace, &yaml_manifest, &labels)
+            KubeWorkloadYaml::CronJob(yaml) => {
+                println!("Applying CronJob to namespace '{}' with labels: {:?}", namespace, labels);
+                self.apply_cronjob(client, &namespace, &yaml, &labels)
                     .await?;
             }
-            ("apps/v1", "ReplicaSet") => {
-                self.apply_replicaset(client, &namespace, &yaml_manifest, &labels)
+            KubeWorkloadYaml::ReplicaSet(yaml) => {
+                println!("Applying ReplicaSet to namespace '{}' with labels: {:?}", namespace, labels);
+                self.apply_replicaset(client, &namespace, &yaml, &labels)
                     .await?;
-            }
-            _ => {
-                return Err(anyhow!(
-                    "Unsupported resource type: {} ({})",
-                    kind,
-                    api_version
-                ));
             }
         }
 
-        println!("Successfully applied {} to namespace '{}'", kind, namespace);
+        println!("Successfully applied workload to namespace '{}'", namespace);
         Ok(())
     }
 
@@ -1572,14 +1591,14 @@ impl KubeManagerRpc for KubeManager {
         name: String,
         namespace: String,
         kind: KubeWorkloadKind,
-    ) -> Result<String, String> {
+    ) -> Result<KubeWorkloadYaml, String> {
         match self
             .retrieve_workload_yaml(name.clone(), namespace.clone(), kind)
             .await
         {
-            Ok(yaml) => {
+            Ok(workload_yaml) => {
                 println!("Successfully retrieved YAML for workload: {namespace}/{name}");
-                Ok(yaml)
+                Ok(workload_yaml)
             }
             Err(e) => {
                 println!("Failed to retrieve YAML for workload {namespace}/{name}: {e}");
@@ -1592,11 +1611,11 @@ impl KubeManagerRpc for KubeManager {
         self,
         _context: ::tarpc::context::Context,
         namespace: String,
-        yaml_manifest: String,
+        workload_yaml: KubeWorkloadYaml,
         labels: std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
         match self
-            .apply_yaml_manifest(namespace.clone(), yaml_manifest, labels)
+            .apply_workload_yaml(namespace.clone(), workload_yaml, labels)
             .await
         {
             Ok(()) => {

@@ -98,8 +98,9 @@ impl CoreState {
             hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
                 .build(HttpConnector::new());
 
+        let db = conductor.db.clone();
         let state = Self {
-            db: conductor.db.clone(),
+            db: db.clone(),
             conductor,
             github_client,
             auth: Arc::new(auth),
@@ -109,7 +110,7 @@ impl CoreState {
             ssh_proxy_display_port,
             hyper_client: Arc::new(hyper_client),
             static_dir: Arc::new(static_dir),
-            kube_controller: KubeController::new(),
+            kube_controller: KubeController::new(db),
         };
 
         {

@@ -6,3 +6,6 @@ edition.workspace = true
 
 [dependencies]
 tarpc.workspace = true
+serde.workspace = true
+k8s-openapi.workspace = true
+lapdev-common.workspace = true

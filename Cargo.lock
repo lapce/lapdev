@@ -2970,6 +2970,7 @@ dependencies = [
  "lapdev-db-entities",
  "lapdev-enterprise",
  "lapdev-kube",
+ "lapdev-kube-rpc",
  "lapdev-proxy-http",
  "lapdev-proxy-ssh",
  "lapdev-rpc",
@@ -3180,6 +3181,7 @@ dependencies = [
  "kube",
  "lapdev-common",
  "lapdev-db",
+ "lapdev-kube-rpc",
  "lapdev-rpc",
  "pem",
  "reqwest",
@@ -3204,6 +3206,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "lapdev-common",
+ "lapdev-kube-rpc",
  "lapdev-rpc",
  "pem",
  "reqwest",
@@ -3220,6 +3223,9 @@ dependencies = [
 name = "lapdev-kube-rpc"
 version = "0.1.0"
 dependencies = [
+ "k8s-openapi",
+ "lapdev-common",
+ "serde",
  "tarpc",
 ]
 

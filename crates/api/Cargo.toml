@@ -44,6 +44,7 @@ secrecy.workspace = true
 sqlx.workspace = true
 sea-orm.workspace = true
 lapdev-rpc.workspace = true
+lapdev-kube-rpc.workspace = true
 lapdev-common.workspace = true
 lapdev-api-hrpc.workspace = true
 lapdev-db.workspace = true

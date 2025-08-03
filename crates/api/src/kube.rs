@@ -8,11 +8,8 @@ use axum::{
 use futures::StreamExt;
 use lapdev_common::{kube::KUBE_CLUSTER_TOKEN_HEADER, token::HashedToken};
 use lapdev_kube::server::KubeClusterServer;
-use lapdev_rpc::{
-    error::ApiError,
-    kube::{KubeClusterRpc, KubeManagerRpcClient},
-    spawn_twoway,
-};
+use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
+use lapdev_rpc::{error::ApiError, spawn_twoway};
 use secrecy::ExposeSecret;
 use tarpc::{
     server::{BaseChannel, Channel},

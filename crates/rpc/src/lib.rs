@@ -1,5 +1,4 @@
 pub mod error;
-pub mod kube;
 
 use std::{
     io,

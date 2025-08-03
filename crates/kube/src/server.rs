@@ -1,6 +1,6 @@
 use lapdev_common::kube::KubeClusterInfo;
 use lapdev_db::api::DbApi;
-use lapdev_rpc::kube::{KubeClusterRpc, KubeManagerRpcClient};
+use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

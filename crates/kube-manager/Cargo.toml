@@ -23,3 +23,4 @@ tokio-util.workspace = true
 tokio-tungstenite.workspace = true
 lapdev-rpc.workspace = true
 lapdev-common.workspace = true
+lapdev-kube-rpc.workspace = true

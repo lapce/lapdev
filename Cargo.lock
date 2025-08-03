@@ -3090,6 +3090,7 @@ dependencies = [
  "pasetors",
  "sea-orm",
  "sea-orm-migration",
+ "secrecy",
  "sqlx",
  "tokio",
  "uuid",

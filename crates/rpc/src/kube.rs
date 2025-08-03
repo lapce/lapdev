@@ -20,4 +20,14 @@ pub trait KubeManagerRpc {
         namespace: String,
     ) -> Result<Option<lapdev_common::kube::KubeWorkload>, String>;
     async fn get_namespaces() -> Result<Vec<KubeNamespace>, String>;
+    async fn get_workload_yaml(
+        name: String,
+        namespace: String,
+        kind: KubeWorkloadKind,
+    ) -> Result<String, String>;
+    async fn deploy_workload_yaml(
+        namespace: String,
+        yaml_manifest: String,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Result<(), String>;
 }

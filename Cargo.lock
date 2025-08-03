@@ -3208,6 +3208,7 @@ dependencies = [
  "pem",
  "reqwest",
  "serde",
+ "serde_yaml",
  "tarpc",
  "tokio",
  "tokio-tungstenite 0.27.0",

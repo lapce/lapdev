@@ -1179,7 +1179,7 @@ impl DbApi {
         cluster_id: Uuid,
         name: String,
         namespace: String,
-    ) -> Result<()> {
+    ) -> Result<lapdev_db_entities::kube_app_catalog::Model> {
         // Verify app catalog belongs to the organization
         let app_catalog = lapdev_db_entities::kube_app_catalog::Entity::find_by_id(app_catalog_id)
             .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
@@ -1218,6 +1218,6 @@ impl DbApi {
         .insert(&self.conn)
         .await?;
 
-        Ok(())
+        Ok(app_catalog)
     }
 }

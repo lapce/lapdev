@@ -9,6 +9,7 @@ yup-oauth2 = "12.1.0"
 pem = "3.0.5"
 base64.workspace = true
 serde.workspace = true
+serde_yaml.workspace = true
 reqwest.workspace = true
 tarpc.workspace = true
 anyhow.workspace = true

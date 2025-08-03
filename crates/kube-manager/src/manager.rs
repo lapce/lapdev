@@ -1024,6 +1024,460 @@ impl KubeManager {
 
         Ok(None)
     }
+
+    async fn retrieve_workload_yaml(
+        &self,
+        name: String,
+        namespace: String,
+        kind: KubeWorkloadKind,
+    ) -> Result<String> {
+        let client = self
+            .kube_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+
+        match kind {
+            KubeWorkloadKind::Deployment => {
+                let api: kube::Api<Deployment> =
+                    kube::Api::namespaced((**client).clone(), &namespace);
+                let deployment = api.get(&name).await?;
+                serde_yaml::to_string(&deployment)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+            }
+            KubeWorkloadKind::StatefulSet => {
+                let api: kube::Api<StatefulSet> =
+                    kube::Api::namespaced((**client).clone(), &namespace);
+                let statefulset = api.get(&name).await?;
+                serde_yaml::to_string(&statefulset)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+            }
+            KubeWorkloadKind::DaemonSet => {
+                let api: kube::Api<DaemonSet> =
+                    kube::Api::namespaced((**client).clone(), &namespace);
+                let daemonset = api.get(&name).await?;
+                serde_yaml::to_string(&daemonset)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+            }
+            KubeWorkloadKind::Pod => {
+                let api: kube::Api<Pod> = kube::Api::namespaced((**client).clone(), &namespace);
+                let pod = api.get(&name).await?;
+                serde_yaml::to_string(&pod)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+            }
+            KubeWorkloadKind::Job => {
+                let api: kube::Api<Job> = kube::Api::namespaced((**client).clone(), &namespace);
+                let job = api.get(&name).await?;
+                serde_yaml::to_string(&job)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+            }
+            KubeWorkloadKind::CronJob => {
+                let api: kube::Api<CronJob> = kube::Api::namespaced((**client).clone(), &namespace);
+                let cronjob = api.get(&name).await?;
+                serde_yaml::to_string(&cronjob)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+            }
+            KubeWorkloadKind::ReplicaSet => {
+                let api: kube::Api<ReplicaSet> =
+                    kube::Api::namespaced((**client).clone(), &namespace);
+                let replicaset = api.get(&name).await?;
+                serde_yaml::to_string(&replicaset)
+                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))
+            }
+        }
+    }
+
+    async fn apply_yaml_manifest(
+        &self,
+        namespace: String,
+        yaml_manifest: String,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let client = self
+            .kube_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+
+        // Step 1: Parse the YAML to determine resource type
+        let resource_info: serde_yaml::Value = serde_yaml::from_str(&yaml_manifest)
+            .map_err(|e| anyhow!("Failed to parse YAML manifest: {}", e))?;
+
+        let api_version = resource_info["apiVersion"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing apiVersion in YAML manifest"))?;
+        let kind = resource_info["kind"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing kind in YAML manifest"))?;
+
+        println!(
+            "Applying {} ({}) to namespace '{}' with labels: {:?}",
+            kind, api_version, namespace, labels
+        );
+
+        // Step 2: Ensure namespace exists
+        self.ensure_namespace_exists(&namespace).await?;
+
+        // Step 3: Apply the resource based on its type
+        match (api_version, kind) {
+            ("apps/v1", "Deployment") => {
+                self.apply_deployment(client, &namespace, &yaml_manifest, &labels)
+                    .await?;
+            }
+            ("apps/v1", "StatefulSet") => {
+                self.apply_statefulset(client, &namespace, &yaml_manifest, &labels)
+                    .await?;
+            }
+            ("apps/v1", "DaemonSet") => {
+                self.apply_daemonset(client, &namespace, &yaml_manifest, &labels)
+                    .await?;
+            }
+            ("v1", "Pod") => {
+                self.apply_pod(client, &namespace, &yaml_manifest, &labels)
+                    .await?;
+            }
+            ("batch/v1", "Job") => {
+                self.apply_job(client, &namespace, &yaml_manifest, &labels)
+                    .await?;
+            }
+            ("batch/v1", "CronJob") => {
+                self.apply_cronjob(client, &namespace, &yaml_manifest, &labels)
+                    .await?;
+            }
+            ("apps/v1", "ReplicaSet") => {
+                self.apply_replicaset(client, &namespace, &yaml_manifest, &labels)
+                    .await?;
+            }
+            _ => {
+                return Err(anyhow!(
+                    "Unsupported resource type: {} ({})",
+                    kind,
+                    api_version
+                ));
+            }
+        }
+
+        println!("Successfully applied {} to namespace '{}'", kind, namespace);
+        Ok(())
+    }
+
+    async fn ensure_namespace_exists(&self, namespace: &str) -> Result<()> {
+        let client = self
+            .kube_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+
+        let namespaces: kube::Api<Namespace> = kube::Api::all((**client).clone());
+
+        // Check if namespace exists
+        if namespaces.get_opt(namespace).await?.is_some() {
+            return Ok(());
+        }
+
+        // Create namespace if it doesn't exist
+        let ns = Namespace {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        namespaces.create(&Default::default(), &ns).await?;
+        println!("Created namespace: {}", namespace);
+        Ok(())
+    }
+
+    async fn apply_deployment(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        yaml_manifest: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut deployment: Deployment = serde_yaml::from_str(yaml_manifest)?;
+
+        // Add environment labels to deployment
+        self.add_labels_to_metadata(&mut deployment.metadata, labels);
+
+        // Force namespace
+        deployment.metadata.namespace = Some(namespace.to_string());
+
+        let api: kube::Api<Deployment> = kube::Api::namespaced((*client).clone(), namespace);
+
+        // Try to create or update the deployment
+        match api
+            .get_opt(&deployment.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                // Update existing deployment
+                api.replace(
+                    &deployment.metadata.name.as_ref().unwrap(),
+                    &Default::default(),
+                    &deployment,
+                )
+                .await?;
+                println!(
+                    "Updated deployment: {}",
+                    deployment.metadata.name.as_ref().unwrap()
+                );
+            }
+            None => {
+                // Create new deployment
+                api.create(&Default::default(), &deployment).await?;
+                println!(
+                    "Created deployment: {}",
+                    deployment.metadata.name.as_ref().unwrap()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_statefulset(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        yaml_manifest: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut statefulset: StatefulSet = serde_yaml::from_str(yaml_manifest)?;
+
+        self.add_labels_to_metadata(&mut statefulset.metadata, labels);
+        statefulset.metadata.namespace = Some(namespace.to_string());
+
+        let api: kube::Api<StatefulSet> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match api
+            .get_opt(&statefulset.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                api.replace(
+                    &statefulset.metadata.name.as_ref().unwrap(),
+                    &Default::default(),
+                    &statefulset,
+                )
+                .await?;
+                println!(
+                    "Updated statefulset: {}",
+                    statefulset.metadata.name.as_ref().unwrap()
+                );
+            }
+            None => {
+                api.create(&Default::default(), &statefulset).await?;
+                println!(
+                    "Created statefulset: {}",
+                    statefulset.metadata.name.as_ref().unwrap()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_daemonset(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        yaml_manifest: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut daemonset: DaemonSet = serde_yaml::from_str(yaml_manifest)?;
+
+        self.add_labels_to_metadata(&mut daemonset.metadata, labels);
+        daemonset.metadata.namespace = Some(namespace.to_string());
+
+        let api: kube::Api<DaemonSet> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match api
+            .get_opt(&daemonset.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                api.replace(
+                    &daemonset.metadata.name.as_ref().unwrap(),
+                    &Default::default(),
+                    &daemonset,
+                )
+                .await?;
+                println!(
+                    "Updated daemonset: {}",
+                    daemonset.metadata.name.as_ref().unwrap()
+                );
+            }
+            None => {
+                api.create(&Default::default(), &daemonset).await?;
+                println!(
+                    "Created daemonset: {}",
+                    daemonset.metadata.name.as_ref().unwrap()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_pod(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        yaml_manifest: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut pod: Pod = serde_yaml::from_str(yaml_manifest)?;
+
+        self.add_labels_to_metadata(&mut pod.metadata, labels);
+        pod.metadata.namespace = Some(namespace.to_string());
+
+        let api: kube::Api<Pod> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match api.get_opt(&pod.metadata.name.as_ref().unwrap()).await? {
+            Some(_) => {
+                api.replace(
+                    &pod.metadata.name.as_ref().unwrap(),
+                    &Default::default(),
+                    &pod,
+                )
+                .await?;
+                println!("Updated pod: {}", pod.metadata.name.as_ref().unwrap());
+            }
+            None => {
+                api.create(&Default::default(), &pod).await?;
+                println!("Created pod: {}", pod.metadata.name.as_ref().unwrap());
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_job(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        yaml_manifest: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut job: Job = serde_yaml::from_str(yaml_manifest)?;
+
+        self.add_labels_to_metadata(&mut job.metadata, labels);
+        job.metadata.namespace = Some(namespace.to_string());
+
+        let api: kube::Api<Job> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match api.get_opt(&job.metadata.name.as_ref().unwrap()).await? {
+            Some(_) => {
+                api.replace(
+                    &job.metadata.name.as_ref().unwrap(),
+                    &Default::default(),
+                    &job,
+                )
+                .await?;
+                println!("Updated job: {}", job.metadata.name.as_ref().unwrap());
+            }
+            None => {
+                api.create(&Default::default(), &job).await?;
+                println!("Created job: {}", job.metadata.name.as_ref().unwrap());
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_cronjob(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        yaml_manifest: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut cronjob: CronJob = serde_yaml::from_str(yaml_manifest)?;
+
+        self.add_labels_to_metadata(&mut cronjob.metadata, labels);
+        cronjob.metadata.namespace = Some(namespace.to_string());
+
+        let api: kube::Api<CronJob> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match api
+            .get_opt(&cronjob.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                api.replace(
+                    &cronjob.metadata.name.as_ref().unwrap(),
+                    &Default::default(),
+                    &cronjob,
+                )
+                .await?;
+                println!(
+                    "Updated cronjob: {}",
+                    cronjob.metadata.name.as_ref().unwrap()
+                );
+            }
+            None => {
+                api.create(&Default::default(), &cronjob).await?;
+                println!(
+                    "Created cronjob: {}",
+                    cronjob.metadata.name.as_ref().unwrap()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_replicaset(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        yaml_manifest: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut replicaset: ReplicaSet = serde_yaml::from_str(yaml_manifest)?;
+
+        self.add_labels_to_metadata(&mut replicaset.metadata, labels);
+        replicaset.metadata.namespace = Some(namespace.to_string());
+
+        let api: kube::Api<ReplicaSet> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match api
+            .get_opt(&replicaset.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                api.replace(
+                    &replicaset.metadata.name.as_ref().unwrap(),
+                    &Default::default(),
+                    &replicaset,
+                )
+                .await?;
+                println!(
+                    "Updated replicaset: {}",
+                    replicaset.metadata.name.as_ref().unwrap()
+                );
+            }
+            None => {
+                api.create(&Default::default(), &replicaset).await?;
+                println!(
+                    "Created replicaset: {}",
+                    replicaset.metadata.name.as_ref().unwrap()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn add_labels_to_metadata(
+        &self,
+        metadata: &mut k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        new_labels: &std::collections::HashMap<String, String>,
+    ) {
+        let labels = metadata.labels.get_or_insert_with(Default::default);
+        for (key, value) in new_labels {
+            labels.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 impl KubeManagerRpc for KubeManager {
@@ -1095,6 +1549,50 @@ impl KubeManagerRpc for KubeManager {
             Err(e) => {
                 println!("Failed to collect namespaces: {e}");
                 Err(format!("Failed to collect namespaces: {e}"))
+            }
+        }
+    }
+
+    async fn get_workload_yaml(
+        self,
+        _context: ::tarpc::context::Context,
+        name: String,
+        namespace: String,
+        kind: KubeWorkloadKind,
+    ) -> Result<String, String> {
+        match self
+            .retrieve_workload_yaml(name.clone(), namespace.clone(), kind)
+            .await
+        {
+            Ok(yaml) => {
+                println!("Successfully retrieved YAML for workload: {namespace}/{name}");
+                Ok(yaml)
+            }
+            Err(e) => {
+                println!("Failed to retrieve YAML for workload {namespace}/{name}: {e}");
+                Err(format!("Failed to retrieve workload YAML: {e}"))
+            }
+        }
+    }
+
+    async fn deploy_workload_yaml(
+        self,
+        _context: ::tarpc::context::Context,
+        namespace: String,
+        yaml_manifest: String,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Result<(), String> {
+        match self
+            .apply_yaml_manifest(namespace.clone(), yaml_manifest, labels)
+            .await
+        {
+            Ok(()) => {
+                println!("Successfully deployed workload to namespace: {namespace}");
+                Ok(())
+            }
+            Err(e) => {
+                println!("Failed to deploy workload to namespace {namespace}: {e}");
+                Err(format!("Failed to deploy workload: {e}"))
             }
         }
     }

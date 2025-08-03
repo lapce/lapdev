@@ -1327,7 +1327,6 @@ impl KubeManager {
 
     async fn retrieve_workloads_yaml(
         &self,
-        namespace: String,
         workload_identifiers: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeWorkloadYaml>> {
         let client = self
@@ -1337,47 +1336,59 @@ impl KubeManager {
 
         let mut results = Vec::new();
 
-        // Get all services once and reuse for all workloads
-        let services_api: kube::Api<Service> =
-            kube::Api::namespaced((**client).clone(), &namespace);
-        let mut all_services = Vec::new();
-        let mut continue_token: Option<String> = None;
-
-        // Retrieve all services in the namespace
-        loop {
-            let mut list_params = ListParams::default().limit(100);
-            if let Some(token) = &continue_token {
-                list_params = list_params.continue_token(token);
-            }
-
-            let services_list = services_api.list(&list_params).await?;
-            all_services.extend(services_list.items);
-
-            continue_token = services_list.metadata.continue_;
-            if continue_token.is_none() {
-                break;
-            }
-        }
-
-        // Process each workload
+        // Group workloads by namespace
+        let mut workloads_by_namespace: std::collections::HashMap<String, Vec<WorkloadIdentifier>> = std::collections::HashMap::new();
         for workload_id in workload_identifiers {
-            let workload_yaml = self
-                .retrieve_single_workload_with_services(
-                    client,
-                    &namespace,
-                    &workload_id.name,
-                    workload_id.kind,
-                    &all_services,
-                )
-                .await?;
-            results.push(workload_yaml);
+            workloads_by_namespace
+                .entry(workload_id.namespace.clone())
+                .or_insert_with(Vec::new)
+                .push(workload_id);
         }
 
-        println!(
-            "Retrieved {} workloads with services from namespace {}",
-            results.len(),
-            namespace
-        );
+        // Process each namespace separately
+        for (namespace, namespace_workloads) in workloads_by_namespace {
+            // Get all services once for this namespace and reuse for all workloads
+            let services_api: kube::Api<Service> =
+                kube::Api::namespaced((**client).clone(), &namespace);
+            let mut all_services = Vec::new();
+            let mut continue_token: Option<String> = None;
+
+            // Retrieve all services in the namespace
+            loop {
+                let mut list_params = ListParams::default().limit(100);
+                if let Some(token) = &continue_token {
+                    list_params = list_params.continue_token(token);
+                }
+
+                let services_list = services_api.list(&list_params).await?;
+                all_services.extend(services_list.items);
+
+                continue_token = services_list.metadata.continue_;
+                if continue_token.is_none() {
+                    break;
+                }
+            }
+
+            // Process each workload in this namespace
+            for workload_id in namespace_workloads {
+                let workload_yaml = self
+                    .retrieve_single_workload_with_services(
+                        client,
+                        &workload_id.namespace,
+                        &workload_id.name,
+                        workload_id.kind,
+                        &all_services,
+                    )
+                    .await?;
+                results.push(workload_yaml);
+            }
+
+            println!(
+                "Retrieved workloads with services from namespace {}",
+                namespace
+            );
+        }
+
         Ok(results)
     }
 
@@ -2226,25 +2237,23 @@ impl KubeManagerRpc for KubeManager {
     async fn get_workloads_yaml(
         self,
         _context: ::tarpc::context::Context,
-        namespace: String,
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeWorkloadYaml>, String> {
         match self
-            .retrieve_workloads_yaml(namespace.clone(), workloads.clone())
+            .retrieve_workloads_yaml(workloads.clone())
             .await
         {
             Ok(workload_yamls) => {
                 println!(
-                    "Successfully retrieved {} workloads YAML from namespace: {}",
-                    workload_yamls.len(),
-                    namespace
+                    "Successfully retrieved {} workloads YAML",
+                    workload_yamls.len()
                 );
                 Ok(workload_yamls)
             }
             Err(e) => {
                 println!(
-                    "Failed to retrieve workloads YAML from namespace {}: {}",
-                    namespace, e
+                    "Failed to retrieve workloads YAML: {}",
+                    e
                 );
                 Err(format!("Failed to retrieve workloads YAML: {}", e))
             }

@@ -7,7 +7,6 @@ pub const KUBE_CLUSTER_TOKEN_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_TOKEN";
 pub const KUBE_CLUSTER_URL_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_URL";
 pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/ws";
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeCluster {
     pub id: Uuid,

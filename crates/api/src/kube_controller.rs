@@ -137,7 +137,8 @@ impl KubeController {
 
         if has_app_catalogs {
             return Err(ApiError::InvalidRequest(
-                "Cannot delete cluster: it has active app catalogs. Please delete them first.".to_string()
+                "Cannot delete cluster: it has active app catalogs. Please delete them first."
+                    .to_string(),
             ));
         }
 
@@ -150,7 +151,8 @@ impl KubeController {
 
         if has_environments {
             return Err(ApiError::InvalidRequest(
-                "Cannot delete cluster: it has active environments. Please delete them first.".to_string()
+                "Cannot delete cluster: it has active environments. Please delete them first."
+                    .to_string(),
             ));
         }
 
@@ -383,7 +385,7 @@ impl KubeController {
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeAppCatalog>, ApiError> {
         let pagination = pagination.unwrap_or_default();
-        
+
         let (catalogs_with_clusters, total_count) = self
             .db
             .get_all_app_catalogs_paginated(org_id, search, Some(pagination.clone()))
@@ -427,7 +429,7 @@ impl KubeController {
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, ApiError> {
         let pagination = pagination.unwrap_or_default();
-        
+
         let (environments_with_catalogs, total_count) = self
             .db
             .get_all_kube_environments_paginated(org_id, user_id, search, Some(pagination.clone()))
@@ -486,7 +488,8 @@ impl KubeController {
 
         if has_environments {
             return Err(ApiError::InvalidRequest(
-                "Cannot delete app catalog: it has active environments. Please delete them first.".to_string()
+                "Cannot delete app catalog: it has active environments. Please delete them first."
+                    .to_string(),
             ));
         }
 
@@ -533,7 +536,7 @@ impl KubeController {
         // Check if the cluster allows deployments
         if !cluster.can_deploy {
             return Err(ApiError::InvalidRequest(
-                "Deployments are not allowed on this cluster".to_string()
+                "Deployments are not allowed on this cluster".to_string(),
             ));
         }
 
@@ -624,20 +627,15 @@ impl KubeController {
             .iter()
             .map(|w| lapdev_kube_rpc::WorkloadIdentifier {
                 name: w.name.clone(),
+                namespace: w.namespace.clone(),
                 kind: w.kind.clone(),
             })
             .collect();
-
-        // Use the first workload's namespace (they should all be from the same namespace in an app catalog)
-        let source_namespace = workloads.first()
-            .map(|w| w.namespace.clone())
-            .unwrap_or_else(|| "default".to_string());
 
         let all_workload_yamls = match source_server
             .rpc_client
             .get_workloads_yaml(
                 tarpc::context::current(),
-                source_namespace.clone(),
                 workload_identifiers,
             )
             .await
@@ -663,7 +661,6 @@ impl KubeController {
 
         // Deploy each workload
         for workload_yaml in all_workload_yamls {
-
             // Then deploy the workload to the target cluster
             match target_server
                 .rpc_client
@@ -676,15 +673,10 @@ impl KubeController {
                 .await
             {
                 Ok(Ok(())) => {
-                    tracing::info!(
-                        "Successfully deployed workload to target cluster"
-                    );
+                    tracing::info!("Successfully deployed workload to target cluster");
                 }
                 Ok(Err(e)) => {
-                    tracing::error!(
-                        "Failed to deploy workload to target cluster: {}",
-                        e
-                    );
+                    tracing::error!("Failed to deploy workload to target cluster: {}", e);
                     return Err(ApiError::InvalidRequest(format!(
                         "Failed to deploy workload to target cluster: {}",
                         e

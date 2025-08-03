@@ -12,6 +12,7 @@ pub struct KubeWorkloadWithServices {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkloadIdentifier {
     pub name: String,
+    pub namespace: String,
     pub kind: KubeWorkloadKind,
 }
 
@@ -50,7 +51,6 @@ pub trait KubeManagerRpc {
         kind: KubeWorkloadKind,
     ) -> Result<KubeWorkloadYaml, String>;
     async fn get_workloads_yaml(
-        namespace: String,
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeWorkloadYaml>, String>;
     async fn deploy_workload_yaml(

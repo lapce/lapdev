@@ -619,38 +619,50 @@ impl KubeController {
                 )
             })?;
 
-        // Step 4: Deploy each workload (retrieve YAML from source, deploy to target)
-        for workload in workloads {
-            // First, retrieve the original YAML manifest from the source cluster
-            let workload_yaml = match source_server
-                .rpc_client
-                .get_workload_yaml(
-                    tarpc::context::current(),
-                    workload.name.clone(),
-                    workload.namespace.clone(),
-                    workload.kind.clone(),
-                )
-                .await
-            {
-                Ok(Ok(workload_yaml)) => workload_yaml,
-                Ok(Err(e)) => {
-                    tracing::error!(
-                        "Failed to get YAML for workload '{}' from source cluster: {}",
-                        workload.name,
-                        e
-                    );
-                    return Err(ApiError::InvalidRequest(format!(
-                        "Failed to get YAML for workload '{}' from source cluster: {}",
-                        workload.name, e
-                    )));
-                }
-                Err(e) => {
-                    return Err(ApiError::InvalidRequest(format!(
-                        "Connection error to source cluster: {}",
-                        e
-                    )));
-                }
-            };
+        // Step 4: Retrieve all workload YAMLs in bulk from source cluster
+        let workload_identifiers: Vec<lapdev_kube_rpc::WorkloadIdentifier> = workloads
+            .iter()
+            .map(|w| lapdev_kube_rpc::WorkloadIdentifier {
+                name: w.name.clone(),
+                kind: w.kind.clone(),
+            })
+            .collect();
+
+        // Use the first workload's namespace (they should all be from the same namespace in an app catalog)
+        let source_namespace = workloads.first()
+            .map(|w| w.namespace.clone())
+            .unwrap_or_else(|| "default".to_string());
+
+        let all_workload_yamls = match source_server
+            .rpc_client
+            .get_workloads_yaml(
+                tarpc::context::current(),
+                source_namespace.clone(),
+                workload_identifiers,
+            )
+            .await
+        {
+            Ok(Ok(workload_yamls)) => workload_yamls,
+            Ok(Err(e)) => {
+                tracing::error!(
+                    "Failed to get YAML for workloads from source cluster: {}",
+                    e
+                );
+                return Err(ApiError::InvalidRequest(format!(
+                    "Failed to get YAML for workloads from source cluster: {}",
+                    e
+                )));
+            }
+            Err(e) => {
+                return Err(ApiError::InvalidRequest(format!(
+                    "Connection error to source cluster: {}",
+                    e
+                )));
+            }
+        };
+
+        // Deploy each workload
+        for workload_yaml in all_workload_yamls {
 
             // Then deploy the workload to the target cluster
             match target_server
@@ -665,20 +677,17 @@ impl KubeController {
             {
                 Ok(Ok(())) => {
                     tracing::info!(
-                        "Successfully deployed workload '{}' of kind '{:?}' to target cluster",
-                        workload.name,
-                        workload.kind
+                        "Successfully deployed workload to target cluster"
                     );
                 }
                 Ok(Err(e)) => {
                     tracing::error!(
-                        "Failed to deploy workload '{}' to target cluster: {}",
-                        workload.name,
+                        "Failed to deploy workload to target cluster: {}",
                         e
                     );
                     return Err(ApiError::InvalidRequest(format!(
-                        "Failed to deploy workload '{}' to target cluster: {}",
-                        workload.name, e
+                        "Failed to deploy workload to target cluster: {}",
+                        e
                     )));
                 }
                 Err(e) => {

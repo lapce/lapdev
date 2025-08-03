@@ -4,14 +4,26 @@ use lapdev_common::kube::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeWorkloadWithServices {
+    pub workload_yaml: String,
+    pub services: Vec<String>, // YAML strings of matching services
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadIdentifier {
+    pub name: String,
+    pub kind: KubeWorkloadKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KubeWorkloadYaml {
-    Deployment(String),
-    StatefulSet(String),
-    DaemonSet(String),
-    ReplicaSet(String),
-    Pod(String),
-    Job(String),
-    CronJob(String),
+    Deployment(KubeWorkloadWithServices),
+    StatefulSet(KubeWorkloadWithServices),
+    DaemonSet(KubeWorkloadWithServices),
+    ReplicaSet(KubeWorkloadWithServices),
+    Pod(KubeWorkloadWithServices),
+    Job(KubeWorkloadWithServices),
+    CronJob(KubeWorkloadWithServices),
 }
 
 #[tarpc::service]
@@ -37,6 +49,10 @@ pub trait KubeManagerRpc {
         namespace: String,
         kind: KubeWorkloadKind,
     ) -> Result<KubeWorkloadYaml, String>;
+    async fn get_workloads_yaml(
+        namespace: String,
+        workloads: Vec<WorkloadIdentifier>,
+    ) -> Result<Vec<KubeWorkloadYaml>, String>;
     async fn deploy_workload_yaml(
         namespace: String,
         workload_yaml: KubeWorkloadYaml,

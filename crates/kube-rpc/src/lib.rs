@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct KubeWorkloadWithServices {
     pub workload_yaml: String,
     pub services: Vec<String>, // YAML strings of matching services
+    pub configmaps: Vec<String>, // YAML strings of referenced ConfigMaps
+    pub secrets: Vec<String>, // YAML strings of referenced Secrets
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

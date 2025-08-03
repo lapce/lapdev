@@ -3,11 +3,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::StreamExt;
+use k8s_openapi::serde_json;
 use k8s_openapi::{
     api::{
         apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
         batch::v1::{CronJob, Job},
-        core::v1::{Namespace, Pod, Service},
+        core::v1::{ConfigMap, Namespace, Pod, Secret, Service},
     },
     NamespaceResourceScope,
 };
@@ -1153,6 +1154,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::Deployment(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![], // TODO: Extract ConfigMaps from deployment
+                    secrets: vec![],    // TODO: Extract Secrets from deployment
                 }))
             }
             KubeWorkloadKind::StatefulSet => {
@@ -1182,6 +1185,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::StatefulSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::DaemonSet => {
@@ -1211,6 +1216,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::DaemonSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::Pod => {
@@ -1233,6 +1240,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::Pod(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::Job => {
@@ -1261,6 +1270,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::Job(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::CronJob => {
@@ -1290,6 +1301,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::CronJob(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::ReplicaSet => {
@@ -1320,6 +1333,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::ReplicaSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
         }
@@ -1337,7 +1352,8 @@ impl KubeManager {
         let mut results = Vec::new();
 
         // Group workloads by namespace
-        let mut workloads_by_namespace: std::collections::HashMap<String, Vec<WorkloadIdentifier>> = std::collections::HashMap::new();
+        let mut workloads_by_namespace: std::collections::HashMap<String, Vec<WorkloadIdentifier>> =
+            std::collections::HashMap::new();
         for workload_id in workload_identifiers {
             workloads_by_namespace
                 .entry(workload_id.namespace.clone())
@@ -1347,13 +1363,20 @@ impl KubeManager {
 
         // Process each namespace separately
         for (namespace, namespace_workloads) in workloads_by_namespace {
-            // Get all services once for this namespace and reuse for all workloads
+            // Get all services, configmaps, and secrets once for this namespace and reuse for all workloads
             let services_api: kube::Api<Service> =
                 kube::Api::namespaced((**client).clone(), &namespace);
+            let configmaps_api: kube::Api<ConfigMap> =
+                kube::Api::namespaced((**client).clone(), &namespace);
+            let secrets_api: kube::Api<Secret> =
+                kube::Api::namespaced((**client).clone(), &namespace);
+
             let mut all_services = Vec::new();
-            let mut continue_token: Option<String> = None;
+            let mut all_configmaps = Vec::new();
+            let mut all_secrets = Vec::new();
 
             // Retrieve all services in the namespace
+            let mut continue_token: Option<String> = None;
             loop {
                 let mut list_params = ListParams::default().limit(100);
                 if let Some(token) = &continue_token {
@@ -1369,15 +1392,51 @@ impl KubeManager {
                 }
             }
 
+            // Retrieve all configmaps in the namespace
+            let mut continue_token: Option<String> = None;
+            loop {
+                let mut list_params = ListParams::default().limit(100);
+                if let Some(token) = &continue_token {
+                    list_params = list_params.continue_token(token);
+                }
+
+                let configmaps_list = configmaps_api.list(&list_params).await?;
+                all_configmaps.extend(configmaps_list.items);
+
+                continue_token = configmaps_list.metadata.continue_;
+                if continue_token.is_none() {
+                    break;
+                }
+            }
+
+            // Retrieve all secrets in the namespace
+            let mut continue_token: Option<String> = None;
+            loop {
+                let mut list_params = ListParams::default().limit(100);
+                if let Some(token) = &continue_token {
+                    list_params = list_params.continue_token(token);
+                }
+
+                let secrets_list = secrets_api.list(&list_params).await?;
+                all_secrets.extend(secrets_list.items);
+
+                continue_token = secrets_list.metadata.continue_;
+                if continue_token.is_none() {
+                    break;
+                }
+            }
+
             // Process each workload in this namespace
             for workload_id in namespace_workloads {
                 let workload_yaml = self
-                    .retrieve_single_workload_with_services(
+                    .retrieve_single_workload_with_resources(
                         client,
                         &workload_id.namespace,
                         &workload_id.name,
                         workload_id.kind,
                         &all_services,
+                        &all_configmaps,
+                        &all_secrets,
                     )
                     .await?;
                 results.push(workload_yaml);
@@ -1392,13 +1451,15 @@ impl KubeManager {
         Ok(results)
     }
 
-    async fn retrieve_single_workload_with_services(
+    async fn retrieve_single_workload_with_resources(
         &self,
         client: &kube::Client,
         namespace: &str,
         name: &str,
         kind: KubeWorkloadKind,
         all_services: &[Service],
+        all_configmaps: &[ConfigMap],
+        all_secrets: &[Secret],
     ) -> Result<KubeWorkloadYaml> {
         match kind {
             KubeWorkloadKind::Deployment => {
@@ -1419,6 +1480,19 @@ impl KubeManager {
                 let services =
                     self.find_matching_services_from_list(&workload_labels, all_services)?;
 
+                // Extract ConfigMap and Secret references
+                let deployment_json = serde_json::to_value(&deployment)?;
+                let configmap_names = Self::extract_configmap_references(&deployment_json);
+                let secret_names = Self::extract_secret_references(&deployment_json);
+
+                // Find matching ConfigMaps and Secrets
+                let configmaps = self
+                    .find_configmaps_from_list(&configmap_names, all_configmaps)
+                    .await?;
+                let secrets = self
+                    .find_secrets_from_list(&secret_names, all_secrets)
+                    .await?;
+
                 // Clean server-managed fields
                 self.clean_metadata(&mut deployment.metadata);
                 deployment.status = None;
@@ -1428,6 +1502,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::Deployment(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps,
+                    secrets,
                 }))
             }
             KubeWorkloadKind::StatefulSet => {
@@ -1454,6 +1530,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::StatefulSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::DaemonSet => {
@@ -1479,6 +1557,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::DaemonSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::Pod => {
@@ -1497,6 +1577,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::Pod(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::Job => {
@@ -1522,6 +1604,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::Job(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::CronJob => {
@@ -1548,6 +1632,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::CronJob(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
             KubeWorkloadKind::ReplicaSet => {
@@ -1575,6 +1661,8 @@ impl KubeManager {
                 Ok(KubeWorkloadYaml::ReplicaSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
+                    configmaps: vec![],
+                    secrets: vec![],
                 }))
             }
         }
@@ -1606,6 +1694,285 @@ impl KubeManager {
         }
 
         Ok(matching_services)
+    }
+
+    fn extract_configmap_references(workload_spec: &serde_json::Value) -> Vec<String> {
+        let mut configmap_names = std::collections::HashSet::new();
+
+        // Extract ConfigMap references from various places in the spec
+        Self::extract_from_containers(workload_spec, &mut configmap_names, "configMap");
+        Self::extract_from_volumes(workload_spec, &mut configmap_names, "configMap");
+
+        configmap_names.into_iter().collect()
+    }
+
+    fn extract_secret_references(workload_spec: &serde_json::Value) -> Vec<String> {
+        let mut secret_names = std::collections::HashSet::new();
+
+        // Extract Secret references from various places in the spec
+        Self::extract_from_containers(workload_spec, &mut secret_names, "secret");
+        Self::extract_from_volumes(workload_spec, &mut secret_names, "secret");
+        Self::extract_image_pull_secrets(workload_spec, &mut secret_names);
+
+        secret_names.into_iter().collect()
+    }
+
+    fn extract_from_containers(
+        spec: &serde_json::Value,
+        names: &mut std::collections::HashSet<String>,
+        resource_type: &str,
+    ) {
+        // Look in spec.template.spec.containers (for Deployments, StatefulSets, etc.)
+        if let Some(containers) = spec
+            .pointer("/spec/template/spec/containers")
+            .and_then(|c| c.as_array())
+        {
+            for container in containers {
+                Self::extract_from_container_env(container, names, resource_type);
+                Self::extract_from_container_env_from(container, names, resource_type);
+                Self::extract_from_container_volume_mounts(container, spec, names, resource_type);
+            }
+        }
+
+        // Look in spec.template.spec.initContainers (for Deployments, StatefulSets, etc.)
+        if let Some(init_containers) = spec
+            .pointer("/spec/template/spec/initContainers")
+            .and_then(|c| c.as_array())
+        {
+            for container in init_containers {
+                Self::extract_from_container_env(container, names, resource_type);
+                Self::extract_from_container_env_from(container, names, resource_type);
+                Self::extract_from_container_volume_mounts(container, spec, names, resource_type);
+            }
+        }
+
+        // Look in spec.containers (for Pods)
+        if let Some(containers) = spec.pointer("/spec/containers").and_then(|c| c.as_array()) {
+            for container in containers {
+                Self::extract_from_container_env(container, names, resource_type);
+                Self::extract_from_container_env_from(container, names, resource_type);
+                Self::extract_from_container_volume_mounts(container, spec, names, resource_type);
+            }
+        }
+
+        // Look in spec.initContainers (for Pods)
+        if let Some(init_containers) = spec.pointer("/spec/initContainers").and_then(|c| c.as_array()) {
+            for container in init_containers {
+                Self::extract_from_container_env(container, names, resource_type);
+                Self::extract_from_container_env_from(container, names, resource_type);
+                Self::extract_from_container_volume_mounts(container, spec, names, resource_type);
+            }
+        }
+    }
+
+    fn extract_from_container_env(
+        container: &serde_json::Value,
+        names: &mut std::collections::HashSet<String>,
+        resource_type: &str,
+    ) {
+        if let Some(env_vars) = container.pointer("/env").and_then(|e| e.as_array()) {
+            for env_var in env_vars {
+                if let Some(value_from) = env_var.get("valueFrom") {
+                    let key_ref_name = if resource_type == "configMap" {
+                        "configMapKeyRef"
+                    } else {
+                        "secretKeyRef"
+                    };
+                    if let Some(name) = value_from
+                        .pointer(&format!("/{}/name", key_ref_name))
+                        .and_then(|n| n.as_str())
+                    {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_from_container_env_from(
+        container: &serde_json::Value,
+        names: &mut std::collections::HashSet<String>,
+        resource_type: &str,
+    ) {
+        if let Some(env_from) = container.pointer("/envFrom").and_then(|e| e.as_array()) {
+            for env_from_source in env_from {
+                let ref_name = if resource_type == "configMap" {
+                    "configMapRef"
+                } else {
+                    "secretRef"
+                };
+                if let Some(name) = env_from_source
+                    .pointer(&format!("/{}/name", ref_name))
+                    .and_then(|n| n.as_str())
+                {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+
+    fn extract_from_container_volume_mounts(
+        container: &serde_json::Value,
+        spec: &serde_json::Value,
+        names: &mut std::collections::HashSet<String>,
+        resource_type: &str,
+    ) {
+        if let Some(volume_mounts) = container
+            .pointer("/volumeMounts")
+            .and_then(|v| v.as_array())
+        {
+            for volume_mount in volume_mounts {
+                if let Some(volume_name) = volume_mount.get("name").and_then(|n| n.as_str()) {
+                    // Find the corresponding volume in spec
+                    Self::find_volume_source(spec, volume_name, names, resource_type);
+                }
+            }
+        }
+    }
+
+    fn extract_from_volumes(
+        spec: &serde_json::Value,
+        names: &mut std::collections::HashSet<String>,
+        resource_type: &str,
+    ) {
+        // Look in spec.template.spec.volumes (for Deployments, StatefulSets, etc.)
+        if let Some(volumes) = spec
+            .pointer("/spec/template/spec/volumes")
+            .and_then(|v| v.as_array())
+        {
+            for volume in volumes {
+                let name_field = if resource_type == "secret" {
+                    "secretName"
+                } else {
+                    "name"
+                };
+                if let Some(name) = volume
+                    .pointer(&format!("/{}/{}", resource_type, name_field))
+                    .and_then(|n| n.as_str())
+                {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+
+        // Look in spec.volumes (for Pods)
+        if let Some(volumes) = spec.pointer("/spec/volumes").and_then(|v| v.as_array()) {
+            for volume in volumes {
+                let name_field = if resource_type == "secret" {
+                    "secretName"
+                } else {
+                    "name"
+                };
+                if let Some(name) = volume
+                    .pointer(&format!("/{}/{}", resource_type, name_field))
+                    .and_then(|n| n.as_str())
+                {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+
+    fn find_volume_source(
+        spec: &serde_json::Value,
+        volume_name: &str,
+        names: &mut std::collections::HashSet<String>,
+        resource_type: &str,
+    ) {
+        let volume_paths = [
+            "/spec/template/spec/volumes", // For Deployments, StatefulSets, etc.
+            "/spec/volumes",               // For Pods
+        ];
+
+        for volume_path in &volume_paths {
+            if let Some(volumes) = spec.pointer(volume_path).and_then(|v| v.as_array()) {
+                for volume in volumes {
+                    if let Some(name) = volume.get("name").and_then(|n| n.as_str()) {
+                        if name == volume_name {
+                            if let Some(resource_name) = volume
+                                .pointer(&format!("/{}/name", resource_type))
+                                .and_then(|n| n.as_str())
+                            {
+                                names.insert(resource_name.to_string());
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_image_pull_secrets(
+        spec: &serde_json::Value,
+        names: &mut std::collections::HashSet<String>,
+    ) {
+        let pull_secret_paths = [
+            "/spec/template/spec/imagePullSecrets", // For Deployments, StatefulSets, etc.
+            "/spec/imagePullSecrets",               // For Pods
+        ];
+
+        for path in &pull_secret_paths {
+            if let Some(pull_secrets) = spec.pointer(path).and_then(|p| p.as_array()) {
+                for pull_secret in pull_secrets {
+                    if let Some(name) = pull_secret.get("name").and_then(|n| n.as_str()) {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    async fn find_configmaps_from_list(
+        &self,
+        configmap_names: &[String],
+        all_configmaps: &[ConfigMap],
+    ) -> Result<Vec<String>> {
+        let mut matching_configmaps = Vec::new();
+
+        for configmap_name in configmap_names {
+            if let Some(configmap) = all_configmaps.iter().find(|cm| {
+                cm.metadata
+                    .name
+                    .as_ref()
+                    .map_or(false, |name| name == configmap_name)
+            }) {
+                let mut clean_configmap = configmap.clone();
+                self.clean_metadata(&mut clean_configmap.metadata);
+
+                let configmap_yaml = serde_yaml::to_string(&clean_configmap)
+                    .map_err(|e| anyhow!("Failed to serialize ConfigMap to YAML: {}", e))?;
+                matching_configmaps.push(configmap_yaml);
+            }
+        }
+
+        Ok(matching_configmaps)
+    }
+
+    async fn find_secrets_from_list(
+        &self,
+        secret_names: &[String],
+        all_secrets: &[Secret],
+    ) -> Result<Vec<String>> {
+        let mut matching_secrets = Vec::new();
+
+        for secret_name in secret_names {
+            if let Some(secret) = all_secrets.iter().find(|s| {
+                s.metadata
+                    .name
+                    .as_ref()
+                    .map_or(false, |name| name == secret_name)
+            }) {
+                let mut clean_secret = secret.clone();
+                self.clean_metadata(&mut clean_secret.metadata);
+
+                let secret_yaml = serde_yaml::to_string(&clean_secret)
+                    .map_err(|e| anyhow!("Failed to serialize Secret to YAML: {}", e))?;
+                matching_secrets.push(secret_yaml);
+            }
+        }
+
+        Ok(matching_secrets)
     }
 
     async fn apply_workload_yaml(
@@ -1643,6 +2010,15 @@ impl KubeManager {
                     &labels,
                 )
                 .await?;
+                self.apply_configmaps(
+                    client,
+                    &namespace,
+                    &workload_with_services.configmaps,
+                    &labels,
+                )
+                .await?;
+                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
+                    .await?;
             }
             KubeWorkloadYaml::StatefulSet(workload_with_services) => {
                 println!(
@@ -1663,6 +2039,15 @@ impl KubeManager {
                     &labels,
                 )
                 .await?;
+                self.apply_configmaps(
+                    client,
+                    &namespace,
+                    &workload_with_services.configmaps,
+                    &labels,
+                )
+                .await?;
+                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
+                    .await?;
             }
             KubeWorkloadYaml::DaemonSet(workload_with_services) => {
                 println!(
@@ -1683,6 +2068,15 @@ impl KubeManager {
                     &labels,
                 )
                 .await?;
+                self.apply_configmaps(
+                    client,
+                    &namespace,
+                    &workload_with_services.configmaps,
+                    &labels,
+                )
+                .await?;
+                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
+                    .await?;
             }
             KubeWorkloadYaml::Pod(workload_with_services) => {
                 println!(
@@ -1703,6 +2097,15 @@ impl KubeManager {
                     &labels,
                 )
                 .await?;
+                self.apply_configmaps(
+                    client,
+                    &namespace,
+                    &workload_with_services.configmaps,
+                    &labels,
+                )
+                .await?;
+                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
+                    .await?;
             }
             KubeWorkloadYaml::Job(workload_with_services) => {
                 println!(
@@ -1723,6 +2126,15 @@ impl KubeManager {
                     &labels,
                 )
                 .await?;
+                self.apply_configmaps(
+                    client,
+                    &namespace,
+                    &workload_with_services.configmaps,
+                    &labels,
+                )
+                .await?;
+                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
+                    .await?;
             }
             KubeWorkloadYaml::CronJob(workload_with_services) => {
                 println!(
@@ -1743,6 +2155,15 @@ impl KubeManager {
                     &labels,
                 )
                 .await?;
+                self.apply_configmaps(
+                    client,
+                    &namespace,
+                    &workload_with_services.configmaps,
+                    &labels,
+                )
+                .await?;
+                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
+                    .await?;
             }
             KubeWorkloadYaml::ReplicaSet(workload_with_services) => {
                 println!(
@@ -1763,6 +2184,15 @@ impl KubeManager {
                     &labels,
                 )
                 .await?;
+                self.apply_configmaps(
+                    client,
+                    &namespace,
+                    &workload_with_services.configmaps,
+                    &labels,
+                )
+                .await?;
+                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
+                    .await?;
             }
         }
 
@@ -1812,6 +2242,98 @@ impl KubeManager {
                         "Created service: {}",
                         service.metadata.name.as_ref().unwrap()
                     );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_configmaps(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        configmap_yamls: &[String],
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        for configmap_yaml in configmap_yamls {
+            let mut configmap: ConfigMap = serde_yaml::from_str(configmap_yaml)?;
+
+            // Add environment labels to configmap
+            self.add_labels_to_metadata(&mut configmap.metadata, labels);
+
+            // Force namespace
+            configmap.metadata.namespace = Some(namespace.to_string());
+
+            let configmaps_api: kube::Api<ConfigMap> =
+                kube::Api::namespaced((*client).clone(), namespace);
+
+            match configmaps_api
+                .get_opt(&configmap.metadata.name.as_ref().unwrap())
+                .await?
+            {
+                Some(_) => {
+                    configmaps_api
+                        .replace(
+                            &configmap.metadata.name.as_ref().unwrap(),
+                            &Default::default(),
+                            &configmap,
+                        )
+                        .await?;
+                    println!(
+                        "Updated configmap: {}",
+                        configmap.metadata.name.as_ref().unwrap()
+                    );
+                }
+                None => {
+                    configmaps_api
+                        .create(&Default::default(), &configmap)
+                        .await?;
+                    println!(
+                        "Created configmap: {}",
+                        configmap.metadata.name.as_ref().unwrap()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_secrets(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        secret_yamls: &[String],
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        for secret_yaml in secret_yamls {
+            let mut secret: Secret = serde_yaml::from_str(secret_yaml)?;
+
+            // Add environment labels to secret
+            self.add_labels_to_metadata(&mut secret.metadata, labels);
+
+            // Force namespace
+            secret.metadata.namespace = Some(namespace.to_string());
+
+            let secrets_api: kube::Api<Secret> =
+                kube::Api::namespaced((*client).clone(), namespace);
+
+            match secrets_api
+                .get_opt(&secret.metadata.name.as_ref().unwrap())
+                .await?
+            {
+                Some(_) => {
+                    secrets_api
+                        .replace(
+                            &secret.metadata.name.as_ref().unwrap(),
+                            &Default::default(),
+                            &secret,
+                        )
+                        .await?;
+                    println!("Updated secret: {}", secret.metadata.name.as_ref().unwrap());
+                }
+                None => {
+                    secrets_api.create(&Default::default(), &secret).await?;
+                    println!("Created secret: {}", secret.metadata.name.as_ref().unwrap());
                 }
             }
         }
@@ -2239,10 +2761,7 @@ impl KubeManagerRpc for KubeManager {
         _context: ::tarpc::context::Context,
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeWorkloadYaml>, String> {
-        match self
-            .retrieve_workloads_yaml(workloads.clone())
-            .await
-        {
+        match self.retrieve_workloads_yaml(workloads.clone()).await {
             Ok(workload_yamls) => {
                 println!(
                     "Successfully retrieved {} workloads YAML",
@@ -2251,10 +2770,7 @@ impl KubeManagerRpc for KubeManager {
                 Ok(workload_yamls)
             }
             Err(e) => {
-                println!(
-                    "Failed to retrieve workloads YAML: {}",
-                    e
-                );
+                println!("Failed to retrieve workloads YAML: {}", e);
                 Err(format!("Failed to retrieve workloads YAML: {}", e))
             }
         }
@@ -2491,5 +3007,675 @@ mod tests {
             KubeManager::parse_memory_resource(Some(&eks_mem)),
             3843684 * 1024
         );
+    }
+
+    #[test]
+    fn test_extract_configmap_references_from_env() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: CONFIG_VALUE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: config-key
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert_eq!(configmap_names, vec!["app-config"]);
+    }
+
+    #[test]
+    fn test_extract_configmap_references_from_env_from() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        envFrom:
+        - configMapRef:
+            name: app-env-config
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert_eq!(configmap_names, vec!["app-env-config"]);
+    }
+
+    #[test]
+    fn test_extract_configmap_references_from_volumes() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: volume-config
+      containers:
+      - name: app
+        image: nginx
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert_eq!(configmap_names, vec!["volume-config"]);
+    }
+
+    #[test]
+    fn test_extract_configmap_references_from_init_containers() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: init-app
+        image: busybox
+        env:
+        - name: INIT_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: init-config
+              key: init-key
+      containers:
+      - name: app
+        image: nginx
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert_eq!(configmap_names, vec!["init-config"]);
+    }
+
+    #[test]
+    fn test_extract_configmap_references_from_pod_spec() {
+        let pod_yaml = r#"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  initContainers:
+  - name: init-app
+    image: busybox
+    envFrom:
+    - configMapRef:
+        name: pod-init-config
+  containers:
+  - name: app
+    image: nginx
+    env:
+    - name: CONFIG_VALUE
+      valueFrom:
+        configMapKeyRef:
+          name: pod-config
+          key: config-key
+"#;
+        let pod: k8s_openapi::api::core::v1::Pod = 
+            serde_yaml::from_str(pod_yaml).unwrap();
+        let pod_json = serde_json::to_value(&pod).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&pod_json);
+        assert!(configmap_names.contains(&"pod-config".to_string()));
+        assert!(configmap_names.contains(&"pod-init-config".to_string()));
+        assert_eq!(configmap_names.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_configmap_references_multiple_sources() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: volume-config
+      initContainers:
+      - name: init-app
+        image: busybox
+        env:
+        - name: INIT_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: init-config
+              key: init-key
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/init-config
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: CONFIG_VALUE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: config-key
+        envFrom:
+        - configMapRef:
+            name: app-env-config
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert!(configmap_names.contains(&"volume-config".to_string()));
+        assert!(configmap_names.contains(&"init-config".to_string()));
+        assert!(configmap_names.contains(&"app-config".to_string()));
+        assert!(configmap_names.contains(&"app-env-config".to_string()));
+        assert_eq!(configmap_names.len(), 4);
+    }
+
+    #[test]
+    fn test_extract_configmap_references_deduplication() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: shared-config
+      containers:
+      - name: app1
+        image: nginx
+        env:
+        - name: CONFIG_VALUE
+          valueFrom:
+            configMapKeyRef:
+              name: shared-config
+              key: config-key
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config1
+      - name: app2
+        image: nginx
+        envFrom:
+        - configMapRef:
+            name: shared-config
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config2
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert_eq!(configmap_names, vec!["shared-config"]);
+    }
+
+    #[test]
+    fn test_extract_configmap_references_no_references() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: SIMPLE_VALUE
+          value: "test"
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert!(configmap_names.is_empty());
+    }
+
+    #[test]
+    fn test_extract_configmap_references_mixed_with_secrets() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: volume-config
+      - name: secret-volume
+        secret:
+          secretName: volume-secret
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: CONFIG_VALUE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: config-key
+        - name: SECRET_VALUE
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: secret-key
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+        - name: secret-volume
+          mountPath: /etc/secrets
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let configmap_names = KubeManager::extract_configmap_references(&deployment_json);
+        assert!(configmap_names.contains(&"volume-config".to_string()));
+        assert!(configmap_names.contains(&"app-config".to_string()));
+        assert_eq!(configmap_names.len(), 2);
+        // Should not contain secrets
+        assert!(!configmap_names.contains(&"volume-secret".to_string()));
+        assert!(!configmap_names.contains(&"app-secret".to_string()));
+    }
+
+    #[test]
+    fn test_extract_secret_references_from_env() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: SECRET_VALUE
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: secret-key
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert_eq!(secret_names, vec!["app-secret"]);
+    }
+
+    #[test]
+    fn test_extract_secret_references_from_env_from() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        envFrom:
+        - secretRef:
+            name: app-env-secret
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert_eq!(secret_names, vec!["app-env-secret"]);
+    }
+
+    #[test]
+    fn test_extract_secret_references_from_volumes() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: volume-secret
+      containers:
+      - name: app
+        image: nginx
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/secrets
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert_eq!(secret_names, vec!["volume-secret"]);
+    }
+
+    #[test]
+    fn test_extract_secret_references_from_image_pull_secrets() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+      - name: registry-secret
+      containers:
+      - name: app
+        image: private-registry.com/app:latest
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert_eq!(secret_names, vec!["registry-secret"]);
+    }
+
+    #[test]
+    fn test_extract_secret_references_from_init_containers() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: init-app
+        image: busybox
+        env:
+        - name: INIT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: init-secret
+              key: init-key
+      containers:
+      - name: app
+        image: nginx
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert_eq!(secret_names, vec!["init-secret"]);
+    }
+
+    #[test]
+    fn test_extract_secret_references_from_pod_spec() {
+        let pod_yaml = r#"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  imagePullSecrets:
+  - name: pod-registry-secret
+  initContainers:
+  - name: init-app
+    image: busybox
+    envFrom:
+    - secretRef:
+        name: pod-init-secret
+  containers:
+  - name: app
+    image: nginx
+    env:
+    - name: SECRET_VALUE
+      valueFrom:
+        secretKeyRef:
+          name: pod-secret
+          key: secret-key
+"#;
+        let pod: k8s_openapi::api::core::v1::Pod = 
+            serde_yaml::from_str(pod_yaml).unwrap();
+        let pod_json = serde_json::to_value(&pod).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&pod_json);
+        assert!(secret_names.contains(&"pod-secret".to_string()));
+        assert!(secret_names.contains(&"pod-init-secret".to_string()));
+        assert!(secret_names.contains(&"pod-registry-secret".to_string()));
+        assert_eq!(secret_names.len(), 3);
+    }
+
+    #[test]
+    fn test_extract_secret_references_multiple_sources() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+      - name: registry-secret
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: volume-secret
+      initContainers:
+      - name: init-app
+        image: busybox
+        env:
+        - name: INIT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: init-secret
+              key: init-key
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/init-secrets
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: SECRET_VALUE
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: secret-key
+        envFrom:
+        - secretRef:
+            name: app-env-secret
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/secrets
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert!(secret_names.contains(&"registry-secret".to_string()));
+        assert!(secret_names.contains(&"volume-secret".to_string()));
+        assert!(secret_names.contains(&"init-secret".to_string()));
+        assert!(secret_names.contains(&"app-secret".to_string()));
+        assert!(secret_names.contains(&"app-env-secret".to_string()));
+        assert_eq!(secret_names.len(), 5);
+    }
+
+    #[test]
+    fn test_extract_secret_references_deduplication() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+      - name: shared-secret
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: shared-secret
+      containers:
+      - name: app1
+        image: nginx
+        env:
+        - name: SECRET_VALUE
+          valueFrom:
+            secretKeyRef:
+              name: shared-secret
+              key: secret-key
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/secrets1
+      - name: app2
+        image: nginx
+        envFrom:
+        - secretRef:
+            name: shared-secret
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/secrets2
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert_eq!(secret_names, vec!["shared-secret"]);
+    }
+
+    #[test]
+    fn test_extract_secret_references_no_references() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: SIMPLE_VALUE
+          value: "test"
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert!(secret_names.is_empty());
+    }
+
+    #[test]
+    fn test_extract_secret_references_mixed_with_configmaps() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+spec:
+  template:
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: volume-config
+      - name: secret-volume
+        secret:
+          secretName: volume-secret
+      containers:
+      - name: app
+        image: nginx
+        env:
+        - name: CONFIG_VALUE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: config-key
+        - name: SECRET_VALUE
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: secret-key
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+        - name: secret-volume
+          mountPath: /etc/secrets
+"#;
+        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+            serde_yaml::from_str(deployment_yaml).unwrap();
+        let deployment_json = serde_json::to_value(&deployment).unwrap();
+
+        let secret_names = KubeManager::extract_secret_references(&deployment_json);
+        assert!(secret_names.contains(&"volume-secret".to_string()));
+        assert!(secret_names.contains(&"app-secret".to_string()));
+        assert_eq!(secret_names.len(), 2);
+        // Should not contain configmaps
+        assert!(!secret_names.contains(&"volume-config".to_string()));
+        assert!(!secret_names.contains(&"app-config".to_string()));
     }
 }

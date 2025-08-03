@@ -17,11 +17,6 @@ Working on **kube** branch implementing Kubernetes provider functionality for La
 - `kube_cluster`: Cluster information and connection details
 - `kube_cluster_token`: Authentication tokens for cluster access
 
-### Provider System
-- `K8sProviderKind::GCP` enum for Google Cloud Platform support
-- Provider abstractions in `lapdev-kube/src/provider/`
-- GCP-specific implementation in `provider/gcp.rs`
-
 ### Service Architecture
 - `lapdev-kube-manager` binary for cluster management
 - HRPC-based communication between services

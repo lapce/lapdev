@@ -1,6 +1,5 @@
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
-use strum_macros::EnumString;
 use uuid::Uuid;
 
 pub const KUBE_CLUSTER_TOKEN_HEADER: &str = "X-Cluster-Token";
@@ -8,19 +7,6 @@ pub const KUBE_CLUSTER_TOKEN_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_TOKEN";
 pub const KUBE_CLUSTER_URL_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_URL";
 pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/ws";
 
-#[derive(
-    Serialize, Deserialize, Debug, EnumString, strum_macros::Display, Clone, Eq, PartialEq, Hash,
-)]
-pub enum K8sProviderKind {
-    GCP,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct K8sProvider {
-    pub id: Uuid,
-    pub name: String,
-    pub provider: K8sProviderKind,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeCluster {

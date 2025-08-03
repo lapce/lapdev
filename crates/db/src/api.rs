@@ -634,18 +634,6 @@ impl DbApi {
         Ok(model)
     }
 
-    pub async fn get_all_k8s_providers(
-        &self,
-        org_id: Uuid,
-    ) -> Result<Vec<lapdev_db_entities::k8s_provider::Model>> {
-        let model = lapdev_db_entities::k8s_provider::Entity::find()
-            .filter(lapdev_db_entities::k8s_provider::Column::OrganizationId.eq(org_id))
-            .filter(lapdev_db_entities::k8s_provider::Column::DeletedAt.is_null())
-            .order_by_asc(lapdev_db_entities::k8s_provider::Column::CreatedAt)
-            .all(&self.conn)
-            .await?;
-        Ok(model)
-    }
 
     pub async fn get_all_kube_clusters(
         &self,

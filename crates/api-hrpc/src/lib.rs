@@ -1,5 +1,5 @@
 use lapdev_common::kube::{
-    CreateKubeClusterResponse, K8sProvider, KubeCluster, KubeClusterInfo, KubeNamespace, KubeWorkload,
+    CreateKubeClusterResponse, KubeCluster, KubeClusterInfo, KubeNamespace, KubeWorkload,
     KubeWorkloadKind, KubeWorkloadList, PaginationParams, PagePaginationParams, PaginatedResult,
 };
 use uuid::Uuid;
@@ -12,15 +12,6 @@ pub use lapdev_common::kube::KubeAppCatalog as AppCatalog;
 
 #[lapdev_hrpc::service]
 pub trait HrpcService {
-    async fn all_k8s_providers(&self, org_id: Uuid) -> Result<Vec<K8sProvider>, HrpcError>;
-
-    async fn create_k8s_gcp_provider(
-        &self,
-        org_id: Uuid,
-        name: String,
-        key: String,
-    ) -> Result<(), HrpcError>;
-
     async fn all_kube_clusters(&self, org_id: Uuid) -> Result<Vec<KubeCluster>, HrpcError>;
 
     async fn create_kube_cluster(

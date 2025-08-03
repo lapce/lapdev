@@ -2,7 +2,6 @@
 
 pub use super::audit_log::Entity as AuditLog;
 pub use super::config::Entity as Config;
-pub use super::k8s_provider::Entity as K8sProvider;
 pub use super::kube_app_catalog::Entity as KubeAppCatalog;
 pub use super::kube_cluster::Entity as KubeCluster;
 pub use super::kube_cluster_token::Entity as KubeClusterToken;

@@ -136,11 +136,6 @@ pub fn SideNavMain() -> impl IntoView {
                 </a>
             </li>
             <li>
-                <a href="/kubernetes/providers" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
-                    <span class="ml-3">K8s Providers</span>
-                </a>
-            </li>
-            <li>
                 <a href="/kubernetes/clusters" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                     <span class="ml-3">K8s Clusters</span>
                 </a>

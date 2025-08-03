@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
 use lapdev_common::kube::{
-    KubeAppCatalog, KubeCluster, PagePaginationParams, PaginatedInfo, PaginatedResult,
+    KubeAppCatalog, KubeCluster, KubeClusterStatus, PagePaginationParams, PaginatedInfo,
+    PaginatedResult,
 };
 use leptos::prelude::*;
 
@@ -509,16 +510,28 @@ pub fn CreateEnvironmentModal(
                         view! {
                             <Select value=selected_cluster open=dropdown_open class="w-full">
                                 <SelectTrigger class="w-full">
-                                    <span data-slot="select-value">
-                                        {move || {
-                                            let cluster_id = selected_cluster.get();
-                                            clusters.get()
-                                                .into_iter()
-                                                .find(|c| c.id == cluster_id && c.can_deploy)
-                                                .map(|c| c.name.clone())
-                                                .unwrap_or_else(|| "Select deployable cluster".to_string())
-                                        }}
-                                    </span>
+                                    {move || {
+                                        let cluster_id = selected_cluster.get();
+                                        if let Some(cluster) = clusters.get()
+                                            .into_iter()
+                                            .find(|c| c.id == cluster_id && c.can_deploy) {
+                                            let status_variant = match cluster.info.status {
+                                                KubeClusterStatus::Ready => BadgeVariant::Secondary,
+                                                KubeClusterStatus::Provisioning => BadgeVariant::Secondary,
+                                                KubeClusterStatus::NotReady | KubeClusterStatus::Error => BadgeVariant::Destructive,
+                                            };
+                                            view! {
+                                                <div class="flex items-center justify-between w-full">
+                                                    <span class="max-w-60 text-ellipsis overflow-hidden whitespace-nowrap">{cluster.name}</span>
+                                                    <Badge variant=status_variant class="ml-2 text-xs">
+                                                        {cluster.info.status.to_string()}
+                                                    </Badge>
+                                                </div>
+                                            }.into_any()
+                                        } else {
+                                            view! { "Select deployable cluster" }.into_any()
+                                        }
+                                    }}
                                 </SelectTrigger>
                                 <SelectContent class="w-full">
                                     {move || {
@@ -526,12 +539,22 @@ pub fn CreateEnvironmentModal(
                                             .into_iter()
                                             .filter(|cluster| cluster.can_deploy)
                                             .map(|cluster| {
+                                                let status_variant = match cluster.info.status {
+                                                    KubeClusterStatus::Ready => BadgeVariant::Secondary,
+                                                    KubeClusterStatus::Provisioning => BadgeVariant::Secondary,
+                                                    KubeClusterStatus::NotReady | KubeClusterStatus::Error => BadgeVariant::Destructive,
+                                                };
                                                 view! {
                                                     <SelectItem
                                                         value=cluster.id
                                                         display=cluster.name.clone()
                                                     >
-                                                        {cluster.name}
+                                                        <div class="flex items-center justify-between w-full">
+                                                            <span class="max-w-60 text-ellipsis overflow-hidden whitespace-nowrap">{cluster.name}</span>
+                                                            <Badge variant=status_variant class="ml-2 text-xs">
+                                                                {cluster.info.status.to_string()}
+                                                            </Badge>
+                                                        </div>
                                                     </SelectItem>
                                                 }
                                             })

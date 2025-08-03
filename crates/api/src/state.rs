@@ -14,7 +14,7 @@ use lapdev_api_hrpc::HrpcService;
 use lapdev_common::{
     hrpc::HrpcError,
     kube::{
-        CreateKubeClusterResponse, K8sProvider, K8sProviderKind, KubeAppCatalog, KubeCluster, KubeClusterInfo,
+        CreateKubeClusterResponse, KubeAppCatalog, KubeCluster, KubeClusterInfo,
         KubeClusterStatus, KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind,
         KubeWorkloadList, PagePaginationParams, PaginatedInfo, PaginatedResult, PaginationParams,
     },
@@ -366,56 +366,6 @@ async fn load_certs(db: &DbApi) -> Result<HashMap<String, Arc<CertifiedKey>>> {
 }
 
 impl HrpcService for CoreState {
-    async fn all_k8s_providers(
-        &self,
-        headers: &axum::http::HeaderMap,
-        org_id: Uuid,
-    ) -> Result<Vec<K8sProvider>, HrpcError> {
-        let _ = self.authorize(headers, org_id, None).await?;
-        let providers = self
-            .db
-            .get_all_k8s_providers(org_id)
-            .await
-            .map_err(ApiError::from)?
-            .into_iter()
-            .filter_map(|p| {
-                Some(K8sProvider {
-                    id: p.id,
-                    name: p.name,
-                    provider: K8sProviderKind::from_str(&p.provider).ok()?,
-                })
-            })
-            .collect();
-        Ok(providers)
-    }
-
-    async fn create_k8s_gcp_provider(
-        &self,
-        headers: &axum::http::HeaderMap,
-        org_id: Uuid,
-        name: String,
-        key: String,
-    ) -> Result<(), HrpcError> {
-        let user = self
-            .authorize(headers, org_id, Some(UserRole::Admin))
-            .await?;
-
-        lapdev_db_entities::k8s_provider::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            created_at: ActiveValue::Set(Utc::now().into()),
-            name: ActiveValue::Set(name),
-            provider: ActiveValue::Set(K8sProviderKind::GCP.to_string()),
-            config: ActiveValue::Set(key),
-            created_by: ActiveValue::Set(user.id),
-            organization_id: ActiveValue::Set(org_id),
-            deleted_at: ActiveValue::Set(None),
-        }
-        .insert(&self.db.conn)
-        .await
-        .map_err(ApiError::from)?;
-
-        Ok(())
-    }
 
     async fn all_kube_clusters(
         &self,

@@ -18,7 +18,6 @@ mod m20240311_220708_create_prebuild_replica_table;
 mod m20240312_175753_create_table_update_trigger;
 mod m20240316_194115_create_workspace_port_table;
 mod m20240823_165223_create_oauth_table;
-mod m20250725_082239_create_k8s_provider;
 mod m20250729_082625_create_kube_cluster;
 mod m20250729_091307_create_kube_cluster_token;
 mod m20250801_000000_create_kube_app_catalog;
@@ -48,7 +47,6 @@ impl MigratorTrait for Migrator {
             Box::new(m20240312_175753_create_table_update_trigger::Migration),
             Box::new(m20240316_194115_create_workspace_port_table::Migration),
             Box::new(m20240823_165223_create_oauth_table::Migration),
-            Box::new(m20250725_082239_create_k8s_provider::Migration),
             Box::new(m20250729_082625_create_kube_cluster::Migration),
             Box::new(m20250729_091307_create_kube_cluster_token::Migration),
             Box::new(m20250801_000000_create_kube_app_catalog::Migration),

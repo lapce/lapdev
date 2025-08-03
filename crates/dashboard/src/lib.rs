@@ -5,7 +5,6 @@ pub mod cluster;
 pub mod component;
 pub mod datepicker;
 pub mod git_provider;
-pub mod k8s_provider;
 pub mod kube_app_catalog;
 pub mod kube_cluster;
 pub mod kube_environment;

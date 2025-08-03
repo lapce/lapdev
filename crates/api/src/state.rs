@@ -1,5 +1,4 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
-use tokio::sync::RwLock;
 
 use anyhow::{anyhow, Context, Result};
 use axum::{body::Body, extract::FromRequestParts, http::request::Parts, RequestPartsExt};
@@ -13,7 +12,6 @@ use lapdev_common::{UserRole, LAPDEV_BASE_HOSTNAME};
 use lapdev_conductor::{scheduler::LAPDEV_CPU_OVERCOMMIT, Conductor};
 use lapdev_db::api::DbApi;
 use lapdev_enterprise::license::LAPDEV_ENTERPRISE_LICENSE;
-use lapdev_kube::server::KubeClusterServer;
 use lapdev_rpc::error::ApiError;
 use pasetors::{
     claims::ClaimsValidationRules,
@@ -31,6 +29,7 @@ use crate::{
     auth::{Auth, AuthConfig},
     cert::{load_cert, CertStore},
     github::GithubClient,
+    kube_controller::KubeController,
     session::OAUTH_STATE_COOKIE,
 };
 
@@ -79,8 +78,8 @@ pub struct CoreState {
     // ssh proxy port to display in front end
     pub ssh_proxy_display_port: u16,
     pub static_dir: Arc<Option<include_dir::Dir<'static>>>,
-    // KubeManager connections per cluster
-    pub kube_cluster_servers: Arc<RwLock<HashMap<Uuid, Vec<KubeClusterServer>>>>,
+    // Kubernetes controller
+    pub kube_controller: KubeController,
 }
 
 impl CoreState {
@@ -110,7 +109,7 @@ impl CoreState {
             ssh_proxy_display_port,
             hyper_client: Arc::new(hyper_client),
             static_dir: Arc::new(static_dir),
-            kube_cluster_servers: Arc::new(RwLock::new(HashMap::new())),
+            kube_controller: KubeController::new(),
         };
 
         {
@@ -326,13 +325,6 @@ impl CoreState {
         Ok((user, project))
     }
 
-    pub async fn get_random_kube_cluster_server(
-        &self,
-        cluster_id: Uuid,
-    ) -> Option<KubeClusterServer> {
-        let servers = self.kube_cluster_servers.read().await;
-        servers.get(&cluster_id)?.last().cloned()
-    }
 }
 
 async fn load_certs(db: &DbApi) -> Result<HashMap<String, Arc<CertifiedKey>>> {

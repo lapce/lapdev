@@ -246,6 +246,7 @@ impl HrpcService for CoreState {
 
         // Get a connected KubeClusterServer for this cluster
         let server = self
+            .kube_controller
             .get_random_kube_cluster_server(cluster_id)
             .await
             .ok_or_else(|| {
@@ -299,6 +300,7 @@ impl HrpcService for CoreState {
 
         // Get a connected KubeClusterServer for this cluster
         let server = self
+            .kube_controller
             .get_random_kube_cluster_server(cluster_id)
             .await
             .ok_or_else(|| {
@@ -339,6 +341,7 @@ impl HrpcService for CoreState {
 
         // Get a connected KubeClusterServer for this cluster
         let server = self
+            .kube_controller
             .get_random_kube_cluster_server(cluster_id)
             .await
             .ok_or_else(|| {

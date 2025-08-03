@@ -76,7 +76,7 @@ async fn handle_cluster_rpc(socket: WebSocket, state: Arc<CoreState>, cluster_id
         cluster_id,
         rpc_client,
         state.db.clone(),
-        state.kube_cluster_servers.clone(),
+        state.kube_controller.kube_cluster_servers.clone(),
     );
 
     let fut = {

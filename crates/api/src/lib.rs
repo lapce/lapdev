@@ -6,6 +6,7 @@ pub mod github;
 pub mod gitlab;
 pub mod hrpc_service;
 pub mod kube;
+pub mod kube_controller;
 pub mod machine_type;
 pub mod organization;
 pub mod prebuild;

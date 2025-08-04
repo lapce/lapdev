@@ -22,7 +22,7 @@ pub fn KubeEnvironment() -> impl IntoView {
     let update_counter = RwSignal::new_local(0);
 
     view! {
-        <div class="flex flex-col gap-10">
+        <div class="flex flex-col gap-6">
             <div class="flex flex-col gap-2 items-start">
                 <H3>Kubernetes Environments</H3>
                 <P>View and manage your Kubernetes development environments created from app catalogs.</P>
@@ -296,7 +296,7 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                 <Badge variant=BadgeVariant::Outline>{environment.namespace.clone()}</Badge>
             </TableCell>
             <TableCell>
-                <a href=format!("/kubernetes/app-catalogs/{}", environment.app_catalog_id)>
+                <a href=format!("/kubernetes/catalogs/{}", environment.app_catalog_id)>
                     <Button variant=ButtonVariant::Link class="p-0">
                         <span class="font-medium">{environment.app_catalog_name.clone()}</span>
                     </Button>

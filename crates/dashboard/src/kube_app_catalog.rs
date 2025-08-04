@@ -33,7 +33,7 @@ pub fn KubeAppCatalog() -> impl IntoView {
     let update_counter = RwSignal::new_local(0);
 
     view! {
-        <div class="flex flex-col gap-10">
+        <div class="flex flex-col gap-6">
             <div class="flex flex-col gap-2 items-start">
                 <H3>Kubernetes App Catalog</H3>
                 <P>
@@ -317,7 +317,6 @@ pub fn AppCatalogItem(
     let catalog_id = catalog.id;
     let catalog_name = catalog.name.clone();
     let catalog_name_clone = catalog_name.clone();
-    let catalog_name_for_log = StoredValue::new(catalog_name.clone());
     let catalog_clone = catalog.clone();
     let cluster_id = catalog.cluster_id;
     let cluster_name = catalog.cluster_name.clone();
@@ -333,7 +332,11 @@ pub fn AppCatalogItem(
     view! {
         <TableRow>
             <TableCell>
-                <span class="font-medium">{catalog_name.clone()}</span>
+                <a href=format!("/kubernetes/catalogs/{}", catalog_id)>
+                    <Button variant=ButtonVariant::Link class="p-0">
+                        <span class="font-medium">{catalog_name.clone()}</span>
+                    </Button>
+                </a>
             </TableCell>
             <TableCell>
                 <ExpandableDescription description=catalog.description.clone() />
@@ -371,17 +374,12 @@ pub fn AppCatalogItem(
                             open=dropdown_expanded.read_only()
                             class="min-w-56 -translate-x-2"
                         >
-                            <DropdownMenuItem
-                                on:click=move |_| {
-                                    dropdown_expanded.set(false);
-                                    // TODO: Navigate to catalog details or show modal
-                                    leptos::logging::log!("View details for catalog: {}", catalog_name_for_log.get_value());
-                                }
-                                class="cursor-pointer"
-                            >
-                                <lucide_leptos::Eye />
-                                View Details
-                            </DropdownMenuItem>
+                            <a href=format!("/kubernetes/catalogs/{}", catalog_id)>
+                                <DropdownMenuItem class="cursor-pointer">
+                                    <lucide_leptos::Eye />
+                                    View Workloads
+                                </DropdownMenuItem>
+                            </a>
                             <DropdownMenuItem
                                 on:click=move |_| {
                                     dropdown_expanded.set(false);

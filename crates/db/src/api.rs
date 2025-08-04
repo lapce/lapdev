@@ -2,10 +2,10 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
-    config::LAPDEV_CLUSTER_NOT_INITIATED, 
-    kube::PagePaginationParams,
-    AuthProvider, ProviderUser, UserRole, WorkspaceStatus,
-    LAPDEV_BASE_HOSTNAME, LAPDEV_ISOLATE_CONTAINER,
+    config::LAPDEV_CLUSTER_NOT_INITIATED,
+    kube::{KubeAppCatalogWorkload, PagePaginationParams},
+    AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
+    LAPDEV_ISOLATE_CONTAINER,
 };
 use lapdev_db_migration::Migrator;
 use pasetors::{
@@ -15,7 +15,7 @@ use pasetors::{
 use sea_orm::{
     sea_query::{Expr, Func, OnConflict},
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, DatabaseTransaction,
-    EntityTrait, QueryFilter, QueryOrder, QuerySelect, PaginatorTrait,
+    EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
 };
 use sea_orm_migration::MigratorTrait;
 use sqlx::PgPool;
@@ -636,7 +636,6 @@ impl DbApi {
         Ok(model)
     }
 
-
     pub async fn get_all_kube_clusters(
         &self,
         org_id: Uuid,
@@ -919,23 +918,47 @@ impl DbApi {
         cluster_id: Uuid,
         name: String,
         description: Option<String>,
-        resources: String,
-    ) -> Result<()> {
+        workloads: Vec<KubeAppCatalogWorkload>,
+    ) -> Result<Uuid> {
+        let txn = self.conn.begin().await?;
+
+        let catalog_id = Uuid::new_v4();
+        let now = Utc::now().into();
+
+        // Create the app catalog
         lapdev_db_entities::kube_app_catalog::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            created_at: ActiveValue::Set(Utc::now().into()),
+            id: ActiveValue::Set(catalog_id),
+            created_at: ActiveValue::Set(now),
             name: ActiveValue::Set(name),
             description: ActiveValue::Set(description),
-            resources: ActiveValue::Set(resources),
+            resources: ActiveValue::Set("".to_string()), // Keep empty for backward compatibility
             cluster_id: ActiveValue::Set(cluster_id),
             created_by: ActiveValue::Set(user_id),
             organization_id: ActiveValue::Set(org_id),
             deleted_at: ActiveValue::Set(None),
         }
-        .insert(&self.conn)
+        .insert(&txn)
         .await?;
 
-        Ok(())
+        // Insert individual workloads
+        for workload in workloads {
+            lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                created_at: ActiveValue::Set(now),
+                deleted_at: ActiveValue::Set(None),
+                app_catalog_id: ActiveValue::Set(catalog_id),
+                name: ActiveValue::Set(workload.name),
+                namespace: ActiveValue::Set(workload.namespace),
+                kind: ActiveValue::Set(workload.kind.to_string()),
+                cpu: ActiveValue::Set(workload.cpu),
+                memory: ActiveValue::Set(workload.memory),
+            }
+            .insert(&txn)
+            .await?;
+        }
+
+        txn.commit().await?;
+        Ok(catalog_id)
     }
 
     pub async fn get_all_app_catalogs_paginated(
@@ -943,7 +966,13 @@ impl DbApi {
         org_id: Uuid,
         search: Option<String>,
         pagination: Option<PagePaginationParams>,
-    ) -> Result<(Vec<(lapdev_db_entities::kube_app_catalog::Model, Option<lapdev_db_entities::kube_cluster::Model>)>, usize)> {
+    ) -> Result<(
+        Vec<(
+            lapdev_db_entities::kube_app_catalog::Model,
+            Option<lapdev_db_entities::kube_cluster::Model>,
+        )>,
+        usize,
+    )> {
         let pagination = pagination.unwrap_or_default();
 
         // Build base query
@@ -964,10 +993,7 @@ impl DbApi {
         }
 
         // Get total count
-        let total_count = base_query
-            .clone()
-            .count(&self.conn)
-            .await? as usize;
+        let total_count = base_query.clone().count(&self.conn).await? as usize;
 
         // Apply pagination
         let offset = (pagination.page.saturating_sub(1)) * pagination.page_size;
@@ -1008,6 +1034,33 @@ impl DbApi {
         Ok(catalog)
     }
 
+    pub async fn get_app_catalog_workloads(
+        &self,
+        catalog_id: Uuid,
+    ) -> Result<Vec<KubeAppCatalogWorkload>> {
+        let workloads = lapdev_db_entities::kube_app_catalog_workload::Entity::find()
+            .filter(
+                lapdev_db_entities::kube_app_catalog_workload::Column::AppCatalogId.eq(catalog_id),
+            )
+            .filter(lapdev_db_entities::kube_app_catalog_workload::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        Ok(workloads
+            .into_iter()
+            .map(|w| KubeAppCatalogWorkload {
+                name: w.name,
+                namespace: w.namespace,
+                kind: w
+                    .kind
+                    .parse()
+                    .unwrap_or(lapdev_common::kube::KubeWorkloadKind::Deployment),
+                cpu: w.cpu,
+                memory: w.memory,
+            })
+            .collect())
+    }
+
     pub async fn check_app_catalog_has_environments(&self, catalog_id: Uuid) -> Result<bool> {
         let has_environments = lapdev_db_entities::kube_environment::Entity::find()
             .filter(lapdev_db_entities::kube_environment::Column::AppCatalogId.eq(catalog_id))
@@ -1025,7 +1078,13 @@ impl DbApi {
         user_id: Uuid,
         search: Option<String>,
         pagination: Option<PagePaginationParams>,
-    ) -> Result<(Vec<(lapdev_db_entities::kube_environment::Model, Option<lapdev_db_entities::kube_app_catalog::Model>)>, usize)> {
+    ) -> Result<(
+        Vec<(
+            lapdev_db_entities::kube_environment::Model,
+            Option<lapdev_db_entities::kube_app_catalog::Model>,
+        )>,
+        usize,
+    )> {
         let pagination = pagination.unwrap_or_default();
 
         // Build base query - filter by user ID so users only see their own environments
@@ -1047,10 +1106,7 @@ impl DbApi {
         }
 
         // Get total count
-        let total_count = base_query
-            .clone()
-            .count(&self.conn)
-            .await? as usize;
+        let total_count = base_query.clone().count(&self.conn).await? as usize;
 
         // Apply pagination
         let offset = (pagination.page.saturating_sub(1)) * pagination.page_size;

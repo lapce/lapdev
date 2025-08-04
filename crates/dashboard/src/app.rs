@@ -17,6 +17,7 @@ use crate::{
     component::sidebar::SidebarData,
     git_provider::GitProviderView,
     kube_app_catalog::KubeAppCatalog,
+    kube_app_catalog_workload::KubeAppCatalogWorkload,
     kube_cluster::KubeCluster,
     kube_environment::KubeEnvironment,
     kube_resource::KubeResource,
@@ -110,6 +111,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/organization/audit_log") view=move || view! { <WrappedView element=AuditLogView /> } />
                 <Route path=path!("/organization/settings") view=move || view! { <WrappedView element=OrgSettings /> } />
                 <Route path=path!("/kubernetes/catalogs") view=move || view! { <WrappedView element=KubeAppCatalog /> } />
+                <Route path=path!("/kubernetes/catalogs/:catalog_id") view=move || view! { <WrappedView element=KubeAppCatalogWorkload /> } />
                 <Route path=path!("/kubernetes/environments") view=move || view! { <WrappedView element=KubeEnvironment /> } />
                 <Route path=path!("/kubernetes/clusters/:cluster_id") view=move || view! { <WrappedView element=KubeResource /> } />
                 <Route path=path!("/kubernetes/clusters") view=move || view! { <WrappedView element=KubeCluster /> } />

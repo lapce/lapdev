@@ -144,6 +144,15 @@ pub struct KubeAppCatalog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeAppCatalogWorkload {
+    pub name: String,
+    pub namespace: String,
+    pub kind: KubeWorkloadKind,
+    pub cpu: Option<String>,
+    pub memory: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeEnvironment {
     pub id: Uuid,
     pub name: String,

@@ -370,10 +370,10 @@ impl KubeController {
         cluster_id: Uuid,
         name: String,
         description: Option<String>,
-        resources: String,
-    ) -> Result<(), ApiError> {
+        workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkload>,
+    ) -> Result<Uuid, ApiError> {
         self.db
-            .create_app_catalog(org_id, user_id, cluster_id, name, description, resources)
+            .create_app_catalog(org_id, user_id, cluster_id, name, description, workloads)
             .await
             .map_err(ApiError::from)
     }
@@ -464,6 +464,58 @@ impl KubeController {
                 total_pages,
             },
         })
+    }
+
+    pub async fn get_app_catalog(
+        &self,
+        org_id: Uuid,
+        catalog_id: Uuid,
+    ) -> Result<KubeAppCatalog, ApiError> {
+        // Get catalog with cluster info
+        let (catalog, cluster) = self
+            .db
+            .get_all_app_catalogs_paginated(org_id, None, None)
+            .await
+            .map_err(ApiError::from)?
+            .0
+            .into_iter()
+            .find(|(cat, _)| cat.id == catalog_id)
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        let cluster = cluster.ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        Ok(KubeAppCatalog {
+            id: catalog.id,
+            name: catalog.name,
+            description: catalog.description,
+            created_at: catalog.created_at,
+            created_by: catalog.created_by,
+            cluster_id: catalog.cluster_id,
+            cluster_name: cluster.name,
+        })
+    }
+
+    pub async fn get_app_catalog_workloads(
+        &self,
+        org_id: Uuid,
+        catalog_id: Uuid,
+    ) -> Result<Vec<lapdev_common::kube::KubeAppCatalogWorkload>, ApiError> {
+        // Verify catalog belongs to the organization
+        let catalog = self
+            .db
+            .get_app_catalog(catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        if catalog.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        self.db
+            .get_app_catalog_workloads(catalog_id)
+            .await
+            .map_err(ApiError::from)
     }
 
     pub async fn delete_app_catalog(&self, org_id: Uuid, catalog_id: Uuid) -> Result<(), ApiError> {

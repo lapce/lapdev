@@ -5,6 +5,7 @@ use lapdev_common::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeCluster, KubeClusterInfo,
         KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind,
         KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
+        KubeAppCatalogWorkload,
     },
     UserRole,
 };
@@ -148,8 +149,8 @@ impl HrpcService for CoreState {
         cluster_id: Uuid,
         name: String,
         description: Option<String>,
-        resources: String,
-    ) -> Result<(), HrpcError> {
+        workloads: Vec<KubeAppCatalogWorkload>,
+    ) -> Result<Uuid, HrpcError> {
         let user = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
@@ -159,7 +160,7 @@ impl HrpcService for CoreState {
                 cluster_id,
                 name,
                 description,
-                resources,
+                workloads,
             )
             .await
             .map_err(HrpcError::from)
@@ -176,6 +177,34 @@ impl HrpcService for CoreState {
 
         self.kube_controller
             .get_all_app_catalogs(org_id, search, pagination)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn get_app_catalog(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        catalog_id: Uuid,
+    ) -> Result<KubeAppCatalog, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+
+        self.kube_controller
+            .get_app_catalog(org_id, catalog_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn get_app_catalog_workloads(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        catalog_id: Uuid,
+    ) -> Result<Vec<KubeAppCatalogWorkload>, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+
+        self.kube_controller
+            .get_app_catalog_workloads(org_id, catalog_id)
             .await
             .map_err(HrpcError::from)
     }

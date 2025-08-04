@@ -1,6 +1,7 @@
 use lapdev_common::kube::{
     CreateKubeClusterResponse, KubeCluster, KubeClusterInfo, KubeNamespace, KubeWorkload,
     KubeWorkloadKind, KubeWorkloadList, PaginationParams, PagePaginationParams, PaginatedResult,
+    KubeAppCatalogWorkload,
 };
 use uuid::Uuid;
 
@@ -69,10 +70,22 @@ pub trait HrpcService {
         cluster_id: Uuid,
         name: String,
         description: Option<String>,
-        resources: String,
-    ) -> Result<(), HrpcError>;
+        workloads: Vec<KubeAppCatalogWorkload>,
+    ) -> Result<Uuid, HrpcError>;
 
     async fn all_app_catalogs(&self, org_id: Uuid, search: Option<String>, pagination: Option<PagePaginationParams>) -> Result<PaginatedResult<KubeAppCatalog>, HrpcError>;
+
+    async fn get_app_catalog(
+        &self,
+        org_id: Uuid,
+        catalog_id: Uuid,
+    ) -> Result<KubeAppCatalog, HrpcError>;
+
+    async fn get_app_catalog_workloads(
+        &self,
+        org_id: Uuid,
+        catalog_id: Uuid,
+    ) -> Result<Vec<KubeAppCatalogWorkload>, HrpcError>;
 
     async fn delete_app_catalog(
         &self,

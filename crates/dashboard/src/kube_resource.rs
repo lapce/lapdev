@@ -4,12 +4,12 @@ use anyhow::{anyhow, Result};
 use lapdev_common::{
     console::Organization,
     kube::{
-        KubeClusterInfo, KubeClusterStatus, KubeNamespace, KubeWorkload, KubeWorkloadKind,
-        KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
+        KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeNamespace, KubeWorkload,
+        KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
     },
 };
 use leptos::prelude::*;
-use leptos_router::hooks::{use_params_map, use_location};
+use leptos_router::hooks::{use_location, use_params_map};
 use uuid::Uuid;
 
 use crate::{
@@ -130,7 +130,7 @@ pub fn ClusterInfo(cluster_id: Uuid) -> impl IntoView {
     });
 
     view! {
-        <Card class="my-4 p-4 flex flex-col gap-4">
+        <Card class="p-6 flex flex-col gap-4">
             <H4>Cluster Information</H4>
             {move || {
                 let info = cluster_info.get();
@@ -182,14 +182,14 @@ pub fn KubeResourceList(
 ) -> impl IntoView {
     let org = get_current_org();
     let location = use_location();
-    
+
     // Initialize from URL search parameters
     let initial_namespace = move || {
         let search = location.search.get_untracked();
         let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
         params.get("namespace")
     };
-    
+
     let namespace_filter = RwSignal::new_local(initial_namespace());
     let kind_filter = RwSignal::new_local(None::<KubeWorkloadKind>);
     let limit = RwSignal::new_local(20usize);
@@ -280,28 +280,33 @@ pub fn KubeResourceList(
         let current_filter = namespace_filter.get_untracked();
         if selected_namespace != current_filter {
             namespace_filter.set(selected_namespace.clone());
-            
+
             // Update URL with new namespace parameter (without navigation)
             let current_path = location.pathname.get_untracked();
             let search = location.search.get_untracked();
-            let params = web_sys::UrlSearchParams::new_with_str(&search).unwrap_or_else(|_| web_sys::UrlSearchParams::new().unwrap());
-            
+            let params = web_sys::UrlSearchParams::new_with_str(&search)
+                .unwrap_or_else(|_| web_sys::UrlSearchParams::new().unwrap());
+
             if let Some(ns) = &selected_namespace {
                 params.set("namespace", ns);
             } else {
                 params.delete("namespace");
             }
-            
+
             let new_search = params.to_string().as_string().unwrap_or_default();
             let new_url = if new_search.is_empty() {
                 current_path
             } else {
                 format!("{}?{}", current_path, new_search)
             };
-            
+
             // Use replaceState to update URL without navigation
             if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
-                let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&new_url));
+                let _ = history.replace_state_with_url(
+                    &wasm_bindgen::JsValue::NULL,
+                    "",
+                    Some(&new_url),
+                );
             }
         }
     });
@@ -641,12 +646,12 @@ async fn create_app_catalog_api(
     description: String,
     selected_workloads: std::collections::HashSet<WorkloadKey>,
     filtered_workloads: Vec<KubeWorkload>,
-) -> Result<(), ErrorResponse> {
+) -> Result<Uuid, ErrorResponse> {
     let org = org
         .get_untracked()
         .ok_or_else(|| anyhow!("can't get org"))?;
 
-    let workloads: Vec<KubeWorkload> = filtered_workloads
+    let selected_workloads_data: Vec<KubeWorkload> = filtered_workloads
         .into_iter()
         .filter(|w| selected_workloads.contains(&WorkloadKey::from_workload(w)))
         .collect();
@@ -655,12 +660,20 @@ async fn create_app_catalog_api(
         return Err(anyhow!("Catalog name is required"))?;
     }
 
-    // Serialize workloads to JSON
-    let resources_json = serde_json::to_string(&workloads)
-        .map_err(|e| anyhow!("Failed to serialize workloads: {}", e))?;
+    // Convert KubeWorkload to KubeAppCatalogWorkload
+    let workloads: Vec<KubeAppCatalogWorkload> = selected_workloads_data
+        .into_iter()
+        .map(|w| KubeAppCatalogWorkload {
+            name: w.name,
+            namespace: w.namespace,
+            kind: w.kind,
+            cpu: None,    // TODO: Extract CPU from workload if available
+            memory: None, // TODO: Extract memory from workload if available
+        })
+        .collect();
 
     let client = get_hrpc_client();
-    client
+    let catalog_id = client
         .create_app_catalog(
             org.id,
             cluster_id,
@@ -670,11 +683,11 @@ async fn create_app_catalog_api(
             } else {
                 Some(description)
             },
-            resources_json,
+            workloads,
         )
         .await??;
 
-    Ok(())
+    Ok(catalog_id)
 }
 
 #[component]
@@ -688,23 +701,35 @@ pub fn AppCatalogModal(
     let catalog_description = RwSignal::new_local("".to_string());
     let org = get_current_org();
 
-    let create_action = Action::new_local(move |_| async move {
-        let name = catalog_name.get_untracked();
-        let description = catalog_description.get_untracked();
-        let selected = selected_workloads.get_untracked();
-        let workloads = filtered_workloads.get_untracked();
+    let navigate = leptos_router::hooks::use_navigate();
+    let create_action = Action::new_local(move |_| {
+        let navigate = navigate.clone();
+        async move {
+            let name = catalog_name.get_untracked();
+            let description = catalog_description.get_untracked();
+            let selected = selected_workloads.get_untracked();
+            let workloads = filtered_workloads.get_untracked();
 
-        create_app_catalog_api(org, cluster_id, name, description, selected, workloads).await?;
+            let catalog_id =
+                create_app_catalog_api(org, cluster_id, name, description, selected, workloads)
+                    .await?;
 
-        // Clear form and close modal
-        catalog_name.set("".to_string());
-        catalog_description.set("".to_string());
-        modal_open.set(false);
+            // Clear form and close modal
+            catalog_name.set("".to_string());
+            catalog_description.set("".to_string());
+            modal_open.set(false);
 
-        // Clear selections after successful creation
-        selected_workloads.set(std::collections::HashSet::new());
+            // Clear selections after successful creation
+            selected_workloads.set(std::collections::HashSet::new());
 
-        Ok(())
+            // Navigate to the created app catalog workloads page
+            navigate(
+                &format!("/kubernetes/catalogs/{catalog_id}"),
+                Default::default(),
+            );
+
+            Ok(())
+        }
     });
 
     view! {

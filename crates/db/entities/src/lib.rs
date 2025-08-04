@@ -5,6 +5,7 @@ pub mod prelude;
 pub mod audit_log;
 pub mod config;
 pub mod kube_app_catalog;
+pub mod kube_app_catalog_workload;
 pub mod kube_cluster;
 pub mod kube_cluster_token;
 pub mod kube_environment;

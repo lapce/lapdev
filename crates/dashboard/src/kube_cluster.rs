@@ -29,15 +29,17 @@ use crate::{
 pub fn KubeCluster() -> impl IntoView {
     let update_counter = RwSignal::new_local(0);
     view! {
-        <div class="flex flex-col gap-2 items-start">
-            <H3>Kubernetes Clusters</H3>
-            <P>View and manage your Kubernetes clusters discovered from your configured providers.</P>
-            <a href="https://docs.lap.dev/">
-                <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
-            </a>
-        </div>
+        <div class="flex flex-col gap-6">
+            <div class="flex flex-col gap-2 items-start">
+                <H3>Kubernetes Clusters</H3>
+                <P>View and manage your Kubernetes clusters discovered from your configured providers.</P>
+                <a href="https://docs.lap.dev/">
+                    <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
+                </a>
+            </div>
 
-        <KubeClusterList update_counter />
+            <KubeClusterList update_counter />
+        </div>
     }
 }
 
@@ -84,7 +86,7 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
     };
 
     view! {
-        <div class="mt-4">
+        <div>
             <div class="flex justify-between items-center mb-4">
                 <Button on:click=create_cluster>
                     <lucide_leptos::Plus  />

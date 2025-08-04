@@ -296,7 +296,11 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                 <Badge variant=BadgeVariant::Outline>{environment.namespace.clone()}</Badge>
             </TableCell>
             <TableCell>
-                <span class="text-sm">{environment.app_catalog_name.clone()}</span>
+                <a href=format!("/kubernetes/app-catalogs/{}", environment.app_catalog_id)>
+                    <Button variant=ButtonVariant::Link class="p-0">
+                        <span class="font-medium">{environment.app_catalog_name.clone()}</span>
+                    </Button>
+                </a>
             </TableCell>
             <TableCell>
                 <Badge variant=status_variant>

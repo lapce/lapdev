@@ -540,7 +540,20 @@ impl KubeController {
             ));
         }
 
-        // Create the environment in database
+        // Get a connected KubeClusterServer for this cluster
+        let server = self
+            .get_random_kube_cluster_server(cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for the environment target cluster".to_string(),
+                )
+            })?;
+
+        // First, get workloads YAML before creating in database to validate success
+        let workloads_with_resources = self.get_workloads_yaml_for_catalog(&app_catalog).await?;
+
+        // Create the environment in database only after successful YAML retrieval
         self.db
             .create_kube_environment(
                 org_id,
@@ -554,21 +567,141 @@ impl KubeController {
             .await
             .map_err(ApiError::from)?;
 
-        // Get a connected KubeClusterServer for this cluster
-        let server = self
-            .get_random_kube_cluster_server(cluster_id)
-            .await
-            .ok_or_else(|| {
-                ApiError::InvalidRequest(
-                    "No connected KubeManager for the environment target cluster".to_string(),
-                )
-            })?;
-
-        // Deploy the app catalog resources to the cluster
-        self.deploy_app_catalog(&server, &namespace, &name, &app_catalog)
+        // Deploy the app catalog resources to the cluster using pre-fetched YAML
+        self.deploy_app_catalog_with_yaml(&server, &namespace, &name, workloads_with_resources)
             .await?;
 
         Ok(())
+    }
+
+    async fn get_workloads_yaml_for_catalog(
+        &self,
+        app_catalog: &lapdev_db_entities::kube_app_catalog::Model,
+    ) -> Result<lapdev_kube_rpc::KubeWorkloadsWithResources, ApiError> {
+        // Step 1: Parse the JSON resources into KubeWorkload structures
+        let workloads: Vec<KubeWorkload> =
+            serde_json::from_str(&app_catalog.resources).map_err(|e| {
+                ApiError::InternalError(format!("Failed to parse app catalog resources: {e}"))
+            })?;
+
+        if workloads.is_empty() {
+            return Ok(lapdev_kube_rpc::KubeWorkloadsWithResources {
+                workloads: Vec::new(),
+                services: std::collections::HashMap::new(),
+                configmaps: std::collections::HashMap::new(),
+                secrets: std::collections::HashMap::new(),
+            });
+        }
+
+        // Step 2: Get the source cluster server where the app catalog was created
+        let source_server = self
+            .get_random_kube_cluster_server(app_catalog.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for the app catalog's source cluster".to_string(),
+                )
+            })?;
+
+        // Step 3: Retrieve workload YAMLs from source cluster
+        let workload_identifiers: Vec<lapdev_kube_rpc::WorkloadIdentifier> = workloads
+            .iter()
+            .map(|w| lapdev_kube_rpc::WorkloadIdentifier {
+                name: w.name.clone(),
+                namespace: w.namespace.clone(),
+                kind: w.kind.clone(),
+            })
+            .collect();
+
+        match source_server
+            .rpc_client
+            .get_workloads_yaml(tarpc::context::current(), workload_identifiers)
+            .await
+        {
+            Ok(Ok(workloads_with_resources)) => Ok(workloads_with_resources),
+            Ok(Err(e)) => {
+                tracing::error!(
+                    "Failed to get YAML for workloads from source cluster: {}",
+                    e
+                );
+                Err(ApiError::InvalidRequest(format!(
+                    "Failed to get YAML for workloads from source cluster: {}",
+                    e
+                )))
+            }
+            Err(e) => {
+                Err(ApiError::InvalidRequest(format!(
+                    "Connection error to source cluster: {}",
+                    e
+                )))
+            }
+        }
+    }
+
+    async fn deploy_app_catalog_with_yaml(
+        &self,
+        target_server: &KubeClusterServer,
+        namespace: &str,
+        environment_name: &str,
+        workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
+    ) -> Result<(), ApiError> {
+        tracing::info!(
+            "Deploying app catalog resources for environment '{}' in namespace '{}'",
+            environment_name,
+            namespace
+        );
+
+        if workloads_with_resources.workloads.is_empty() {
+            tracing::warn!(
+                "No workloads found for environment '{}'",
+                environment_name
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Found {} workloads to deploy for environment '{}'",
+            workloads_with_resources.workloads.len(),
+            environment_name
+        );
+
+        // Prepare environment-specific labels
+        let mut environment_labels = std::collections::HashMap::new();
+        environment_labels.insert(
+            "lapdev.environment".to_string(),
+            environment_name.to_string(),
+        );
+        environment_labels.insert("lapdev.managed-by".to_string(), "lapdev".to_string());
+
+        // Deploy all workloads and resources in a single call
+        match target_server
+            .rpc_client
+            .deploy_workload_yaml(
+                tarpc::context::current(),
+                namespace.to_string(),
+                workloads_with_resources,
+                environment_labels.clone(),
+            )
+            .await
+        {
+            Ok(Ok(())) => {
+                tracing::info!("Successfully deployed all workloads to target cluster");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Failed to deploy workloads to target cluster: {}", e);
+                Err(ApiError::InvalidRequest(format!(
+                    "Failed to deploy workloads to target cluster: {}",
+                    e
+                )))
+            }
+            Err(e) => {
+                Err(ApiError::InvalidRequest(format!(
+                    "Connection error to target cluster: {}",
+                    e
+                )))
+            }
+        }
     }
 
     async fn deploy_app_catalog(
@@ -632,15 +765,12 @@ impl KubeController {
             })
             .collect();
 
-        let all_workload_yamls = match source_server
+        let workloads_with_resources = match source_server
             .rpc_client
-            .get_workloads_yaml(
-                tarpc::context::current(),
-                workload_identifiers,
-            )
+            .get_workloads_yaml(tarpc::context::current(), workload_identifiers)
             .await
         {
-            Ok(Ok(workload_yamls)) => workload_yamls,
+            Ok(Ok(workloads_with_resources)) => workloads_with_resources,
             Ok(Err(e)) => {
                 tracing::error!(
                     "Failed to get YAML for workloads from source cluster: {}",
@@ -659,35 +789,33 @@ impl KubeController {
             }
         };
 
-        // Deploy each workload
-        for workload_yaml in all_workload_yamls {
-            // Then deploy the workload to the target cluster
-            match target_server
-                .rpc_client
-                .deploy_workload_yaml(
-                    tarpc::context::current(),
-                    namespace.to_string(),
-                    workload_yaml,
-                    environment_labels.clone(),
-                )
-                .await
-            {
-                Ok(Ok(())) => {
-                    tracing::info!("Successfully deployed workload to target cluster");
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("Failed to deploy workload to target cluster: {}", e);
-                    return Err(ApiError::InvalidRequest(format!(
-                        "Failed to deploy workload to target cluster: {}",
-                        e
-                    )));
-                }
-                Err(e) => {
-                    return Err(ApiError::InvalidRequest(format!(
-                        "Connection error to target cluster: {}",
-                        e
-                    )));
-                }
+
+        // Deploy all workloads and resources in a single call
+        match target_server
+            .rpc_client
+            .deploy_workload_yaml(
+                tarpc::context::current(),
+                namespace.to_string(),
+                workloads_with_resources,
+                environment_labels.clone(),
+            )
+            .await
+        {
+            Ok(Ok(())) => {
+                tracing::info!("Successfully deployed all workloads to target cluster");
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Failed to deploy workloads to target cluster: {}", e);
+                return Err(ApiError::InvalidRequest(format!(
+                    "Failed to deploy workloads to target cluster: {}",
+                    e
+                )));
+            }
+            Err(e) => {
+                return Err(ApiError::InvalidRequest(format!(
+                    "Connection error to target cluster: {}",
+                    e
+                )));
             }
         }
 

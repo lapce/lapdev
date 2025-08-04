@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -21,7 +21,7 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
-    WorkloadIdentifier,
+    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, WorkloadIdentifier,
 };
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;
@@ -215,7 +215,7 @@ impl KubeManager {
         let cluster = resp
             .clusters
             .iter()
-            .find(|c| c.name == "autopilot-production-1")
+            .find(|c| c.name == "autopilot-belgium-production")
             .unwrap();
         let cert = STANDARD.decode(&cluster.master_auth.cluster_ca_certificate)?;
         let _cert = pem::parse_many(&cert)?
@@ -1058,18 +1058,245 @@ impl KubeManager {
         metadata.owner_references = None;
     }
 
-    async fn find_matching_services(
+    fn create_clean_metadata(
+        &self,
+        original_metadata: &k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+    ) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+
+        ObjectMeta {
+            name: original_metadata.name.clone(),
+            labels: original_metadata.labels.clone(),
+            annotations: original_metadata.annotations.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn clean_service_spec(&self, service: Service) -> Service {
+        use k8s_openapi::api::core::v1::ServiceSpec;
+
+        // Create clean service spec with only essential fields
+        let clean_spec = service.spec.map(|original_spec| ServiceSpec {
+            // Only the essential fields for basic service functionality
+            selector: original_spec.selector,
+            ports: original_spec.ports,
+            type_: original_spec.type_,
+
+            // All other fields use defaults - let target cluster manage them
+            ..Default::default()
+        });
+
+        // Create new clean service
+        Service {
+            metadata: self.create_clean_metadata(&service.metadata),
+            spec: clean_spec,
+            status: None, // Never copy status
+        }
+    }
+
+    fn clean_configmap(&self, configmap: ConfigMap) -> ConfigMap {
+        ConfigMap {
+            metadata: self.create_clean_metadata(&configmap.metadata),
+            data: configmap.data,
+            binary_data: configmap.binary_data,
+            immutable: configmap.immutable,
+        }
+    }
+
+    fn clean_secret(&self, secret: Secret) -> Secret {
+        Secret {
+            metadata: self.create_clean_metadata(&secret.metadata),
+            data: secret.data,
+            string_data: secret.string_data,
+            type_: secret.type_,
+            immutable: secret.immutable,
+        }
+    }
+
+    fn clean_deployment(&self, deployment: Deployment) -> Deployment {
+        use k8s_openapi::api::apps::v1::DeploymentSpec;
+
+        let clean_spec = deployment.spec.map(|original_spec| DeploymentSpec {
+            // Only the essential fields for basic deployment functionality
+            replicas: original_spec.replicas,
+            selector: original_spec.selector,
+            template: original_spec.template,
+
+            // All other fields use defaults - let target cluster manage them
+            ..Default::default()
+        });
+
+        Deployment {
+            metadata: self.create_clean_metadata(&deployment.metadata),
+            spec: clean_spec,
+            status: None, // Never copy status
+        }
+    }
+
+    fn clean_statefulset(&self, statefulset: StatefulSet) -> StatefulSet {
+        use k8s_openapi::api::apps::v1::StatefulSetSpec;
+
+        let clean_spec = statefulset.spec.map(|original_spec| StatefulSetSpec {
+            service_name: original_spec.service_name,
+            replicas: original_spec.replicas,
+            selector: original_spec.selector,
+            template: original_spec.template,
+            volume_claim_templates: original_spec.volume_claim_templates,
+            update_strategy: original_spec.update_strategy,
+            min_ready_seconds: original_spec.min_ready_seconds,
+            persistent_volume_claim_retention_policy: original_spec
+                .persistent_volume_claim_retention_policy,
+            ordinals: original_spec.ordinals,
+            revision_history_limit: original_spec.revision_history_limit,
+            pod_management_policy: original_spec.pod_management_policy,
+        });
+
+        StatefulSet {
+            metadata: self.create_clean_metadata(&statefulset.metadata),
+            spec: clean_spec,
+            status: None,
+        }
+    }
+
+    fn clean_daemonset(&self, daemonset: DaemonSet) -> DaemonSet {
+        use k8s_openapi::api::apps::v1::DaemonSetSpec;
+
+        let clean_spec = daemonset.spec.map(|original_spec| DaemonSetSpec {
+            selector: original_spec.selector,
+            template: original_spec.template,
+            update_strategy: original_spec.update_strategy,
+            min_ready_seconds: original_spec.min_ready_seconds,
+            revision_history_limit: original_spec.revision_history_limit,
+        });
+
+        DaemonSet {
+            metadata: self.create_clean_metadata(&daemonset.metadata),
+            spec: clean_spec,
+            status: None,
+        }
+    }
+
+    fn clean_pod(&self, pod: Pod) -> Pod {
+        use k8s_openapi::api::core::v1::PodSpec;
+
+        let clean_spec = pod.spec.map(|original_spec| PodSpec {
+            containers: original_spec.containers,
+            init_containers: original_spec.init_containers,
+            ephemeral_containers: original_spec.ephemeral_containers,
+            volumes: original_spec.volumes,
+            restart_policy: original_spec.restart_policy,
+            termination_grace_period_seconds: original_spec.termination_grace_period_seconds,
+            active_deadline_seconds: original_spec.active_deadline_seconds,
+            dns_policy: original_spec.dns_policy,
+            dns_config: original_spec.dns_config,
+            node_selector: original_spec.node_selector,
+            service_account_name: original_spec.service_account_name,
+            service_account: original_spec.service_account,
+            automount_service_account_token: original_spec.automount_service_account_token,
+            security_context: original_spec.security_context,
+            image_pull_secrets: original_spec.image_pull_secrets,
+            affinity: original_spec.affinity,
+            tolerations: original_spec.tolerations,
+            topology_spread_constraints: original_spec.topology_spread_constraints,
+            priority_class_name: original_spec.priority_class_name,
+            priority: original_spec.priority,
+            preemption_policy: original_spec.preemption_policy,
+            overhead: original_spec.overhead,
+            enable_service_links: original_spec.enable_service_links,
+            os: original_spec.os,
+            host_users: original_spec.host_users,
+            scheduling_gates: original_spec.scheduling_gates,
+            resource_claims: original_spec.resource_claims,
+
+            // Remove runtime/node-specific fields by using Default
+            ..Default::default()
+        });
+
+        Pod {
+            metadata: self.create_clean_metadata(&pod.metadata),
+            spec: clean_spec,
+            status: None,
+        }
+    }
+
+    fn clean_job(&self, job: Job) -> Job {
+        use k8s_openapi::api::batch::v1::JobSpec;
+
+        let clean_spec = job.spec.map(|original_spec| JobSpec {
+            template: original_spec.template,
+            parallelism: original_spec.parallelism,
+            completions: original_spec.completions,
+            completion_mode: original_spec.completion_mode,
+            active_deadline_seconds: original_spec.active_deadline_seconds,
+            backoff_limit: original_spec.backoff_limit,
+            backoff_limit_per_index: original_spec.backoff_limit_per_index,
+            max_failed_indexes: original_spec.max_failed_indexes,
+            selector: original_spec.selector,
+            manual_selector: original_spec.manual_selector,
+            ttl_seconds_after_finished: original_spec.ttl_seconds_after_finished,
+            suspend: original_spec.suspend,
+            pod_failure_policy: original_spec.pod_failure_policy,
+            pod_replacement_policy: original_spec.pod_replacement_policy,
+            managed_by: original_spec.managed_by,
+            success_policy: original_spec.success_policy,
+        });
+
+        Job {
+            metadata: self.create_clean_metadata(&job.metadata),
+            spec: clean_spec,
+            status: None,
+        }
+    }
+
+    fn clean_cronjob(&self, cronjob: CronJob) -> CronJob {
+        use k8s_openapi::api::batch::v1::CronJobSpec;
+
+        let clean_spec = cronjob.spec.map(|original_spec| CronJobSpec {
+            schedule: original_spec.schedule,
+            time_zone: original_spec.time_zone,
+            starting_deadline_seconds: original_spec.starting_deadline_seconds,
+            concurrency_policy: original_spec.concurrency_policy,
+            suspend: original_spec.suspend,
+            job_template: original_spec.job_template,
+            successful_jobs_history_limit: original_spec.successful_jobs_history_limit,
+            failed_jobs_history_limit: original_spec.failed_jobs_history_limit,
+        });
+
+        CronJob {
+            metadata: self.create_clean_metadata(&cronjob.metadata),
+            spec: clean_spec,
+            status: None,
+        }
+    }
+
+    fn clean_replicaset(&self, replicaset: ReplicaSet) -> ReplicaSet {
+        use k8s_openapi::api::apps::v1::ReplicaSetSpec;
+
+        let clean_spec = replicaset.spec.map(|original_spec| ReplicaSetSpec {
+            replicas: original_spec.replicas,
+            selector: original_spec.selector,
+            template: original_spec.template,
+            min_ready_seconds: original_spec.min_ready_seconds,
+        });
+
+        ReplicaSet {
+            metadata: self.create_clean_metadata(&replicaset.metadata),
+            spec: clean_spec,
+            status: None,
+        }
+    }
+
+    async fn retrieve_cluster_ip_services_in_namespace(
         &self,
         client: &kube::Client,
         namespace: &str,
-        workload_labels: &std::collections::BTreeMap<String, String>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<Service>> {
         let services_api: kube::Api<Service> = kube::Api::namespaced((*client).clone(), namespace);
 
-        let mut matching_services = Vec::new();
-        let mut continue_token: Option<String> = None;
+        let mut all_services = Vec::new();
 
-        // Loop through all pages of services
+        // Retrieve all services in the namespace
+        let mut continue_token: Option<String> = None;
         loop {
             let mut list_params = ListParams::default().limit(100);
             if let Some(token) = &continue_token {
@@ -1078,278 +1305,53 @@ impl KubeManager {
 
             let services_list = services_api.list(&list_params).await?;
 
-            // Process services in current page
-            for service in services_list.items {
-                // Check if service selector matches workload labels
-                if let Some(selector) = &service.spec.as_ref().and_then(|s| s.selector.as_ref()) {
-                    // Service selector must be a subset of workload labels (all selector labels must match)
-                    let matches = selector
-                        .iter()
-                        .all(|(key, value)| workload_labels.get(key).map_or(false, |v| v == value));
+            // Filter for ClusterIP services only (other types are cluster-specific)
+            let cluster_ip_services: Vec<Service> = services_list
+                .items
+                .into_iter()
+                .filter(|service| {
+                    service
+                        .spec
+                        .as_ref()
+                        .map(|spec| {
+                            spec.type_.as_deref() == Some("ClusterIP") || spec.type_.is_none()
+                        })
+                        .unwrap_or(false)
+                })
+                .collect();
 
-                    if matches && !selector.is_empty() {
-                        let mut clean_service = service;
-                        self.clean_metadata(&mut clean_service.metadata);
-                        clean_service.status = None;
+            all_services.extend(cluster_ip_services);
 
-                        let service_yaml = serde_yaml::to_string(&clean_service)
-                            .map_err(|e| anyhow!("Failed to serialize service to YAML: {}", e))?;
-                        matching_services.push(service_yaml);
-                    }
-                }
-            }
-
-            // Check if there are more pages
             continue_token = services_list.metadata.continue_;
             if continue_token.is_none() {
                 break;
             }
         }
 
-        println!(
-            "Found {} matching services for workload in namespace {}",
-            matching_services.len(),
-            namespace
-        );
-        Ok(matching_services)
-    }
-
-    async fn retrieve_workload_yaml(
-        &self,
-        name: String,
-        namespace: String,
-        kind: KubeWorkloadKind,
-    ) -> Result<KubeWorkloadYaml> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
-
-        match kind {
-            KubeWorkloadKind::Deployment => {
-                let api: kube::Api<Deployment> =
-                    kube::Api::namespaced((**client).clone(), &namespace);
-                let mut deployment = api.get(&name).await?;
-
-                // Get labels for service matching
-                let workload_labels = deployment
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.template.metadata.as_ref())
-                    .and_then(|m| m.labels.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Find matching services
-                let services = self
-                    .find_matching_services(client, &namespace, &workload_labels)
-                    .await?;
-
-                // Clean server-managed fields
-                self.clean_metadata(&mut deployment.metadata);
-                deployment.status = None;
-                let workload_yaml = serde_yaml::to_string(&deployment)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
-
-                Ok(KubeWorkloadYaml::Deployment(KubeWorkloadWithServices {
-                    workload_yaml,
-                    services,
-                    configmaps: vec![], // TODO: Extract ConfigMaps from deployment
-                    secrets: vec![],    // TODO: Extract Secrets from deployment
-                }))
-            }
-            KubeWorkloadKind::StatefulSet => {
-                let api: kube::Api<StatefulSet> =
-                    kube::Api::namespaced((**client).clone(), &namespace);
-                let mut statefulset = api.get(&name).await?;
-
-                // Get labels for service matching
-                let workload_labels = statefulset
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.template.metadata.as_ref())
-                    .and_then(|m| m.labels.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Find matching services
-                let services = self
-                    .find_matching_services(client, &namespace, &workload_labels)
-                    .await?;
-
-                self.clean_metadata(&mut statefulset.metadata);
-                statefulset.status = None;
-                let workload_yaml = serde_yaml::to_string(&statefulset)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
-
-                Ok(KubeWorkloadYaml::StatefulSet(KubeWorkloadWithServices {
-                    workload_yaml,
-                    services,
-                    configmaps: vec![],
-                    secrets: vec![],
-                }))
-            }
-            KubeWorkloadKind::DaemonSet => {
-                let api: kube::Api<DaemonSet> =
-                    kube::Api::namespaced((**client).clone(), &namespace);
-                let mut daemonset = api.get(&name).await?;
-
-                // Get labels for service matching
-                let workload_labels = daemonset
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.template.metadata.as_ref())
-                    .and_then(|m| m.labels.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Find matching services
-                let services = self
-                    .find_matching_services(client, &namespace, &workload_labels)
-                    .await?;
-
-                self.clean_metadata(&mut daemonset.metadata);
-                daemonset.status = None;
-                let workload_yaml = serde_yaml::to_string(&daemonset)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
-
-                Ok(KubeWorkloadYaml::DaemonSet(KubeWorkloadWithServices {
-                    workload_yaml,
-                    services,
-                    configmaps: vec![],
-                    secrets: vec![],
-                }))
-            }
-            KubeWorkloadKind::Pod => {
-                let api: kube::Api<Pod> = kube::Api::namespaced((**client).clone(), &namespace);
-                let mut pod = api.get(&name).await?;
-
-                // Get labels for service matching (Pod labels are directly in metadata)
-                let workload_labels = pod.metadata.labels.as_ref().cloned().unwrap_or_default();
-
-                // Find matching services
-                let services = self
-                    .find_matching_services(client, &namespace, &workload_labels)
-                    .await?;
-
-                self.clean_metadata(&mut pod.metadata);
-                pod.status = None;
-                let workload_yaml = serde_yaml::to_string(&pod)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
-
-                Ok(KubeWorkloadYaml::Pod(KubeWorkloadWithServices {
-                    workload_yaml,
-                    services,
-                    configmaps: vec![],
-                    secrets: vec![],
-                }))
-            }
-            KubeWorkloadKind::Job => {
-                let api: kube::Api<Job> = kube::Api::namespaced((**client).clone(), &namespace);
-                let mut job = api.get(&name).await?;
-
-                // Get labels for service matching
-                let workload_labels = job
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.template.metadata.as_ref())
-                    .and_then(|m| m.labels.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Find matching services
-                let services = self
-                    .find_matching_services(client, &namespace, &workload_labels)
-                    .await?;
-
-                self.clean_metadata(&mut job.metadata);
-                job.status = None;
-                let workload_yaml = serde_yaml::to_string(&job)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
-
-                Ok(KubeWorkloadYaml::Job(KubeWorkloadWithServices {
-                    workload_yaml,
-                    services,
-                    configmaps: vec![],
-                    secrets: vec![],
-                }))
-            }
-            KubeWorkloadKind::CronJob => {
-                let api: kube::Api<CronJob> = kube::Api::namespaced((**client).clone(), &namespace);
-                let mut cronjob = api.get(&name).await?;
-
-                // Get labels for service matching
-                let workload_labels = cronjob
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.job_template.spec.as_ref())
-                    .and_then(|js| js.template.metadata.as_ref())
-                    .and_then(|m| m.labels.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Find matching services
-                let services = self
-                    .find_matching_services(client, &namespace, &workload_labels)
-                    .await?;
-
-                self.clean_metadata(&mut cronjob.metadata);
-                cronjob.status = None;
-                let workload_yaml = serde_yaml::to_string(&cronjob)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
-
-                Ok(KubeWorkloadYaml::CronJob(KubeWorkloadWithServices {
-                    workload_yaml,
-                    services,
-                    configmaps: vec![],
-                    secrets: vec![],
-                }))
-            }
-            KubeWorkloadKind::ReplicaSet => {
-                let api: kube::Api<ReplicaSet> =
-                    kube::Api::namespaced((**client).clone(), &namespace);
-                let mut replicaset = api.get(&name).await?;
-
-                // Get labels for service matching
-                let workload_labels = replicaset
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.template.as_ref())
-                    .and_then(|t| t.metadata.as_ref())
-                    .and_then(|m| m.labels.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Find matching services
-                let services = self
-                    .find_matching_services(client, &namespace, &workload_labels)
-                    .await?;
-
-                self.clean_metadata(&mut replicaset.metadata);
-                replicaset.status = None;
-                let workload_yaml = serde_yaml::to_string(&replicaset)
-                    .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
-
-                Ok(KubeWorkloadYaml::ReplicaSet(KubeWorkloadWithServices {
-                    workload_yaml,
-                    services,
-                    configmaps: vec![],
-                    secrets: vec![],
-                }))
-            }
-        }
+        Ok(all_services)
     }
 
     async fn retrieve_workloads_yaml(
         &self,
         workload_identifiers: Vec<WorkloadIdentifier>,
-    ) -> Result<Vec<KubeWorkloadYaml>> {
+    ) -> Result<KubeWorkloadsWithResources> {
         let client = self
             .kube_client
             .as_ref()
             .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
 
-        let mut results = Vec::new();
+        let mut workloads = Vec::new();
+        let mut all_services_set_by_namespace: HashMap<String, std::collections::HashSet<String>> =
+            HashMap::new();
+        let mut all_configmaps_set_by_namespace: HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = HashMap::new();
+        let mut all_secrets_set_by_namespace: HashMap<String, std::collections::HashSet<String>> =
+            HashMap::new();
+
+        // Store all resources by namespace for later serialization
+        let mut all_services_by_namespace: HashMap<String, Vec<Service>> = HashMap::new();
 
         // Group workloads by namespace
         let mut workloads_by_namespace: std::collections::HashMap<String, Vec<WorkloadIdentifier>> =
@@ -1363,83 +1365,81 @@ impl KubeManager {
 
         // Process each namespace separately
         for (namespace, namespace_workloads) in workloads_by_namespace {
-            // Get all services, configmaps, and secrets once for this namespace and reuse for all workloads
-            let services_api: kube::Api<Service> =
-                kube::Api::namespaced((**client).clone(), &namespace);
-            let configmaps_api: kube::Api<ConfigMap> =
-                kube::Api::namespaced((**client).clone(), &namespace);
-            let secrets_api: kube::Api<Secret> =
-                kube::Api::namespaced((**client).clone(), &namespace);
+            // Get all ClusterIP services once for this namespace and reuse for all workloads
+            let all_services = self
+                .retrieve_cluster_ip_services_in_namespace(client, &namespace)
+                .await?;
 
-            let mut all_services = Vec::new();
-            let mut all_configmaps = Vec::new();
-            let mut all_secrets = Vec::new();
-
-            // Retrieve all services in the namespace
-            let mut continue_token: Option<String> = None;
-            loop {
-                let mut list_params = ListParams::default().limit(100);
-                if let Some(token) = &continue_token {
-                    list_params = list_params.continue_token(token);
-                }
-
-                let services_list = services_api.list(&list_params).await?;
-                all_services.extend(services_list.items);
-
-                continue_token = services_list.metadata.continue_;
-                if continue_token.is_none() {
-                    break;
-                }
-            }
-
-            // Retrieve all configmaps in the namespace
-            let mut continue_token: Option<String> = None;
-            loop {
-                let mut list_params = ListParams::default().limit(100);
-                if let Some(token) = &continue_token {
-                    list_params = list_params.continue_token(token);
-                }
-
-                let configmaps_list = configmaps_api.list(&list_params).await?;
-                all_configmaps.extend(configmaps_list.items);
-
-                continue_token = configmaps_list.metadata.continue_;
-                if continue_token.is_none() {
-                    break;
-                }
-            }
-
-            // Retrieve all secrets in the namespace
-            let mut continue_token: Option<String> = None;
-            loop {
-                let mut list_params = ListParams::default().limit(100);
-                if let Some(token) = &continue_token {
-                    list_params = list_params.continue_token(token);
-                }
-
-                let secrets_list = secrets_api.list(&list_params).await?;
-                all_secrets.extend(secrets_list.items);
-
-                continue_token = secrets_list.metadata.continue_;
-                if continue_token.is_none() {
-                    break;
-                }
-            }
+            // Store services by namespace for later serialization
+            all_services_by_namespace.insert(namespace.clone(), all_services.clone());
 
             // Process each workload in this namespace
             for workload_id in namespace_workloads {
-                let workload_yaml = self
+                let workload_yaml_result = self
                     .retrieve_single_workload_with_resources(
                         client,
                         &workload_id.namespace,
                         &workload_id.name,
                         workload_id.kind,
                         &all_services,
-                        &all_configmaps,
-                        &all_secrets,
                     )
                     .await?;
-                results.push(workload_yaml);
+
+                // Helper to collect resource names by namespace
+                let mut collect_resources =
+                    |services: Vec<String>, configmaps: Vec<String>, secrets: Vec<String>| {
+                        let services_set = all_services_set_by_namespace
+                            .entry(namespace.clone())
+                            .or_insert_with(std::collections::HashSet::new);
+                        let configmaps_set = all_configmaps_set_by_namespace
+                            .entry(namespace.clone())
+                            .or_insert_with(std::collections::HashSet::new);
+                        let secrets_set = all_secrets_set_by_namespace
+                            .entry(namespace.clone())
+                            .or_insert_with(std::collections::HashSet::new);
+
+                        for service in services {
+                            services_set.insert(service);
+                        }
+                        for configmap in configmaps {
+                            configmaps_set.insert(configmap);
+                        }
+                        for secret in secrets {
+                            secrets_set.insert(secret);
+                        }
+                    };
+
+                // Extract just the workload YAML and collect associated resources
+                match workload_yaml_result {
+                    KubeWorkloadYaml::Deployment(ws) => {
+                        workloads.push(KubeWorkloadYamlOnly::Deployment(ws.workload_yaml));
+                        collect_resources(ws.services, ws.configmaps, ws.secrets);
+                    }
+                    KubeWorkloadYaml::StatefulSet(ws) => {
+                        workloads.push(KubeWorkloadYamlOnly::StatefulSet(ws.workload_yaml));
+                        collect_resources(ws.services, ws.configmaps, ws.secrets);
+                    }
+                    KubeWorkloadYaml::DaemonSet(ws) => {
+                        workloads.push(KubeWorkloadYamlOnly::DaemonSet(ws.workload_yaml));
+                        collect_resources(ws.services, ws.configmaps, ws.secrets);
+                    }
+                    KubeWorkloadYaml::ReplicaSet(ws) => {
+                        workloads.push(KubeWorkloadYamlOnly::ReplicaSet(ws.workload_yaml));
+                        collect_resources(ws.services, ws.configmaps, ws.secrets);
+                    }
+                    KubeWorkloadYaml::Pod(ws) => {
+                        workloads.push(KubeWorkloadYamlOnly::Pod(ws.workload_yaml));
+                        collect_resources(ws.services, ws.configmaps, ws.secrets);
+                    }
+                    KubeWorkloadYaml::Job(ws) => {
+                        workloads.push(KubeWorkloadYamlOnly::Job(ws.workload_yaml));
+                        collect_resources(ws.services, ws.configmaps, ws.secrets);
+                    }
+                    KubeWorkloadYaml::CronJob(ws) => {
+                        workloads.push(KubeWorkloadYamlOnly::CronJob(ws.workload_yaml));
+                        collect_resources(ws.services, ws.configmaps, ws.secrets);
+                    }
+                }
             }
 
             println!(
@@ -1448,7 +1448,23 @@ impl KubeManager {
             );
         }
 
-        Ok(results)
+        // Now build the actual YAML content maps from the already-fetched resources
+        let (services_yaml_map, configmaps_yaml_map, secrets_yaml_map) = self
+            .build_resource_yaml_maps(
+                client,
+                all_services_by_namespace,
+                &all_services_set_by_namespace,
+                &all_configmaps_set_by_namespace,
+                &all_secrets_set_by_namespace,
+            )
+            .await?;
+
+        Ok(KubeWorkloadsWithResources {
+            workloads,
+            services: services_yaml_map,
+            configmaps: configmaps_yaml_map,
+            secrets: secrets_yaml_map,
+        })
     }
 
     async fn retrieve_single_workload_with_resources(
@@ -1458,14 +1474,12 @@ impl KubeManager {
         name: &str,
         kind: KubeWorkloadKind,
         all_services: &[Service],
-        all_configmaps: &[ConfigMap],
-        all_secrets: &[Secret],
     ) -> Result<KubeWorkloadYaml> {
         match kind {
             KubeWorkloadKind::Deployment => {
                 let api: kube::Api<Deployment> =
                     kube::Api::namespaced((*client).clone(), namespace);
-                let mut deployment = api.get(name).await?;
+                let deployment = api.get(name).await?;
 
                 // Get labels for service matching
                 let workload_labels = deployment
@@ -1482,21 +1496,12 @@ impl KubeManager {
 
                 // Extract ConfigMap and Secret references
                 let deployment_json = serde_json::to_value(&deployment)?;
-                let configmap_names = Self::extract_configmap_references(&deployment_json);
-                let secret_names = Self::extract_secret_references(&deployment_json);
-
-                // Find matching ConfigMaps and Secrets
-                let configmaps = self
-                    .find_configmaps_from_list(&configmap_names, all_configmaps)
-                    .await?;
-                let secrets = self
-                    .find_secrets_from_list(&secret_names, all_secrets)
-                    .await?;
+                let configmaps = Self::extract_configmap_references(&deployment_json);
+                let secrets = Self::extract_secret_references(&deployment_json);
 
                 // Clean server-managed fields
-                self.clean_metadata(&mut deployment.metadata);
-                deployment.status = None;
-                let workload_yaml = serde_yaml::to_string(&deployment)
+                let clean_deployment = self.clean_deployment(deployment);
+                let workload_yaml = serde_yaml::to_string(&clean_deployment)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
                 Ok(KubeWorkloadYaml::Deployment(KubeWorkloadWithServices {
@@ -1509,7 +1514,7 @@ impl KubeManager {
             KubeWorkloadKind::StatefulSet => {
                 let api: kube::Api<StatefulSet> =
                     kube::Api::namespaced((*client).clone(), namespace);
-                let mut statefulset = api.get(name).await?;
+                let statefulset = api.get(name).await?;
 
                 let workload_labels = statefulset
                     .spec
@@ -1522,21 +1527,25 @@ impl KubeManager {
                 let services =
                     self.find_matching_services_from_list(&workload_labels, all_services)?;
 
-                self.clean_metadata(&mut statefulset.metadata);
-                statefulset.status = None;
-                let workload_yaml = serde_yaml::to_string(&statefulset)
+                // Extract ConfigMap and Secret references
+                let statefulset_json = serde_json::to_value(&statefulset)?;
+                let configmaps = Self::extract_configmap_references(&statefulset_json);
+                let secrets = Self::extract_secret_references(&statefulset_json);
+
+                let clean_statefulset = self.clean_statefulset(statefulset);
+                let workload_yaml = serde_yaml::to_string(&clean_statefulset)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
                 Ok(KubeWorkloadYaml::StatefulSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
-                    configmaps: vec![],
-                    secrets: vec![],
+                    configmaps,
+                    secrets,
                 }))
             }
             KubeWorkloadKind::DaemonSet => {
                 let api: kube::Api<DaemonSet> = kube::Api::namespaced((*client).clone(), namespace);
-                let mut daemonset = api.get(name).await?;
+                let daemonset = api.get(name).await?;
 
                 let workload_labels = daemonset
                     .spec
@@ -1549,41 +1558,49 @@ impl KubeManager {
                 let services =
                     self.find_matching_services_from_list(&workload_labels, all_services)?;
 
-                self.clean_metadata(&mut daemonset.metadata);
-                daemonset.status = None;
-                let workload_yaml = serde_yaml::to_string(&daemonset)
+                // Extract ConfigMap and Secret references
+                let daemonset_json = serde_json::to_value(&daemonset)?;
+                let configmaps = Self::extract_configmap_references(&daemonset_json);
+                let secrets = Self::extract_secret_references(&daemonset_json);
+
+                let clean_daemonset = self.clean_daemonset(daemonset);
+                let workload_yaml = serde_yaml::to_string(&clean_daemonset)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
                 Ok(KubeWorkloadYaml::DaemonSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
-                    configmaps: vec![],
-                    secrets: vec![],
+                    configmaps,
+                    secrets,
                 }))
             }
             KubeWorkloadKind::Pod => {
                 let api: kube::Api<Pod> = kube::Api::namespaced((*client).clone(), namespace);
-                let mut pod = api.get(name).await?;
+                let pod = api.get(name).await?;
 
                 let workload_labels = pod.metadata.labels.as_ref().cloned().unwrap_or_default();
                 let services =
                     self.find_matching_services_from_list(&workload_labels, all_services)?;
 
-                self.clean_metadata(&mut pod.metadata);
-                pod.status = None;
-                let workload_yaml = serde_yaml::to_string(&pod)
+                // Extract ConfigMap and Secret references
+                let pod_json = serde_json::to_value(&pod)?;
+                let configmaps = Self::extract_configmap_references(&pod_json);
+                let secrets = Self::extract_secret_references(&pod_json);
+
+                let clean_pod = self.clean_pod(pod);
+                let workload_yaml = serde_yaml::to_string(&clean_pod)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
                 Ok(KubeWorkloadYaml::Pod(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
-                    configmaps: vec![],
-                    secrets: vec![],
+                    configmaps,
+                    secrets,
                 }))
             }
             KubeWorkloadKind::Job => {
                 let api: kube::Api<Job> = kube::Api::namespaced((*client).clone(), namespace);
-                let mut job = api.get(name).await?;
+                let job = api.get(name).await?;
 
                 let workload_labels = job
                     .spec
@@ -1596,21 +1613,25 @@ impl KubeManager {
                 let services =
                     self.find_matching_services_from_list(&workload_labels, all_services)?;
 
-                self.clean_metadata(&mut job.metadata);
-                job.status = None;
-                let workload_yaml = serde_yaml::to_string(&job)
+                // Extract ConfigMap and Secret references
+                let job_json = serde_json::to_value(&job)?;
+                let configmaps = Self::extract_configmap_references(&job_json);
+                let secrets = Self::extract_secret_references(&job_json);
+
+                let clean_job = self.clean_job(job);
+                let workload_yaml = serde_yaml::to_string(&clean_job)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
                 Ok(KubeWorkloadYaml::Job(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
-                    configmaps: vec![],
-                    secrets: vec![],
+                    configmaps,
+                    secrets,
                 }))
             }
             KubeWorkloadKind::CronJob => {
                 let api: kube::Api<CronJob> = kube::Api::namespaced((*client).clone(), namespace);
-                let mut cronjob = api.get(name).await?;
+                let cronjob = api.get(name).await?;
 
                 let workload_labels = cronjob
                     .spec
@@ -1624,22 +1645,26 @@ impl KubeManager {
                 let services =
                     self.find_matching_services_from_list(&workload_labels, all_services)?;
 
-                self.clean_metadata(&mut cronjob.metadata);
-                cronjob.status = None;
-                let workload_yaml = serde_yaml::to_string(&cronjob)
+                // Extract ConfigMap and Secret references
+                let cronjob_json = serde_json::to_value(&cronjob)?;
+                let configmaps = Self::extract_configmap_references(&cronjob_json);
+                let secrets = Self::extract_secret_references(&cronjob_json);
+
+                let clean_cronjob = self.clean_cronjob(cronjob);
+                let workload_yaml = serde_yaml::to_string(&clean_cronjob)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
                 Ok(KubeWorkloadYaml::CronJob(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
-                    configmaps: vec![],
-                    secrets: vec![],
+                    configmaps,
+                    secrets,
                 }))
             }
             KubeWorkloadKind::ReplicaSet => {
                 let api: kube::Api<ReplicaSet> =
                     kube::Api::namespaced((*client).clone(), namespace);
-                let mut replicaset = api.get(name).await?;
+                let replicaset = api.get(name).await?;
 
                 let workload_labels = replicaset
                     .spec
@@ -1653,16 +1678,20 @@ impl KubeManager {
                 let services =
                     self.find_matching_services_from_list(&workload_labels, all_services)?;
 
-                self.clean_metadata(&mut replicaset.metadata);
-                replicaset.status = None;
-                let workload_yaml = serde_yaml::to_string(&replicaset)
+                // Extract ConfigMap and Secret references
+                let replicaset_json = serde_json::to_value(&replicaset)?;
+                let configmaps = Self::extract_configmap_references(&replicaset_json);
+                let secrets = Self::extract_secret_references(&replicaset_json);
+
+                let clean_replicaset = self.clean_replicaset(replicaset);
+                let workload_yaml = serde_yaml::to_string(&clean_replicaset)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
                 Ok(KubeWorkloadYaml::ReplicaSet(KubeWorkloadWithServices {
                     workload_yaml,
                     services,
-                    configmaps: vec![],
-                    secrets: vec![],
+                    configmaps,
+                    secrets,
                 }))
             }
         }
@@ -1673,7 +1702,7 @@ impl KubeManager {
         workload_labels: &std::collections::BTreeMap<String, String>,
         all_services: &[Service],
     ) -> Result<Vec<String>> {
-        let mut matching_services = Vec::new();
+        let mut matching_service_names = Vec::new();
 
         for service in all_services {
             if let Some(selector) = &service.spec.as_ref().and_then(|s| s.selector.as_ref()) {
@@ -1682,18 +1711,14 @@ impl KubeManager {
                     .all(|(key, value)| workload_labels.get(key).map_or(false, |v| v == value));
 
                 if matches && !selector.is_empty() {
-                    let mut clean_service = service.clone();
-                    self.clean_metadata(&mut clean_service.metadata);
-                    clean_service.status = None;
-
-                    let service_yaml = serde_yaml::to_string(&clean_service)
-                        .map_err(|e| anyhow!("Failed to serialize service to YAML: {}", e))?;
-                    matching_services.push(service_yaml);
+                    if let Some(service_name) = &service.metadata.name {
+                        matching_service_names.push(service_name.clone());
+                    }
                 }
             }
         }
 
-        Ok(matching_services)
+        Ok(matching_service_names)
     }
 
     fn extract_configmap_references(workload_spec: &serde_json::Value) -> Vec<String> {
@@ -1756,7 +1781,10 @@ impl KubeManager {
         }
 
         // Look in spec.initContainers (for Pods)
-        if let Some(init_containers) = spec.pointer("/spec/initContainers").and_then(|c| c.as_array()) {
+        if let Some(init_containers) = spec
+            .pointer("/spec/initContainers")
+            .and_then(|c| c.as_array())
+        {
             for container in init_containers {
                 Self::extract_from_container_env(container, names, resource_type);
                 Self::extract_from_container_env_from(container, names, resource_type);
@@ -1923,56 +1951,90 @@ impl KubeManager {
         }
     }
 
-    async fn find_configmaps_from_list(
+    async fn build_resource_yaml_maps(
         &self,
-        configmap_names: &[String],
-        all_configmaps: &[ConfigMap],
-    ) -> Result<Vec<String>> {
-        let mut matching_configmaps = Vec::new();
+        client: &kube::Client,
+        all_services_by_namespace: HashMap<String, Vec<Service>>,
+        needed_services_by_namespace: &HashMap<String, std::collections::HashSet<String>>,
+        needed_configmaps_by_namespace: &HashMap<String, std::collections::HashSet<String>>,
+        needed_secrets_by_namespace: &HashMap<String, std::collections::HashSet<String>>,
+    ) -> Result<(
+        HashMap<String, String>,
+        HashMap<String, String>,
+        HashMap<String, String>,
+    )> {
+        let mut services_yaml_map = HashMap::new();
+        let mut configmaps_yaml_map = HashMap::new();
+        let mut secrets_yaml_map = HashMap::new();
 
-        for configmap_name in configmap_names {
-            if let Some(configmap) = all_configmaps.iter().find(|cm| {
-                cm.metadata
-                    .name
-                    .as_ref()
-                    .map_or(false, |name| name == configmap_name)
-            }) {
-                let mut clean_configmap = configmap.clone();
-                self.clean_metadata(&mut clean_configmap.metadata);
+        // Serialize only the services that are actually needed
+        for (namespace, services) in all_services_by_namespace {
+            if let Some(needed_services) = needed_services_by_namespace.get(&namespace) {
+                for service in services {
+                    if let Some(service_name) = &service.metadata.name {
+                        if needed_services.contains(service_name) {
+                            let clean_service = self.clean_service_spec(service.clone());
 
-                let configmap_yaml = serde_yaml::to_string(&clean_configmap)
-                    .map_err(|e| anyhow!("Failed to serialize ConfigMap to YAML: {}", e))?;
-                matching_configmaps.push(configmap_yaml);
+                            if let Ok(service_yaml) = serde_yaml::to_string(&clean_service) {
+                                services_yaml_map.insert(service_name.clone(), service_yaml);
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        Ok(matching_configmaps)
-    }
+        // Fetch and serialize only the configmaps that are actually needed
+        for (namespace, needed_configmaps) in needed_configmaps_by_namespace {
+            let configmaps_api: kube::Api<ConfigMap> =
+                kube::Api::namespaced((*client).clone(), namespace);
 
-    async fn find_secrets_from_list(
-        &self,
-        secret_names: &[String],
-        all_secrets: &[Secret],
-    ) -> Result<Vec<String>> {
-        let mut matching_secrets = Vec::new();
+            for configmap_name in needed_configmaps {
+                match configmaps_api.get(configmap_name).await {
+                    Ok(configmap) => {
+                        let clean_configmap = self.clean_configmap(configmap);
 
-        for secret_name in secret_names {
-            if let Some(secret) = all_secrets.iter().find(|s| {
-                s.metadata
-                    .name
-                    .as_ref()
-                    .map_or(false, |name| name == secret_name)
-            }) {
-                let mut clean_secret = secret.clone();
-                self.clean_metadata(&mut clean_secret.metadata);
-
-                let secret_yaml = serde_yaml::to_string(&clean_secret)
-                    .map_err(|e| anyhow!("Failed to serialize Secret to YAML: {}", e))?;
-                matching_secrets.push(secret_yaml);
+                        if let Ok(configmap_yaml) = serde_yaml::to_string(&clean_configmap) {
+                            configmaps_yaml_map.insert(configmap_name.clone(), configmap_yaml);
+                        }
+                    }
+                    Err(e) => {
+                        // Log error but continue - ConfigMap might not exist or be accessible
+                        println!(
+                            "Warning: Could not fetch ConfigMap {}/{}: {}",
+                            namespace, configmap_name, e
+                        );
+                    }
+                }
             }
         }
 
-        Ok(matching_secrets)
+        // Fetch and serialize only the secrets that are actually needed
+        for (namespace, needed_secrets) in needed_secrets_by_namespace {
+            let secrets_api: kube::Api<Secret> =
+                kube::Api::namespaced((*client).clone(), namespace);
+
+            for secret_name in needed_secrets {
+                match secrets_api.get(secret_name).await {
+                    Ok(secret) => {
+                        let clean_secret = self.clean_secret(secret);
+
+                        if let Ok(secret_yaml) = serde_yaml::to_string(&clean_secret) {
+                            secrets_yaml_map.insert(secret_name.clone(), secret_yaml);
+                        }
+                    }
+                    Err(e) => {
+                        // Log error but continue - Secret might not exist or be accessible
+                        println!(
+                            "Warning: Could not fetch Secret {}/{}: {}",
+                            namespace, secret_name, e
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok((services_yaml_map, configmaps_yaml_map, secrets_yaml_map))
     }
 
     async fn apply_workload_yaml(
@@ -2200,6 +2262,56 @@ impl KubeManager {
         Ok(())
     }
 
+    async fn apply_workloads_with_resources(
+        &self,
+        namespace: String,
+        workloads_with_resources: KubeWorkloadsWithResources,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let client = self
+            .kube_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+
+        // Step 1: Ensure namespace exists
+        self.ensure_namespace_exists(&namespace).await?;
+
+        // Step 2: Apply shared resources first (configmaps, secrets, then services)
+        // Apply configmaps first as they might be referenced by workloads
+        for (name, configmap_yaml) in &workloads_with_resources.configmaps {
+            println!("Applying ConfigMap '{}' to namespace '{}'", name, namespace);
+            self.apply_single_configmap(client, &namespace, configmap_yaml, &labels)
+                .await?;
+        }
+
+        // Apply secrets next as they might be referenced by workloads
+        for (name, secret_yaml) in &workloads_with_resources.secrets {
+            println!("Applying Secret '{}' to namespace '{}'", name, namespace);
+            self.apply_single_secret(client, &namespace, secret_yaml, &labels)
+                .await?;
+        }
+
+        // Step 3: Apply all workloads
+        for workload in &workloads_with_resources.workloads {
+            println!("Applying workload to namespace '{}'", namespace);
+            self.apply_workload_only(client, &namespace, workload, &labels)
+                .await?;
+        }
+
+        // Step 4: Apply services last as they reference workloads
+        for (name, service_yaml) in &workloads_with_resources.services {
+            println!("Applying Service '{}' to namespace '{}'", name, namespace);
+            self.apply_single_service(client, &namespace, service_yaml, &labels)
+                .await?;
+        }
+
+        println!(
+            "Successfully applied all workloads and resources to namespace '{}'",
+            namespace
+        );
+        Ok(())
+    }
+
     async fn apply_services(
         &self,
         client: &kube::Client,
@@ -2335,6 +2447,175 @@ impl KubeManager {
                     secrets_api.create(&Default::default(), &secret).await?;
                     println!("Created secret: {}", secret.metadata.name.as_ref().unwrap());
                 }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_single_configmap(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        configmap_yaml: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut configmap: ConfigMap = serde_yaml::from_str(configmap_yaml)?;
+
+        // Add environment labels to configmap
+        self.add_labels_to_metadata(&mut configmap.metadata, labels);
+
+        // Force namespace
+        configmap.metadata.namespace = Some(namespace.to_string());
+
+        let configmaps_api: kube::Api<ConfigMap> =
+            kube::Api::namespaced((*client).clone(), namespace);
+
+        match configmaps_api
+            .get_opt(&configmap.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                configmaps_api
+                    .replace(
+                        &configmap.metadata.name.as_ref().unwrap(),
+                        &Default::default(),
+                        &configmap,
+                    )
+                    .await?;
+                println!(
+                    "Updated configmap: {}",
+                    configmap.metadata.name.as_ref().unwrap()
+                );
+            }
+            None => {
+                configmaps_api
+                    .create(&Default::default(), &configmap)
+                    .await?;
+                println!(
+                    "Created configmap: {}",
+                    configmap.metadata.name.as_ref().unwrap()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_single_secret(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        secret_yaml: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut secret: Secret = serde_yaml::from_str(secret_yaml)?;
+
+        // Add environment labels to secret
+        self.add_labels_to_metadata(&mut secret.metadata, labels);
+
+        // Force namespace
+        secret.metadata.namespace = Some(namespace.to_string());
+
+        let secrets_api: kube::Api<Secret> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match secrets_api
+            .get_opt(&secret.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                secrets_api
+                    .replace(
+                        &secret.metadata.name.as_ref().unwrap(),
+                        &Default::default(),
+                        &secret,
+                    )
+                    .await?;
+                println!("Updated secret: {}", secret.metadata.name.as_ref().unwrap());
+            }
+            None => {
+                secrets_api.create(&Default::default(), &secret).await?;
+                println!("Created secret: {}", secret.metadata.name.as_ref().unwrap());
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_single_service(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        service_yaml: &str,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let mut service: Service = serde_yaml::from_str(service_yaml)?;
+
+        // Add environment labels to service
+        self.add_labels_to_metadata(&mut service.metadata, labels);
+
+        // Force namespace
+        service.metadata.namespace = Some(namespace.to_string());
+
+        let services_api: kube::Api<Service> = kube::Api::namespaced((*client).clone(), namespace);
+
+        match services_api
+            .get_opt(&service.metadata.name.as_ref().unwrap())
+            .await?
+        {
+            Some(_) => {
+                services_api
+                    .replace(
+                        &service.metadata.name.as_ref().unwrap(),
+                        &Default::default(),
+                        &service,
+                    )
+                    .await?;
+                println!(
+                    "Updated service: {}",
+                    service.metadata.name.as_ref().unwrap()
+                );
+            }
+            None => {
+                services_api.create(&Default::default(), &service).await?;
+                println!(
+                    "Created service: {}",
+                    service.metadata.name.as_ref().unwrap()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_workload_only(
+        &self,
+        client: &kube::Client,
+        namespace: &str,
+        workload: &KubeWorkloadYamlOnly,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        match workload {
+            KubeWorkloadYamlOnly::Deployment(yaml) => {
+                self.apply_deployment(client, namespace, yaml, labels)
+                    .await?;
+            }
+            KubeWorkloadYamlOnly::StatefulSet(yaml) => {
+                self.apply_statefulset(client, namespace, yaml, labels)
+                    .await?;
+            }
+            KubeWorkloadYamlOnly::DaemonSet(yaml) => {
+                self.apply_daemonset(client, namespace, yaml, labels)
+                    .await?;
+            }
+            KubeWorkloadYamlOnly::ReplicaSet(yaml) => {
+                self.apply_replicaset(client, namespace, yaml, labels)
+                    .await?;
+            }
+            KubeWorkloadYamlOnly::Pod(yaml) => {
+                self.apply_pod(client, namespace, yaml, labels).await?;
+            }
+            KubeWorkloadYamlOnly::Job(yaml) => {
+                self.apply_job(client, namespace, yaml, labels).await?;
+            }
+            KubeWorkloadYamlOnly::CronJob(yaml) => {
+                self.apply_cronjob(client, namespace, yaml, labels).await?;
             }
         }
         Ok(())
@@ -2734,40 +3015,21 @@ impl KubeManagerRpc for KubeManager {
         }
     }
 
-    async fn get_workload_yaml(
-        self,
-        _context: ::tarpc::context::Context,
-        name: String,
-        namespace: String,
-        kind: KubeWorkloadKind,
-    ) -> Result<KubeWorkloadYaml, String> {
-        match self
-            .retrieve_workload_yaml(name.clone(), namespace.clone(), kind)
-            .await
-        {
-            Ok(workload_yaml) => {
-                println!("Successfully retrieved YAML for workload: {namespace}/{name}");
-                Ok(workload_yaml)
-            }
-            Err(e) => {
-                println!("Failed to retrieve YAML for workload {namespace}/{name}: {e}");
-                Err(format!("Failed to retrieve workload YAML: {e}"))
-            }
-        }
-    }
-
     async fn get_workloads_yaml(
         self,
         _context: ::tarpc::context::Context,
         workloads: Vec<WorkloadIdentifier>,
-    ) -> Result<Vec<KubeWorkloadYaml>, String> {
+    ) -> Result<KubeWorkloadsWithResources, String> {
         match self.retrieve_workloads_yaml(workloads.clone()).await {
-            Ok(workload_yamls) => {
+            Ok(workloads_with_resources) => {
                 println!(
-                    "Successfully retrieved {} workloads YAML",
-                    workload_yamls.len()
+                    "Successfully retrieved {} workloads with {} services, {} configmaps, {} secrets",
+                    workloads_with_resources.workloads.len(),
+                    workloads_with_resources.services.len(),
+                    workloads_with_resources.configmaps.len(),
+                    workloads_with_resources.secrets.len()
                 );
-                Ok(workload_yamls)
+                Ok(workloads_with_resources)
             }
             Err(e) => {
                 println!("Failed to retrieve workloads YAML: {}", e);
@@ -2780,20 +3042,20 @@ impl KubeManagerRpc for KubeManager {
         self,
         _context: ::tarpc::context::Context,
         namespace: String,
-        workload_yaml: KubeWorkloadYaml,
+        workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
         match self
-            .apply_workload_yaml(namespace.clone(), workload_yaml, labels)
+            .apply_workloads_with_resources(namespace.clone(), workloads_with_resources, labels)
             .await
         {
             Ok(()) => {
-                println!("Successfully deployed workload to namespace: {namespace}");
+                println!("Successfully deployed workloads to namespace: {namespace}");
                 Ok(())
             }
             Err(e) => {
-                println!("Failed to deploy workload to namespace {namespace}: {e}");
-                Err(format!("Failed to deploy workload: {e}"))
+                println!("Failed to deploy workloads to namespace {namespace}: {e}");
+                Err(format!("Failed to deploy workloads: {e}"))
             }
         }
     }
@@ -3029,7 +3291,7 @@ spec:
               name: app-config
               key: config-key
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3054,7 +3316,7 @@ spec:
         - configMapRef:
             name: app-env-config
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3083,7 +3345,7 @@ spec:
         - name: config-volume
           mountPath: /etc/config
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3114,7 +3376,7 @@ spec:
       - name: app
         image: nginx
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3146,8 +3408,7 @@ spec:
           name: pod-config
           key: config-key
 "#;
-        let pod: k8s_openapi::api::core::v1::Pod = 
-            serde_yaml::from_str(pod_yaml).unwrap();
+        let pod: k8s_openapi::api::core::v1::Pod = serde_yaml::from_str(pod_yaml).unwrap();
         let pod_json = serde_json::to_value(&pod).unwrap();
 
         let configmap_names = KubeManager::extract_configmap_references(&pod_json);
@@ -3198,7 +3459,7 @@ spec:
         - name: config-volume
           mountPath: /etc/config
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3245,7 +3506,7 @@ spec:
         - name: config-volume
           mountPath: /etc/config2
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3270,7 +3531,7 @@ spec:
         - name: SIMPLE_VALUE
           value: "test"
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3315,7 +3576,7 @@ spec:
         - name: secret-volume
           mountPath: /etc/secrets
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3348,7 +3609,7 @@ spec:
               name: app-secret
               key: secret-key
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3373,7 +3634,7 @@ spec:
         - secretRef:
             name: app-env-secret
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3402,7 +3663,7 @@ spec:
         - name: secret-volume
           mountPath: /etc/secrets
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3426,7 +3687,7 @@ spec:
       - name: app
         image: private-registry.com/app:latest
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3457,7 +3718,7 @@ spec:
       - name: app
         image: nginx
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3491,8 +3752,7 @@ spec:
           name: pod-secret
           key: secret-key
 "#;
-        let pod: k8s_openapi::api::core::v1::Pod = 
-            serde_yaml::from_str(pod_yaml).unwrap();
+        let pod: k8s_openapi::api::core::v1::Pod = serde_yaml::from_str(pod_yaml).unwrap();
         let pod_json = serde_json::to_value(&pod).unwrap();
 
         let secret_names = KubeManager::extract_secret_references(&pod_json);
@@ -3546,7 +3806,7 @@ spec:
         - name: secret-volume
           mountPath: /etc/secrets
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3596,7 +3856,7 @@ spec:
         - name: secret-volume
           mountPath: /etc/secrets2
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3621,7 +3881,7 @@ spec:
         - name: SIMPLE_VALUE
           value: "test"
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 
@@ -3666,7 +3926,7 @@ spec:
         - name: secret-volume
           mountPath: /etc/secrets
 "#;
-        let deployment: k8s_openapi::api::apps::v1::Deployment = 
+        let deployment: k8s_openapi::api::apps::v1::Deployment =
             serde_yaml::from_str(deployment_yaml).unwrap();
         let deployment_json = serde_json::to_value(&deployment).unwrap();
 

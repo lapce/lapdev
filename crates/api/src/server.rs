@@ -320,7 +320,7 @@ async fn setup_log(
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let var = std::env::var("RUST_LOG").unwrap_or_default();
     let var =
-        format!("error,lapdev=info,lapdev_api=info,lapdev_conductor=info,lapdev_rpc=info,lapdev_common=info,lapdev_db=info,lapdev_enterprise=info,lapdev_proxy_ssh=info,lapdev_proxy_http=info,{var}");
+        format!("error,lapdev=info,lapdev_api=info,lapdev_conductor=info,lapdev_rpc=info,lapdev_common=info,lapdev_db=info,lapdev_enterprise=info,lapdev_proxy_ssh=info,lapdev_proxy_http=info,lapdev_kube=info,lapdev_kube_manager=info,{var}");
     let filter = tracing_subscriber::EnvFilter::builder().parse_lossy(var);
     tracing_subscriber::fmt()
         .with_ansi(false)

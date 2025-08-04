@@ -71,7 +71,7 @@ impl russh::server::Handler for SshProxyHandler {
         public_key: &russh::keys::PublicKey,
     ) -> Result<Auth, Self::Error> {
         let public_key = public_key.public_key_base64();
-        println!("auth public key");
+        tracing::debug!("auth public key");
         let ws = self.db.get_workspace_by_name(user).await?;
         let workspace_host = self
             .db
@@ -122,7 +122,7 @@ impl russh::server::Handler for SshProxyHandler {
     }
 
     async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
-        println!("auth succedded");
+        tracing::info!("auth succeeded");
         let (addr, port) = self
             .ws_addr
             .as_ref()
@@ -137,7 +137,7 @@ impl russh::server::Handler for SshProxyHandler {
                 self.ws_session = Some(session);
             }
             Err(e) => {
-                println!("error connection: {e}");
+                tracing::error!("error connection: {e}");
             }
         }
         Ok(())

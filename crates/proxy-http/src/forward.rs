@@ -37,9 +37,9 @@ pub async fn handler(
             .protocols(protocols)
             .on_upgrade(move |socket| async move {
                 if let Err(e) = proxy_socket(socket, uri, headers).await {
-                    println!("handle websocket error: {e}");
+                    tracing::error!("handle websocket error: {e}");
                 } else {
-                    println!("handle websocket finished");
+                    tracing::debug!("handle websocket finished");
                 }
             });
         return Some(ProxyForward::Resp(resp));

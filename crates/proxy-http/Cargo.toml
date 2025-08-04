@@ -11,5 +11,6 @@ anyhow.workspace = true
 futures.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+tracing.workspace = true
 lapdev-db.workspace = true
 lapdev-db-entities.workspace = true

@@ -92,7 +92,7 @@ impl KubeManager {
         let url = std::env::var(KUBE_CLUSTER_URL_ENV_VAR)
             .unwrap_or_else(|_| DEFAULT_KUBE_CLUSTER_URL.to_string());
 
-        println!("Connecting to Lapdev cluster at: {}", url);
+        tracing::info!("Connecting to Lapdev cluster at: {}", url);
 
         let mut request = url.into_client_request()?;
         request
@@ -103,7 +103,7 @@ impl KubeManager {
             match Self::handle_connection_cycle(request.clone()).await {
                 Ok(_) => {}
                 Err(e) => {
-                    println!("Connection cycle failed: {}, retrying in 5 seconds...", e);
+                    tracing::warn!("Connection cycle failed: {}, retrying in 5 seconds...", e);
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
@@ -113,11 +113,11 @@ impl KubeManager {
     async fn handle_connection_cycle(
         request: tokio_tungstenite::tungstenite::http::Request<()>,
     ) -> Result<()> {
-        println!("Attempting to connect to cluster...");
+        tracing::info!("Attempting to connect to cluster...");
 
         let (stream, _) = tokio_tungstenite::connect_async(request.clone()).await?;
 
-        println!("WebSocket connection established");
+        tracing::info!("WebSocket connection established");
 
         let trans = WebSocketTransport::new(stream);
         let io = LengthDelimitedCodec::builder().new_framed(trans);
@@ -132,7 +132,7 @@ impl KubeManager {
         let kube_client = Self::new_kube_client()
             .await
             .map_err(|e| {
-                println!("Warning: Failed to create Kubernetes client: {}", e);
+                tracing::warn!("Failed to create Kubernetes client: {}", e);
                 e
             })
             .ok();
@@ -145,22 +145,22 @@ impl KubeManager {
         // Spawn the RPC server mainloop in the background
         let rpc_clone = rpc_server.clone();
         let server_task = tokio::spawn(async move {
-            println!("Starting RPC server...");
+            tracing::info!("Starting RPC server...");
             BaseChannel::with_defaults(server_chan)
                 .execute(rpc_clone.serve())
                 .for_each(|resp| async move {
                     tokio::spawn(resp);
                 })
                 .await;
-            println!("RPC server stopped");
+            tracing::info!("RPC server stopped");
         });
 
         // Report cluster info immediately after connection
         if let Err(e) = rpc_server.report_cluster_info().await {
-            println!("Failed to report cluster info: {}", e);
+            tracing::error!("Failed to report cluster info: {}", e);
             // Don't fail the entire connection for this, just log and continue
         } else {
-            println!("Successfully reported cluster info");
+            tracing::info!("Successfully reported cluster info");
         }
 
         // Wait for the server task to complete
@@ -168,7 +168,7 @@ impl KubeManager {
             return Err(anyhow!("RPC server task failed: {}", e));
         }
 
-        println!("Connection cycle completed, will retry in 1 second...");
+        tracing::debug!("Connection cycle completed, will retry in 1 second...");
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         Ok(())
@@ -228,7 +228,7 @@ impl KubeManager {
                 }
             })
             .collect::<Vec<_>>();
-        println!("{:?}", cluster);
+        tracing::debug!("Cluster details: {:?}", cluster);
         let mut config = kube::Config::new(
             format!(
                 "https://{}/",
@@ -246,11 +246,11 @@ impl KubeManager {
         };
         // let client = kube::Client::try_from(config)?;
         // let api: kube::Api<Deployment> = kube::Api::all(client);
-        // println!("get api");
+        // tracing::debug!("get api");
         // let r = api.list(&ListParams::default().limit(1)).await?;
         // let namespace = r.items.first().map(|d| d.namespace());
         // // client.
-        // println!("kube {namespace:?}");
+        // tracing::debug!("kube {namespace:?}");
 
         Ok(config)
     }
@@ -437,15 +437,15 @@ impl KubeManager {
 
     async fn report_cluster_info(&self) -> Result<()> {
         let cluster_info = self.collect_cluster_info().await?;
-        println!("Reporting cluster info: {:?}", cluster_info);
+        tracing::info!("Reporting cluster info: {:?}", cluster_info);
 
         match self
             .rpc_client
             .report_cluster_info(tarpc::context::current(), cluster_info)
             .await
         {
-            Ok(_) => println!("Successfully reported cluster info"),
-            Err(e) => println!("RPC call failed: {}", e),
+            Ok(_) => tracing::info!("Successfully reported cluster info"),
+            Err(e) => tracing::error!("RPC call failed: {}", e),
         }
 
         Ok(())
@@ -491,7 +491,7 @@ impl KubeManager {
         include_system_workloads: bool,
         pagination: Option<PaginationParams>,
     ) -> Result<KubeWorkloadList> {
-        println!("pagination is {pagination:?}");
+        tracing::debug!("pagination is {pagination:?}");
 
         let (cursor, limit) = if let Some(pagination) = pagination {
             (pagination.cursor, pagination.limit.max(1))
@@ -499,7 +499,7 @@ impl KubeManager {
             (None, 50) // Default reasonable limit
         };
 
-        println!("cursor {cursor:?}");
+        tracing::debug!("cursor {cursor:?}");
 
         // Collect workloads sequentially by resource type, starting from the cursor position
         let mut all_workloads = Vec::new();
@@ -1442,7 +1442,7 @@ impl KubeManager {
                 }
             }
 
-            println!(
+            tracing::debug!(
                 "Retrieved workloads with services from namespace {}",
                 namespace
             );
@@ -2000,8 +2000,8 @@ impl KubeManager {
                     }
                     Err(e) => {
                         // Log error but continue - ConfigMap might not exist or be accessible
-                        println!(
-                            "Warning: Could not fetch ConfigMap {}/{}: {}",
+                        tracing::warn!(
+                            "Could not fetch ConfigMap {}/{}: {}",
                             namespace, configmap_name, e
                         );
                     }
@@ -2025,8 +2025,8 @@ impl KubeManager {
                     }
                     Err(e) => {
                         // Log error but continue - Secret might not exist or be accessible
-                        println!(
-                            "Warning: Could not fetch Secret {}/{}: {}",
+                        tracing::warn!(
+                            "Could not fetch Secret {}/{}: {}",
                             namespace, secret_name, e
                         );
                     }
@@ -2054,7 +2054,7 @@ impl KubeManager {
         // Step 2: Apply the resource based on workload type
         match workload_yaml {
             KubeWorkloadYaml::Deployment(workload_with_services) => {
-                println!(
+                tracing::info!(
                     "Applying Deployment to namespace '{}' with labels: {:?}",
                     namespace, labels
                 );
@@ -2083,7 +2083,7 @@ impl KubeManager {
                     .await?;
             }
             KubeWorkloadYaml::StatefulSet(workload_with_services) => {
-                println!(
+                tracing::info!(
                     "Applying StatefulSet to namespace '{}' with labels: {:?}",
                     namespace, labels
                 );
@@ -2112,7 +2112,7 @@ impl KubeManager {
                     .await?;
             }
             KubeWorkloadYaml::DaemonSet(workload_with_services) => {
-                println!(
+                tracing::info!(
                     "Applying DaemonSet to namespace '{}' with labels: {:?}",
                     namespace, labels
                 );
@@ -2141,7 +2141,7 @@ impl KubeManager {
                     .await?;
             }
             KubeWorkloadYaml::Pod(workload_with_services) => {
-                println!(
+                tracing::info!(
                     "Applying Pod to namespace '{}' with labels: {:?}",
                     namespace, labels
                 );
@@ -2170,7 +2170,7 @@ impl KubeManager {
                     .await?;
             }
             KubeWorkloadYaml::Job(workload_with_services) => {
-                println!(
+                tracing::info!(
                     "Applying Job to namespace '{}' with labels: {:?}",
                     namespace, labels
                 );
@@ -2199,7 +2199,7 @@ impl KubeManager {
                     .await?;
             }
             KubeWorkloadYaml::CronJob(workload_with_services) => {
-                println!(
+                tracing::info!(
                     "Applying CronJob to namespace '{}' with labels: {:?}",
                     namespace, labels
                 );
@@ -2228,7 +2228,7 @@ impl KubeManager {
                     .await?;
             }
             KubeWorkloadYaml::ReplicaSet(workload_with_services) => {
-                println!(
+                tracing::info!(
                     "Applying ReplicaSet to namespace '{}' with labels: {:?}",
                     namespace, labels
                 );
@@ -2258,7 +2258,7 @@ impl KubeManager {
             }
         }
 
-        println!("Successfully applied workload to namespace '{}'", namespace);
+        tracing::info!("Successfully applied workload to namespace '{}'", namespace);
         Ok(())
     }
 
@@ -2279,33 +2279,33 @@ impl KubeManager {
         // Step 2: Apply shared resources first (configmaps, secrets, then services)
         // Apply configmaps first as they might be referenced by workloads
         for (name, configmap_yaml) in &workloads_with_resources.configmaps {
-            println!("Applying ConfigMap '{}' to namespace '{}'", name, namespace);
+            tracing::info!("Applying ConfigMap '{}' to namespace '{}'", name, namespace);
             self.apply_single_configmap(client, &namespace, configmap_yaml, &labels)
                 .await?;
         }
 
         // Apply secrets next as they might be referenced by workloads
         for (name, secret_yaml) in &workloads_with_resources.secrets {
-            println!("Applying Secret '{}' to namespace '{}'", name, namespace);
+            tracing::info!("Applying Secret '{}' to namespace '{}'", name, namespace);
             self.apply_single_secret(client, &namespace, secret_yaml, &labels)
                 .await?;
         }
 
         // Step 3: Apply all workloads
         for workload in &workloads_with_resources.workloads {
-            println!("Applying workload to namespace '{}'", namespace);
+            tracing::info!("Applying workload to namespace '{}'", namespace);
             self.apply_workload_only(client, &namespace, workload, &labels)
                 .await?;
         }
 
         // Step 4: Apply services last as they reference workloads
         for (name, service_yaml) in &workloads_with_resources.services {
-            println!("Applying Service '{}' to namespace '{}'", name, namespace);
+            tracing::info!("Applying Service '{}' to namespace '{}'", name, namespace);
             self.apply_single_service(client, &namespace, service_yaml, &labels)
                 .await?;
         }
 
-        println!(
+        tracing::info!(
             "Successfully applied all workloads and resources to namespace '{}'",
             namespace
         );
@@ -2343,14 +2343,14 @@ impl KubeManager {
                             &service,
                         )
                         .await?;
-                    println!(
+                    tracing::info!(
                         "Updated service: {}",
                         service.metadata.name.as_ref().unwrap()
                     );
                 }
                 None => {
                     services_api.create(&Default::default(), &service).await?;
-                    println!(
+                    tracing::info!(
                         "Created service: {}",
                         service.metadata.name.as_ref().unwrap()
                     );
@@ -2391,7 +2391,7 @@ impl KubeManager {
                             &configmap,
                         )
                         .await?;
-                    println!(
+                    tracing::info!(
                         "Updated configmap: {}",
                         configmap.metadata.name.as_ref().unwrap()
                     );
@@ -2400,7 +2400,7 @@ impl KubeManager {
                     configmaps_api
                         .create(&Default::default(), &configmap)
                         .await?;
-                    println!(
+                    tracing::info!(
                         "Created configmap: {}",
                         configmap.metadata.name.as_ref().unwrap()
                     );
@@ -2441,11 +2441,11 @@ impl KubeManager {
                             &secret,
                         )
                         .await?;
-                    println!("Updated secret: {}", secret.metadata.name.as_ref().unwrap());
+                    tracing::info!("Updated secret: {}", secret.metadata.name.as_ref().unwrap());
                 }
                 None => {
                     secrets_api.create(&Default::default(), &secret).await?;
-                    println!("Created secret: {}", secret.metadata.name.as_ref().unwrap());
+                    tracing::info!("Created secret: {}", secret.metadata.name.as_ref().unwrap());
                 }
             }
         }
@@ -2482,7 +2482,7 @@ impl KubeManager {
                         &configmap,
                     )
                     .await?;
-                println!(
+                tracing::info!(
                     "Updated configmap: {}",
                     configmap.metadata.name.as_ref().unwrap()
                 );
@@ -2491,7 +2491,7 @@ impl KubeManager {
                 configmaps_api
                     .create(&Default::default(), &configmap)
                     .await?;
-                println!(
+                tracing::info!(
                     "Created configmap: {}",
                     configmap.metadata.name.as_ref().unwrap()
                 );
@@ -2529,11 +2529,11 @@ impl KubeManager {
                         &secret,
                     )
                     .await?;
-                println!("Updated secret: {}", secret.metadata.name.as_ref().unwrap());
+                tracing::info!("Updated secret: {}", secret.metadata.name.as_ref().unwrap());
             }
             None => {
                 secrets_api.create(&Default::default(), &secret).await?;
-                println!("Created secret: {}", secret.metadata.name.as_ref().unwrap());
+                tracing::info!("Created secret: {}", secret.metadata.name.as_ref().unwrap());
             }
         }
         Ok(())
@@ -2568,14 +2568,14 @@ impl KubeManager {
                         &service,
                     )
                     .await?;
-                println!(
+                tracing::info!(
                     "Updated service: {}",
                     service.metadata.name.as_ref().unwrap()
                 );
             }
             None => {
                 services_api.create(&Default::default(), &service).await?;
-                println!(
+                tracing::info!(
                     "Created service: {}",
                     service.metadata.name.as_ref().unwrap()
                 );
@@ -2644,7 +2644,7 @@ impl KubeManager {
         };
 
         namespaces.create(&Default::default(), &ns).await?;
-        println!("Created namespace: {}", namespace);
+        tracing::info!("Created namespace: {}", namespace);
         Ok(())
     }
 
@@ -2678,7 +2678,7 @@ impl KubeManager {
                     &deployment,
                 )
                 .await?;
-                println!(
+                tracing::info!(
                     "Updated deployment: {}",
                     deployment.metadata.name.as_ref().unwrap()
                 );
@@ -2686,7 +2686,7 @@ impl KubeManager {
             None => {
                 // Create new deployment
                 api.create(&Default::default(), &deployment).await?;
-                println!(
+                tracing::info!(
                     "Created deployment: {}",
                     deployment.metadata.name.as_ref().unwrap()
                 );
@@ -2721,14 +2721,14 @@ impl KubeManager {
                     &statefulset,
                 )
                 .await?;
-                println!(
+                tracing::info!(
                     "Updated statefulset: {}",
                     statefulset.metadata.name.as_ref().unwrap()
                 );
             }
             None => {
                 api.create(&Default::default(), &statefulset).await?;
-                println!(
+                tracing::info!(
                     "Created statefulset: {}",
                     statefulset.metadata.name.as_ref().unwrap()
                 );
@@ -2763,14 +2763,14 @@ impl KubeManager {
                     &daemonset,
                 )
                 .await?;
-                println!(
+                tracing::info!(
                     "Updated daemonset: {}",
                     daemonset.metadata.name.as_ref().unwrap()
                 );
             }
             None => {
                 api.create(&Default::default(), &daemonset).await?;
-                println!(
+                tracing::info!(
                     "Created daemonset: {}",
                     daemonset.metadata.name.as_ref().unwrap()
                 );
@@ -2802,11 +2802,11 @@ impl KubeManager {
                     &pod,
                 )
                 .await?;
-                println!("Updated pod: {}", pod.metadata.name.as_ref().unwrap());
+                tracing::info!("Updated pod: {}", pod.metadata.name.as_ref().unwrap());
             }
             None => {
                 api.create(&Default::default(), &pod).await?;
-                println!("Created pod: {}", pod.metadata.name.as_ref().unwrap());
+                tracing::info!("Created pod: {}", pod.metadata.name.as_ref().unwrap());
             }
         }
 
@@ -2835,11 +2835,11 @@ impl KubeManager {
                     &job,
                 )
                 .await?;
-                println!("Updated job: {}", job.metadata.name.as_ref().unwrap());
+                tracing::info!("Updated job: {}", job.metadata.name.as_ref().unwrap());
             }
             None => {
                 api.create(&Default::default(), &job).await?;
-                println!("Created job: {}", job.metadata.name.as_ref().unwrap());
+                tracing::info!("Created job: {}", job.metadata.name.as_ref().unwrap());
             }
         }
 
@@ -2871,14 +2871,14 @@ impl KubeManager {
                     &cronjob,
                 )
                 .await?;
-                println!(
+                tracing::info!(
                     "Updated cronjob: {}",
                     cronjob.metadata.name.as_ref().unwrap()
                 );
             }
             None => {
                 api.create(&Default::default(), &cronjob).await?;
-                println!(
+                tracing::info!(
                     "Created cronjob: {}",
                     cronjob.metadata.name.as_ref().unwrap()
                 );
@@ -2913,14 +2913,14 @@ impl KubeManager {
                     &replicaset,
                 )
                 .await?;
-                println!(
+                tracing::info!(
                     "Updated replicaset: {}",
                     replicaset.metadata.name.as_ref().unwrap()
                 );
             }
             None => {
                 api.create(&Default::default(), &replicaset).await?;
-                println!(
+                tracing::info!(
                     "Created replicaset: {}",
                     replicaset.metadata.name.as_ref().unwrap()
                 );
@@ -2961,14 +2961,14 @@ impl KubeManagerRpc for KubeManager {
             .await
         {
             Ok(workloads) => {
-                println!(
+                tracing::info!(
                     "Successfully collected {} workloads",
                     workloads.workloads.len()
                 );
                 Ok(workloads)
             }
             Err(e) => {
-                println!("Failed to collect workloads: {e}");
+                tracing::error!("Failed to collect workloads: {e}");
                 Err(format!("Failed to collect workloads: {e}"))
             }
         }
@@ -2986,14 +2986,14 @@ impl KubeManagerRpc for KubeManager {
         {
             Ok(workload) => {
                 if workload.is_some() {
-                    println!("Successfully found workload: {namespace}/{name}");
+                    tracing::info!("Successfully found workload: {namespace}/{name}");
                 } else {
-                    println!("Workload not found: {namespace}/{name}");
+                    tracing::warn!("Workload not found: {namespace}/{name}");
                 }
                 Ok(workload)
             }
             Err(e) => {
-                println!("Failed to get workload details for {namespace}/{name}: {e}");
+                tracing::error!("Failed to get workload details for {namespace}/{name}: {e}");
                 Err(format!("Failed to get workload details: {e}"))
             }
         }
@@ -3005,11 +3005,11 @@ impl KubeManagerRpc for KubeManager {
     ) -> Result<Vec<KubeNamespace>, String> {
         match self.collect_namespaces().await {
             Ok(namespaces) => {
-                println!("Successfully collected {} namespaces", namespaces.len());
+                tracing::info!("Successfully collected {} namespaces", namespaces.len());
                 Ok(namespaces)
             }
             Err(e) => {
-                println!("Failed to collect namespaces: {e}");
+                tracing::error!("Failed to collect namespaces: {e}");
                 Err(format!("Failed to collect namespaces: {e}"))
             }
         }
@@ -3022,7 +3022,7 @@ impl KubeManagerRpc for KubeManager {
     ) -> Result<KubeWorkloadsWithResources, String> {
         match self.retrieve_workloads_yaml(workloads.clone()).await {
             Ok(workloads_with_resources) => {
-                println!(
+                tracing::info!(
                     "Successfully retrieved {} workloads with {} services, {} configmaps, {} secrets",
                     workloads_with_resources.workloads.len(),
                     workloads_with_resources.services.len(),
@@ -3032,7 +3032,7 @@ impl KubeManagerRpc for KubeManager {
                 Ok(workloads_with_resources)
             }
             Err(e) => {
-                println!("Failed to retrieve workloads YAML: {}", e);
+                tracing::error!("Failed to retrieve workloads YAML: {}", e);
                 Err(format!("Failed to retrieve workloads YAML: {}", e))
             }
         }
@@ -3050,11 +3050,11 @@ impl KubeManagerRpc for KubeManager {
             .await
         {
             Ok(()) => {
-                println!("Successfully deployed workloads to namespace: {namespace}");
+                tracing::info!("Successfully deployed workloads to namespace: {namespace}");
                 Ok(())
             }
             Err(e) => {
-                println!("Failed to deploy workloads to namespace {namespace}: {e}");
+                tracing::error!("Failed to deploy workloads to namespace {namespace}: {e}");
                 Err(format!("Failed to deploy workloads: {e}"))
             }
         }

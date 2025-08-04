@@ -66,7 +66,7 @@ async fn handle_workspace_updates(ws_id: Uuid, socket: &mut WebSocket, state: &C
         tokio::select! {
             incoming = socket.recv() => {
                 if incoming.is_none() {
-                    println!("websocket closed by client");
+                    tracing::debug!("websocket closed by client");
                     return;
                 }
             }
@@ -76,7 +76,7 @@ async fn handle_workspace_updates(ws_id: Uuid, socket: &mut WebSocket, state: &C
                         let _ = socket.send(Message::Text(c.into())).await;
                     }
                 } else {
-                    println!("workspace update messages stopped");
+                    tracing::debug!("workspace update messages stopped");
                     return;
                 }
             }
@@ -94,7 +94,7 @@ async fn handle_all_workspaces_update(
         tokio::select! {
             incoming = socket.recv() => {
                 if incoming.is_none() {
-                    println!("websocket closed by client");
+                    tracing::debug!("websocket closed by client");
                     return;
                 }
             }
@@ -104,7 +104,7 @@ async fn handle_all_workspaces_update(
                         let _ = socket.send(Message::Text(c.into())).await;
                     }
                 } else {
-                    println!("workspace update messages stopped");
+                    tracing::debug!("workspace update messages stopped");
                     return;
                 }
             }

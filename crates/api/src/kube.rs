@@ -24,7 +24,7 @@ pub async fn kube_cluster_websocket(
     headers: HeaderMap,
     State(state): State<Arc<CoreState>>,
 ) -> Result<Response, ApiError> {
-    println!("now handle kube_cluster_websocket");
+    tracing::debug!("now handle kube_cluster_websocket");
     let token = headers
         .get(KUBE_CLUSTER_TOKEN_HEADER)
         .ok_or(ApiError::Unauthenticated)?
@@ -45,7 +45,7 @@ pub async fn kube_cluster_websocket(
             ApiError::InternalError(format!("Cluster {} doesn't exist", token.cluster_id))
         })?;
 
-    println!("now handle cluster websocket");
+    tracing::debug!("now handle cluster websocket");
     Ok(handle_cluster_websocket(websocket, state, cluster.id))
 }
 
@@ -55,7 +55,7 @@ fn handle_cluster_websocket(
     cluster_id: Uuid,
 ) -> Response {
     websocket
-        .on_failed_upgrade(|e| println!("websocket upgrade failed {e:?}"))
+        .on_failed_upgrade(|e| tracing::error!("websocket upgrade failed {e:?}"))
         .on_upgrade(move |socket| async move {
             handle_cluster_rpc(socket, state, cluster_id).await;
         })

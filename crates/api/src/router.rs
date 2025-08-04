@@ -299,7 +299,7 @@ async fn handle_catch_all(
         .ok();
 
     let path = parts.uri.path();
-    println!("handle catch all got {path}");
+    tracing::debug!("handle catch all got {path}");
 
     if let Some(websocket) = websocket {
         let uri = &parts.uri;

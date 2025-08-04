@@ -248,9 +248,9 @@ impl Conductor {
             let conductor = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = conductor.listen_table_update().await {
-                    println!("listen table update error: {e}");
+                    tracing::error!("listen table update error: {e}");
                 } else {
-                    println!("listen table update exited");
+                    tracing::info!("listen table update exited");
                 }
             });
         }

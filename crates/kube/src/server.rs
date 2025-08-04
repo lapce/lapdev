@@ -75,7 +75,7 @@ impl KubeClusterRpc for KubeClusterServer {
         _context: ::tarpc::context::Context,
         cluster_info: KubeClusterInfo,
     ) -> Result<(), String> {
-        println!(
+        tracing::info!(
             "Received cluster info for cluster {}: {:?}",
             self.cluster_id, cluster_info
         );
@@ -100,7 +100,7 @@ impl KubeClusterRpc for KubeClusterServer {
             .await
             .map_err(|e| format!("Failed to update cluster info: {}", e))?;
 
-        println!(
+        tracing::info!(
             "Successfully updated cluster {} info in database",
             self.cluster_id
         );

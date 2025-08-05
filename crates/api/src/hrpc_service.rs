@@ -252,6 +252,23 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn update_app_catalog_workload(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        workload_id: Uuid,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+    ) -> Result<(), HrpcError> {
+        let _ = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
+
+        self.kube_controller
+            .update_app_catalog_workload(org_id, workload_id, containers)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn add_workloads_to_app_catalog(
         &self,
         headers: &axum::http::HeaderMap,

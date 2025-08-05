@@ -1115,6 +1115,22 @@ impl DbApi {
         Ok(())
     }
 
+    pub async fn update_app_catalog_workload(
+        &self,
+        workload_id: Uuid,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+    ) -> Result<()> {
+        let containers_json = serde_json::to_value(containers)?;
+        lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
+            id: ActiveValue::Set(workload_id),
+            containers: ActiveValue::Set(Json::from(containers_json)),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
+
     pub async fn check_app_catalog_has_environments(&self, catalog_id: Uuid) -> Result<bool> {
         let has_environments = lapdev_db_entities::kube_environment::Entity::find()
             .filter(lapdev_db_entities::kube_environment::Column::AppCatalogId.eq(catalog_id))

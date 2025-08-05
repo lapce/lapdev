@@ -623,6 +623,39 @@ impl KubeController {
             .map_err(ApiError::from)
     }
 
+    pub async fn update_app_catalog_workload(
+        &self,
+        org_id: Uuid,
+        workload_id: Uuid,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+    ) -> Result<(), ApiError> {
+        // First get the workload to find its catalog
+        let workload = self
+            .db
+            .get_app_catalog_workload(workload_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
+
+        // Verify the catalog belongs to the organization
+        let catalog = self
+            .db
+            .get_app_catalog(workload.app_catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        if catalog.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Update the workload containers
+        self.db
+            .update_app_catalog_workload(workload_id, containers)
+            .await
+            .map_err(ApiError::from)
+    }
+
     pub async fn add_workloads_to_app_catalog(
         &self,
         org_id: Uuid,

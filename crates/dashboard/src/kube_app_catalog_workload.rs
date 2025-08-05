@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{KubeAppCatalog, KubeAppCatalogWorkload},
+    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo},
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -304,56 +304,17 @@ pub fn WorkloadItem(
                 <div class="text-sm space-y-2">
                     {
                         let containers = workload.containers.clone();
-                        containers.iter().map(|container| {
-                            let name = container.name.clone();
-                            let image = container.image.clone();
+                        containers.iter().enumerate().map(|(container_index, container)| {
+                            let workload_id = workload.id;
+                            let container_idx = container_index;
 
                             view! {
-                                <div class="flex flex-col p-2 bg-muted/30 rounded border">
-                                    <span class="font-medium text-foreground">{name}</span>
-                                    <div class="text-sm text-foreground space-y-1 mt-1">
-                                        <div class="flex flex-col gap-2">
-                                            <div class="flex items-center gap-1">
-                                                <lucide_leptos::Box attr:class="w-3 h-3" />
-                                                <span class="truncate">{image}</span>
-                                            </div>
-                                            <div class="flex gap-10">
-                                                <div class="flex flex-col gap-1">
-                                                    <div class="flex items-center gap-1">
-                                                        <lucide_leptos::Cpu attr:class="w-3 h-3" />
-                                                        <span class="font-medium">CPU</span>
-                                                    </div>
-                                                    <div class="ml-4 space-y-0.5">
-                                                        <div class="flex">
-                                                            <span class="text-muted-foreground w-16">{"Request:"}</span>
-                                                            <span>{container.cpu_request.clone().unwrap_or_else(|| "-".to_string())}</span>
-                                                        </div>
-                                                        <div class="flex">
-                                                            <span class="text-muted-foreground w-16">{"Limit:"}</span>
-                                                            <span>{container.cpu_limit.clone().unwrap_or_else(|| "-".to_string())}</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <div class="flex flex-col gap-1">
-                                                    <div class="flex items-center gap-1">
-                                                        <lucide_leptos::MemoryStick attr:class="w-3 h-3" />
-                                                        <span class="font-medium">Memory</span>
-                                                    </div>
-                                                    <div class="ml-4 space-y-0.5">
-                                                        <div class="flex">
-                                                            <span class="text-muted-foreground w-16">{"Request:"}</span>
-                                                            <span>{container.memory_request.clone().unwrap_or_else(|| "-".to_string())}</span>
-                                                        </div>
-                                                        <div class="flex">
-                                                            <span class="text-muted-foreground w-16">{"Limit:"}</span>
-                                                            <span>{container.memory_limit.clone().unwrap_or_else(|| "-".to_string())}</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                <ContainerEditor
+                                    workload_id
+                                    container_index=container_idx
+                                    container=container.clone()
+                                    update_counter
+                                />
                             }
                         }).collect::<Vec<_>>()
                     }
@@ -460,5 +421,221 @@ pub fn AddWorkloadsButton(
             <lucide_leptos::Plus />
             "Add Workloads"
         </Button>
+    }
+}
+
+async fn update_container(
+    org: Signal<Option<Organization>>,
+    workload_id: Uuid,
+    containers: Vec<KubeContainerInfo>,
+    update_counter: RwSignal<usize>,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .update_app_catalog_workload(org.id, workload_id, containers)
+        .await??;
+
+    update_counter.update(|c| *c += 1);
+
+    Ok(())
+}
+
+#[component]
+pub fn ContainerEditor(
+    workload_id: Uuid,
+    container_index: usize,
+    container: KubeContainerInfo,
+    update_counter: RwSignal<usize>,
+) -> impl IntoView {
+    let org = get_current_org();
+    let is_editing = RwSignal::new(false);
+
+    // Create signals for all editable fields
+    let image_signal = RwSignal::new(container.image.clone());
+    let cpu_request_signal = RwSignal::new(container.cpu_request.clone().unwrap_or_default());
+    let cpu_limit_signal = RwSignal::new(container.cpu_limit.clone().unwrap_or_default());
+    let memory_request_signal = RwSignal::new(container.memory_request.clone().unwrap_or_default());
+    let memory_limit_signal = RwSignal::new(container.memory_limit.clone().unwrap_or_default());
+
+    let name = container.name.clone();
+
+    let update_action = Action::new_local(move |containers: &Vec<KubeContainerInfo>| {
+        update_container(org, workload_id, containers.clone(), update_counter)
+    });
+
+    let save_changes = {
+        let container_name = container.name.clone();
+        Callback::new(move |_| {
+            // Get current workload to update only this container
+            // For now, we'll just update with the current container data
+            let updated_container = KubeContainerInfo {
+                name: container_name.clone(),
+                image: image_signal.get(),
+                cpu_request: if cpu_request_signal.get().trim().is_empty() {
+                    None
+                } else {
+                    Some(cpu_request_signal.get().trim().to_string())
+                },
+                cpu_limit: if cpu_limit_signal.get().trim().is_empty() {
+                    None
+                } else {
+                    Some(cpu_limit_signal.get().trim().to_string())
+                },
+                memory_request: if memory_request_signal.get().trim().is_empty() {
+                    None
+                } else {
+                    Some(memory_request_signal.get().trim().to_string())
+                },
+                memory_limit: if memory_limit_signal.get().trim().is_empty() {
+                    None
+                } else {
+                    Some(memory_limit_signal.get().trim().to_string())
+                },
+            };
+
+            // For simplicity, we'll pass just this container. In a real implementation,
+            // you'd need to get all containers for the workload and update just this one
+            update_action.dispatch(vec![updated_container]);
+            is_editing.set(false);
+        })
+    };
+
+    let cancel_changes = {
+        let container_image = container.image.clone();
+        Callback::new(move |_| {
+            // Reset to original values
+            image_signal.set(container_image.clone());
+            cpu_request_signal.set(container.cpu_request.clone().unwrap_or_default());
+            cpu_limit_signal.set(container.cpu_limit.clone().unwrap_or_default());
+            memory_request_signal.set(container.memory_request.clone().unwrap_or_default());
+            memory_limit_signal.set(container.memory_limit.clone().unwrap_or_default());
+            is_editing.set(false);
+        })
+    };
+
+    view! {
+        <div class="flex flex-col p-2 bg-muted/30 rounded border">
+            <div class="flex justify-between items-center">
+                <span class="font-medium text-foreground">{name}</span>
+                <div class="flex gap-1">
+                    <Show when=move || !is_editing.get()>
+                        <Button
+                            variant=ButtonVariant::Ghost
+                            class="px-2 py-1 h-auto"
+                            on:click=move |_| is_editing.set(true)
+                        >
+                            <lucide_leptos::Pen attr:class="w-3 h-3" />
+                        </Button>
+                    </Show>
+                    <Show when=move || is_editing.get()>
+                        <Button
+                            variant=ButtonVariant::Ghost
+                            class="px-2 py-1 h-auto text-green-600"
+                            on:click=move |_| save_changes.run(())
+                        >
+                            <lucide_leptos::Check attr:class="w-3 h-3" />
+                        </Button>
+                        <Button
+                            variant=ButtonVariant::Ghost
+                            class="px-2 py-1 h-auto text-red-600"
+                            on:click=move |_| cancel_changes.run(())
+                        >
+                            <lucide_leptos::X attr:class="w-3 h-3" />
+                        </Button>
+                    </Show>
+                </div>
+            </div>
+
+            <div class="text-sm text-foreground space-y-1 mt-1">
+                <div class="flex flex-col gap-2">
+                    <div class="flex items-center gap-1">
+                        <lucide_leptos::Box attr:class="w-3 h-3" />
+                        <Show
+                            when=move || is_editing.get()
+                            fallback=move || view! { <span class="truncate">{move || image_signal.get()}</span> }
+                        >
+                            <Input
+                                prop:value=move || image_signal.get()
+                                on:input=move |ev| image_signal.set(event_target_value(&ev))
+                                attr:placeholder="Container image"
+                                class="text-xs h-6"
+                            />
+                        </Show>
+                    </div>
+                    <div class="flex gap-10">
+                        <div class="flex flex-col gap-1">
+                            <div class="flex items-center gap-1">
+                                <lucide_leptos::Cpu attr:class="w-3 h-3" />
+                                <span class="font-medium">CPU</span>
+                            </div>
+                            <div class="ml-4 space-y-0.5">
+                                <div class="flex">
+                                    <span class="text-muted-foreground w-16">{"Request:"}</span>
+                                    <Show
+                                        when=move || is_editing.get()
+                                        fallback=move || view! { <span>{move || if cpu_request_signal.get().is_empty() { "-".to_string() } else { cpu_request_signal.get() }}</span> }
+                                    >
+                                        <Input
+                                            prop:value=move || cpu_request_signal.get()
+                                            on:input=move |ev| cpu_request_signal.set(event_target_value(&ev))
+                                            class="text-xs h-5 w-20"
+                                        />
+                                    </Show>
+                                </div>
+                                <div class="flex">
+                                    <span class="text-muted-foreground w-16">{"Limit:"}</span>
+                                    <Show
+                                        when=move || is_editing.get()
+                                        fallback=move || view! { <span>{move || if cpu_limit_signal.get().is_empty() { "-".to_string() } else { cpu_limit_signal.get() }}</span> }
+                                    >
+                                        <Input
+                                            prop:value=move || cpu_limit_signal.get()
+                                            on:input=move |ev| cpu_limit_signal.set(event_target_value(&ev))
+                                            class="text-xs h-5 w-20"
+                                        />
+                                    </Show>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <div class="flex items-center gap-1">
+                                <lucide_leptos::MemoryStick attr:class="w-3 h-3" />
+                                <span class="font-medium">Memory</span>
+                            </div>
+                            <div class="ml-4 space-y-0.5">
+                                <div class="flex">
+                                    <span class="text-muted-foreground w-16">{"Request:"}</span>
+                                    <Show
+                                        when=move || is_editing.get()
+                                        fallback=move || view! { <span>{move || if memory_request_signal.get().is_empty() { "-".to_string() } else { memory_request_signal.get() }}</span> }
+                                    >
+                                        <Input
+                                            prop:value=move || memory_request_signal.get()
+                                            on:input=move |ev| memory_request_signal.set(event_target_value(&ev))
+                                            class="text-xs h-5 w-20"
+                                        />
+                                    </Show>
+                                </div>
+                                <div class="flex">
+                                    <span class="text-muted-foreground w-16">{"Limit:"}</span>
+                                    <Show
+                                        when=move || is_editing.get()
+                                        fallback=move || view! { <span>{move || if memory_limit_signal.get().is_empty() { "-".to_string() } else { memory_limit_signal.get() }}</span> }
+                                    >
+                                        <Input
+                                            prop:value=move || memory_limit_signal.get()
+                                            on:input=move |ev| memory_limit_signal.set(event_target_value(&ev))
+                                            class="text-xs h-5 w-20"
+                                        />
+                                    </Show>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     }
 }

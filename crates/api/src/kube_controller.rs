@@ -5,15 +5,17 @@ use uuid::Uuid;
 use anyhow::Result;
 use lapdev_common::{
     kube::{
-        CreateKubeClusterResponse, KubeAppCatalog, KubeCluster, KubeClusterInfo, KubeClusterStatus,
-        KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-        PagePaginationParams, PaginatedInfo, PaginatedResult, PaginationParams,
+        CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkloadCreate, KubeCluster,
+        KubeClusterInfo, KubeClusterStatus, KubeEnvironment, KubeNamespace, KubeWorkload,
+        KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedInfo, PaginatedResult,
+        PaginationParams,
     },
     token::PlainToken,
 };
 use lapdev_db::api::DbApi;
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_rpc::error::ApiError;
+use sea_orm::TransactionTrait;
 use secrecy::ExposeSecret;
 
 #[derive(Clone)]
@@ -363,6 +365,39 @@ impl KubeController {
         Ok(cluster_info)
     }
 
+    async fn enrich_workloads_with_details(
+        &self,
+        cluster_id: Uuid,
+        workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkloadCreate>,
+    ) -> Result<Vec<lapdev_common::kube::KubeWorkloadDetails>, ApiError> {
+        // Get cluster connection
+        let cluster_server = self
+            .get_random_kube_cluster_server(cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest("No connected KubeManager for this cluster".to_string())
+            })?;
+        
+        // Convert to WorkloadIdentifier for RPC call
+        let workload_identifiers: Vec<lapdev_kube_rpc::WorkloadIdentifier> = workloads
+            .iter()
+            .map(|w| lapdev_kube_rpc::WorkloadIdentifier {
+                name: w.name.clone(),
+                namespace: w.namespace.clone(),
+                kind: w.kind.clone(),
+            })
+            .collect();
+
+        // Get detailed information from KubeManager
+        let workload_details = cluster_server
+            .rpc_client
+            .get_workloads_details(tarpc::context::current(), workload_identifiers)
+            .await
+            .map_err(|e| ApiError::InvalidRequest(format!("Failed to get workload details: {}", e)))?;
+
+        workload_details.map_err(|e| ApiError::InvalidRequest(format!("KubeManager error: {}", e)))
+    }
+
     pub async fn create_app_catalog(
         &self,
         org_id: Uuid,
@@ -370,10 +405,13 @@ impl KubeController {
         cluster_id: Uuid,
         name: String,
         description: Option<String>,
-        workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkload>,
+        workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkloadCreate>,
     ) -> Result<Uuid, ApiError> {
+        // Get enriched workload details from KubeManager
+        let enriched_workloads = self.enrich_workloads_with_details(cluster_id, workloads).await?;
+        
         self.db
-            .create_app_catalog(org_id, user_id, cluster_id, name, description, workloads)
+            .create_app_catalog_with_enriched_workloads(org_id, user_id, cluster_id, name, description, enriched_workloads)
             .await
             .map_err(ApiError::from)
     }
@@ -482,7 +520,8 @@ impl KubeController {
             .find(|(cat, _)| cat.id == catalog_id)
             .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
 
-        let cluster = cluster.ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+        let cluster =
+            cluster.ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
 
         Ok(KubeAppCatalog {
             id: catalog.id,
@@ -550,6 +589,90 @@ impl KubeController {
             .delete_app_catalog(catalog_id)
             .await
             .map_err(ApiError::from)
+    }
+
+    pub async fn delete_app_catalog_workload(
+        &self,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), ApiError> {
+        // First get the workload to find its catalog
+        let workload = self
+            .db
+            .get_app_catalog_workload(workload_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
+
+        // Verify the catalog belongs to the organization
+        let catalog = self
+            .db
+            .get_app_catalog(workload.app_catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        if catalog.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Delete the workload
+        self.db
+            .delete_app_catalog_workload(workload_id)
+            .await
+            .map_err(ApiError::from)
+    }
+
+    pub async fn add_workloads_to_app_catalog(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        catalog_id: Uuid,
+        workloads: Vec<KubeAppCatalogWorkloadCreate>,
+    ) -> Result<(), ApiError> {
+        // Verify the catalog belongs to the organization
+        let catalog = self
+            .db
+            .get_app_catalog(catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        if catalog.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Enrich workloads with details from KubeManager
+        let enriched_workloads = self.enrich_workloads_with_details(catalog.cluster_id, workloads).await?;
+        
+        // Add enriched workloads to the catalog
+        let txn = self.db.conn.begin().await.map_err(ApiError::from)?;
+        let now = chrono::Utc::now().into();
+        
+        match self
+            .db
+            .insert_enriched_workloads_to_catalog(&txn, catalog_id, enriched_workloads, now)
+            .await
+        {
+            Ok(_) => {
+                txn.commit().await.map_err(ApiError::from)?;
+                Ok(())
+            },
+            Err(db_err) => {
+                txn.rollback().await.map_err(ApiError::from)?;
+                // Check if this is a unique constraint violation using SeaORM's sql_err() method
+                if matches!(
+                    db_err.sql_err(),
+                    Some(sea_orm::SqlErr::UniqueConstraintViolation(_))
+                ) {
+                    Err(ApiError::InvalidRequest(
+                        "One or more selected workloads already exist in this catalog".to_string(),
+                    ))
+                } else {
+                    Err(ApiError::from(anyhow::Error::from(db_err)))
+                }
+            }
+        }
     }
 
     pub async fn create_kube_environment(
@@ -677,16 +800,12 @@ impl KubeController {
                     e
                 );
                 Err(ApiError::InvalidRequest(format!(
-                    "Failed to get YAML for workloads from source cluster: {}",
-                    e
+                    "Failed to get YAML for workloads from source cluster: {e}"
                 )))
             }
-            Err(e) => {
-                Err(ApiError::InvalidRequest(format!(
-                    "Connection error to source cluster: {}",
-                    e
-                )))
-            }
+            Err(e) => Err(ApiError::InvalidRequest(format!(
+                "Connection error to source cluster: {e}"
+            ))),
         }
     }
 
@@ -704,10 +823,7 @@ impl KubeController {
         );
 
         if workloads_with_resources.workloads.is_empty() {
-            tracing::warn!(
-                "No workloads found for environment '{}'",
-                environment_name
-            );
+            tracing::warn!("No workloads found for environment '{}'", environment_name);
             return Ok(());
         }
 
@@ -743,16 +859,12 @@ impl KubeController {
             Ok(Err(e)) => {
                 tracing::error!("Failed to deploy workloads to target cluster: {}", e);
                 Err(ApiError::InvalidRequest(format!(
-                    "Failed to deploy workloads to target cluster: {}",
-                    e
+                    "Failed to deploy workloads to target cluster: {e}"
                 )))
             }
-            Err(e) => {
-                Err(ApiError::InvalidRequest(format!(
-                    "Connection error to target cluster: {}",
-                    e
-                )))
-            }
+            Err(e) => Err(ApiError::InvalidRequest(format!(
+                "Connection error to target cluster: {e}"
+            ))),
         }
     }
 
@@ -840,7 +952,6 @@ impl KubeController {
                 )));
             }
         };
-
 
         // Deploy all workloads and resources in a single call
         match target_server

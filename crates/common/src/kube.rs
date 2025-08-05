@@ -145,11 +145,36 @@ pub struct KubeAppCatalog {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeAppCatalogWorkload {
+    pub id: Uuid,
     pub name: String,
     pub namespace: String,
     pub kind: KubeWorkloadKind,
-    pub cpu: Option<String>,
-    pub memory: Option<String>,
+    pub containers: Vec<KubeContainerInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeAppCatalogWorkloadCreate {
+    pub name: String,
+    pub namespace: String,
+    pub kind: KubeWorkloadKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeContainerInfo {
+    pub name: String,
+    pub image: String,
+    pub cpu_request: Option<String>,
+    pub cpu_limit: Option<String>,
+    pub memory_request: Option<String>,
+    pub memory_limit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeWorkloadDetails {
+    pub name: String,
+    pub namespace: String,
+    pub kind: KubeWorkloadKind,
+    pub containers: Vec<KubeContainerInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3093,6 +3093,7 @@ dependencies = [
  "sea-orm",
  "sea-orm-migration",
  "secrecy",
+ "serde_json",
  "sqlx",
  "tokio",
  "uuid",

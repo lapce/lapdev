@@ -183,7 +183,7 @@ pub fn DeleteModal(
     view! {
         <AlertDialogContent open>
             <AlertDialogHeader>
-                <AlertDialogTitle>
+                <AlertDialogTitle class="text-wrap">
                     {format!(
                         "Are you sure you want to delete {}",
                         resource.get().unwrap_or_default(),

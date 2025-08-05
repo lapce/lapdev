@@ -14,8 +14,8 @@ use k8s_openapi::{
 };
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
-    KubeClusterInfo, KubeClusterStatus, KubeNamespace, KubeWorkload, KubeWorkloadKind,
-    KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
+    KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeNamespace, KubeWorkload,
+    KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
     DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER,
     KUBE_CLUSTER_URL_ENV_VAR,
 };
@@ -2002,7 +2002,9 @@ impl KubeManager {
                         // Log error but continue - ConfigMap might not exist or be accessible
                         tracing::warn!(
                             "Could not fetch ConfigMap {}/{}: {}",
-                            namespace, configmap_name, e
+                            namespace,
+                            configmap_name,
+                            e
                         );
                     }
                 }
@@ -2027,7 +2029,9 @@ impl KubeManager {
                         // Log error but continue - Secret might not exist or be accessible
                         tracing::warn!(
                             "Could not fetch Secret {}/{}: {}",
-                            namespace, secret_name, e
+                            namespace,
+                            secret_name,
+                            e
                         );
                     }
                 }
@@ -2056,7 +2060,8 @@ impl KubeManager {
             KubeWorkloadYaml::Deployment(workload_with_services) => {
                 tracing::info!(
                     "Applying Deployment to namespace '{}' with labels: {:?}",
-                    namespace, labels
+                    namespace,
+                    labels
                 );
                 self.apply_deployment(
                     client,
@@ -2085,7 +2090,8 @@ impl KubeManager {
             KubeWorkloadYaml::StatefulSet(workload_with_services) => {
                 tracing::info!(
                     "Applying StatefulSet to namespace '{}' with labels: {:?}",
-                    namespace, labels
+                    namespace,
+                    labels
                 );
                 self.apply_statefulset(
                     client,
@@ -2114,7 +2120,8 @@ impl KubeManager {
             KubeWorkloadYaml::DaemonSet(workload_with_services) => {
                 tracing::info!(
                     "Applying DaemonSet to namespace '{}' with labels: {:?}",
-                    namespace, labels
+                    namespace,
+                    labels
                 );
                 self.apply_daemonset(
                     client,
@@ -2143,7 +2150,8 @@ impl KubeManager {
             KubeWorkloadYaml::Pod(workload_with_services) => {
                 tracing::info!(
                     "Applying Pod to namespace '{}' with labels: {:?}",
-                    namespace, labels
+                    namespace,
+                    labels
                 );
                 self.apply_pod(
                     client,
@@ -2172,7 +2180,8 @@ impl KubeManager {
             KubeWorkloadYaml::Job(workload_with_services) => {
                 tracing::info!(
                     "Applying Job to namespace '{}' with labels: {:?}",
-                    namespace, labels
+                    namespace,
+                    labels
                 );
                 self.apply_job(
                     client,
@@ -2201,7 +2210,8 @@ impl KubeManager {
             KubeWorkloadYaml::CronJob(workload_with_services) => {
                 tracing::info!(
                     "Applying CronJob to namespace '{}' with labels: {:?}",
-                    namespace, labels
+                    namespace,
+                    labels
                 );
                 self.apply_cronjob(
                     client,
@@ -2230,7 +2240,8 @@ impl KubeManager {
             KubeWorkloadYaml::ReplicaSet(workload_with_services) => {
                 tracing::info!(
                     "Applying ReplicaSet to namespace '{}' with labels: {:?}",
-                    namespace, labels
+                    namespace,
+                    labels
                 );
                 self.apply_replicaset(
                     client,
@@ -2940,6 +2951,155 @@ impl KubeManager {
             labels.insert(key.clone(), value.clone());
         }
     }
+
+    async fn get_workload_resource_details(
+        &self,
+        name: &str,
+        namespace: &str,
+        kind: &KubeWorkloadKind,
+    ) -> Result<Vec<KubeContainerInfo>> {
+        let client = self
+            .kube_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+
+        match kind {
+            KubeWorkloadKind::Deployment => {
+                let api: kube::Api<Deployment> =
+                    kube::Api::namespaced((**client).clone(), namespace);
+                if let Ok(deployment) = api.get(name).await {
+                    if let Some(spec) = &deployment.spec {
+                        if let Some(pod_spec) = &spec.template.spec {
+                            return self.extract_pod_resource_info(pod_spec);
+                        }
+                    }
+                }
+            }
+            KubeWorkloadKind::StatefulSet => {
+                let api: kube::Api<StatefulSet> =
+                    kube::Api::namespaced((**client).clone(), namespace);
+                if let Ok(statefulset) = api.get(name).await {
+                    if let Some(spec) = &statefulset.spec {
+                        if let Some(pod_spec) = &spec.template.spec {
+                            return self.extract_pod_resource_info(pod_spec);
+                        }
+                    }
+                }
+            }
+            KubeWorkloadKind::DaemonSet => {
+                let api: kube::Api<DaemonSet> =
+                    kube::Api::namespaced((**client).clone(), namespace);
+                if let Ok(daemonset) = api.get(name).await {
+                    if let Some(spec) = &daemonset.spec {
+                        if let Some(pod_spec) = &spec.template.spec {
+                            return self.extract_pod_resource_info(pod_spec);
+                        }
+                    }
+                }
+            }
+            KubeWorkloadKind::Pod => {
+                let api: kube::Api<Pod> = kube::Api::namespaced((**client).clone(), namespace);
+                if let Ok(pod) = api.get(name).await {
+                    if let Some(spec) = &pod.spec {
+                        return self.extract_pod_resource_info(spec);
+                    }
+                }
+            }
+            KubeWorkloadKind::Job => {
+                let api: kube::Api<Job> = kube::Api::namespaced((**client).clone(), namespace);
+                if let Ok(job) = api.get(name).await {
+                    if let Some(spec) = &job.spec {
+                        if let Some(pod_spec) = &spec.template.spec {
+                            return self.extract_pod_resource_info(pod_spec);
+                        }
+                    }
+                }
+            }
+            KubeWorkloadKind::CronJob => {
+                let api: kube::Api<CronJob> = kube::Api::namespaced((**client).clone(), namespace);
+                if let Ok(cronjob) = api.get(name).await {
+                    if let Some(spec) = &cronjob.spec {
+                        if let Some(job_template) = &spec.job_template.spec {
+                            if let Some(pod_spec) = &job_template.template.spec {
+                                return self.extract_pod_resource_info(pod_spec);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        Ok(Vec::new())
+    }
+
+    fn extract_pod_resource_info(
+        &self,
+        pod_spec: &k8s_openapi::api::core::v1::PodSpec,
+    ) -> Result<Vec<KubeContainerInfo>> {
+        pod_spec
+            .containers
+            .iter()
+            .map(|container| {
+                let mut cpu_request = None;
+                let mut cpu_limit = None;
+                let mut memory_request = None;
+                let mut memory_limit = None;
+
+                if let Some(resources) = &container.resources {
+                    // CPU and Memory requests
+                    if let Some(requests) = &resources.requests {
+                        if let Some(cpu_req) = requests.get("cpu") {
+                            cpu_request = Some(cpu_req.0.clone());
+                        }
+                        if let Some(memory_req) = requests.get("memory") {
+                            memory_request = Some(memory_req.0.clone());
+                        }
+                    }
+
+                    // CPU and Memory limits
+                    if let Some(limits) = &resources.limits {
+                        if let Some(cpu_lim) = limits.get("cpu") {
+                            cpu_limit = Some(cpu_lim.0.clone());
+                        }
+                        if let Some(memory_lim) = limits.get("memory") {
+                            memory_limit = Some(memory_lim.0.clone());
+                        }
+                    }
+                }
+
+                // Error if container has no image
+                let image = container.image.clone().ok_or_else(|| {
+                    anyhow!("Container '{}' has no image specified", container.name)
+                })?;
+
+                Ok(KubeContainerInfo {
+                    name: container.name.clone(),
+                    image,
+                    cpu_request,
+                    cpu_limit,
+                    memory_request,
+                    memory_limit,
+                })
+            })
+            .collect()
+    }
+
+    fn format_memory_bytes(bytes: u64) -> String {
+        const KI: u64 = 1024;
+        const MI: u64 = KI * 1024;
+        const GI: u64 = MI * 1024;
+
+        if bytes >= GI {
+            format!("{}Gi", bytes / GI)
+        } else if bytes >= MI {
+            format!("{}Mi", bytes / MI)
+        } else if bytes >= KI {
+            format!("{}Ki", bytes / KI)
+        } else {
+            format!("{}B", bytes)
+        }
+    }
 }
 
 impl KubeManagerRpc for KubeManager {
@@ -3058,6 +3218,48 @@ impl KubeManagerRpc for KubeManager {
                 Err(format!("Failed to deploy workloads: {e}"))
             }
         }
+    }
+
+    async fn get_workloads_details(
+        self,
+        _context: ::tarpc::context::Context,
+        workloads: Vec<WorkloadIdentifier>,
+    ) -> Result<Vec<lapdev_common::kube::KubeWorkloadDetails>, String> {
+        let mut details = Vec::new();
+
+        for workload in workloads {
+            match self
+                .get_workload_resource_details(&workload.name, &workload.namespace, &workload.kind)
+                .await
+            {
+                Ok(containers) => {
+                    details.push(lapdev_common::kube::KubeWorkloadDetails {
+                        name: workload.name,
+                        namespace: workload.namespace,
+                        kind: workload.kind,
+                        containers,
+                    });
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to get workload details for {}/{}: {}",
+                        workload.namespace,
+                        workload.name,
+                        e
+                    );
+                    return Err(format!(
+                        "Failed to get workload details for {}/{}: {}",
+                        workload.namespace, workload.name, e
+                    ));
+                }
+            }
+        }
+
+        tracing::info!(
+            "Successfully retrieved details for {} workloads",
+            details.len()
+        );
+        Ok(details)
     }
 }
 

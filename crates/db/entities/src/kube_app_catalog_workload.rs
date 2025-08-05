@@ -13,8 +13,7 @@ pub struct Model {
     pub name: String,
     pub namespace: String,
     pub kind: String,
-    pub cpu: Option<String>,
-    pub memory: Option<String>,
+    pub containers: Json,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

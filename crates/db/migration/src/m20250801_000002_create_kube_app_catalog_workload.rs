@@ -48,11 +48,10 @@ impl MigrationTrait for Migration {
                             .string()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(KubeAppCatalogWorkload::Cpu).string().null())
                     .col(
-                        ColumnDef::new(KubeAppCatalogWorkload::Memory)
-                            .string()
-                            .null(),
+                        ColumnDef::new(KubeAppCatalogWorkload::Containers)
+                            .json()
+                            .not_null(),
                     )
                     .foreign_key(
                         ForeignKey::create()
@@ -88,7 +87,9 @@ impl MigrationTrait for Migration {
                     .col(KubeAppCatalogWorkload::Name)
                     .col(KubeAppCatalogWorkload::Namespace)
                     .col(KubeAppCatalogWorkload::Kind)
+                    .col(KubeAppCatalogWorkload::DeletedAt)
                     .unique()
+                    .nulls_not_distinct()
                     .to_owned(),
             )
             .await?;
@@ -107,6 +108,5 @@ pub enum KubeAppCatalogWorkload {
     Name,
     Namespace,
     Kind,
-    Cpu,
-    Memory,
+    Containers,
 }

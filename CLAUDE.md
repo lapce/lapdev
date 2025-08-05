@@ -38,7 +38,6 @@ Working on **kube** branch implementing Kubernetes provider functionality for La
 - Currently working on implement lapdev-kube-manager, and the first step is to report cluster info to KubeClusterServer via KubeClusterRpc
 
 ### 📋 TODO
-- Complete GCP provider implementation
 - Implement cluster lifecycle management
 - Add workspace scheduling to Kubernetes
 - Integration with existing lapdev-conductor
@@ -60,7 +59,6 @@ cargo run --bin lapdev-kube-manager
 ```
 
 ## Key Files to Focus On
-- `lapdev-kube/src/provider/gcp.rs` - GCP integration
 - `lapdev-kube-manager/src/manager.rs` - Cluster management
 - `lapdev-kube/src/server.rs` - Kubernetes API server
 - `lapdev-common/src/kube.rs` - Shared Kubernetes types
@@ -69,7 +67,6 @@ cargo run --bin lapdev-kube-manager
 - Using tarpc for RPC but also implementing custom HRPC framework
 - Kubernetes client library: `kube = "1.1.0"` with `k8s-openapi = "0.25.0"`
 - Database: SeaORM with PostgreSQL
-- Currently focused on GCP as first cloud provider
 
 ## Service Details
 - lapdev-kube-manager is a service which runs inside k8s cluster itself

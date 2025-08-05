@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED,
-    kube::{KubeAppCatalogWorkload, PagePaginationParams},
+    kube::{KubeAppCatalogWorkload, KubeWorkloadDetails, PagePaginationParams},
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
 };
@@ -13,11 +13,13 @@ use pasetors::{
     version4::V4,
 };
 use sea_orm::{
+    prelude::Json,
     sea_query::{Expr, Func, OnConflict},
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, DatabaseTransaction,
     EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
 };
 use sea_orm_migration::MigratorTrait;
+use serde_json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -918,7 +920,7 @@ impl DbApi {
         cluster_id: Uuid,
         name: String,
         description: Option<String>,
-        workloads: Vec<KubeAppCatalogWorkload>,
+        workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkloadCreate>,
     ) -> Result<Uuid> {
         let txn = self.conn.begin().await?;
 
@@ -941,21 +943,45 @@ impl DbApi {
         .await?;
 
         // Insert individual workloads
-        for workload in workloads {
-            lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
-                id: ActiveValue::Set(Uuid::new_v4()),
-                created_at: ActiveValue::Set(now),
-                deleted_at: ActiveValue::Set(None),
-                app_catalog_id: ActiveValue::Set(catalog_id),
-                name: ActiveValue::Set(workload.name),
-                namespace: ActiveValue::Set(workload.namespace),
-                kind: ActiveValue::Set(workload.kind.to_string()),
-                cpu: ActiveValue::Set(workload.cpu),
-                memory: ActiveValue::Set(workload.memory),
-            }
-            .insert(&txn)
+        self.insert_workloads_to_catalog(&txn, catalog_id, workloads, now)
             .await?;
+
+        txn.commit().await?;
+        Ok(catalog_id)
+    }
+
+    pub async fn create_app_catalog_with_enriched_workloads(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        cluster_id: Uuid,
+        name: String,
+        description: Option<String>,
+        enriched_workloads: Vec<KubeWorkloadDetails>,
+    ) -> Result<Uuid> {
+        let txn = self.conn.begin().await?;
+
+        let catalog_id = Uuid::new_v4();
+        let now = Utc::now().into();
+
+        // Create the app catalog
+        lapdev_db_entities::kube_app_catalog::ActiveModel {
+            id: ActiveValue::Set(catalog_id),
+            created_at: ActiveValue::Set(now),
+            name: ActiveValue::Set(name),
+            description: ActiveValue::Set(description),
+            resources: ActiveValue::Set("".to_string()), // Keep empty for backward compatibility
+            cluster_id: ActiveValue::Set(cluster_id),
+            created_by: ActiveValue::Set(user_id),
+            organization_id: ActiveValue::Set(org_id),
+            deleted_at: ActiveValue::Set(None),
         }
+        .insert(&txn)
+        .await?;
+
+        // Insert enriched workloads
+        self.insert_enriched_workloads_to_catalog(&txn, catalog_id, enriched_workloads, now)
+            .await?;
 
         txn.commit().await?;
         Ok(catalog_id)
@@ -1048,17 +1074,45 @@ impl DbApi {
 
         Ok(workloads
             .into_iter()
-            .map(|w| KubeAppCatalogWorkload {
-                name: w.name,
-                namespace: w.namespace,
-                kind: w
-                    .kind
-                    .parse()
-                    .unwrap_or(lapdev_common::kube::KubeWorkloadKind::Deployment),
-                cpu: w.cpu,
-                memory: w.memory,
+            .filter_map(|w| {
+                // Deserialize containers from JSON, skip if invalid
+                let containers = serde_json::from_value(w.containers.clone()).ok()?;
+                
+                Some(KubeAppCatalogWorkload {
+                    id: w.id,
+                    name: w.name,
+                    namespace: w.namespace,
+                    kind: w
+                        .kind
+                        .parse()
+                        .unwrap_or(lapdev_common::kube::KubeWorkloadKind::Deployment),
+                    containers,
+                })
             })
             .collect())
+    }
+
+    pub async fn get_app_catalog_workload(
+        &self,
+        workload_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_app_catalog_workload::Model>> {
+        let workload =
+            lapdev_db_entities::kube_app_catalog_workload::Entity::find_by_id(workload_id)
+                .filter(lapdev_db_entities::kube_app_catalog_workload::Column::DeletedAt.is_null())
+                .one(&self.conn)
+                .await?;
+        Ok(workload)
+    }
+
+    pub async fn delete_app_catalog_workload(&self, workload_id: Uuid) -> Result<()> {
+        lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
+            id: ActiveValue::Set(workload_id),
+            deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
     }
 
     pub async fn check_app_catalog_has_environments(&self, catalog_id: Uuid) -> Result<bool> {
@@ -1152,5 +1206,58 @@ impl DbApi {
         .insert(&self.conn)
         .await?;
         Ok(environment)
+    }
+
+    async fn insert_workloads_to_catalog(
+        &self,
+        txn: &sea_orm::DatabaseTransaction,
+        catalog_id: Uuid,
+        workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkloadCreate>,
+        created_at: sea_orm::prelude::DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        for workload in workloads {
+            lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                created_at: ActiveValue::Set(created_at),
+                deleted_at: ActiveValue::Set(None),
+                app_catalog_id: ActiveValue::Set(catalog_id),
+                name: ActiveValue::Set(workload.name.clone()),
+                namespace: ActiveValue::Set(workload.namespace.clone()),
+                kind: ActiveValue::Set(workload.kind.to_string()),
+                containers: ActiveValue::Set(serde_json::json!([])),
+            }
+            .insert(txn)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn insert_enriched_workloads_to_catalog(
+        &self,
+        txn: &sea_orm::DatabaseTransaction,
+        catalog_id: Uuid,
+        enriched_workloads: Vec<KubeWorkloadDetails>,
+        created_at: sea_orm::prelude::DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        for workload in enriched_workloads {
+            // Serialize all containers
+            let containers_json = serde_json::to_value(&workload.containers)
+                .map(Json::from)
+                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
+            lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                created_at: ActiveValue::Set(created_at),
+                deleted_at: ActiveValue::Set(None),
+                app_catalog_id: ActiveValue::Set(catalog_id),
+                name: ActiveValue::Set(workload.name),
+                namespace: ActiveValue::Set(workload.namespace),
+                kind: ActiveValue::Set(workload.kind.to_string()),
+                containers: ActiveValue::Set(containers_json),
+            }
+            .insert(txn)
+            .await?;
+        }
+        Ok(())
     }
 }

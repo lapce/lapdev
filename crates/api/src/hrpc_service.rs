@@ -2,10 +2,9 @@ use lapdev_api_hrpc::HrpcService;
 use lapdev_common::{
     hrpc::HrpcError,
     kube::{
-        CreateKubeClusterResponse, KubeAppCatalog, KubeCluster, KubeClusterInfo,
-        KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind,
+        CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeCluster,
+        KubeClusterInfo, KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind,
         KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
-        KubeAppCatalogWorkload,
     },
     UserRole,
 };
@@ -65,8 +64,10 @@ impl HrpcService for CoreState {
         cluster_id: Uuid,
         can_deploy: bool,
     ) -> Result<(), HrpcError> {
-        let _ = self.authorize(headers, org_id, Some(UserRole::Admin)).await?;
-        
+        let _ = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
+
         self.kube_controller
             .set_cluster_deployable(org_id, cluster_id, can_deploy)
             .await
@@ -149,19 +150,14 @@ impl HrpcService for CoreState {
         cluster_id: Uuid,
         name: String,
         description: Option<String>,
-        workloads: Vec<KubeAppCatalogWorkload>,
+        workloads: Vec<KubeAppCatalogWorkloadCreate>,
     ) -> Result<Uuid, HrpcError> {
-        let user = self.authorize(headers, org_id, None).await?;
+        let user = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
 
         self.kube_controller
-            .create_app_catalog(
-                org_id,
-                user.id,
-                cluster_id,
-                name,
-                description,
-                workloads,
-            )
+            .create_app_catalog(org_id, user.id, cluster_id, name, description, workloads)
             .await
             .map_err(HrpcError::from)
     }
@@ -240,6 +236,39 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn delete_app_catalog_workload(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let _ = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
+
+        self.kube_controller
+            .delete_app_catalog_workload(org_id, workload_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn add_workloads_to_app_catalog(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        catalog_id: Uuid,
+        workloads: Vec<KubeAppCatalogWorkloadCreate>,
+    ) -> Result<(), HrpcError> {
+        let user = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
+
+        self.kube_controller
+            .add_workloads_to_app_catalog(org_id, user.id, catalog_id, workloads)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn create_kube_environment(
         &self,
         headers: &axum::http::HeaderMap,
@@ -252,14 +281,7 @@ impl HrpcService for CoreState {
         let user = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
-            .create_kube_environment(
-                org_id,
-                user.id,
-                app_catalog_id,
-                cluster_id,
-                name,
-                namespace,
-            )
+            .create_kube_environment(org_id, user.id, app_catalog_id, cluster_id, name, namespace)
             .await
             .map_err(HrpcError::from)
     }

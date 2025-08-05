@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeWorkloadKind},
+    kube::{KubeAppCatalog, KubeAppCatalogWorkload},
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -14,12 +14,13 @@ use crate::{
     app::AppConfig,
     component::{
         badge::{Badge, BadgeVariant},
+        button::{Button, ButtonVariant},
         card::Card,
         input::Input,
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         typography::{H3, H4, P},
     },
-    modal::DatetimeModal,
+    modal::{DatetimeModal, DeleteModal, ErrorResponse},
     organization::get_current_org,
 };
 
@@ -52,7 +53,7 @@ pub fn KubeAppCatalogWorkload() -> impl IntoView {
     }
 }
 
-async fn get_app_catalog(
+pub async fn get_app_catalog(
     org: Signal<Option<Organization>>,
     catalog_id: Uuid,
 ) -> Result<KubeAppCatalog> {
@@ -72,12 +73,32 @@ async fn get_app_catalog_workloads(
         .await??)
 }
 
+async fn delete_workload(
+    org: Signal<Option<Organization>>,
+    workload_id: Uuid,
+    delete_modal_open: RwSignal<bool>,
+    update_counter: RwSignal<usize>,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .delete_app_catalog_workload(org.id, workload_id)
+        .await??;
+
+    delete_modal_open.set(false);
+    update_counter.update(|c| *c += 1);
+
+    Ok(())
+}
+
 #[component]
 pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
     let org = get_current_org();
     let is_loading = RwSignal::new(false);
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
+    let update_counter = RwSignal::new(0usize);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -118,12 +139,15 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
         result
     });
 
-    let workloads_result = LocalResource::new(move || async move {
-        let result = get_app_catalog_workloads(org, catalog_id)
-            .await
-            .unwrap_or_else(|_| vec![]);
-        is_loading.set(false);
-        result
+    let workloads_result = LocalResource::new(move || {
+        update_counter.track();
+        async move {
+            let result = get_app_catalog_workloads(org, catalog_id)
+                .await
+                .unwrap_or_else(|_| vec![]);
+            is_loading.set(false);
+            result
+        }
     });
 
     let catalog_info = Signal::derive(move || catalog_result.get().flatten());
@@ -151,8 +175,9 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                 <AppCatalogInfo catalog=catalog_info />
             </Show>
 
-            // Search Input
-            <div class="flex items-center gap-4">
+            // Search Input and Add Workloads Button
+            <div class="flex flex-col items-start gap-4">
+                <AddWorkloadsButton catalog_id catalog_info />
                 <div class="relative flex-1 max-w-sm">
                     <lucide_leptos::Search attr:class="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
                     <Input
@@ -183,8 +208,8 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                             <TableHead>Name</TableHead>
                             <TableHead>Namespace</TableHead>
                             <TableHead>Kind</TableHead>
-                            <TableHead>CPU</TableHead>
-                            <TableHead>Memory</TableHead>
+                            <TableHead>Containers</TableHead>
+                            <TableHead>Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -192,7 +217,7 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                             each=move || filtered_workloads.get()
                             key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
                             children=move |workload| {
-                                view! { <WorkloadItem workload=workload.clone() /> }
+                                view! { <WorkloadItem workload=workload.clone() update_counter /> }
                             }
                         />
                     </TableBody>
@@ -247,14 +272,20 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
 }
 
 #[component]
-pub fn WorkloadItem(workload: KubeAppCatalogWorkload) -> impl IntoView {
-    let kind_variant = match workload.kind {
-        KubeWorkloadKind::Deployment => BadgeVariant::Default,
-        KubeWorkloadKind::StatefulSet => BadgeVariant::Secondary,
-        KubeWorkloadKind::DaemonSet => BadgeVariant::Destructive,
-        KubeWorkloadKind::Pod => BadgeVariant::Outline,
-        _ => BadgeVariant::Secondary,
-    };
+pub fn WorkloadItem(
+    workload: KubeAppCatalogWorkload,
+    update_counter: RwSignal<usize>,
+) -> impl IntoView {
+    let org = get_current_org();
+    let delete_modal_open = RwSignal::new(false);
+    let workload_name = workload.name.clone();
+    let workload_id = workload.id;
+
+    let delete_action = Action::new_local(move |_| {
+        delete_workload(org, workload_id, delete_modal_open, update_counter)
+    });
+
+    let kind_variant = BadgeVariant::Outline;
 
     view! {
         <TableRow>
@@ -270,14 +301,85 @@ pub fn WorkloadItem(workload: KubeAppCatalogWorkload) -> impl IntoView {
                 </Badge>
             </TableCell>
             <TableCell>
-                <span class="text-sm">
-                    {workload.cpu.unwrap_or_else(|| "Not specified".to_string())}
-                </span>
+                <div class="text-sm space-y-2">
+                    {
+                        let containers = workload.containers.clone();
+                        containers.iter().map(|container| {
+                            let name = container.name.clone();
+                            let image = container.image.clone();
+
+                            view! {
+                                <div class="flex flex-col p-2 bg-muted/30 rounded border">
+                                    <span class="font-medium text-foreground">{name}</span>
+                                    <div class="text-sm text-foreground space-y-1 mt-1">
+                                        <div class="flex flex-col gap-2">
+                                            <div class="flex items-center gap-1">
+                                                <lucide_leptos::Box attr:class="w-3 h-3" />
+                                                <span class="truncate">{image}</span>
+                                            </div>
+                                            <div class="flex gap-10">
+                                                <div class="flex flex-col gap-1">
+                                                    <div class="flex items-center gap-1">
+                                                        <lucide_leptos::Cpu attr:class="w-3 h-3" />
+                                                        <span class="font-medium">CPU</span>
+                                                    </div>
+                                                    <div class="ml-4 space-y-0.5">
+                                                        <div class="flex">
+                                                            <span class="text-muted-foreground w-16">{"Request:"}</span>
+                                                            <span>{container.cpu_request.clone().unwrap_or_else(|| "-".to_string())}</span>
+                                                        </div>
+                                                        <div class="flex">
+                                                            <span class="text-muted-foreground w-16">{"Limit:"}</span>
+                                                            <span>{container.cpu_limit.clone().unwrap_or_else(|| "-".to_string())}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="flex flex-col gap-1">
+                                                    <div class="flex items-center gap-1">
+                                                        <lucide_leptos::MemoryStick attr:class="w-3 h-3" />
+                                                        <span class="font-medium">Memory</span>
+                                                    </div>
+                                                    <div class="ml-4 space-y-0.5">
+                                                        <div class="flex">
+                                                            <span class="text-muted-foreground w-16">{"Request:"}</span>
+                                                            <span>{container.memory_request.clone().unwrap_or_else(|| "-".to_string())}</span>
+                                                        </div>
+                                                        <div class="flex">
+                                                            <span class="text-muted-foreground w-16">{"Limit:"}</span>
+                                                            <span>{container.memory_limit.clone().unwrap_or_else(|| "-".to_string())}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        }).collect::<Vec<_>>()
+                    }
+                    {if workload.containers.clone().is_empty() {
+                        view! { <span class="text-muted-foreground">"No containers"</span> }
+                    } else {
+                        view! { <span class="text-muted-foreground">" "</span> }
+                    }}
+                </div>
             </TableCell>
             <TableCell>
-                <span class="text-sm">
-                    {workload.memory.unwrap_or_else(|| "Not specified".to_string())}
-                </span>
+                <Button
+                    variant=ButtonVariant::Ghost
+                    class="px-2"
+                    on:click=move |_| {
+                        delete_modal_open.set(true);
+                    }
+                >
+                    <lucide_leptos::Trash />
+                </Button>
+
+                <DeleteModal
+                    resource=workload_name.clone()
+                    open=delete_modal_open
+                    delete_action
+                />
             </TableCell>
         </TableRow>
     }
@@ -330,5 +432,33 @@ pub fn AppCatalogInfo(catalog: Signal<Option<KubeAppCatalog>>) -> impl IntoView 
                 view! { <div></div> }.into_any()
             }
         }}
+    }
+}
+
+#[component]
+pub fn AddWorkloadsButton(
+    catalog_id: Uuid,
+    catalog_info: Signal<Option<KubeAppCatalog>>,
+) -> impl IntoView {
+    let navigate = leptos_router::hooks::use_navigate();
+
+    let on_click = move |_| {
+        if let Some(catalog) = catalog_info.get_untracked() {
+            let url = format!(
+                "/kubernetes/clusters/{}?catalog_id={}",
+                catalog.cluster_id, catalog_id
+            );
+            navigate(&url, Default::default());
+        }
+    };
+
+    view! {
+        <Button
+            variant=ButtonVariant::Default
+            on:click=on_click
+        >
+            <lucide_leptos::Plus />
+            "Add Workloads"
+        </Button>
     }
 }

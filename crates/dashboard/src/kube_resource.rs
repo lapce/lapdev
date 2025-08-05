@@ -4,8 +4,9 @@ use anyhow::{anyhow, Result};
 use lapdev_common::{
     console::Organization,
     kube::{
-        KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeNamespace, KubeWorkload,
-        KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
+        KubeAppCatalogWorkloadCreate, KubeClusterInfo, KubeClusterStatus, KubeNamespace,
+        KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor,
+        PaginationParams,
     },
 };
 use leptos::prelude::*;
@@ -28,6 +29,7 @@ use crate::{
         textarea::Textarea,
         typography::{H3, H4, P},
     },
+    kube_app_catalog_workload::get_app_catalog,
     modal::{ErrorResponse, Modal},
     organization::get_current_org,
 };
@@ -190,6 +192,12 @@ pub fn KubeResourceList(
         params.get("namespace")
     };
 
+    let catalog_id_from_url = {
+        let search = location.search.get_untracked();
+        let params = web_sys::UrlSearchParams::new_with_str(&search).ok();
+        params.and_then(|p| p.get("catalog_id").and_then(|id| Uuid::from_str(&id).ok()))
+    };
+
     let namespace_filter = RwSignal::new_local(initial_namespace());
     let kind_filter = RwSignal::new_local(None::<KubeWorkloadKind>);
     let limit = RwSignal::new_local(20usize);
@@ -348,6 +356,7 @@ pub fn KubeResourceList(
                 is_loading=is_loading.read_only().into()
                 cluster_status
                 cluster_id
+                catalog_id_from_url
                 on_view_details=Callback::new(move |w| {
                     selected_workload.set(Some(w));
                     detail_modal_open.set(true);
@@ -660,15 +669,17 @@ async fn create_app_catalog_api(
         return Err(anyhow!("Catalog name is required"))?;
     }
 
-    // Convert KubeWorkload to KubeAppCatalogWorkload
-    let workloads: Vec<KubeAppCatalogWorkload> = selected_workloads_data
+    if selected_workloads_data.is_empty() {
+        return Err(anyhow!("At least one workload must be selected to create a catalog"))?;
+    }
+
+    // Convert KubeWorkload to KubeAppCatalogWorkloadCreate
+    let workloads: Vec<KubeAppCatalogWorkloadCreate> = selected_workloads_data
         .into_iter()
-        .map(|w| KubeAppCatalogWorkload {
+        .map(|w| KubeAppCatalogWorkloadCreate {
             name: w.name,
             namespace: w.namespace,
             kind: w.kind,
-            cpu: None,    // TODO: Extract CPU from workload if available
-            memory: None, // TODO: Extract memory from workload if available
         })
         .collect();
 
@@ -690,43 +701,109 @@ async fn create_app_catalog_api(
     Ok(catalog_id)
 }
 
+async fn add_workloads_to_catalog_api(
+    org: Signal<Option<Organization>>,
+    catalog_id: Uuid,
+    selected_workloads: std::collections::HashSet<WorkloadKey>,
+    filtered_workloads: Vec<KubeWorkload>,
+) -> Result<(), ErrorResponse> {
+    let org = org
+        .get_untracked()
+        .ok_or_else(|| anyhow!("can't get org"))?;
+
+    let selected_workloads_data: Vec<KubeWorkload> = filtered_workloads
+        .into_iter()
+        .filter(|w| selected_workloads.contains(&WorkloadKey::from_workload(w)))
+        .collect();
+
+    if selected_workloads_data.is_empty() {
+        return Err(anyhow!("At least one workload must be selected to add to the catalog"))?;
+    }
+
+    // Convert KubeWorkload to KubeAppCatalogWorkloadCreate
+    let workloads: Vec<KubeAppCatalogWorkloadCreate> = selected_workloads_data
+        .into_iter()
+        .map(|w| KubeAppCatalogWorkloadCreate {
+            name: w.name,
+            namespace: w.namespace,
+            kind: w.kind,
+        })
+        .collect();
+
+    let client = get_hrpc_client();
+    client
+        .add_workloads_to_app_catalog(org.id, catalog_id, workloads)
+        .await??;
+
+    Ok(())
+}
+
 #[component]
 pub fn AppCatalogModal(
     modal_open: RwSignal<bool>,
     selected_workloads: RwSignal<std::collections::HashSet<WorkloadKey>>,
     filtered_workloads: Signal<Vec<KubeWorkload>>,
     cluster_id: Uuid,
+    catalog_id_from_url: Option<Uuid>,
 ) -> impl IntoView {
     let catalog_name = RwSignal::new_local("".to_string());
     let catalog_description = RwSignal::new_local("".to_string());
     let org = get_current_org();
 
+    // Load existing catalog info when adding to existing catalog
+    let existing_catalog = LocalResource::new(move || async move {
+        if let Some(catalog_id) = catalog_id_from_url {
+            get_app_catalog(org, catalog_id).await.ok()
+        } else {
+            None
+        }
+    });
+
     let navigate = leptos_router::hooks::use_navigate();
     let create_action = Action::new_local(move |_| {
         let navigate = navigate.clone();
         async move {
-            let name = catalog_name.get_untracked();
-            let description = catalog_description.get_untracked();
             let selected = selected_workloads.get_untracked();
             let workloads = filtered_workloads.get_untracked();
 
-            let catalog_id =
-                create_app_catalog_api(org, cluster_id, name, description, selected, workloads)
-                    .await?;
+            if let Some(existing_catalog_id) = catalog_id_from_url {
+                // Add to existing catalog mode
+                add_workloads_to_catalog_api(org, existing_catalog_id, selected, workloads).await?;
 
-            // Clear form and close modal
-            catalog_name.set("".to_string());
-            catalog_description.set("".to_string());
-            modal_open.set(false);
+                // Clear form and close modal
+                modal_open.set(false);
 
-            // Clear selections after successful creation
-            selected_workloads.set(std::collections::HashSet::new());
+                // Clear selections after successful addition
+                selected_workloads.set(std::collections::HashSet::new());
 
-            // Navigate to the created app catalog workloads page
-            navigate(
-                &format!("/kubernetes/catalogs/{catalog_id}"),
-                Default::default(),
-            );
+                // Navigate back to the catalog workloads page
+                navigate(
+                    &format!("/kubernetes/catalogs/{existing_catalog_id}"),
+                    Default::default(),
+                );
+            } else {
+                // Create new catalog mode
+                let name = catalog_name.get_untracked();
+                let description = catalog_description.get_untracked();
+
+                let new_catalog_id =
+                    create_app_catalog_api(org, cluster_id, name, description, selected, workloads)
+                        .await?;
+
+                // Clear form and close modal
+                catalog_name.set("".to_string());
+                catalog_description.set("".to_string());
+                modal_open.set(false);
+
+                // Clear selections after successful creation
+                selected_workloads.set(std::collections::HashSet::new());
+
+                // Navigate to the created app catalog workloads page
+                navigate(
+                    &format!("/kubernetes/catalogs/{new_catalog_id}"),
+                    Default::default(),
+                );
+            }
 
             Ok(())
         }
@@ -734,34 +811,85 @@ pub fn AppCatalogModal(
 
     view! {
         <Modal
-            title="Create App Catalog"
+            title={if catalog_id_from_url.is_some() {
+                "Add Workloads to Catalog"
+            } else {
+                "Create App Catalog"
+            }}
             open=modal_open
             action=create_action
         >
             <div class="flex flex-col gap-4">
-                <div class="flex flex-col gap-2">
-                    <Label>Catalog Name</Label>
-                    <Input
-                        prop:value=move || catalog_name.get()
-                        on:input=move |ev| {
-                            catalog_name.set(event_target_value(&ev));
-                        }
-                        attr:placeholder="Enter catalog name"
-                        attr:required=true
-                    />
-                </div>
+                // Only show name and description fields when creating new catalog
+                <Show when=move || catalog_id_from_url.is_none()>
+                    <div class="flex flex-col gap-2">
+                        <Label>Catalog Name</Label>
+                        <Input
+                            prop:value=move || catalog_name.get()
+                            on:input=move |ev| {
+                                catalog_name.set(event_target_value(&ev));
+                            }
+                            attr:placeholder="Enter catalog name"
+                            attr:required=true
+                        />
+                    </div>
 
-                <div class="flex flex-col gap-2">
-                    <Label>Description</Label>
-                    <Textarea
-                        prop:value=move || catalog_description.get()
-                        on:input=move |ev| {
-                            catalog_description.set(event_target_value(&ev));
-                        }
-                        attr:placeholder="Describe what this app does..."
-                        class="min-h-20"
-                    />
-                </div>
+                    <div class="flex flex-col gap-2">
+                        <Label>Description</Label>
+                        <Textarea
+                            prop:value=move || catalog_description.get()
+                            on:input=move |ev| {
+                                catalog_description.set(event_target_value(&ev));
+                            }
+                            attr:placeholder="Describe what this app does..."
+                            class="min-h-20"
+                        />
+                    </div>
+                </Show>
+
+                // Show existing catalog info when adding to existing catalog
+                {move || {
+                    if catalog_id_from_url.is_some() {
+                        view! {
+                            <div class="flex flex-col gap-2 p-4 bg-muted rounded-lg">
+                                <P class="font-medium text-sm">Target Catalog:</P>
+                                {move || {
+                                    if let Some(catalog) = existing_catalog.get().flatten() {
+                                        view! {
+                                            <div class="space-y-2 text-sm">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="font-medium">Name:</span>
+                                                    <span>{catalog.name}</span>
+                                                </div>
+                                                {if let Some(desc) = &catalog.description {
+                                                    view! {
+                                                        <div class="flex flex-col gap-1">
+                                                            <span class="font-medium">Description:</span>
+                                                            <span class="text-muted-foreground leading-relaxed">{desc.clone()}</span>
+                                                        </div>
+                                                    }.into_any()
+                                                } else {
+                                                    view! {
+                                                        <div class="text-muted-foreground text-xs">No description</div>
+                                                    }.into_any()
+                                                }}
+                                            </div>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                                                <div class="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent"></div>
+                                                "Loading catalog information..."
+                                            </div>
+                                        }.into_any()
+                                    }
+                                }}
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }
+                }}
 
                 <div class="flex flex-col gap-2">
                     <Label>
@@ -819,6 +947,7 @@ pub fn AppCatalogActions(
     selected_workloads: RwSignal<std::collections::HashSet<WorkloadKey>>,
     filtered_workloads: Signal<Vec<KubeWorkload>>,
     cluster_id: Uuid,
+    catalog_id_from_url: Option<Uuid>,
 ) -> impl IntoView {
     let modal_open = RwSignal::new(false);
 
@@ -836,36 +965,57 @@ pub fn AppCatalogActions(
             selected_workloads
             filtered_workloads
             cluster_id
+            catalog_id_from_url
         />
 
-        // Action buttons row - only show when workloads are selected
+        // Action buttons row - always visible
         {move || {
             let selected_count = selected_workloads.with(|s| s.len());
-            if selected_count > 0 {
-                view! {
-                    <div class="flex items-center gap-2 p-3 bg-muted/50 rounded-lg border">
-                        <Button
-                            variant=ButtonVariant::Default
-                            on:click=create_app_catalog
-                        >
-                            <lucide_leptos::Plus />
+            let has_selections = selected_count > 0;
+
+            view! {
+                <div class="flex items-center gap-2">
+                    {if let Some(existing_catalog_id) = catalog_id_from_url {
+                        view! {
+                            <a href=format!("/kubernetes/catalogs/{}", existing_catalog_id)>
+                                <Button variant=ButtonVariant::Secondary>
+                                    <lucide_leptos::ArrowLeft />
+                                    "Back to Catalog"
+                                </Button>
+                            </a>
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }}
+                    <Button
+                        variant=ButtonVariant::Default
+                        disabled=!has_selections
+                        on:click=create_app_catalog
+                    >
+                        <lucide_leptos::Plus />
+                        {if catalog_id_from_url.is_some() {
+                            "Add to Catalog"
+                        } else {
                             "Create App Catalog"
-                        </Button>
-                        <Button
-                            variant=ButtonVariant::Outline
-                            on:click=clear_selections
-                        >
-                            <lucide_leptos::X />
-                            "Clear Selections"
-                        </Button>
-                        <span class="text-sm text-muted-foreground">
-                            {format!("{} selected", selected_count)}
-                        </span>
-                    </div>
-                }.into_any()
-            } else {
-                ().into_any()
-            }
+                        }}
+                    </Button>
+                    <Button
+                        variant=ButtonVariant::Outline
+                        disabled=!has_selections
+                        on:click=clear_selections
+                    >
+                        <lucide_leptos::X />
+                        "Clear Selections"
+                    </Button>
+                    <span class="text-sm text-muted-foreground">
+                        {if has_selections {
+                            format!("{} selected", selected_count)
+                        } else {
+                            "No workloads selected".to_string()
+                        }}
+                    </span>
+                </div>
+            }.into_any()
         }}
     }
 }
@@ -876,6 +1026,7 @@ pub fn WorkloadTable(
     is_loading: Signal<bool>,
     cluster_status: Signal<KubeClusterStatus>,
     cluster_id: Uuid,
+    catalog_id_from_url: Option<Uuid>,
     #[prop(into)] on_view_details: Callback<KubeWorkload>,
 ) -> impl IntoView {
     let selected_workloads = RwSignal::new(std::collections::HashSet::<WorkloadKey>::new());
@@ -930,7 +1081,12 @@ pub fn WorkloadTable(
     };
     view! {
         <div class="flex flex-col gap-4">
-            <AppCatalogActions selected_workloads filtered_workloads cluster_id />
+            <AppCatalogActions
+                selected_workloads
+                filtered_workloads
+                cluster_id
+                catalog_id_from_url
+            />
 
             <div class="relative rounded-lg border">
             <Table class="table-auto">

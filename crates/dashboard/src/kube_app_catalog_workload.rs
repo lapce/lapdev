@@ -129,9 +129,13 @@ pub fn WorkloadDetail(catalog_id: Uuid, workload_id: Uuid) -> impl IntoView {
             is_loading.set(true);
             let result = get_workload_detail(org, catalog_id, workload_id).await.ok();
             if let Some((catalog, workload)) = result.as_ref() {
-                config
-                    .current_page
-                    .set(format!("{} - {}", catalog.name, workload.name));
+                config.current_page.set(workload.name.clone());
+                config.header_links.update(|header_links| {
+                    header_links.push((
+                        catalog.name.clone(),
+                        format!("/kubernetes/catalogs/{catalog_id}"),
+                    ));
+                });
             }
             is_loading.set(false);
             result
@@ -170,31 +174,6 @@ pub fn WorkloadDetail(catalog_id: Uuid, workload_id: Uuid) -> impl IntoView {
                         "Loading workload details..."
                     </div>
                 </div>
-            </Show>
-
-            // Navigation Breadcrumb
-            <Show when=move || catalog_info.get().is_some()>
-                <nav class="flex items-center gap-2 text-sm text-muted-foreground">
-                    <a href="/kubernetes/catalogs" class="hover:text-foreground">
-                        App Catalogs
-                    </a>
-                    <lucide_leptos::ChevronRight attr:class="h-4 w-4" />
-                    {move || {
-                        if let Some(catalog) = catalog_info.get() {
-                            view! {
-                                <a href=format!("/kubernetes/catalogs/{}", catalog.id) class="hover:text-foreground">
-                                    {catalog.name}
-                                </a>
-                            }.into_any()
-                        } else {
-                            view! { <span>"..."</span> }.into_any()
-                        }
-                    }}
-                    <lucide_leptos::ChevronRight attr:class="h-4 w-4" />
-                    <span class="text-foreground">
-                        {move || workload_info.get().map(|w| w.name).unwrap_or_default()}
-                    </span>
-                </nav>
             </Show>
 
             // Workload Information Card

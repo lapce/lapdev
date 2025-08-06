@@ -306,7 +306,7 @@ pub fn WorkloadItem(
                 </Badge>
             </TableCell>
             <TableCell>
-                <div class="text-sm space-y-2">
+                <div class="text-sm flex flex-col gap-2">
                     {
                         let containers = workload.containers.clone();
                         containers.iter().map(|container| {
@@ -318,9 +318,9 @@ pub fn WorkloadItem(
                         }).collect::<Vec<_>>()
                     }
                     {if workload.containers.clone().is_empty() {
-                        view! { <span class="text-muted-foreground">"No containers"</span> }
+                        view! { <span class="text-muted-foreground">"No containers"</span> }.into_any()
                     } else {
-                        view! { <span class="text-muted-foreground">" "</span> }
+                        ().into_any()
                     }}
                 </div>
             </TableCell>
@@ -423,11 +423,8 @@ pub fn AddWorkloadsButton(
     }
 }
 
-
 #[component]
-pub fn ContainerDisplay(
-    container: KubeContainerInfo,
-) -> impl IntoView {
+pub fn ContainerDisplay(container: KubeContainerInfo) -> impl IntoView {
     view! {
         <div class="flex flex-col p-2 bg-muted/30 rounded border">
             <div class="flex justify-between items-center">

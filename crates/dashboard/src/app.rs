@@ -36,6 +36,7 @@ use crate::{
 pub struct AppConfig {
     pub show_lapdev_website: RwSignal<bool>,
     pub current_page: RwSignal<String>,
+    pub header_links: RwSignal<Vec<(String, String)>>,
 }
 
 #[component]
@@ -86,6 +87,7 @@ pub fn set_context() {
     provide_context(AppConfig {
         show_lapdev_website: RwSignal::new(false),
         current_page: RwSignal::new(String::new()),
+        header_links: RwSignal::new(Vec::new()),
     });
 
     provide_context(SidebarData {

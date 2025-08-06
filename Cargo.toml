@@ -70,6 +70,7 @@ clap = { version = "4.5.2", features = ["derive"] }
 tempfile = "3.8.1"
 zstd = "0.13.0"
 tar = "0.4.40"
+regex = "1.11.1"
 git2 = { version = "0.18.2", features = ["vendored-libgit2", "vendored-openssl"] }
 anyhow = "1.0.66"
 thiserror = "1.0.58"

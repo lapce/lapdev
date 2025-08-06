@@ -7,6 +7,7 @@ license.workspace = true
 description.workspace = true
 
 [dependencies]
+regex.workspace = true
 tarpc.workspace = true
 itertools.workspace = true
 rustls-webpki.workspace = true

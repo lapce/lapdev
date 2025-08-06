@@ -2977,6 +2977,7 @@ dependencies = [
  "lapdev-rpc",
  "oauth2",
  "pasetors",
+ "regex",
  "reqwest",
  "russh",
  "rustls-pemfile 2.2.0",

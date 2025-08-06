@@ -395,6 +395,7 @@ pub fn DetailedContainerEditor(
 ) -> impl IntoView {
     let org = get_current_org();
     let is_editing = RwSignal::new(false);
+    let error_message = RwSignal::new(None::<String>);
 
     // Create signals for all editable fields
     let image_signal = RwSignal::new(container.image.clone());
@@ -407,7 +408,26 @@ pub fn DetailedContainerEditor(
     let name = container.name.clone();
 
     let update_action = Action::new_local(move |containers: &Vec<KubeContainerInfo>| {
-        update_workload_containers(org, workload_id, containers.clone(), update_counter)
+        let error_msg = error_message;
+        let containers = containers.clone();
+        error_msg.set(None);
+        async move {
+            match update_workload_containers(org, workload_id, containers.clone(), update_counter)
+                .await
+            {
+                Ok(_) => {
+                    // Success - clear any errors and close editing mode
+                    error_msg.set(None);
+                    is_editing.set(false);
+                    Ok(())
+                }
+                Err(err) => {
+                    // Error - display the error message and keep editing mode open
+                    error_msg.set(Some(err.error.clone()));
+                    Err(err)
+                }
+            }
+        }
     });
 
     let save_changes = {
@@ -437,7 +457,11 @@ pub fn DetailedContainerEditor(
                 } else {
                     Some(memory_limit_signal.get().trim().to_string())
                 },
-                env_vars: env_vars_signal.get(),
+                env_vars: env_vars_signal
+                    .get()
+                    .into_iter()
+                    .filter(|var| !var.name.trim().is_empty())
+                    .collect(),
             };
 
             // Update all containers with the modified one
@@ -445,7 +469,6 @@ pub fn DetailedContainerEditor(
             updated_containers[container_index] = updated_container;
 
             update_action.dispatch(updated_containers);
-            is_editing.set(false);
         })
     };
 
@@ -459,6 +482,8 @@ pub fn DetailedContainerEditor(
             memory_request_signal.set(container.memory_request.clone().unwrap_or_default());
             memory_limit_signal.set(container.memory_limit.clone().unwrap_or_default());
             env_vars_signal.set(container.env_vars.clone());
+            // Clear any error messages and exit editing mode
+            error_message.set(None);
             is_editing.set(false);
         })
     };
@@ -501,6 +526,18 @@ pub fn DetailedContainerEditor(
                     </div>
                 </div>
 
+                // Error display
+                <Show when=move || error_message.get().is_some()>
+                    <div class="p-3 bg-destructive/10 border border-destructive/20 rounded-md">
+                        <div class="flex items-start gap-2">
+                            <lucide_leptos::CircleAlert attr:class="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
+                            <div class="text-sm text-destructive">
+                                {move || error_message.get().unwrap_or_default()}
+                            </div>
+                        </div>
+                    </div>
+                </Show>
+
                 // Container Configuration - reorganized into vertical sections
                 <div class="flex flex-col gap-6">
                     // 1. Container Image
@@ -532,7 +569,7 @@ pub fn DetailedContainerEditor(
                             <lucide_leptos::Gauge attr:class="h-4 w-4" />
                             Resource Configuration
                         </div>
-                        
+
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                             // CPU Configuration
                             <div class="flex flex-col gap-3">
@@ -554,7 +591,6 @@ pub fn DetailedContainerEditor(
                                             <Input
                                                 prop:value=move || cpu_request_signal.get()
                                                 on:input=move |ev| cpu_request_signal.set(event_target_value(&ev))
-                                                attr:placeholder="100m"
                                                 class="text-xs font-mono"
                                             />
                                         </Show>
@@ -572,14 +608,13 @@ pub fn DetailedContainerEditor(
                                             <Input
                                                 prop:value=move || cpu_limit_signal.get()
                                                 on:input=move |ev| cpu_limit_signal.set(event_target_value(&ev))
-                                                attr:placeholder="500m"
                                                 class="text-xs font-mono"
                                             />
                                         </Show>
                                     </div>
                                 </div>
                             </div>
-                            
+
                             // Memory Configuration
                             <div class="flex flex-col gap-3">
                                 <div class="flex items-center gap-2 text-xs font-semibold text-foreground">
@@ -600,7 +635,6 @@ pub fn DetailedContainerEditor(
                                             <Input
                                                 prop:value=move || memory_request_signal.get()
                                                 on:input=move |ev| memory_request_signal.set(event_target_value(&ev))
-                                                attr:placeholder="128Mi"
                                                 class="text-xs font-mono"
                                             />
                                         </Show>
@@ -618,7 +652,6 @@ pub fn DetailedContainerEditor(
                                             <Input
                                                 prop:value=move || memory_limit_signal.get()
                                                 on:input=move |ev| memory_limit_signal.set(event_target_value(&ev))
-                                                attr:placeholder="512Mi"
                                                 class="text-xs font-mono"
                                             />
                                         </Show>
@@ -634,11 +667,11 @@ pub fn DetailedContainerEditor(
                             <lucide_leptos::Settings attr:class="h-4 w-4" />
                             Environment Variables
                         </div>
-                        
+
                         <Show when=move || is_editing.get()>
                             <EnvVarsEditor env_vars_signal />
                         </Show>
-                        
+
                         <Show when=move || !is_editing.get()>
                             <EnvVarsDisplay env_vars_signal />
                         </Show>
@@ -673,60 +706,61 @@ fn EnvVarsEditor(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
                     Add Variable
                 </Button>
             </div>
-            
+
             <div class="space-y-2">
-                {
-                    let env_vars = env_vars_signal.get();
-                    env_vars.iter().enumerate().map(|(index, env_var)| {
-                        let env_var_name = env_var.name.clone();
-                        let env_var_value = env_var.value.clone();
-                        
-                        view! {
-                            <div class="flex gap-2 items-center">
-                                <Input
-                                    prop:value=env_var_name.clone()
-                                    on:input=move |ev| {
-                                        let new_name = event_target_value(&ev);
-                                        env_vars_signal.update(|vars| {
-                                            if let Some(var) = vars.get_mut(index) {
-                                                var.name = new_name;
-                                            }
-                                        });
-                                    }
-                                    attr:placeholder="Variable name"
-                                    class="text-xs font-mono flex-1"
-                                />
-                                <Input
-                                    prop:value=env_var_value.clone()
-                                    on:input=move |ev| {
-                                        let new_value = event_target_value(&ev);
-                                        env_vars_signal.update(|vars| {
-                                            if let Some(var) = vars.get_mut(index) {
-                                                var.value = new_value;
-                                            }
-                                        });
-                                    }
-                                    attr:placeholder="Variable value"
-                                    class="text-xs font-mono flex-1"
-                                />
-                                <Button
-                                    variant=ButtonVariant::Ghost
-                                    class="px-2 py-1 h-auto text-red-600 hover:text-red-700"
-                                    on:click=move |_| {
-                                        env_vars_signal.update(|vars| {
-                                            if index < vars.len() {
-                                                vars.remove(index);
-                                            }
-                                        });
-                                    }
-                                >
-                                    <lucide_leptos::Trash2 attr:class="w-3 h-3" />
-                                </Button>
-                            </div>
-                        }
-                    }).collect::<Vec<_>>()
-                }
-                
+                {move || {
+                    env_vars_signal.with(|env_vars| {
+                        env_vars.iter().enumerate().map(|(index, env_var)| {
+                            let env_var_name = env_var.name.clone();
+                            let env_var_value = env_var.value.clone();
+
+                            view! {
+                                <div class="flex gap-2 items-center">
+                                    <Input
+                                        prop:value=env_var_name.clone()
+                                        on:input=move |ev| {
+                                            let new_name = event_target_value(&ev);
+                                            env_vars_signal.update(|vars| {
+                                                if let Some(var) = vars.get_mut(index) {
+                                                    var.name = new_name;
+                                                }
+                                            });
+                                        }
+                                        attr:placeholder="Variable name"
+                                        class="text-xs font-mono flex-1"
+                                    />
+                                    <Input
+                                        prop:value=env_var_value.clone()
+                                        on:input=move |ev| {
+                                            let new_value = event_target_value(&ev);
+                                            env_vars_signal.update(|vars| {
+                                                if let Some(var) = vars.get_mut(index) {
+                                                    var.value = new_value;
+                                                }
+                                            });
+                                        }
+                                        attr:placeholder="Variable value"
+                                        class="text-xs font-mono flex-1"
+                                    />
+                                    <Button
+                                        variant=ButtonVariant::Ghost
+                                        class="px-2 py-1 h-auto text-red-600 hover:text-red-700"
+                                        on:click=move |_| {
+                                            env_vars_signal.update(|vars| {
+                                                if index < vars.len() {
+                                                    vars.remove(index);
+                                                }
+                                            });
+                                        }
+                                    >
+                                        <lucide_leptos::Trash2 attr:class="w-3 h-3" />
+                                    </Button>
+                                </div>
+                            }
+                        }).collect::<Vec<_>>()
+                    })
+                }}
+
                 {move || {
                     let vars = env_vars_signal.get();
                     if vars.is_empty() {
@@ -744,7 +778,7 @@ fn EnvVarsEditor(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
     }
 }
 
-#[component]  
+#[component]
 fn EnvVarsDisplay(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
     view! {
         <div class="space-y-1">
@@ -753,7 +787,7 @@ fn EnvVarsDisplay(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
                 env_vars.iter().map(|env_var| {
                     let env_var_name = env_var.name.clone();
                     let env_var_value = env_var.value.clone();
-                    
+
                     view! {
                         <div class="flex gap-2 text-xs">
                             <span class="font-mono font-medium min-w-0 flex-shrink-0">{env_var_name}</span>
@@ -763,7 +797,7 @@ fn EnvVarsDisplay(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
                     }
                 }).collect::<Vec<_>>()
             }
-            
+
             {move || {
                 let vars = env_vars_signal.get();
                 if vars.is_empty() {

@@ -3080,6 +3080,7 @@ impl KubeManager {
                     cpu_limit,
                     memory_request,
                     memory_limit,
+                    env_vars: vec![],
                 })
             })
             .collect()

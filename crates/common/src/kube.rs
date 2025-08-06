@@ -160,6 +160,12 @@ pub struct KubeAppCatalogWorkloadCreate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeEnvVar {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeContainerInfo {
     pub name: String,
     pub image: String,
@@ -167,6 +173,7 @@ pub struct KubeContainerInfo {
     pub cpu_limit: Option<String>,
     pub memory_request: Option<String>,
     pub memory_limit: Option<String>,
+    pub env_vars: Vec<KubeEnvVar>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

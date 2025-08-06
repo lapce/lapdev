@@ -29,7 +29,7 @@ use crate::{
         textarea::Textarea,
         typography::{H3, H4, P},
     },
-    kube_app_catalog_workload::get_app_catalog,
+    kube_app_catalog_detail::get_app_catalog,
     modal::{ErrorResponse, Modal},
     organization::get_current_org,
 };
@@ -670,7 +670,9 @@ async fn create_app_catalog_api(
     }
 
     if selected_workloads_data.is_empty() {
-        return Err(anyhow!("At least one workload must be selected to create a catalog"))?;
+        return Err(anyhow!(
+            "At least one workload must be selected to create a catalog"
+        ))?;
     }
 
     // Convert KubeWorkload to KubeAppCatalogWorkloadCreate
@@ -717,7 +719,9 @@ async fn add_workloads_to_catalog_api(
         .collect();
 
     if selected_workloads_data.is_empty() {
-        return Err(anyhow!("At least one workload must be selected to add to the catalog"))?;
+        return Err(anyhow!(
+            "At least one workload must be selected to add to the catalog"
+        ))?;
     }
 
     // Convert KubeWorkload to KubeAppCatalogWorkloadCreate

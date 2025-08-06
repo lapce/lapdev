@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo},
+    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo, KubeEnvVar},
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -17,29 +17,33 @@ use crate::{
         button::{Button, ButtonVariant},
         card::Card,
         input::Input,
-        table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         typography::{H3, H4, P},
     },
-    modal::{DatetimeModal, DeleteModal, ErrorResponse},
+    modal::{DeleteModal, ErrorResponse},
     organization::get_current_org,
 };
 
 #[component]
 pub fn KubeAppCatalogWorkload() -> impl IntoView {
     let params = use_params_map();
-    let catalog_id = params.with_untracked(|params| {
-        params
+    let (catalog_id, workload_id) = params.with_untracked(|params| {
+        let catalog_id = params
             .get("catalog_id")
             .and_then(|id| Uuid::from_str(id.as_str()).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let workload_id = params
+            .get("workload_id")
+            .and_then(|id| Uuid::from_str(id.as_str()).ok())
+            .unwrap_or_default();
+        (catalog_id, workload_id)
     });
 
     view! {
         <div class="flex flex-col gap-6">
             <div class="flex flex-col gap-2 items-start">
-                <H3>App Catalog Workloads</H3>
+                <H3>Workload Details</H3>
                 <P>
-                    View workloads included in this Kubernetes application catalog.
+                    View and manage details for this Kubernetes workload.
                 </P>
                 <a href="https://docs.lap.dev/">
                     <Badge variant=BadgeVariant::Secondary>
@@ -48,383 +52,35 @@ pub fn KubeAppCatalogWorkload() -> impl IntoView {
                 </a>
             </div>
 
-            <WorkloadsList catalog_id />
+            <WorkloadDetail catalog_id workload_id />
         </div>
     }
 }
 
-pub async fn get_app_catalog(
+async fn get_workload_detail(
     org: Signal<Option<Organization>>,
     catalog_id: Uuid,
-) -> Result<KubeAppCatalog> {
-    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
-    let client = HrpcServiceClient::new("/api/rpc".to_string());
-    Ok(client.get_app_catalog(org.id, catalog_id).await??)
-}
-
-async fn get_app_catalog_workloads(
-    org: Signal<Option<Organization>>,
-    catalog_id: Uuid,
-) -> Result<Vec<KubeAppCatalogWorkload>> {
-    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
-    let client = HrpcServiceClient::new("/api/rpc".to_string());
-    Ok(client
-        .get_app_catalog_workloads(org.id, catalog_id)
-        .await??)
-}
-
-async fn delete_workload(
-    org: Signal<Option<Organization>>,
     workload_id: Uuid,
-    delete_modal_open: RwSignal<bool>,
-    update_counter: RwSignal<usize>,
-) -> Result<(), ErrorResponse> {
+) -> Result<(KubeAppCatalog, KubeAppCatalogWorkload)> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
 
-    client
-        .delete_app_catalog_workload(org.id, workload_id)
+    // Get catalog info
+    let catalog = client.get_app_catalog(org.id, catalog_id).await??;
+
+    // Get all workloads and find the specific one
+    let workloads = client
+        .get_app_catalog_workloads(org.id, catalog_id)
         .await??;
+    let workload = workloads
+        .into_iter()
+        .find(|w| w.id == workload_id)
+        .ok_or_else(|| anyhow!("Workload not found"))?;
 
-    delete_modal_open.set(false);
-    update_counter.update(|c| *c += 1);
-
-    Ok(())
+    Ok((catalog, workload))
 }
 
-#[component]
-pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
-    let org = get_current_org();
-    let is_loading = RwSignal::new(false);
-    let search_query = RwSignal::new(String::new());
-    let debounced_search = RwSignal::new(String::new());
-    let update_counter = RwSignal::new(0usize);
-
-    // Debounce search input (300ms delay)
-    let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
-        StoredValue::new(None);
-
-    Effect::new(move |_| {
-        let query = search_query.get();
-
-        // Clear any existing timeout
-        if let Some(h) = search_timeout_handle.get_value() {
-            h.clear();
-        }
-
-        // Set new timeout
-        let h = leptos::leptos_dom::helpers::set_timeout_with_handle(
-            move || {
-                debounced_search.set(query.clone());
-            },
-            std::time::Duration::from_millis(300),
-        )
-        .expect("set timeout for search debounce");
-        search_timeout_handle.set_value(Some(h));
-    });
-
-    on_cleanup(move || {
-        if let Some(Some(h)) = search_timeout_handle.try_get_value() {
-            h.clear();
-        }
-    });
-
-    let config = use_context::<AppConfig>().unwrap();
-    let catalog_result = LocalResource::new(move || async move {
-        is_loading.set(true);
-        let result = get_app_catalog(org, catalog_id).await.ok();
-        if let Some(app_catalog) = result.as_ref() {
-            config.current_page.set(app_catalog.name.clone());
-        }
-        result
-    });
-
-    let workloads_result = LocalResource::new(move || {
-        update_counter.track();
-        async move {
-            let result = get_app_catalog_workloads(org, catalog_id)
-                .await
-                .unwrap_or_else(|_| vec![]);
-            is_loading.set(false);
-            result
-        }
-    });
-
-    let catalog_info = Signal::derive(move || catalog_result.get().flatten());
-    let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
-
-    // Filter workloads based on search query
-    let filtered_workloads = Signal::derive(move || {
-        let workloads = all_workloads.get();
-        let search_term = debounced_search.get().to_lowercase();
-
-        if search_term.trim().is_empty() {
-            workloads
-        } else {
-            workloads
-                .into_iter()
-                .filter(|workload| workload.name.to_lowercase().contains(&search_term))
-                .collect()
-        }
-    });
-
-    view! {
-        <div class="flex flex-col gap-4">
-            // App Catalog Information Section
-            <Show when=move || catalog_info.get().is_some()>
-                <AppCatalogInfo catalog=catalog_info />
-            </Show>
-
-            // Search Input and Add Workloads Button
-            <div class="flex flex-col items-start gap-4">
-                <AddWorkloadsButton catalog_id catalog_info />
-                <div class="relative flex-1 max-w-sm">
-                    <lucide_leptos::Search attr:class="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
-                    <Input
-                        attr:placeholder="Search workloads..."
-                        class="pl-10"
-                        prop:value=move || search_query.get()
-                        on:input=move |ev| {
-                            search_query.set(event_target_value(&ev));
-                        }
-                    />
-                </div>
-            </div>
-
-            <div class="rounded-lg border relative">
-                // Loading overlay
-                <Show when=move || is_loading.get()>
-                    <div class="absolute inset-0 bg-white/50 backdrop-blur-sm z-10 flex items-center justify-center">
-                        <div class="flex items-center gap-2 text-sm text-muted-foreground">
-                            <div class="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent"></div>
-                            "Loading workloads..."
-                        </div>
-                    </div>
-                </Show>
-
-                <Table>
-                    <TableHeader class="bg-muted">
-                        <TableRow>
-                            <TableHead>Name</TableHead>
-                            <TableHead>Namespace</TableHead>
-                            <TableHead>Kind</TableHead>
-                            <TableHead>Containers</TableHead>
-                            <TableHead>Actions</TableHead>
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        <For
-                            each=move || filtered_workloads.get()
-                            key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
-                            children=move |workload| {
-                                view! { <WorkloadItem workload=workload.clone() update_counter /> }
-                            }
-                        />
-                    </TableBody>
-                </Table>
-
-                {move || {
-                    let filtered = filtered_workloads.get();
-                    let all_workloads = all_workloads.get();
-                    let search_term = debounced_search.get();
-                    let is_searching = !search_term.trim().is_empty();
-
-                    if filtered.is_empty() {
-                        if is_searching {
-                            view! {
-                                <div class="flex flex-col items-center justify-center py-12 text-center">
-                                    <div class="rounded-full bg-muted p-3 mb-4">
-                                        <lucide_leptos::Search />
-                                    </div>
-                                    <H4 class="mb-2">No Results Found</H4>
-                                    <P class="text-muted-foreground mb-4 max-w-sm">
-                                        {format!(
-                                            "No workloads match your search for \"{}\". Try adjusting your search terms.",
-                                            search_term
-                                        )}
-                                    </P>
-                                </div>
-                            }
-                            .into_any()
-                        } else if all_workloads.is_empty() {
-                            view! {
-                                <div class="flex flex-col items-center justify-center py-12 text-center">
-                                    <div class="rounded-full bg-muted p-3 mb-4">
-                                        <lucide_leptos::Package />
-                                    </div>
-                                    <H4 class="mb-2">No Workloads Found</H4>
-                                    <P class="text-muted-foreground mb-4 max-w-sm">
-                                        "This app catalog doesn't contain any workloads yet."
-                                    </P>
-                                </div>
-                            }
-                            .into_any()
-                        } else {
-                            view! { <div></div> }.into_any()
-                        }
-                    } else {
-                        view! { <div></div> }.into_any()
-                    }
-                }}
-            </div>
-        </div>
-    }
-}
-
-#[component]
-pub fn WorkloadItem(
-    workload: KubeAppCatalogWorkload,
-    update_counter: RwSignal<usize>,
-) -> impl IntoView {
-    let org = get_current_org();
-    let delete_modal_open = RwSignal::new(false);
-    let workload_name = workload.name.clone();
-    let workload_id = workload.id;
-
-    let delete_action = Action::new_local(move |_| {
-        delete_workload(org, workload_id, delete_modal_open, update_counter)
-    });
-
-    let kind_variant = BadgeVariant::Outline;
-
-    view! {
-        <TableRow>
-            <TableCell>
-                <span class="font-medium">{workload.name}</span>
-            </TableCell>
-            <TableCell>
-                <span class="text-muted-foreground">{workload.namespace}</span>
-            </TableCell>
-            <TableCell>
-                <Badge variant=kind_variant>
-                    {workload.kind.to_string()}
-                </Badge>
-            </TableCell>
-            <TableCell>
-                <div class="text-sm space-y-2">
-                    {
-                        let containers = workload.containers.clone();
-                        containers.iter().enumerate().map(|(container_index, container)| {
-                            let workload_id = workload.id;
-                            let container_idx = container_index;
-
-                            view! {
-                                <ContainerEditor
-                                    workload_id
-                                    container_index=container_idx
-                                    container=container.clone()
-                                    update_counter
-                                />
-                            }
-                        }).collect::<Vec<_>>()
-                    }
-                    {if workload.containers.clone().is_empty() {
-                        view! { <span class="text-muted-foreground">"No containers"</span> }
-                    } else {
-                        view! { <span class="text-muted-foreground">" "</span> }
-                    }}
-                </div>
-            </TableCell>
-            <TableCell>
-                <Button
-                    variant=ButtonVariant::Ghost
-                    class="px-2"
-                    on:click=move |_| {
-                        delete_modal_open.set(true);
-                    }
-                >
-                    <lucide_leptos::Trash />
-                </Button>
-
-                <DeleteModal
-                    resource=workload_name.clone()
-                    open=delete_modal_open
-                    delete_action
-                />
-            </TableCell>
-        </TableRow>
-    }
-}
-
-#[component]
-pub fn AppCatalogInfo(catalog: Signal<Option<KubeAppCatalog>>) -> impl IntoView {
-    view! {
-        {move || {
-            if let Some(catalog) = catalog.get() {
-                view! {
-                    <Card class="p-6">
-                        <div class="flex flex-col gap-4">
-                            <div class="flex flex-col gap-2">
-                                <H3>{catalog.name.clone()}</H3>
-                                {catalog.description.clone().map(|desc| {
-                                    view! {
-                                        <P class="text-muted-foreground">{desc}</P>
-                                    }
-                                })}
-                            </div>
-                            <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm">
-                                <div class="flex items-center gap-2 text-muted-foreground font-medium">
-                                    <div class="[&>svg]:size-4 [&>svg]:shrink-0">
-                                        <lucide_leptos::Server />
-                                    </div>
-                                    <span>Cluster</span>
-                                </div>
-                                <div>
-                                    <a href=format!("/kubernetes/clusters/{}", catalog.cluster_id) class="text-foreground hover:underline">
-                                        {catalog.cluster_name.clone()}
-                                    </a>
-                                </div>
-
-                                <div class="flex items-center gap-2 text-muted-foreground font-medium">
-                                    <div class="[&>svg]:size-4 [&>svg]:shrink-0">
-                                        <lucide_leptos::Calendar />
-                                    </div>
-                                    <span>Created</span>
-                                </div>
-                                <div>
-                                    <DatetimeModal time=catalog.created_at />
-                                </div>
-                            </div>
-                        </div>
-                    </Card>
-                }
-                .into_any()
-            } else {
-                view! { <div></div> }.into_any()
-            }
-        }}
-    }
-}
-
-#[component]
-pub fn AddWorkloadsButton(
-    catalog_id: Uuid,
-    catalog_info: Signal<Option<KubeAppCatalog>>,
-) -> impl IntoView {
-    let navigate = leptos_router::hooks::use_navigate();
-
-    let on_click = move |_| {
-        if let Some(catalog) = catalog_info.get_untracked() {
-            let url = format!(
-                "/kubernetes/clusters/{}?catalog_id={}",
-                catalog.cluster_id, catalog_id
-            );
-            navigate(&url, Default::default());
-        }
-    };
-
-    view! {
-        <Button
-            variant=ButtonVariant::Default
-            on:click=on_click
-        >
-            <lucide_leptos::Plus />
-            "Add Workloads"
-        </Button>
-    }
-}
-
-async fn update_container(
+async fn update_workload_containers(
     org: Signal<Option<Organization>>,
     workload_id: Uuid,
     containers: Vec<KubeContainerInfo>,
@@ -442,11 +98,299 @@ async fn update_container(
     Ok(())
 }
 
+async fn delete_workload(
+    org: Signal<Option<Organization>>,
+    workload_id: Uuid,
+    delete_modal_open: RwSignal<bool>,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .delete_app_catalog_workload(org.id, workload_id)
+        .await??;
+
+    delete_modal_open.set(false);
+
+    Ok(())
+}
+
 #[component]
-pub fn ContainerEditor(
+pub fn WorkloadDetail(catalog_id: Uuid, workload_id: Uuid) -> impl IntoView {
+    let org = get_current_org();
+    let is_loading = RwSignal::new(false);
+    let update_counter = RwSignal::new(0usize);
+    let delete_modal_open = RwSignal::new(false);
+
+    let config = use_context::<AppConfig>().unwrap();
+    let detail_result = LocalResource::new(move || {
+        update_counter.track();
+        async move {
+            is_loading.set(true);
+            let result = get_workload_detail(org, catalog_id, workload_id).await.ok();
+            if let Some((catalog, workload)) = result.as_ref() {
+                config
+                    .current_page
+                    .set(format!("{} - {}", catalog.name, workload.name));
+            }
+            is_loading.set(false);
+            result
+        }
+    });
+
+    let catalog_info =
+        Signal::derive(move || detail_result.get().and_then(|opt| opt.map(|(c, _)| c)));
+    let workload_info =
+        Signal::derive(move || detail_result.get().and_then(|opt| opt.map(|(_, w)| w)));
+
+    let navigate = leptos_router::hooks::use_navigate();
+    let delete_action = Action::new_local(move |_| {
+        let nav = navigate.clone();
+        async move {
+            match delete_workload(org, workload_id, delete_modal_open).await {
+                Ok(_) => {
+                    nav(
+                        &format!("/kubernetes/catalogs/{}", catalog_id),
+                        Default::default(),
+                    );
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    });
+
+    view! {
+        <div class="flex flex-col gap-6">
+            // Loading State
+            <Show when=move || is_loading.get()>
+                <div class="flex items-center justify-center py-12">
+                    <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                        <div class="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent"></div>
+                        "Loading workload details..."
+                    </div>
+                </div>
+            </Show>
+
+            // Navigation Breadcrumb
+            <Show when=move || catalog_info.get().is_some()>
+                <nav class="flex items-center gap-2 text-sm text-muted-foreground">
+                    <a href="/kubernetes/catalogs" class="hover:text-foreground">
+                        App Catalogs
+                    </a>
+                    <lucide_leptos::ChevronRight attr:class="h-4 w-4" />
+                    {move || {
+                        if let Some(catalog) = catalog_info.get() {
+                            view! {
+                                <a href=format!("/kubernetes/catalogs/{}", catalog.id) class="hover:text-foreground">
+                                    {catalog.name}
+                                </a>
+                            }.into_any()
+                        } else {
+                            view! { <span>"..."</span> }.into_any()
+                        }
+                    }}
+                    <lucide_leptos::ChevronRight attr:class="h-4 w-4" />
+                    <span class="text-foreground">
+                        {move || workload_info.get().map(|w| w.name).unwrap_or_default()}
+                    </span>
+                </nav>
+            </Show>
+
+            // Workload Information Card
+            <Show when=move || workload_info.get().is_some()>
+                <WorkloadInfoCard workload_info catalog_info delete_modal_open delete_action />
+            </Show>
+
+            // Containers Section
+            <Show when=move || workload_info.get().is_some()>
+                <ContainersSection workload_info update_counter />
+            </Show>
+
+            // Delete Modal
+            {move || {
+                if let Some(workload) = workload_info.get() {
+                    view! {
+                        <DeleteModal
+                            resource=workload.name
+                            open=delete_modal_open
+                            delete_action
+                        />
+                    }.into_any()
+                } else {
+                    view! { <div></div> }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+#[component]
+pub fn WorkloadInfoCard(
+    workload_info: Signal<Option<KubeAppCatalogWorkload>>,
+    catalog_info: Signal<Option<KubeAppCatalog>>,
+    delete_modal_open: RwSignal<bool>,
+    delete_action: Action<(), Result<(), ErrorResponse>>,
+) -> impl IntoView {
+    view! {
+        {move || {
+            if let (Some(workload), Some(catalog)) = (workload_info.get(), catalog_info.get()) {
+                let workload_name = workload.name.clone();
+                let workload_namespace1 = workload.namespace.clone();  // For badge
+                let workload_namespace2 = workload.namespace.clone();  // For metadata
+                let workload_kind_str1 = workload.kind.to_string();    // For badge
+                let workload_kind_str2 = workload.kind.to_string();    // For metadata
+                let workload_containers_len = workload.containers.len();
+                let catalog_id = catalog.id;
+                let catalog_name = catalog.name.clone();
+                let catalog_cluster_id = catalog.cluster_id;
+                let catalog_cluster_name = catalog.cluster_name.clone();
+
+                view! {
+                    <Card class="p-6">
+                        <div class="flex flex-col gap-6">
+                            // Header with actions
+                            <div class="flex items-start justify-between">
+                                <div class="flex flex-col gap-2">
+                                    <H3>{workload_name.clone()}</H3>
+                                    <div class="flex items-center gap-2">
+                                        <Badge variant=BadgeVariant::Secondary>
+                                            {workload_namespace1}
+                                        </Badge>
+                                    </div>
+                                </div>
+                                <Button
+                                    variant=ButtonVariant::Destructive
+                                    on:click=move |_| delete_modal_open.set(true)
+                                >
+                                    <lucide_leptos::Trash2 />
+                                    Delete Workload
+                                </Button>
+                            </div>
+
+                            // Metadata grid
+                            <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm">
+                                <div class="flex items-center gap-2 text-muted-foreground font-medium">
+                                    <div class="[&>svg]:size-4 [&>svg]:shrink-0">
+                                        <lucide_leptos::Package />
+                                    </div>
+                                    <span>App Catalog</span>
+                                </div>
+                                <div>
+                                    <a href=format!("/kubernetes/catalogs/{}", catalog_id) class="text-foreground hover:underline">
+                                        {catalog_name.clone()}
+                                    </a>
+                                </div>
+
+                                <div class="flex items-center gap-2 text-muted-foreground font-medium">
+                                    <div class="[&>svg]:size-4 [&>svg]:shrink-0">
+                                        <lucide_leptos::Server />
+                                    </div>
+                                    <span>Cluster</span>
+                                </div>
+                                <div>
+                                    <a href=format!("/kubernetes/clusters/{}", catalog_cluster_id) class="text-foreground hover:underline">
+                                        {catalog_cluster_name}
+                                    </a>
+                                </div>
+
+                                <div class="flex items-center gap-2 text-muted-foreground font-medium">
+                                    <div class="[&>svg]:size-4 [&>svg]:shrink-0">
+                                        <lucide_leptos::Hash />
+                                    </div>
+                                    <span>Namespace</span>
+                                </div>
+                                <div class="font-mono text-sm">
+                                    {workload_namespace2}
+                                </div>
+
+                                <div class="flex items-center gap-2 text-muted-foreground font-medium">
+                                    <div class="[&>svg]:size-4 [&>svg]:shrink-0">
+                                        <lucide_leptos::Layers />
+                                    </div>
+                                    <span>Kind</span>
+                                </div>
+                                <div>
+                                    {workload_kind_str2}
+                                </div>
+
+                                <div class="flex items-center gap-2 text-muted-foreground font-medium">
+                                    <div class="[&>svg]:size-4 [&>svg]:shrink-0">
+                                        <lucide_leptos::Box />
+                                    </div>
+                                    <span>Containers</span>
+                                </div>
+                                <div>
+                                    {format!("{} container{}", workload_containers_len, if workload_containers_len == 1 { "" } else { "s" })}
+                                </div>
+                            </div>
+                        </div>
+                    </Card>
+                }
+                .into_any()
+            } else {
+                view! { <div></div> }.into_any()
+            }
+        }}
+    }
+}
+
+#[component]
+pub fn ContainersSection(
+    workload_info: Signal<Option<KubeAppCatalogWorkload>>,
+    update_counter: RwSignal<usize>,
+) -> impl IntoView {
+    view! {
+        {move || {
+            if let Some(workload) = workload_info.get() {
+                view! {
+                    <Card class="p-6">
+                        <div class="flex flex-col gap-4">
+                            <H4>Containers</H4>
+                            <div class="space-y-4">
+                                {
+                                    workload.containers.iter().enumerate().map(|(index, container)| {
+                                        let workload_id = workload.id;
+                                        let container_idx = index;
+                                        view! {
+                                            <DetailedContainerEditor
+                                                workload_id
+                                                container_index=container_idx
+                                                container=container.clone()
+                                                all_containers=workload.containers.clone()
+                                                update_counter
+                                            />
+                                        }
+                                    }).collect::<Vec<_>>()
+                                }
+                                {if workload.containers.is_empty() {
+                                    view! {
+                                        <div class="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+                                            <lucide_leptos::Box attr:class="h-12 w-12 mb-2 opacity-50" />
+                                            <P>No containers configured for this workload</P>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! { <div></div> }.into_any()
+                                }}
+                            </div>
+                        </div>
+                    </Card>
+                }
+                .into_any()
+            } else {
+                view! { <div></div> }.into_any()
+            }
+        }}
+    }
+}
+
+#[component]
+pub fn DetailedContainerEditor(
     workload_id: Uuid,
     container_index: usize,
     container: KubeContainerInfo,
+    all_containers: Vec<KubeContainerInfo>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     let org = get_current_org();
@@ -458,18 +402,18 @@ pub fn ContainerEditor(
     let cpu_limit_signal = RwSignal::new(container.cpu_limit.clone().unwrap_or_default());
     let memory_request_signal = RwSignal::new(container.memory_request.clone().unwrap_or_default());
     let memory_limit_signal = RwSignal::new(container.memory_limit.clone().unwrap_or_default());
+    let env_vars_signal = RwSignal::new(container.env_vars.clone());
 
     let name = container.name.clone();
 
     let update_action = Action::new_local(move |containers: &Vec<KubeContainerInfo>| {
-        update_container(org, workload_id, containers.clone(), update_counter)
+        update_workload_containers(org, workload_id, containers.clone(), update_counter)
     });
 
     let save_changes = {
         let container_name = container.name.clone();
+        let all_containers_clone = all_containers.clone();
         Callback::new(move |_| {
-            // Get current workload to update only this container
-            // For now, we'll just update with the current container data
             let updated_container = KubeContainerInfo {
                 name: container_name.clone(),
                 image: image_signal.get(),
@@ -493,11 +437,14 @@ pub fn ContainerEditor(
                 } else {
                     Some(memory_limit_signal.get().trim().to_string())
                 },
+                env_vars: env_vars_signal.get(),
             };
 
-            // For simplicity, we'll pass just this container. In a real implementation,
-            // you'd need to get all containers for the workload and update just this one
-            update_action.dispatch(vec![updated_container]);
+            // Update all containers with the modified one
+            let mut updated_containers = all_containers_clone.clone();
+            updated_containers[container_index] = updated_container;
+
+            update_action.dispatch(updated_containers);
             is_editing.set(false);
         })
     };
@@ -511,131 +458,324 @@ pub fn ContainerEditor(
             cpu_limit_signal.set(container.cpu_limit.clone().unwrap_or_default());
             memory_request_signal.set(container.memory_request.clone().unwrap_or_default());
             memory_limit_signal.set(container.memory_limit.clone().unwrap_or_default());
+            env_vars_signal.set(container.env_vars.clone());
             is_editing.set(false);
         })
     };
 
     view! {
-        <div class="flex flex-col p-2 bg-muted/30 rounded border">
-            <div class="flex justify-between items-center">
-                <span class="font-medium text-foreground">{name}</span>
-                <div class="flex gap-1">
-                    <Show when=move || !is_editing.get()>
-                        <Button
-                            variant=ButtonVariant::Ghost
-                            class="px-2 py-1 h-auto"
-                            on:click=move |_| is_editing.set(true)
-                        >
-                            <lucide_leptos::Pen attr:class="w-3 h-3" />
-                        </Button>
-                    </Show>
-                    <Show when=move || is_editing.get()>
-                        <Button
-                            variant=ButtonVariant::Ghost
-                            class="px-2 py-1 h-auto text-green-600"
-                            on:click=move |_| save_changes.run(())
-                        >
-                            <lucide_leptos::Check attr:class="w-3 h-3" />
-                        </Button>
-                        <Button
-                            variant=ButtonVariant::Ghost
-                            class="px-2 py-1 h-auto text-red-600"
-                            on:click=move |_| cancel_changes.run(())
-                        >
-                            <lucide_leptos::X attr:class="w-3 h-3" />
-                        </Button>
-                    </Show>
+        <div class="border rounded-lg p-4 bg-card">
+            <div class="flex flex-col gap-4">
+                // Container header with name and actions
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center gap-2">
+                        <lucide_leptos::Box attr:class="h-5 w-5 text-muted-foreground" />
+                        <H4 class="text-lg">{name}</H4>
+                    </div>
+                    <div class="flex gap-2">
+                        <Show when=move || !is_editing.get()>
+                            <Button
+                                variant=ButtonVariant::Outline
+                                on:click=move |_| is_editing.set(true)
+                            >
+                                <lucide_leptos::Pen attr:class="w-4 h-4" />
+                                Edit
+                            </Button>
+                        </Show>
+                        <Show when=move || is_editing.get()>
+                            <Button
+                                variant=ButtonVariant::Default
+                                on:click=move |_| save_changes.run(())
+                            >
+                                <lucide_leptos::Check attr:class="w-4 h-4" />
+                                Save
+                            </Button>
+                            <Button
+                                variant=ButtonVariant::Outline
+                                on:click=move |_| cancel_changes.run(())
+                            >
+                                <lucide_leptos::X attr:class="w-4 h-4" />
+                                Cancel
+                            </Button>
+                        </Show>
+                    </div>
                 </div>
-            </div>
 
-            <div class="text-sm text-foreground space-y-1 mt-1">
-                <div class="flex flex-col gap-2">
-                    <div class="flex items-center gap-1">
-                        <lucide_leptos::Box attr:class="w-3 h-3" />
+                // Container Configuration - reorganized into vertical sections
+                <div class="flex flex-col gap-6">
+                    // 1. Container Image
+                    <div class="flex flex-col gap-3">
+                        <div class="flex items-center gap-2 text-sm font-medium text-foreground border-b border-border pb-2">
+                            <lucide_leptos::Image attr:class="h-4 w-4" />
+                            Container Image
+                        </div>
                         <Show
                             when=move || is_editing.get()
-                            fallback=move || view! { <span class="truncate">{move || image_signal.get()}</span> }
+                            fallback=move || view! {
+                                <div class="p-3 bg-muted rounded-md font-mono text-sm break-all">
+                                    {move || image_signal.get()}
+                                </div>
+                            }
                         >
                             <Input
                                 prop:value=move || image_signal.get()
                                 on:input=move |ev| image_signal.set(event_target_value(&ev))
-                                attr:placeholder="Container image"
-                                class="text-xs h-6"
+                                attr:placeholder="Container image (e.g., nginx:1.21, postgres:13)"
+                                class="font-mono"
                             />
                         </Show>
                     </div>
-                    <div class="flex gap-10">
-                        <div class="flex flex-col gap-1">
-                            <div class="flex items-center gap-1">
-                                <lucide_leptos::Cpu attr:class="w-3 h-3" />
-                                <span class="font-medium">CPU</span>
-                            </div>
-                            <div class="ml-4 space-y-0.5">
-                                <div class="flex">
-                                    <span class="text-muted-foreground w-16">{"Request:"}</span>
-                                    <Show
-                                        when=move || is_editing.get()
-                                        fallback=move || view! { <span>{move || if cpu_request_signal.get().is_empty() { "-".to_string() } else { cpu_request_signal.get() }}</span> }
-                                    >
-                                        <Input
-                                            prop:value=move || cpu_request_signal.get()
-                                            on:input=move |ev| cpu_request_signal.set(event_target_value(&ev))
-                                            class="text-xs h-5 w-20"
-                                        />
-                                    </Show>
-                                </div>
-                                <div class="flex">
-                                    <span class="text-muted-foreground w-16">{"Limit:"}</span>
-                                    <Show
-                                        when=move || is_editing.get()
-                                        fallback=move || view! { <span>{move || if cpu_limit_signal.get().is_empty() { "-".to_string() } else { cpu_limit_signal.get() }}</span> }
-                                    >
-                                        <Input
-                                            prop:value=move || cpu_limit_signal.get()
-                                            on:input=move |ev| cpu_limit_signal.set(event_target_value(&ev))
-                                            class="text-xs h-5 w-20"
-                                        />
-                                    </Show>
-                                </div>
-                            </div>
+
+                    // 2. Resource Configuration
+                    <div class="flex flex-col gap-4">
+                        <div class="flex items-center gap-2 text-sm font-medium text-foreground border-b border-border pb-2">
+                            <lucide_leptos::Gauge attr:class="h-4 w-4" />
+                            Resource Configuration
                         </div>
-                        <div class="flex flex-col gap-1">
-                            <div class="flex items-center gap-1">
-                                <lucide_leptos::MemoryStick attr:class="w-3 h-3" />
-                                <span class="font-medium">Memory</span>
-                            </div>
-                            <div class="ml-4 space-y-0.5">
-                                <div class="flex">
-                                    <span class="text-muted-foreground w-16">{"Request:"}</span>
-                                    <Show
-                                        when=move || is_editing.get()
-                                        fallback=move || view! { <span>{move || if memory_request_signal.get().is_empty() { "-".to_string() } else { memory_request_signal.get() }}</span> }
-                                    >
-                                        <Input
-                                            prop:value=move || memory_request_signal.get()
-                                            on:input=move |ev| memory_request_signal.set(event_target_value(&ev))
-                                            class="text-xs h-5 w-20"
-                                        />
-                                    </Show>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            // CPU Configuration
+                            <div class="flex flex-col gap-3">
+                                <div class="flex items-center gap-2 text-xs font-semibold text-foreground">
+                                    <lucide_leptos::Cpu attr:class="h-4 w-4" />
+                                    CPU
                                 </div>
-                                <div class="flex">
-                                    <span class="text-muted-foreground w-16">{"Limit:"}</span>
-                                    <Show
-                                        when=move || is_editing.get()
-                                        fallback=move || view! { <span>{move || if memory_limit_signal.get().is_empty() { "-".to_string() } else { memory_limit_signal.get() }}</span> }
-                                    >
-                                        <Input
-                                            prop:value=move || memory_limit_signal.get()
-                                            on:input=move |ev| memory_limit_signal.set(event_target_value(&ev))
-                                            class="text-xs h-5 w-20"
-                                        />
-                                    </Show>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div class="flex flex-col gap-2">
+                                        <label class="text-xs font-medium text-muted-foreground">Request</label>
+                                        <Show
+                                            when=move || is_editing.get()
+                                            fallback=move || view! {
+                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
+                                                    {move || if cpu_request_signal.get().is_empty() { "-".to_string() } else { cpu_request_signal.get() }}
+                                                </div>
+                                            }
+                                        >
+                                            <Input
+                                                prop:value=move || cpu_request_signal.get()
+                                                on:input=move |ev| cpu_request_signal.set(event_target_value(&ev))
+                                                attr:placeholder="100m"
+                                                class="text-xs font-mono"
+                                            />
+                                        </Show>
+                                    </div>
+                                    <div class="flex flex-col gap-2">
+                                        <label class="text-xs font-medium text-muted-foreground">Limit</label>
+                                        <Show
+                                            when=move || is_editing.get()
+                                            fallback=move || view! {
+                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
+                                                    {move || if cpu_limit_signal.get().is_empty() { "-".to_string() } else { cpu_limit_signal.get() }}
+                                                </div>
+                                            }
+                                        >
+                                            <Input
+                                                prop:value=move || cpu_limit_signal.get()
+                                                on:input=move |ev| cpu_limit_signal.set(event_target_value(&ev))
+                                                attr:placeholder="500m"
+                                                class="text-xs font-mono"
+                                            />
+                                        </Show>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            // Memory Configuration
+                            <div class="flex flex-col gap-3">
+                                <div class="flex items-center gap-2 text-xs font-semibold text-foreground">
+                                    <lucide_leptos::MemoryStick attr:class="h-4 w-4" />
+                                    Memory
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div class="flex flex-col gap-2">
+                                        <label class="text-xs font-medium text-muted-foreground">Request</label>
+                                        <Show
+                                            when=move || is_editing.get()
+                                            fallback=move || view! {
+                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
+                                                    {move || if memory_request_signal.get().is_empty() { "-".to_string() } else { memory_request_signal.get() }}
+                                                </div>
+                                            }
+                                        >
+                                            <Input
+                                                prop:value=move || memory_request_signal.get()
+                                                on:input=move |ev| memory_request_signal.set(event_target_value(&ev))
+                                                attr:placeholder="128Mi"
+                                                class="text-xs font-mono"
+                                            />
+                                        </Show>
+                                    </div>
+                                    <div class="flex flex-col gap-2">
+                                        <label class="text-xs font-medium text-muted-foreground">Limit</label>
+                                        <Show
+                                            when=move || is_editing.get()
+                                            fallback=move || view! {
+                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
+                                                    {move || if memory_limit_signal.get().is_empty() { "-".to_string() } else { memory_limit_signal.get() }}
+                                                </div>
+                                            }
+                                        >
+                                            <Input
+                                                prop:value=move || memory_limit_signal.get()
+                                                on:input=move |ev| memory_limit_signal.set(event_target_value(&ev))
+                                                attr:placeholder="512Mi"
+                                                class="text-xs font-mono"
+                                            />
+                                        </Show>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
+
+                    // 3. Environment Variables
+                    <div class="flex flex-col gap-4">
+                        <div class="flex items-center gap-2 text-sm font-medium text-foreground border-b border-border pb-2">
+                            <lucide_leptos::Settings attr:class="h-4 w-4" />
+                            Environment Variables
+                        </div>
+                        
+                        <Show when=move || is_editing.get()>
+                            <EnvVarsEditor env_vars_signal />
+                        </Show>
+                        
+                        <Show when=move || !is_editing.get()>
+                            <EnvVarsDisplay env_vars_signal />
+                        </Show>
+                    </div>
                 </div>
             </div>
+        </div>
+    }
+}
+
+#[component]
+fn EnvVarsEditor(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
+    let add_env_var = Callback::new(move |_| {
+        env_vars_signal.update(|vars| {
+            vars.push(KubeEnvVar {
+                name: String::new(),
+                value: String::new(),
+            });
+        });
+    });
+
+    view! {
+        <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-medium text-muted-foreground">Variables</span>
+                <Button
+                    variant=ButtonVariant::Outline
+                    class="px-2 py-1 h-auto text-xs"
+                    on:click=move |_| add_env_var.run(())
+                >
+                    <lucide_leptos::Plus attr:class="w-3 h-3" />
+                    Add Variable
+                </Button>
+            </div>
+            
+            <div class="space-y-2">
+                {
+                    let env_vars = env_vars_signal.get();
+                    env_vars.iter().enumerate().map(|(index, env_var)| {
+                        let env_var_name = env_var.name.clone();
+                        let env_var_value = env_var.value.clone();
+                        
+                        view! {
+                            <div class="flex gap-2 items-center">
+                                <Input
+                                    prop:value=env_var_name.clone()
+                                    on:input=move |ev| {
+                                        let new_name = event_target_value(&ev);
+                                        env_vars_signal.update(|vars| {
+                                            if let Some(var) = vars.get_mut(index) {
+                                                var.name = new_name;
+                                            }
+                                        });
+                                    }
+                                    attr:placeholder="Variable name"
+                                    class="text-xs font-mono flex-1"
+                                />
+                                <Input
+                                    prop:value=env_var_value.clone()
+                                    on:input=move |ev| {
+                                        let new_value = event_target_value(&ev);
+                                        env_vars_signal.update(|vars| {
+                                            if let Some(var) = vars.get_mut(index) {
+                                                var.value = new_value;
+                                            }
+                                        });
+                                    }
+                                    attr:placeholder="Variable value"
+                                    class="text-xs font-mono flex-1"
+                                />
+                                <Button
+                                    variant=ButtonVariant::Ghost
+                                    class="px-2 py-1 h-auto text-red-600 hover:text-red-700"
+                                    on:click=move |_| {
+                                        env_vars_signal.update(|vars| {
+                                            if index < vars.len() {
+                                                vars.remove(index);
+                                            }
+                                        });
+                                    }
+                                >
+                                    <lucide_leptos::Trash2 attr:class="w-3 h-3" />
+                                </Button>
+                            </div>
+                        }
+                    }).collect::<Vec<_>>()
+                }
+                
+                {move || {
+                    let vars = env_vars_signal.get();
+                    if vars.is_empty() {
+                        view! {
+                            <div class="text-xs text-muted-foreground italic py-2">
+                                No environment variables configured
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }
+                }}
+            </div>
+        </div>
+    }
+}
+
+#[component]  
+fn EnvVarsDisplay(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
+    view! {
+        <div class="space-y-1">
+            {
+                let env_vars = env_vars_signal.get();
+                env_vars.iter().map(|env_var| {
+                    let env_var_name = env_var.name.clone();
+                    let env_var_value = env_var.value.clone();
+                    
+                    view! {
+                        <div class="flex gap-2 text-xs">
+                            <span class="font-mono font-medium min-w-0 flex-shrink-0">{env_var_name}</span>
+                            <span class="text-muted-foreground">=</span>
+                            <span class="font-mono text-muted-foreground truncate min-w-0 flex-1">{env_var_value}</span>
+                        </div>
+                    }
+                }).collect::<Vec<_>>()
+            }
+            
+            {move || {
+                let vars = env_vars_signal.get();
+                if vars.is_empty() {
+                    view! {
+                        <div class="text-xs text-muted-foreground italic py-1">
+                            No environment variables configured
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <div></div> }.into_any()
+                }
+            }}
         </div>
     }
 }

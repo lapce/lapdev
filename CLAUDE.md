@@ -73,3 +73,15 @@ cargo run --bin lapdev-kube-manager
 
 ## Development Tips
 - For checking compile error, only do cargo check instead of cargo build, because it's much faster
+
+## AI Assistant Guidelines
+ALWAYS consider whether any available sub-agents could help with the current task, even for seemingly simple requests. Before responding directly, evaluate:
+- Which sub-agents are available (general-purpose, rust-postgres-backend-expert, rpc-backend-architect, leptos-frontend-expert, rust-k8s-backend-engineer)
+- Whether any part of the task falls within their expertise
+- If delegating would provide better results
+
+Use sub-agents proactively, not just when explicitly asked. Available specialized agents:
+- **rust-k8s-backend-engineer**: For Kubernetes integration, kube-rs, cluster management, operators, authentication, RBAC
+- **rust-postgres-backend-expert**: For database schema, SeaORM, query optimization, migrations
+- **rpc-backend-architect**: For RPC systems, tarpc, HRPC, service communication, distributed systems
+- **general-purpose**: For complex multi-step tasks, code searches, research

@@ -1,5 +1,5 @@
 use lapdev_common::kube::{
-    KubeClusterInfo, KubeNamespace, KubeWorkloadDetails, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
+    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespace, KubeWorkloadDetails, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -72,7 +72,7 @@ pub trait KubeManagerRpc {
     async fn get_namespaces() -> Result<Vec<KubeNamespace>, String>;
 
     async fn get_workloads_yaml(
-        workloads: Vec<WorkloadIdentifier>,
+        workloads: Vec<KubeAppCatalogWorkload>,
     ) -> Result<KubeWorkloadsWithResources, String>;
 
     async fn deploy_workload_yaml(

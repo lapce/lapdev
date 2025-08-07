@@ -14,10 +14,10 @@ use k8s_openapi::{
 };
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
-    KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeNamespace, KubeWorkload,
-    KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
-    DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER,
-    KUBE_CLUSTER_URL_ENV_VAR,
+    KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeNamespace,
+    KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor,
+    PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
+    KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
@@ -1333,7 +1333,7 @@ impl KubeManager {
 
     async fn retrieve_workloads_yaml(
         &self,
-        workload_identifiers: Vec<WorkloadIdentifier>,
+        catalog_workloads: Vec<KubeAppCatalogWorkload>,
     ) -> Result<KubeWorkloadsWithResources> {
         let client = self
             .kube_client
@@ -1354,13 +1354,15 @@ impl KubeManager {
         let mut all_services_by_namespace: HashMap<String, Vec<Service>> = HashMap::new();
 
         // Group workloads by namespace
-        let mut workloads_by_namespace: std::collections::HashMap<String, Vec<WorkloadIdentifier>> =
-            std::collections::HashMap::new();
-        for workload_id in workload_identifiers {
+        let mut workloads_by_namespace: std::collections::HashMap<
+            String,
+            Vec<KubeAppCatalogWorkload>,
+        > = std::collections::HashMap::new();
+        for catalog_workload in catalog_workloads {
             workloads_by_namespace
-                .entry(workload_id.namespace.clone())
+                .entry(catalog_workload.namespace.clone())
                 .or_insert_with(Vec::new)
-                .push(workload_id);
+                .push(catalog_workload);
         }
 
         // Process each namespace separately
@@ -3179,7 +3181,7 @@ impl KubeManagerRpc for KubeManager {
     async fn get_workloads_yaml(
         self,
         _context: ::tarpc::context::Context,
-        workloads: Vec<WorkloadIdentifier>,
+        workloads: Vec<KubeAppCatalogWorkload>,
     ) -> Result<KubeWorkloadsWithResources, String> {
         match self.retrieve_workloads_yaml(workloads.clone()).await {
             Ok(workloads_with_resources) => {

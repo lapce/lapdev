@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 
 use anyhow::{anyhow, Result};
 use lapdev_common::{
@@ -336,8 +336,16 @@ pub fn KubeResourceList(
         }
     });
 
+    let selected_workloads = RwSignal::new(std::collections::HashSet::<WorkloadKey>::new());
+
     view! {
         <div class="flex flex-col gap-4">
+            <AppCatalogActions
+                selected_workloads
+                filtered_workloads
+                cluster_id
+                catalog_id_from_url
+            />
             <div class="flex flex-wrap gap-4 items-center">
                <NamespaceFilters namespace_select_value cluster_id />
                <WorkloadFilters workload_kind_select_value />
@@ -352,11 +360,10 @@ pub fn KubeResourceList(
             />
 
             <WorkloadTable
+                selected_workloads
                 filtered_workloads
                 is_loading=is_loading.read_only().into()
                 cluster_status
-                cluster_id
-                catalog_id_from_url
                 on_view_details=Callback::new(move |w| {
                     selected_workload.set(Some(w));
                     detail_modal_open.set(true);
@@ -948,7 +955,7 @@ pub fn AppCatalogModal(
 
 #[component]
 pub fn AppCatalogActions(
-    selected_workloads: RwSignal<std::collections::HashSet<WorkloadKey>>,
+    selected_workloads: RwSignal<HashSet<WorkloadKey>>,
     filtered_workloads: Signal<Vec<KubeWorkload>>,
     cluster_id: Uuid,
     catalog_id_from_url: Option<Uuid>,
@@ -978,7 +985,7 @@ pub fn AppCatalogActions(
             let has_selections = selected_count > 0;
 
             view! {
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-4">
                     {if let Some(existing_catalog_id) = catalog_id_from_url {
                         view! {
                             <a href=format!("/kubernetes/catalogs/{}", existing_catalog_id)>
@@ -989,7 +996,7 @@ pub fn AppCatalogActions(
                             </a>
                         }.into_any()
                     } else {
-                        view! { <div></div> }.into_any()
+                        ().into_any()
                     }}
                     <Button
                         variant=ButtonVariant::Default
@@ -1026,15 +1033,12 @@ pub fn AppCatalogActions(
 
 #[component]
 pub fn WorkloadTable(
+    selected_workloads: RwSignal<HashSet<WorkloadKey>>,
     filtered_workloads: Signal<Vec<KubeWorkload>>,
     is_loading: Signal<bool>,
     cluster_status: Signal<KubeClusterStatus>,
-    cluster_id: Uuid,
-    catalog_id_from_url: Option<Uuid>,
     #[prop(into)] on_view_details: Callback<KubeWorkload>,
 ) -> impl IntoView {
-    let selected_workloads = RwSignal::new(std::collections::HashSet::<WorkloadKey>::new());
-
     let all_selected = Signal::derive(move || {
         let workloads = filtered_workloads.get();
         let selected = selected_workloads.get();
@@ -1085,12 +1089,6 @@ pub fn WorkloadTable(
     };
     view! {
         <div class="flex flex-col gap-4">
-            <AppCatalogActions
-                selected_workloads
-                filtered_workloads
-                cluster_id
-                catalog_id_from_url
-            />
 
             <div class="relative rounded-lg border">
             <Table class="table-auto">

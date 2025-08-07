@@ -166,9 +166,18 @@ pub struct KubeEnvVar {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum KubeContainerImage {
+    /// Follow the image from the original workload (tracks updates)
+    FollowOriginal,
+    /// Use a custom specified image
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeContainerInfo {
     pub name: String,
-    pub image: String,
+    pub original_image: String,
+    pub image: KubeContainerImage,
     pub cpu_request: Option<String>,
     pub cpu_limit: Option<String>,
     pub memory_request: Option<String>,

@@ -4,7 +4,9 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo},
+    kube::{
+        KubeAppCatalog, KubeAppCatalogWorkload, KubeCluster, KubeClusterStatus, KubeContainerInfo,
+    },
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -17,10 +19,13 @@ use crate::{
         button::{Button, ButtonVariant},
         card::Card,
         input::Input,
+        label::Label,
+        select::{Select, SelectContent, SelectItem, SelectTrigger},
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         typography::{H3, H4, P},
     },
-    modal::{DatetimeModal, DeleteModal, ErrorResponse},
+    kube_app_catalog::CreateEnvironmentModal,
+    modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
 };
 
@@ -99,6 +104,7 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     let update_counter = RwSignal::new(0usize);
+    let create_env_modal_open = RwSignal::new(false);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -175,9 +181,18 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                 <AppCatalogInfo catalog=catalog_info />
             </Show>
 
-            // Search Input and Add Workloads Button
+            // Search Input and Action Buttons
             <div class="flex flex-col items-start gap-4">
-                <AddWorkloadsButton catalog_id catalog_info />
+                <div class="flex items-center gap-2">
+                    <AddWorkloadsButton catalog_id catalog_info />
+                    <Button
+                        variant=ButtonVariant::Outline
+                        on:click=move |_| create_env_modal_open.set(true)
+                    >
+                        <lucide_leptos::Plus />
+                        Create Environment
+                    </Button>
+                </div>
                 <div class="relative flex-1 max-w-sm">
                     <lucide_leptos::Search attr:class="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
                     <Input
@@ -267,6 +282,22 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                     }
                 }}
             </div>
+
+            <Show when=move || catalog_info.get().is_some()>
+                {move || {
+                    if let Some(catalog) = catalog_info.get() {
+                        view! {
+                            <CreateEnvironmentModal
+                                modal_open=create_env_modal_open
+                                app_catalog=catalog
+                                update_counter
+                            />
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }
+                }}
+            </Show>
         </div>
     }
 }
@@ -434,7 +465,12 @@ pub fn ContainerDisplay(container: KubeContainerInfo) -> impl IntoView {
             <div class="text-sm text-foreground mt-1">
                 <div class="flex items-center gap-1">
                     <lucide_leptos::Box attr:class="w-3 h-3" />
-                    <span class="truncate w-80 text-muted-foreground">{container.image.clone()}</span>
+                    <span class="truncate w-80 text-muted-foreground">{
+                        match &container.image {
+                            lapdev_common::kube::KubeContainerImage::FollowOriginal => container.original_image.clone(),
+                            lapdev_common::kube::KubeContainerImage::Custom(image) => image.clone(),
+                        }
+                    }</span>
                 </div>
             </div>
         </div>

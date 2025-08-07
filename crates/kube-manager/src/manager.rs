@@ -14,10 +14,10 @@ use k8s_openapi::{
 };
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
-    KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeNamespace,
-    KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor,
-    PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
-    KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
+    KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
+    KubeContainerInfo, KubeNamespace, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
+    KubeWorkloadStatus, PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_URL,
+    KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
@@ -1096,13 +1096,121 @@ impl KubeManager {
         }
     }
 
+    fn merge_single_container(
+        &self,
+        container: k8s_openapi::api::core::v1::Container,
+        workload_container: &KubeContainerInfo,
+    ) -> k8s_openapi::api::core::v1::Container {
+        use k8s_openapi::api::core::v1::EnvVar;
+        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+        use std::collections::HashMap;
+
+        let mut new_container = container.clone();
+
+        // Update image based on the enum
+        match &workload_container.image {
+            KubeContainerImage::FollowOriginal => {
+                // Keep the original image from the workload (no change)
+            }
+            KubeContainerImage::Custom(custom_image) => {
+                if !custom_image.is_empty() {
+                    new_container.image = Some(custom_image.clone());
+                }
+            }
+        }
+
+        // Update resource requirements
+        let mut resources = container.resources.unwrap_or_default();
+        let mut requests = resources.requests.unwrap_or_default();
+        let mut limits = resources.limits.unwrap_or_default();
+
+        // Update CPU and memory requests
+        if let Some(cpu_request) = &workload_container.cpu_request {
+            if !cpu_request.is_empty() {
+                requests.insert("cpu".to_string(), Quantity(cpu_request.clone()));
+            }
+        }
+        if let Some(memory_request) = &workload_container.memory_request {
+            if !memory_request.is_empty() {
+                requests.insert("memory".to_string(), Quantity(memory_request.clone()));
+            }
+        }
+
+        // Update CPU and memory limits
+        if let Some(cpu_limit) = &workload_container.cpu_limit {
+            if !cpu_limit.is_empty() {
+                limits.insert("cpu".to_string(), Quantity(cpu_limit.clone()));
+            }
+        }
+        if let Some(memory_limit) = &workload_container.memory_limit {
+            if !memory_limit.is_empty() {
+                limits.insert("memory".to_string(), Quantity(memory_limit.clone()));
+            }
+        }
+
+        // Set the updated resources back
+        resources.requests = if requests.is_empty() {
+            None
+        } else {
+            Some(requests)
+        };
+        resources.limits = if limits.is_empty() {
+            None
+        } else {
+            Some(limits)
+        };
+        new_container.resources = Some(resources);
+
+        // Merge environment variables
+        let mut env_map: HashMap<
+            String,
+            (
+                Option<String>,
+                Option<k8s_openapi::api::core::v1::EnvVarSource>,
+            ),
+        > = HashMap::new();
+
+        // Start with original container's env vars (if any)
+        if let Some(original_env) = container.env {
+            for env_var in original_env {
+                env_map.insert(env_var.name.clone(), (env_var.value, env_var.value_from));
+            }
+        }
+
+        // Add/override with environment variables from workload_container
+        for kube_env_var in &workload_container.env_vars {
+            env_map.insert(
+                kube_env_var.name.clone(),
+                (Some(kube_env_var.value.clone()), None),
+            );
+        }
+
+        // Convert back to k8s EnvVar format
+        let merged_env: Vec<EnvVar> = env_map
+            .into_iter()
+            .map(|(name, (value, value_from))| EnvVar {
+                name,
+                value,
+                value_from,
+            })
+            .collect();
+
+        // Set the merged environment variables
+        new_container.env = if merged_env.is_empty() {
+            None
+        } else {
+            Some(merged_env)
+        };
+
+        new_container
+    }
+
     fn merge_template_containers(
         &self,
         template: k8s_openapi::api::core::v1::PodTemplateSpec,
         workload_containers: &[KubeContainerInfo],
     ) -> k8s_openapi::api::core::v1::PodTemplateSpec {
         use k8s_openapi::api::core::v1::{PodSpec, PodTemplateSpec};
-        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 
         let pod_spec = template.spec.map(|original_pod_spec| {
             let merged_containers = original_pod_spec
@@ -1114,57 +1222,7 @@ impl KubeManager {
                         .iter()
                         .find(|wc| wc.name == container.name)
                     {
-                        let mut new_container = container.clone();
-
-                        // Update image if specified in workload
-                        if !workload_container.image.is_empty() {
-                            new_container.image = Some(workload_container.image.clone());
-                        }
-
-                        // Update resource requirements
-                        let mut resources = container.resources.unwrap_or_default();
-                        let mut requests = resources.requests.unwrap_or_default();
-                        let mut limits = resources.limits.unwrap_or_default();
-
-                        // Update CPU and memory requests
-                        if let Some(cpu_request) = &workload_container.cpu_request {
-                            if !cpu_request.is_empty() {
-                                requests.insert("cpu".to_string(), Quantity(cpu_request.clone()));
-                            }
-                        }
-                        if let Some(memory_request) = &workload_container.memory_request {
-                            if !memory_request.is_empty() {
-                                requests
-                                    .insert("memory".to_string(), Quantity(memory_request.clone()));
-                            }
-                        }
-
-                        // Update CPU and memory limits
-                        if let Some(cpu_limit) = &workload_container.cpu_limit {
-                            if !cpu_limit.is_empty() {
-                                limits.insert("cpu".to_string(), Quantity(cpu_limit.clone()));
-                            }
-                        }
-                        if let Some(memory_limit) = &workload_container.memory_limit {
-                            if !memory_limit.is_empty() {
-                                limits.insert("memory".to_string(), Quantity(memory_limit.clone()));
-                            }
-                        }
-
-                        // Set the updated resources back
-                        resources.requests = if requests.is_empty() {
-                            None
-                        } else {
-                            Some(requests)
-                        };
-                        resources.limits = if limits.is_empty() {
-                            None
-                        } else {
-                            Some(limits)
-                        };
-                        new_container.resources = Some(resources);
-
-                        new_container
+                        self.merge_single_container(container, workload_container)
                     } else {
                         container
                     }
@@ -1283,8 +1341,6 @@ impl KubeManager {
         containers: Vec<k8s_openapi::api::core::v1::Container>,
         workload_containers: &[KubeContainerInfo],
     ) -> Vec<k8s_openapi::api::core::v1::Container> {
-        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-
         containers
             .into_iter()
             .map(|container| {
@@ -1293,56 +1349,7 @@ impl KubeManager {
                     .iter()
                     .find(|wc| wc.name == container.name)
                 {
-                    let mut new_container = container.clone();
-
-                    // Update image if specified in workload
-                    if !workload_container.image.is_empty() {
-                        new_container.image = Some(workload_container.image.clone());
-                    }
-
-                    // Update resource requirements
-                    let mut resources = container.resources.unwrap_or_default();
-                    let mut requests = resources.requests.unwrap_or_default();
-                    let mut limits = resources.limits.unwrap_or_default();
-
-                    // Update CPU and memory requests
-                    if let Some(cpu_request) = &workload_container.cpu_request {
-                        if !cpu_request.is_empty() {
-                            requests.insert("cpu".to_string(), Quantity(cpu_request.clone()));
-                        }
-                    }
-                    if let Some(memory_request) = &workload_container.memory_request {
-                        if !memory_request.is_empty() {
-                            requests.insert("memory".to_string(), Quantity(memory_request.clone()));
-                        }
-                    }
-
-                    // Update CPU and memory limits
-                    if let Some(cpu_limit) = &workload_container.cpu_limit {
-                        if !cpu_limit.is_empty() {
-                            limits.insert("cpu".to_string(), Quantity(cpu_limit.clone()));
-                        }
-                    }
-                    if let Some(memory_limit) = &workload_container.memory_limit {
-                        if !memory_limit.is_empty() {
-                            limits.insert("memory".to_string(), Quantity(memory_limit.clone()));
-                        }
-                    }
-
-                    // Set the updated resources back
-                    resources.requests = if requests.is_empty() {
-                        None
-                    } else {
-                        Some(requests)
-                    };
-                    resources.limits = if limits.is_empty() {
-                        None
-                    } else {
-                        Some(limits)
-                    };
-                    new_container.resources = Some(resources);
-
-                    new_container
+                    self.merge_single_container(container, workload_container)
                 } else {
                     container
                 }
@@ -3286,7 +3293,8 @@ impl KubeManager {
 
                 Ok(KubeContainerInfo {
                     name: container.name.clone(),
-                    image,
+                    original_image: image.clone(),
+                    image: KubeContainerImage::FollowOriginal,
                     cpu_request,
                     cpu_limit,
                     memory_request,

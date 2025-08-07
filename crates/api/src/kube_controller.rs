@@ -6,7 +6,7 @@ use anyhow::Result;
 use lapdev_common::{
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkloadCreate, KubeCluster,
-        KubeClusterInfo, KubeClusterStatus, KubeEnvironment, KubeNamespace, KubeWorkload,
+        KubeClusterInfo, KubeClusterStatus, KubeContainerImage, KubeEnvironment, KubeNamespace, KubeWorkload,
         KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedInfo, PaginatedResult,
         PaginationParams,
     },
@@ -924,11 +924,18 @@ impl KubeController {
                 )));
             }
 
-            if container.image.trim().is_empty() {
-                return Err(ApiError::InvalidRequest(format!(
-                    "Container '{}' image cannot be empty",
-                    container.name
-                )));
+            match &container.image {
+                KubeContainerImage::Custom(image) => {
+                    if image.trim().is_empty() {
+                        return Err(ApiError::InvalidRequest(format!(
+                            "Container '{}' custom image cannot be empty",
+                            container.name
+                        )));
+                    }
+                }
+                KubeContainerImage::FollowOriginal => {
+                    // No validation needed for FollowOriginal
+                }
             }
 
             // Validate CPU resources

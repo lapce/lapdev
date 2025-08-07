@@ -4,7 +4,9 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo, KubeEnvVar},
+    kube::{
+        KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerImage, KubeContainerInfo, KubeEnvVar,
+    },
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -378,6 +380,10 @@ pub fn DetailedContainerEditor(
 
     // Create signals for all editable fields
     let image_signal = RwSignal::new(container.image.clone());
+    let custom_image_signal = RwSignal::new(match &container.image {
+        KubeContainerImage::Custom(img) => img.clone(),
+        KubeContainerImage::FollowOriginal => String::new(),
+    });
     let cpu_request_signal = RwSignal::new(container.cpu_request.clone().unwrap_or_default());
     let cpu_limit_signal = RwSignal::new(container.cpu_limit.clone().unwrap_or_default());
     let memory_request_signal = RwSignal::new(container.memory_request.clone().unwrap_or_default());
@@ -412,9 +418,11 @@ pub fn DetailedContainerEditor(
     let save_changes = {
         let container_name = container.name.clone();
         let all_containers_clone = all_containers.clone();
+        let original_image = container.original_image.clone();
         Callback::new(move |_| {
             let updated_container = KubeContainerInfo {
                 name: container_name.clone(),
+                original_image: original_image.clone(),
                 image: image_signal.get(),
                 cpu_request: if cpu_request_signal.get().trim().is_empty() {
                     None
@@ -453,9 +461,14 @@ pub fn DetailedContainerEditor(
 
     let cancel_changes = {
         let container_image = container.image.clone();
+        let custom_img_value = match &container.image {
+            KubeContainerImage::Custom(img) => img.clone(),
+            KubeContainerImage::FollowOriginal => String::new(),
+        };
         Callback::new(move |_| {
             // Reset to original values
             image_signal.set(container_image.clone());
+            custom_image_signal.set(custom_img_value.clone());
             cpu_request_signal.set(container.cpu_request.clone().unwrap_or_default());
             cpu_limit_signal.set(container.cpu_limit.clone().unwrap_or_default());
             memory_request_signal.set(container.memory_request.clone().unwrap_or_default());
@@ -466,6 +479,8 @@ pub fn DetailedContainerEditor(
             is_editing.set(false);
         })
     };
+
+    let original_image = container.original_image.clone();
 
     view! {
         <div class="border rounded-lg p-4 bg-card">
@@ -525,20 +540,73 @@ pub fn DetailedContainerEditor(
                             <lucide_leptos::Image attr:class="h-4 w-4" />
                             Container Image
                         </div>
+
                         <Show
                             when=move || is_editing.get()
-                            fallback=move || view! {
-                                <div class="p-3 bg-muted rounded-md font-mono text-sm break-all">
-                                    {move || image_signal.get()}
-                                </div>
+                            fallback=move || {
+                                let display_text = match image_signal.get() {
+                                    KubeContainerImage::FollowOriginal => {
+                                        format!("Follow Original: {}", original_image)
+                                    }
+                                    KubeContainerImage::Custom(img) => {
+                                        format!("Custom: {}", img)
+                                    }
+                                };
+                                view! {
+                                    <div class="p-3 bg-muted rounded-md font-mono text-sm break-all">
+                                        {display_text}
+                                    </div>
+                                }
                             }
                         >
-                            <Input
-                                prop:value=move || image_signal.get()
-                                on:input=move |ev| image_signal.set(event_target_value(&ev))
-                                attr:placeholder="Container image (e.g., nginx:1.21, postgres:13)"
-                                class="font-mono"
-                            />
+                            <div class="flex flex-col gap-4">
+                                // Radio buttons for image mode
+                                <div class="flex flex-col gap-3">
+                                    <label class="flex items-center gap-2">
+                                        <input
+                                            type="radio"
+                                            name=format!("image-mode-{}", container.name)
+                                            prop:checked=move || matches!(image_signal.get(), KubeContainerImage::FollowOriginal)
+                                            on:change=move |_| {
+                                                image_signal.set(KubeContainerImage::FollowOriginal);
+                                            }
+                                        />
+                                        <span class="text-sm">Follow Original Image</span>
+                                    </label>
+                                    <div class="ml-6 text-xs text-muted-foreground font-mono">
+                                        {format!("Current: {}", container.original_image.clone())}
+                                    </div>
+
+                                    <label class="flex items-center gap-2">
+                                        <input
+                                            type="radio"
+                                            name=format!("image-mode-{}", container.name)
+                                            prop:checked=move || matches!(image_signal.get(), KubeContainerImage::Custom(_))
+                                            on:change=move |_| {
+                                                let custom_img = custom_image_signal.get();
+                                                image_signal.set(KubeContainerImage::Custom(custom_img));
+                                            }
+                                        />
+                                        <span class="text-sm">Use Custom Image</span>
+                                    </label>
+
+                                    // Custom image input - only show when Custom is selected
+                                    <Show when=move || matches!(image_signal.get(), KubeContainerImage::Custom(_))>
+                                        <div class="ml-6">
+                                            <Input
+                                                prop:value=move || custom_image_signal.get()
+                                                on:input=move |ev| {
+                                                    let new_value = event_target_value(&ev);
+                                                    custom_image_signal.set(new_value.clone());
+                                                    image_signal.set(KubeContainerImage::Custom(new_value));
+                                                }
+                                                attr:placeholder="Container image (e.g., nginx:1.21, postgres:13)"
+                                                class="font-mono"
+                                            />
+                                        </div>
+                                    </Show>
+                                </div>
+                            </div>
                         </Show>
                     </div>
 

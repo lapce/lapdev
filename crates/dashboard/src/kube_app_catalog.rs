@@ -30,7 +30,7 @@ use crate::{
 
 #[component]
 pub fn KubeAppCatalog() -> impl IntoView {
-    let update_counter = RwSignal::new_local(0);
+    let update_counter = RwSignal::new(0);
 
     view! {
         <div class="flex flex-col gap-6">
@@ -67,7 +67,7 @@ async fn delete_app_catalog(
     org: Signal<Option<Organization>>,
     catalog_id: uuid::Uuid,
     delete_modal_open: RwSignal<bool>,
-    update_counter: RwSignal<usize, LocalStorage>,
+    update_counter: RwSignal<usize>,
 ) -> Result<(), ErrorResponse> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
@@ -81,7 +81,7 @@ async fn delete_app_catalog(
 }
 
 #[component]
-pub fn AppCatalogList(update_counter: RwSignal<usize, LocalStorage>) -> impl IntoView {
+pub fn AppCatalogList(update_counter: RwSignal<usize>) -> impl IntoView {
     let org = get_current_org();
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
@@ -305,10 +305,7 @@ pub fn AppCatalogList(update_counter: RwSignal<usize, LocalStorage>) -> impl Int
 }
 
 #[component]
-pub fn AppCatalogItem(
-    catalog: KubeAppCatalog,
-    update_counter: RwSignal<usize, LocalStorage>,
-) -> impl IntoView {
+pub fn AppCatalogItem(catalog: KubeAppCatalog, update_counter: RwSignal<usize>) -> impl IntoView {
     let dropdown_expanded = RwSignal::new(false);
     let delete_modal_open = RwSignal::new(false);
     let create_env_modal_open = RwSignal::new(false);
@@ -434,7 +431,7 @@ pub fn ExpandableDescription(description: Option<String>) -> impl IntoView {
 pub fn CreateEnvironmentModal(
     modal_open: RwSignal<bool>,
     app_catalog: KubeAppCatalog,
-    update_counter: RwSignal<usize, LocalStorage>,
+    update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     let environment_name = RwSignal::new_local("".to_string());
     let namespace = RwSignal::new_local("".to_string());

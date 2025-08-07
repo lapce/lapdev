@@ -1044,30 +1044,13 @@ impl KubeManager {
 
     fn clean_metadata(
         &self,
-        metadata: &mut k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
-    ) {
-        // Remove server-managed fields that should not be set on object creation
-        metadata.resource_version = None;
-        metadata.uid = None;
-        metadata.self_link = None;
-        metadata.creation_timestamp = None;
-        metadata.deletion_timestamp = None;
-        metadata.deletion_grace_period_seconds = None;
-        metadata.generation = None;
-        metadata.managed_fields = None;
-        metadata.owner_references = None;
-    }
-
-    fn create_clean_metadata(
-        &self,
-        original_metadata: &k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        original_metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
     ) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
         ObjectMeta {
-            name: original_metadata.name.clone(),
-            labels: original_metadata.labels.clone(),
-            annotations: original_metadata.annotations.clone(),
+            name: original_metadata.name,
+            labels: original_metadata.labels,
             ..Default::default()
         }
     }
@@ -1088,7 +1071,7 @@ impl KubeManager {
 
         // Create new clean service
         Service {
-            metadata: self.create_clean_metadata(&service.metadata),
+            metadata: self.clean_metadata(service.metadata),
             spec: clean_spec,
             status: None, // Never copy status
         }
@@ -1096,7 +1079,7 @@ impl KubeManager {
 
     fn clean_configmap(&self, configmap: ConfigMap) -> ConfigMap {
         ConfigMap {
-            metadata: self.create_clean_metadata(&configmap.metadata),
+            metadata: self.clean_metadata(configmap.metadata),
             data: configmap.data,
             binary_data: configmap.binary_data,
             immutable: configmap.immutable,
@@ -1105,7 +1088,7 @@ impl KubeManager {
 
     fn clean_secret(&self, secret: Secret) -> Secret {
         Secret {
-            metadata: self.create_clean_metadata(&secret.metadata),
+            metadata: self.clean_metadata(secret.metadata),
             data: secret.data,
             string_data: secret.string_data,
             type_: secret.type_,
@@ -1113,174 +1096,404 @@ impl KubeManager {
         }
     }
 
-    fn clean_deployment(&self, deployment: Deployment) -> Deployment {
+    fn merge_template_containers(
+        &self,
+        template: k8s_openapi::api::core::v1::PodTemplateSpec,
+        workload_containers: &[KubeContainerInfo],
+    ) -> k8s_openapi::api::core::v1::PodTemplateSpec {
+        use k8s_openapi::api::core::v1::{PodSpec, PodTemplateSpec};
+        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+
+        let pod_spec = template.spec.map(|original_pod_spec| {
+            let merged_containers = original_pod_spec
+                .containers
+                .into_iter()
+                .map(|container| {
+                    // Find matching container in workload by name
+                    if let Some(workload_container) = workload_containers
+                        .iter()
+                        .find(|wc| wc.name == container.name)
+                    {
+                        let mut new_container = container.clone();
+
+                        // Update image if specified in workload
+                        if !workload_container.image.is_empty() {
+                            new_container.image = Some(workload_container.image.clone());
+                        }
+
+                        // Update resource requirements
+                        let mut resources = container.resources.unwrap_or_default();
+                        let mut requests = resources.requests.unwrap_or_default();
+                        let mut limits = resources.limits.unwrap_or_default();
+
+                        // Update CPU and memory requests
+                        if let Some(cpu_request) = &workload_container.cpu_request {
+                            if !cpu_request.is_empty() {
+                                requests.insert("cpu".to_string(), Quantity(cpu_request.clone()));
+                            }
+                        }
+                        if let Some(memory_request) = &workload_container.memory_request {
+                            if !memory_request.is_empty() {
+                                requests
+                                    .insert("memory".to_string(), Quantity(memory_request.clone()));
+                            }
+                        }
+
+                        // Update CPU and memory limits
+                        if let Some(cpu_limit) = &workload_container.cpu_limit {
+                            if !cpu_limit.is_empty() {
+                                limits.insert("cpu".to_string(), Quantity(cpu_limit.clone()));
+                            }
+                        }
+                        if let Some(memory_limit) = &workload_container.memory_limit {
+                            if !memory_limit.is_empty() {
+                                limits.insert("memory".to_string(), Quantity(memory_limit.clone()));
+                            }
+                        }
+
+                        // Set the updated resources back
+                        resources.requests = if requests.is_empty() {
+                            None
+                        } else {
+                            Some(requests)
+                        };
+                        resources.limits = if limits.is_empty() {
+                            None
+                        } else {
+                            Some(limits)
+                        };
+                        new_container.resources = Some(resources);
+
+                        new_container
+                    } else {
+                        container
+                    }
+                })
+                .collect();
+
+            PodSpec {
+                containers: merged_containers,
+                ..original_pod_spec
+            }
+        });
+
+        PodTemplateSpec {
+            spec: pod_spec,
+            ..template
+        }
+    }
+
+    fn clean_deployment(
+        &self,
+        deployment: Deployment,
+        workload_containers: &[KubeContainerInfo],
+    ) -> Deployment {
         use k8s_openapi::api::apps::v1::DeploymentSpec;
 
-        let clean_spec = deployment.spec.map(|original_spec| DeploymentSpec {
-            // Only the essential fields for basic deployment functionality
-            replicas: original_spec.replicas,
-            selector: original_spec.selector,
-            template: original_spec.template,
+        let clean_spec = deployment.spec.map(|original_spec| {
+            // Merge container specs with template
+            let template =
+                self.merge_template_containers(original_spec.template, workload_containers);
 
-            // All other fields use defaults - let target cluster manage them
-            ..Default::default()
+            DeploymentSpec {
+                // Only the essential fields for basic deployment functionality
+                replicas: original_spec.replicas,
+                selector: original_spec.selector,
+                template,
+                min_ready_seconds: original_spec.min_ready_seconds,
+                paused: original_spec.paused,
+                progress_deadline_seconds: original_spec.progress_deadline_seconds,
+                revision_history_limit: original_spec.revision_history_limit,
+                strategy: original_spec.strategy,
+            }
         });
 
         Deployment {
-            metadata: self.create_clean_metadata(&deployment.metadata),
+            metadata: self.clean_metadata(deployment.metadata),
             spec: clean_spec,
             status: None, // Never copy status
         }
     }
 
-    fn clean_statefulset(&self, statefulset: StatefulSet) -> StatefulSet {
+    fn clean_statefulset(
+        &self,
+        statefulset: StatefulSet,
+        workload_containers: &[KubeContainerInfo],
+    ) -> StatefulSet {
         use k8s_openapi::api::apps::v1::StatefulSetSpec;
 
-        let clean_spec = statefulset.spec.map(|original_spec| StatefulSetSpec {
-            service_name: original_spec.service_name,
-            replicas: original_spec.replicas,
-            selector: original_spec.selector,
-            template: original_spec.template,
-            volume_claim_templates: original_spec.volume_claim_templates,
-            update_strategy: original_spec.update_strategy,
-            min_ready_seconds: original_spec.min_ready_seconds,
-            persistent_volume_claim_retention_policy: original_spec
-                .persistent_volume_claim_retention_policy,
-            ordinals: original_spec.ordinals,
-            revision_history_limit: original_spec.revision_history_limit,
-            pod_management_policy: original_spec.pod_management_policy,
+        let clean_spec = statefulset.spec.map(|original_spec| {
+            // Merge container specs with template
+            let template =
+                self.merge_template_containers(original_spec.template, workload_containers);
+
+            StatefulSetSpec {
+                service_name: original_spec.service_name,
+                replicas: original_spec.replicas,
+                selector: original_spec.selector,
+                template,
+                volume_claim_templates: original_spec.volume_claim_templates,
+                update_strategy: original_spec.update_strategy,
+                min_ready_seconds: original_spec.min_ready_seconds,
+                persistent_volume_claim_retention_policy: original_spec
+                    .persistent_volume_claim_retention_policy,
+                ordinals: original_spec.ordinals,
+                revision_history_limit: original_spec.revision_history_limit,
+                pod_management_policy: original_spec.pod_management_policy,
+            }
         });
 
         StatefulSet {
-            metadata: self.create_clean_metadata(&statefulset.metadata),
+            metadata: self.clean_metadata(statefulset.metadata),
             spec: clean_spec,
             status: None,
         }
     }
 
-    fn clean_daemonset(&self, daemonset: DaemonSet) -> DaemonSet {
+    fn clean_daemonset(
+        &self,
+        daemonset: DaemonSet,
+        workload_containers: &[KubeContainerInfo],
+    ) -> DaemonSet {
         use k8s_openapi::api::apps::v1::DaemonSetSpec;
 
-        let clean_spec = daemonset.spec.map(|original_spec| DaemonSetSpec {
-            selector: original_spec.selector,
-            template: original_spec.template,
-            update_strategy: original_spec.update_strategy,
-            min_ready_seconds: original_spec.min_ready_seconds,
-            revision_history_limit: original_spec.revision_history_limit,
+        let clean_spec = daemonset.spec.map(|original_spec| {
+            // Merge container specs with template
+            let template =
+                self.merge_template_containers(original_spec.template, workload_containers);
+
+            DaemonSetSpec {
+                selector: original_spec.selector,
+                template,
+                update_strategy: original_spec.update_strategy,
+                min_ready_seconds: original_spec.min_ready_seconds,
+                revision_history_limit: original_spec.revision_history_limit,
+            }
         });
 
         DaemonSet {
-            metadata: self.create_clean_metadata(&daemonset.metadata),
+            metadata: self.clean_metadata(daemonset.metadata),
             spec: clean_spec,
             status: None,
         }
     }
 
-    fn clean_pod(&self, pod: Pod) -> Pod {
+    fn merge_containers(
+        &self,
+        containers: Vec<k8s_openapi::api::core::v1::Container>,
+        workload_containers: &[KubeContainerInfo],
+    ) -> Vec<k8s_openapi::api::core::v1::Container> {
+        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+
+        containers
+            .into_iter()
+            .map(|container| {
+                // Find matching container in workload by name
+                if let Some(workload_container) = workload_containers
+                    .iter()
+                    .find(|wc| wc.name == container.name)
+                {
+                    let mut new_container = container.clone();
+
+                    // Update image if specified in workload
+                    if !workload_container.image.is_empty() {
+                        new_container.image = Some(workload_container.image.clone());
+                    }
+
+                    // Update resource requirements
+                    let mut resources = container.resources.unwrap_or_default();
+                    let mut requests = resources.requests.unwrap_or_default();
+                    let mut limits = resources.limits.unwrap_or_default();
+
+                    // Update CPU and memory requests
+                    if let Some(cpu_request) = &workload_container.cpu_request {
+                        if !cpu_request.is_empty() {
+                            requests.insert("cpu".to_string(), Quantity(cpu_request.clone()));
+                        }
+                    }
+                    if let Some(memory_request) = &workload_container.memory_request {
+                        if !memory_request.is_empty() {
+                            requests.insert("memory".to_string(), Quantity(memory_request.clone()));
+                        }
+                    }
+
+                    // Update CPU and memory limits
+                    if let Some(cpu_limit) = &workload_container.cpu_limit {
+                        if !cpu_limit.is_empty() {
+                            limits.insert("cpu".to_string(), Quantity(cpu_limit.clone()));
+                        }
+                    }
+                    if let Some(memory_limit) = &workload_container.memory_limit {
+                        if !memory_limit.is_empty() {
+                            limits.insert("memory".to_string(), Quantity(memory_limit.clone()));
+                        }
+                    }
+
+                    // Set the updated resources back
+                    resources.requests = if requests.is_empty() {
+                        None
+                    } else {
+                        Some(requests)
+                    };
+                    resources.limits = if limits.is_empty() {
+                        None
+                    } else {
+                        Some(limits)
+                    };
+                    new_container.resources = Some(resources);
+
+                    new_container
+                } else {
+                    container
+                }
+            })
+            .collect()
+    }
+
+    fn clean_pod(&self, pod: Pod, workload_containers: &[KubeContainerInfo]) -> Pod {
         use k8s_openapi::api::core::v1::PodSpec;
 
-        let clean_spec = pod.spec.map(|original_spec| PodSpec {
-            containers: original_spec.containers,
-            init_containers: original_spec.init_containers,
-            ephemeral_containers: original_spec.ephemeral_containers,
-            volumes: original_spec.volumes,
-            restart_policy: original_spec.restart_policy,
-            termination_grace_period_seconds: original_spec.termination_grace_period_seconds,
-            active_deadline_seconds: original_spec.active_deadline_seconds,
-            dns_policy: original_spec.dns_policy,
-            dns_config: original_spec.dns_config,
-            node_selector: original_spec.node_selector,
-            service_account_name: original_spec.service_account_name,
-            service_account: original_spec.service_account,
-            automount_service_account_token: original_spec.automount_service_account_token,
-            security_context: original_spec.security_context,
-            image_pull_secrets: original_spec.image_pull_secrets,
-            affinity: original_spec.affinity,
-            tolerations: original_spec.tolerations,
-            topology_spread_constraints: original_spec.topology_spread_constraints,
-            priority_class_name: original_spec.priority_class_name,
-            priority: original_spec.priority,
-            preemption_policy: original_spec.preemption_policy,
-            overhead: original_spec.overhead,
-            enable_service_links: original_spec.enable_service_links,
-            os: original_spec.os,
-            host_users: original_spec.host_users,
-            scheduling_gates: original_spec.scheduling_gates,
-            resource_claims: original_spec.resource_claims,
+        let clean_spec = pod.spec.map(|original_spec| {
+            let merged_containers =
+                self.merge_containers(original_spec.containers, workload_containers);
 
-            // Remove runtime/node-specific fields by using Default
-            ..Default::default()
+            PodSpec {
+                active_deadline_seconds: original_spec.active_deadline_seconds,
+                containers: merged_containers,
+                init_containers: original_spec.init_containers,
+                ephemeral_containers: original_spec.ephemeral_containers,
+                volumes: original_spec.volumes,
+                restart_policy: original_spec.restart_policy,
+                termination_grace_period_seconds: original_spec.termination_grace_period_seconds,
+                dns_policy: original_spec.dns_policy,
+                dns_config: original_spec.dns_config,
+                node_selector: original_spec.node_selector,
+                service_account_name: original_spec.service_account_name,
+                service_account: original_spec.service_account,
+                automount_service_account_token: original_spec.automount_service_account_token,
+                security_context: original_spec.security_context,
+                image_pull_secrets: original_spec.image_pull_secrets,
+                affinity: original_spec.affinity,
+                tolerations: original_spec.tolerations,
+                topology_spread_constraints: original_spec.topology_spread_constraints,
+                priority_class_name: original_spec.priority_class_name,
+                priority: original_spec.priority,
+                preemption_policy: original_spec.preemption_policy,
+                overhead: original_spec.overhead,
+                enable_service_links: original_spec.enable_service_links,
+                os: original_spec.os,
+                host_users: original_spec.host_users,
+                scheduling_gates: original_spec.scheduling_gates,
+                resource_claims: original_spec.resource_claims,
+
+                // Remove runtime/node-specific fields by using Default
+                ..Default::default()
+            }
         });
 
         Pod {
-            metadata: self.create_clean_metadata(&pod.metadata),
+            metadata: self.clean_metadata(pod.metadata),
             spec: clean_spec,
             status: None,
         }
     }
 
-    fn clean_job(&self, job: Job) -> Job {
+    fn clean_job(&self, job: Job, workload_containers: &[KubeContainerInfo]) -> Job {
         use k8s_openapi::api::batch::v1::JobSpec;
 
-        let clean_spec = job.spec.map(|original_spec| JobSpec {
-            template: original_spec.template,
-            parallelism: original_spec.parallelism,
-            completions: original_spec.completions,
-            completion_mode: original_spec.completion_mode,
-            active_deadline_seconds: original_spec.active_deadline_seconds,
-            backoff_limit: original_spec.backoff_limit,
-            backoff_limit_per_index: original_spec.backoff_limit_per_index,
-            max_failed_indexes: original_spec.max_failed_indexes,
-            selector: original_spec.selector,
-            manual_selector: original_spec.manual_selector,
-            ttl_seconds_after_finished: original_spec.ttl_seconds_after_finished,
-            suspend: original_spec.suspend,
-            pod_failure_policy: original_spec.pod_failure_policy,
-            pod_replacement_policy: original_spec.pod_replacement_policy,
-            managed_by: original_spec.managed_by,
-            success_policy: original_spec.success_policy,
+        let clean_spec = job.spec.map(|original_spec| {
+            // Merge container specs with template
+            let template =
+                self.merge_template_containers(original_spec.template, workload_containers);
+
+            JobSpec {
+                template,
+                parallelism: original_spec.parallelism,
+                completions: original_spec.completions,
+                completion_mode: original_spec.completion_mode,
+                active_deadline_seconds: original_spec.active_deadline_seconds,
+                backoff_limit: original_spec.backoff_limit,
+                backoff_limit_per_index: original_spec.backoff_limit_per_index,
+                max_failed_indexes: original_spec.max_failed_indexes,
+                selector: original_spec.selector,
+                manual_selector: original_spec.manual_selector,
+                ttl_seconds_after_finished: original_spec.ttl_seconds_after_finished,
+                suspend: original_spec.suspend,
+                pod_failure_policy: original_spec.pod_failure_policy,
+                pod_replacement_policy: original_spec.pod_replacement_policy,
+                managed_by: original_spec.managed_by,
+                success_policy: original_spec.success_policy,
+            }
         });
 
         Job {
-            metadata: self.create_clean_metadata(&job.metadata),
+            metadata: self.clean_metadata(job.metadata),
             spec: clean_spec,
             status: None,
         }
     }
 
-    fn clean_cronjob(&self, cronjob: CronJob) -> CronJob {
+    fn clean_cronjob(
+        &self,
+        cronjob: CronJob,
+        workload_containers: &[KubeContainerInfo],
+    ) -> CronJob {
         use k8s_openapi::api::batch::v1::CronJobSpec;
 
-        let clean_spec = cronjob.spec.map(|original_spec| CronJobSpec {
-            schedule: original_spec.schedule,
-            time_zone: original_spec.time_zone,
-            starting_deadline_seconds: original_spec.starting_deadline_seconds,
-            concurrency_policy: original_spec.concurrency_policy,
-            suspend: original_spec.suspend,
-            job_template: original_spec.job_template,
-            successful_jobs_history_limit: original_spec.successful_jobs_history_limit,
-            failed_jobs_history_limit: original_spec.failed_jobs_history_limit,
+        let clean_spec = cronjob.spec.map(|original_spec| {
+            // Handle job_template which contains a JobTemplateSpec
+            let job_template = {
+                let mut template = original_spec.job_template;
+                if let Some(job_spec) = &mut template.spec {
+                    // Merge container specs with the job template's template
+                    job_spec.template = self
+                        .merge_template_containers(job_spec.template.clone(), workload_containers);
+                }
+                template
+            };
+
+            CronJobSpec {
+                schedule: original_spec.schedule,
+                time_zone: original_spec.time_zone,
+                starting_deadline_seconds: original_spec.starting_deadline_seconds,
+                concurrency_policy: original_spec.concurrency_policy,
+                suspend: original_spec.suspend,
+                job_template,
+                successful_jobs_history_limit: original_spec.successful_jobs_history_limit,
+                failed_jobs_history_limit: original_spec.failed_jobs_history_limit,
+            }
         });
 
         CronJob {
-            metadata: self.create_clean_metadata(&cronjob.metadata),
+            metadata: self.clean_metadata(cronjob.metadata),
             spec: clean_spec,
             status: None,
         }
     }
 
-    fn clean_replicaset(&self, replicaset: ReplicaSet) -> ReplicaSet {
+    fn clean_replicaset(
+        &self,
+        replicaset: ReplicaSet,
+        workload_containers: &[KubeContainerInfo],
+    ) -> ReplicaSet {
         use k8s_openapi::api::apps::v1::ReplicaSetSpec;
 
-        let clean_spec = replicaset.spec.map(|original_spec| ReplicaSetSpec {
-            replicas: original_spec.replicas,
-            selector: original_spec.selector,
-            template: original_spec.template,
-            min_ready_seconds: original_spec.min_ready_seconds,
+        let clean_spec = replicaset.spec.map(|original_spec| {
+            // Merge container specs with template
+            let template = original_spec
+                .template
+                .map(|t| self.merge_template_containers(t, workload_containers));
+
+            ReplicaSetSpec {
+                replicas: original_spec.replicas,
+                selector: original_spec.selector,
+                template,
+                min_ready_seconds: original_spec.min_ready_seconds,
+            }
         });
 
         ReplicaSet {
-            metadata: self.create_clean_metadata(&replicaset.metadata),
+            metadata: self.clean_metadata(replicaset.metadata),
             spec: clean_spec,
             status: None,
         }
@@ -1376,15 +1589,9 @@ impl KubeManager {
             all_services_by_namespace.insert(namespace.clone(), all_services.clone());
 
             // Process each workload in this namespace
-            for workload_id in namespace_workloads {
+            for workload in namespace_workloads {
                 let workload_yaml_result = self
-                    .retrieve_single_workload_with_resources(
-                        client,
-                        &workload_id.namespace,
-                        &workload_id.name,
-                        workload_id.kind,
-                        &all_services,
-                    )
+                    .retrieve_single_workload_with_resources(client, &workload, &all_services)
                     .await?;
 
                 // Helper to collect resource names by namespace
@@ -1392,13 +1599,13 @@ impl KubeManager {
                     |services: Vec<String>, configmaps: Vec<String>, secrets: Vec<String>| {
                         let services_set = all_services_set_by_namespace
                             .entry(namespace.clone())
-                            .or_insert_with(std::collections::HashSet::new);
+                            .or_default();
                         let configmaps_set = all_configmaps_set_by_namespace
                             .entry(namespace.clone())
-                            .or_insert_with(std::collections::HashSet::new);
+                            .or_default();
                         let secrets_set = all_secrets_set_by_namespace
                             .entry(namespace.clone())
-                            .or_insert_with(std::collections::HashSet::new);
+                            .or_default();
 
                         for service in services {
                             services_set.insert(service);
@@ -1472,16 +1679,14 @@ impl KubeManager {
     async fn retrieve_single_workload_with_resources(
         &self,
         client: &kube::Client,
-        namespace: &str,
-        name: &str,
-        kind: KubeWorkloadKind,
+        workload: &KubeAppCatalogWorkload,
         all_services: &[Service],
     ) -> Result<KubeWorkloadYaml> {
-        match kind {
+        match workload.kind {
             KubeWorkloadKind::Deployment => {
                 let api: kube::Api<Deployment> =
-                    kube::Api::namespaced((*client).clone(), namespace);
-                let deployment = api.get(name).await?;
+                    kube::Api::namespaced((*client).clone(), &workload.namespace);
+                let deployment = api.get(&workload.name).await?;
 
                 // Get labels for service matching
                 let workload_labels = deployment
@@ -1501,8 +1706,8 @@ impl KubeManager {
                 let configmaps = Self::extract_configmap_references(&deployment_json);
                 let secrets = Self::extract_secret_references(&deployment_json);
 
-                // Clean server-managed fields
-                let clean_deployment = self.clean_deployment(deployment);
+                // Clean server-managed fields and merge container specs
+                let clean_deployment = self.clean_deployment(deployment, &workload.containers);
                 let workload_yaml = serde_yaml::to_string(&clean_deployment)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
@@ -1515,8 +1720,8 @@ impl KubeManager {
             }
             KubeWorkloadKind::StatefulSet => {
                 let api: kube::Api<StatefulSet> =
-                    kube::Api::namespaced((*client).clone(), namespace);
-                let statefulset = api.get(name).await?;
+                    kube::Api::namespaced((*client).clone(), &workload.namespace);
+                let statefulset = api.get(&workload.name).await?;
 
                 let workload_labels = statefulset
                     .spec
@@ -1534,7 +1739,7 @@ impl KubeManager {
                 let configmaps = Self::extract_configmap_references(&statefulset_json);
                 let secrets = Self::extract_secret_references(&statefulset_json);
 
-                let clean_statefulset = self.clean_statefulset(statefulset);
+                let clean_statefulset = self.clean_statefulset(statefulset, &workload.containers);
                 let workload_yaml = serde_yaml::to_string(&clean_statefulset)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
@@ -1546,8 +1751,9 @@ impl KubeManager {
                 }))
             }
             KubeWorkloadKind::DaemonSet => {
-                let api: kube::Api<DaemonSet> = kube::Api::namespaced((*client).clone(), namespace);
-                let daemonset = api.get(name).await?;
+                let api: kube::Api<DaemonSet> =
+                    kube::Api::namespaced((*client).clone(), &workload.namespace);
+                let daemonset = api.get(&workload.name).await?;
 
                 let workload_labels = daemonset
                     .spec
@@ -1565,7 +1771,7 @@ impl KubeManager {
                 let configmaps = Self::extract_configmap_references(&daemonset_json);
                 let secrets = Self::extract_secret_references(&daemonset_json);
 
-                let clean_daemonset = self.clean_daemonset(daemonset);
+                let clean_daemonset = self.clean_daemonset(daemonset, &workload.containers);
                 let workload_yaml = serde_yaml::to_string(&clean_daemonset)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
@@ -1577,8 +1783,9 @@ impl KubeManager {
                 }))
             }
             KubeWorkloadKind::Pod => {
-                let api: kube::Api<Pod> = kube::Api::namespaced((*client).clone(), namespace);
-                let pod = api.get(name).await?;
+                let api: kube::Api<Pod> =
+                    kube::Api::namespaced((*client).clone(), &workload.namespace);
+                let pod = api.get(&workload.name).await?;
 
                 let workload_labels = pod.metadata.labels.as_ref().cloned().unwrap_or_default();
                 let services =
@@ -1589,7 +1796,7 @@ impl KubeManager {
                 let configmaps = Self::extract_configmap_references(&pod_json);
                 let secrets = Self::extract_secret_references(&pod_json);
 
-                let clean_pod = self.clean_pod(pod);
+                let clean_pod = self.clean_pod(pod, &workload.containers);
                 let workload_yaml = serde_yaml::to_string(&clean_pod)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
@@ -1601,8 +1808,9 @@ impl KubeManager {
                 }))
             }
             KubeWorkloadKind::Job => {
-                let api: kube::Api<Job> = kube::Api::namespaced((*client).clone(), namespace);
-                let job = api.get(name).await?;
+                let api: kube::Api<Job> =
+                    kube::Api::namespaced((*client).clone(), &workload.namespace);
+                let job = api.get(&workload.name).await?;
 
                 let workload_labels = job
                     .spec
@@ -1620,7 +1828,7 @@ impl KubeManager {
                 let configmaps = Self::extract_configmap_references(&job_json);
                 let secrets = Self::extract_secret_references(&job_json);
 
-                let clean_job = self.clean_job(job);
+                let clean_job = self.clean_job(job, &workload.containers);
                 let workload_yaml = serde_yaml::to_string(&clean_job)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
@@ -1632,8 +1840,9 @@ impl KubeManager {
                 }))
             }
             KubeWorkloadKind::CronJob => {
-                let api: kube::Api<CronJob> = kube::Api::namespaced((*client).clone(), namespace);
-                let cronjob = api.get(name).await?;
+                let api: kube::Api<CronJob> =
+                    kube::Api::namespaced((*client).clone(), &workload.namespace);
+                let cronjob = api.get(&workload.name).await?;
 
                 let workload_labels = cronjob
                     .spec
@@ -1652,7 +1861,7 @@ impl KubeManager {
                 let configmaps = Self::extract_configmap_references(&cronjob_json);
                 let secrets = Self::extract_secret_references(&cronjob_json);
 
-                let clean_cronjob = self.clean_cronjob(cronjob);
+                let clean_cronjob = self.clean_cronjob(cronjob, &workload.containers);
                 let workload_yaml = serde_yaml::to_string(&clean_cronjob)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 
@@ -1665,8 +1874,8 @@ impl KubeManager {
             }
             KubeWorkloadKind::ReplicaSet => {
                 let api: kube::Api<ReplicaSet> =
-                    kube::Api::namespaced((*client).clone(), namespace);
-                let replicaset = api.get(name).await?;
+                    kube::Api::namespaced((*client).clone(), &workload.namespace);
+                let replicaset = api.get(&workload.name).await?;
 
                 let workload_labels = replicaset
                     .spec
@@ -1685,7 +1894,7 @@ impl KubeManager {
                 let configmaps = Self::extract_configmap_references(&replicaset_json);
                 let secrets = Self::extract_secret_references(&replicaset_json);
 
-                let clean_replicaset = self.clean_replicaset(replicaset);
+                let clean_replicaset = self.clean_replicaset(replicaset, &workload.containers);
                 let workload_yaml = serde_yaml::to_string(&clean_replicaset)
                     .map_err(|e| anyhow!("Failed to serialize to YAML: {}", e))?;
 

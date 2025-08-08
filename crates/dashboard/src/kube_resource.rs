@@ -5,8 +5,8 @@ use lapdev_common::{
     console::Organization,
     kube::{
         KubeAppCatalogWorkloadCreate, KubeClusterInfo, KubeClusterStatus, KubeNamespace,
-        KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor,
-        PaginationParams,
+        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus,
+        PaginationCursor, PaginationParams,
     },
 };
 use leptos::prelude::*;
@@ -86,11 +86,11 @@ async fn get_workloads_from_api(
 async fn get_namespaces_from_api(
     org: Signal<Option<Organization>>,
     cluster_id: uuid::Uuid,
-) -> Result<Vec<KubeNamespace>> {
+) -> Result<Vec<KubeNamespaceInfo>> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = get_hrpc_client();
 
-    Ok(client.get_namespaces(org.id, cluster_id).await??)
+    Ok(client.get_cluster_namespaces(org.id, cluster_id).await??)
 }
 
 async fn get_cluster_info_from_api(

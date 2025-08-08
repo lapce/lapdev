@@ -112,14 +112,15 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
                             <TableHead>Version</TableHead>
                             <TableHead>Region</TableHead>
                             <TableHead>Nodes</TableHead>
-                            <TableHead>Can Deploy Environment</TableHead>
+                            <TableHead>Can Deploy Personal</TableHead>
+                            <TableHead>Can Deploy Shared</TableHead>
                             <TableHead class="w-24">Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         <For
                             each=move || clusters.get()
-                            key=|c| format!("{}_{}", c.id, c.can_deploy)
+                            key=|c| format!("{}_{}_{}", c.id, c.can_deploy_personal, c.can_deploy_shared)
                             children=move |cluster| {
                                 view! { <KubeClusterItem cluster update_counter /> }
                             }
@@ -199,13 +200,24 @@ pub fn KubeClusterItem(
             <TableCell>{cluster.info.node_count.to_string()}</TableCell>
             <TableCell>
                 <Badge variant={
-                    if cluster.can_deploy {
+                    if cluster.can_deploy_personal {
                         BadgeVariant::Secondary
                     } else {
                         BadgeVariant::Destructive
                     }
                 }>
-                    {if cluster.can_deploy { "Yes" } else { "No" }}
+                    {if cluster.can_deploy_personal { "Yes" } else { "No" }}
+                </Badge>
+            </TableCell>
+            <TableCell>
+                <Badge variant={
+                    if cluster.can_deploy_shared {
+                        BadgeVariant::Secondary
+                    } else {
+                        BadgeVariant::Destructive
+                    }
+                }>
+                    {if cluster.can_deploy_shared { "Yes" } else { "No" }}
                 </Badge>
             </TableCell>
             <TableCell>
@@ -232,53 +244,103 @@ pub fn KubeClusterItem(
                         </a>
                         <DropdownMenuItem
                             on:click=move |_| {
-                                if !cluster.can_deploy {
+                                if !cluster.can_deploy_personal {
                                     dropdown_expanded.set(false);
-                                    // Enable deployment
+                                    // Enable personal deployment
                                     let org = org.get_untracked();
                                     let cluster_id = cluster.id;
                                     spawn_local(async move {
                                         if let Some(org) = org {
                                             let client = HrpcServiceClient::new("/api/rpc".to_string());
-                                            let _ = client.set_cluster_deployable(org.id, cluster_id, true).await;
+                                            let _ = client.set_cluster_personal_deployable(org.id, cluster_id, true).await;
                                             update_counter.update(|c| *c += 1);
                                         }
                                     });
                                 }
                             }
-                            class=if cluster.can_deploy {
+                            class=if cluster.can_deploy_personal {
                                 "cursor-not-allowed opacity-50"
                             } else {
                                 "cursor-pointer"
                             }
                         >
                             <lucide_leptos::Check />
-                            "Enable Deployment"
+                            "Enable Personal Deployment"
                         </DropdownMenuItem>
                         <DropdownMenuItem
                             on:click=move |_| {
-                                if cluster.can_deploy {
+                                if cluster.can_deploy_personal {
                                     dropdown_expanded.set(false);
-                                    // Disable deployment
+                                    // Disable personal deployment
                                     let org = org.get_untracked();
                                     let cluster_id = cluster.id;
                                     spawn_local(async move {
                                         if let Some(org) = org {
                                             let client = HrpcServiceClient::new("/api/rpc".to_string());
-                                            let _ = client.set_cluster_deployable(org.id, cluster_id, false).await;
+                                            let _ = client.set_cluster_personal_deployable(org.id, cluster_id, false).await;
                                             update_counter.update(|c| *c += 1);
                                         }
                                     });
                                 }
                             }
-                            class=if !cluster.can_deploy {
+                            class=if !cluster.can_deploy_personal {
                                 "cursor-not-allowed opacity-50"
                             } else {
                                 "cursor-pointer"
                             }
                         >
                             <lucide_leptos::X />
-                            "Disable Deployment"
+                            "Disable Personal Deployment"
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            on:click=move |_| {
+                                if !cluster.can_deploy_shared {
+                                    dropdown_expanded.set(false);
+                                    // Enable shared deployment
+                                    let org = org.get_untracked();
+                                    let cluster_id = cluster.id;
+                                    spawn_local(async move {
+                                        if let Some(org) = org {
+                                            let client = HrpcServiceClient::new("/api/rpc".to_string());
+                                            let _ = client.set_cluster_shared_deployable(org.id, cluster_id, true).await;
+                                            update_counter.update(|c| *c += 1);
+                                        }
+                                    });
+                                }
+                            }
+                            class=if cluster.can_deploy_shared {
+                                "cursor-not-allowed opacity-50"
+                            } else {
+                                "cursor-pointer"
+                            }
+                        >
+                            <lucide_leptos::Check />
+                            "Enable Shared Deployment"
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            on:click=move |_| {
+                                if cluster.can_deploy_shared {
+                                    dropdown_expanded.set(false);
+                                    // Disable shared deployment
+                                    let org = org.get_untracked();
+                                    let cluster_id = cluster.id;
+                                    spawn_local(async move {
+                                        if let Some(org) = org {
+                                            let client = HrpcServiceClient::new("/api/rpc".to_string());
+                                            let _ = client.set_cluster_shared_deployable(org.id, cluster_id, false).await;
+                                            update_counter.update(|c| *c += 1);
+                                        }
+                                    });
+                                }
+                            }
+                            class=if !cluster.can_deploy_shared {
+                                "cursor-not-allowed opacity-50"
+                            } else {
+                                "cursor-pointer"
+                            }
+                        >
+                            <lucide_leptos::X />
+                            "Disable Shared Deployment"
                         </DropdownMenuItem>
                         <DropdownMenuItem
                             on:click=move |_| {

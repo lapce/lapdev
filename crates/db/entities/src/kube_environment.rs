@@ -10,13 +10,13 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     pub deleted_at: Option<DateTimeWithTimeZone>,
     pub organization_id: Uuid,
-    pub created_by: Uuid,
+    pub user_id: Uuid,
     pub app_catalog_id: Uuid,
     pub cluster_id: Uuid,
     pub name: String,
     pub namespace: String,
     pub status: Option<String>,
-    pub user_id: Uuid,
+    pub is_shared: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -34,7 +34,22 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(KubeCluster::Status).string())
                     .col(ColumnDef::new(KubeCluster::Region).string())
                     .col(ColumnDef::new(KubeCluster::LastReportedAt).timestamp_with_time_zone())
-                    .col(ColumnDef::new(KubeCluster::CanDeploy).boolean().not_null())
+                    .col(ColumnDef::new(KubeCluster::CanDeployPersonal).boolean().not_null())
+                    .col(ColumnDef::new(KubeCluster::CanDeployShared).boolean().not_null())
+                    .to_owned(),
+            )
+            .await?;
+
+        // Create optimal composite index for get_all_kube_clusters query
+        // Covers: organization_id, deleted_at, created_at (for ordering)
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_cluster_org_deleted_created_idx")
+                    .table(KubeCluster::Table)
+                    .col(KubeCluster::OrganizationId)
+                    .col(KubeCluster::DeletedAt)
+                    .col(KubeCluster::CreatedAt)
                     .to_owned(),
             )
             .await
@@ -54,5 +69,6 @@ pub enum KubeCluster {
     Status,
     Region,
     LastReportedAt,
-    CanDeploy,
+    CanDeployPersonal,
+    CanDeployShared,
 }

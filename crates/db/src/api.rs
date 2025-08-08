@@ -13,15 +13,40 @@ use pasetors::{
     version4::V4,
 };
 use sea_orm::{
-    prelude::Json,
+    prelude::{DateTimeWithTimeZone, Json},
     sea_query::{Expr, Func, OnConflict},
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, DatabaseTransaction,
-    EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
+    EntityTrait, FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
+    RelationTrait, TransactionTrait,
 };
 use sea_orm_migration::MigratorTrait;
 use serde_json;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+// Custom result structure for multi-table join
+#[derive(FromQueryResult)]
+struct KubeEnvironmentWithRelated {
+    // Environment fields
+    pub env_id: Uuid,
+    pub env_name: String,
+    pub env_namespace: String,
+    pub env_app_catalog_id: Uuid,
+    pub env_cluster_id: Uuid,
+    pub env_status: Option<String>,
+    pub env_created_at: DateTimeWithTimeZone,
+    pub env_is_shared: bool,
+    pub env_organization_id: Uuid,
+    pub env_user_id: Uuid,
+    pub env_deleted_at: Option<DateTimeWithTimeZone>,
+
+    // App catalog fields
+    pub catalog_name: Option<String>,
+    pub catalog_description: Option<String>,
+
+    // Cluster fields
+    pub cluster_name: Option<String>,
+}
 
 pub const LAPDEV_PIN_UNPIN_ERROR: &str = "lapdev-pin-unpin-error";
 pub const LAPDEV_MAX_CPU_ERROR: &str = "lapdev-max-cpu-error";
@@ -838,7 +863,8 @@ impl DbApi {
             organization_id: ActiveValue::Set(org_id),
             deleted_at: ActiveValue::Set(None),
             last_reported_at: ActiveValue::Set(None),
-            can_deploy: ActiveValue::Set(true),
+            can_deploy_personal: ActiveValue::Set(true),
+            can_deploy_shared: ActiveValue::Set(true),
         }
         .insert(&self.conn)
         .await?;
@@ -901,11 +927,13 @@ impl DbApi {
     pub async fn set_cluster_deployable(
         &self,
         cluster_id: Uuid,
-        can_deploy: bool,
+        can_deploy_personal: bool,
+        can_deploy_shared: bool,
     ) -> Result<lapdev_db_entities::kube_cluster::Model> {
         let active_model = lapdev_db_entities::kube_cluster::ActiveModel {
             id: ActiveValue::Set(cluster_id),
-            can_deploy: ActiveValue::Set(can_deploy),
+            can_deploy_personal: ActiveValue::Set(can_deploy_personal),
+            can_deploy_shared: ActiveValue::Set(can_deploy_shared),
             ..Default::default()
         };
         let updated = active_model.update(&self.conn).await?;
@@ -1077,7 +1105,7 @@ impl DbApi {
             .filter_map(|w| {
                 // Deserialize containers from JSON, skip if invalid
                 let containers = serde_json::from_value(w.containers.clone()).ok()?;
-                
+
                 Some(KubeAppCatalogWorkload {
                     id: w.id,
                     name: w.name,
@@ -1123,7 +1151,7 @@ impl DbApi {
         let containers_json = serde_json::to_value(containers)?;
         lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
             id: ActiveValue::Set(workload_id),
-            containers: ActiveValue::Set(Json::from(containers_json)),
+            containers: ActiveValue::Set(containers_json),
             ..Default::default()
         }
         .update(&self.conn)
@@ -1147,21 +1175,29 @@ impl DbApi {
         org_id: Uuid,
         user_id: Uuid,
         search: Option<String>,
+        is_shared: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<(
         Vec<(
             lapdev_db_entities::kube_environment::Model,
             Option<lapdev_db_entities::kube_app_catalog::Model>,
+            Option<lapdev_db_entities::kube_cluster::Model>,
         )>,
         usize,
     )> {
         let pagination = pagination.unwrap_or_default();
 
-        // Build base query - filter by user ID so users only see their own environments
+        // Build base query - filter by shared status and ownership
         let mut base_query = lapdev_db_entities::kube_environment::Entity::find()
             .filter(lapdev_db_entities::kube_environment::Column::OrganizationId.eq(org_id))
-            .filter(lapdev_db_entities::kube_environment::Column::UserId.eq(user_id))
+            .filter(lapdev_db_entities::kube_environment::Column::IsShared.eq(is_shared))
             .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null());
+
+        // For personal environments, only show user's own environments
+        if !is_shared {
+            base_query =
+                base_query.filter(lapdev_db_entities::kube_environment::Column::UserId.eq(user_id));
+        }
 
         if let Some(search_term) = search.as_ref().filter(|s| !s.trim().is_empty()) {
             use sea_orm::sea_query::{extension::postgres::PgExpr, Expr, SimpleExpr};
@@ -1188,12 +1224,132 @@ impl DbApi {
             .order_by_desc(lapdev_db_entities::kube_environment::Column::DeletedAt)
             .order_by_desc(lapdev_db_entities::kube_environment::Column::CreatedAt);
 
-        let environments_with_catalogs = paginated_query
-            .find_also_related(lapdev_db_entities::kube_app_catalog::Entity)
+        let environments_with_related: Vec<KubeEnvironmentWithRelated> = paginated_query
+            .select_only()
+            // Select environment columns with aliases
+            .column_as(lapdev_db_entities::kube_environment::Column::Id, "env_id")
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::Name,
+                "env_name",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::Namespace,
+                "env_namespace",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::AppCatalogId,
+                "env_app_catalog_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::ClusterId,
+                "env_cluster_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::Status,
+                "env_status",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::CreatedAt,
+                "env_created_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::IsShared,
+                "env_is_shared",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::OrganizationId,
+                "env_organization_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::UserId,
+                "env_user_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::DeletedAt,
+                "env_deleted_at",
+            )
+            // Join and select app catalog columns
+            .join(
+                JoinType::LeftJoin,
+                lapdev_db_entities::kube_environment::Relation::KubeAppCatalog.def(),
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::Name,
+                "catalog_name",
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::Description,
+                "catalog_description",
+            )
+            // Join and select cluster columns
+            .join(
+                JoinType::LeftJoin,
+                lapdev_db_entities::kube_environment::Relation::KubeCluster.def(),
+            )
+            .column_as(
+                lapdev_db_entities::kube_cluster::Column::Name,
+                "cluster_name",
+            )
+            .into_model::<KubeEnvironmentWithRelated>()
             .all(&self.conn)
             .await?;
 
-        Ok((environments_with_catalogs, total_count))
+        // Transform the result to match the expected tuple structure
+        let environments_with_catalogs_and_clusters = environments_with_related
+            .into_iter()
+            .map(|related| {
+                let env = lapdev_db_entities::kube_environment::Model {
+                    id: related.env_id,
+                    created_at: related.env_created_at,
+                    deleted_at: related.env_deleted_at,
+                    organization_id: related.env_organization_id,
+                    user_id: related.env_user_id,
+                    app_catalog_id: related.env_app_catalog_id,
+                    cluster_id: related.env_cluster_id,
+                    name: related.env_name,
+                    namespace: related.env_namespace,
+                    status: related.env_status,
+                    is_shared: related.env_is_shared,
+                };
+
+                let catalog =
+                    related
+                        .catalog_name
+                        .map(|name| lapdev_db_entities::kube_app_catalog::Model {
+                            id: related.env_app_catalog_id,
+                            name,
+                            description: related.catalog_description,
+                            resources: String::new(),
+                            cluster_id: related.env_cluster_id,
+                            created_at: related.env_created_at,
+                            created_by: related.env_user_id,
+                            organization_id: related.env_organization_id,
+                            deleted_at: None,
+                        });
+
+                let cluster =
+                    related
+                        .cluster_name
+                        .map(|name| lapdev_db_entities::kube_cluster::Model {
+                            id: related.env_cluster_id,
+                            name,
+                            cluster_version: None,
+                            status: None,
+                            region: None,
+                            created_at: related.env_created_at,
+                            created_by: related.env_user_id,
+                            organization_id: related.env_organization_id,
+                            deleted_at: None,
+                            last_reported_at: None,
+                            can_deploy_personal: true,
+                            can_deploy_shared: true,
+                        });
+
+                (env, catalog, cluster)
+            })
+            .collect();
+
+        Ok((environments_with_catalogs_and_clusters, total_count))
     }
 
     pub async fn create_kube_environment(
@@ -1205,23 +1361,95 @@ impl DbApi {
         name: String,
         namespace: String,
         status: Option<String>,
-    ) -> Result<lapdev_db_entities::kube_environment::Model> {
+        is_shared: bool,
+    ) -> Result<lapdev_db_entities::kube_environment::Model, sea_orm::DbErr> {
         let environment = lapdev_db_entities::kube_environment::ActiveModel {
             id: ActiveValue::Set(Uuid::new_v4()),
             created_at: ActiveValue::Set(Utc::now().into()),
             deleted_at: ActiveValue::Set(None),
             organization_id: ActiveValue::Set(org_id),
-            created_by: ActiveValue::Set(user_id),
             user_id: ActiveValue::Set(user_id),
             app_catalog_id: ActiveValue::Set(app_catalog_id),
             cluster_id: ActiveValue::Set(cluster_id),
             name: ActiveValue::Set(name),
             namespace: ActiveValue::Set(namespace),
             status: ActiveValue::Set(status),
+            is_shared: ActiveValue::Set(is_shared),
         }
         .insert(&self.conn)
         .await?;
         Ok(environment)
+    }
+
+    // Kube Namespace operations
+    pub async fn create_kube_namespace(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        name: String,
+        description: Option<String>,
+        is_shared: bool,
+    ) -> Result<lapdev_db_entities::kube_namespace::Model> {
+        let namespace = lapdev_db_entities::kube_namespace::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            created_at: ActiveValue::Set(Utc::now().into()),
+            deleted_at: ActiveValue::Set(None),
+            organization_id: ActiveValue::Set(org_id),
+            user_id: ActiveValue::Set(user_id),
+            name: ActiveValue::Set(name),
+            description: ActiveValue::Set(description),
+            is_shared: ActiveValue::Set(is_shared),
+        }
+        .insert(&self.conn)
+        .await?;
+        Ok(namespace)
+    }
+
+    pub async fn get_all_kube_namespaces(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        is_shared: bool,
+    ) -> Result<Vec<lapdev_db_entities::kube_namespace::Model>> {
+        let mut query = lapdev_db_entities::kube_namespace::Entity::find()
+            .filter(lapdev_db_entities::kube_namespace::Column::OrganizationId.eq(org_id))
+            .filter(lapdev_db_entities::kube_namespace::Column::IsShared.eq(is_shared))
+            .filter(lapdev_db_entities::kube_namespace::Column::DeletedAt.is_null());
+
+        // For personal namespaces, only show those created by the user
+        if !is_shared {
+            query = query.filter(lapdev_db_entities::kube_namespace::Column::UserId.eq(user_id));
+        }
+
+        let namespaces = query
+            .order_by_asc(lapdev_db_entities::kube_namespace::Column::Name)
+            .all(&self.conn)
+            .await?;
+        Ok(namespaces)
+    }
+
+    pub async fn get_kube_namespace(
+        &self,
+        namespace_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_namespace::Model>> {
+        let namespace = lapdev_db_entities::kube_namespace::Entity::find_by_id(namespace_id)
+            .filter(lapdev_db_entities::kube_namespace::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?;
+        Ok(namespace)
+    }
+
+    pub async fn delete_kube_namespace(
+        &self,
+        namespace_id: Uuid,
+    ) -> Result<lapdev_db_entities::kube_namespace::Model> {
+        let namespace = lapdev_db_entities::kube_namespace::ActiveModel {
+            id: ActiveValue::Set(namespace_id),
+            deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        };
+        let updated = namespace.update(&self.conn).await?;
+        Ok(updated)
     }
 
     async fn insert_workloads_to_catalog(

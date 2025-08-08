@@ -15,9 +15,10 @@ use k8s_openapi::{
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
-    KubeContainerInfo, KubeNamespace, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-    KubeWorkloadStatus, PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_URL,
-    KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
+    KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
+    KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
+    DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER,
+    KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
@@ -653,7 +654,7 @@ impl KubeManager {
         })
     }
 
-    async fn collect_namespaces(&self) -> Result<Vec<KubeNamespace>> {
+    async fn collect_namespaces(&self) -> Result<Vec<KubeNamespaceInfo>> {
         let client = self
             .kube_client
             .as_ref()
@@ -676,7 +677,7 @@ impl KubeManager {
                 .creation_timestamp
                 .map(|t| format!("{t:?}"));
 
-            kube_namespaces.push(KubeNamespace {
+            kube_namespaces.push(KubeNamespaceInfo {
                 name,
                 status,
                 created_at,
@@ -3382,7 +3383,7 @@ impl KubeManagerRpc for KubeManager {
     async fn get_namespaces(
         self,
         _context: ::tarpc::context::Context,
-    ) -> Result<Vec<KubeNamespace>, String> {
+    ) -> Result<Vec<KubeNamespaceInfo>, String> {
         match self.collect_namespaces().await {
             Ok(namespaces) => {
                 tracing::info!("Successfully collected {} namespaces", namespaces.len());

@@ -11,7 +11,8 @@ pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster
 pub struct KubeCluster {
     pub id: Uuid,
     pub name: String,
-    pub can_deploy: bool,
+    pub can_deploy_personal: bool,
+    pub can_deploy_shared: bool,
     pub info: KubeClusterInfo,
 }
 
@@ -127,6 +128,16 @@ pub struct CreateKubeClusterResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeNamespace {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_shared: bool,
+    pub created_at: DateTime<FixedOffset>,
+    pub created_by: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeNamespaceInfo {
     pub name: String,
     pub status: String,
     pub created_at: Option<String>,
@@ -196,11 +207,14 @@ pub struct KubeWorkloadDetails {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeEnvironment {
     pub id: Uuid,
+    pub user_id: Uuid,
     pub name: String,
     pub namespace: String,
     pub app_catalog_id: Uuid,
     pub app_catalog_name: String,
+    pub cluster_id: Uuid,
+    pub cluster_name: String,
     pub status: Option<String>,
     pub created_at: String,
-    pub created_by: Uuid,
+    pub is_shared: bool,
 }

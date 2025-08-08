@@ -11,6 +11,7 @@ use crate::{
         button::{Button, ButtonVariant},
         pagination::PagePagination,
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
+        tabs::{Tabs, TabsContent, TabsList, TabsTrigger},
         typography::{H3, H4, P},
     },
     modal::DatetimeModal,
@@ -39,13 +40,20 @@ pub fn KubeEnvironment() -> impl IntoView {
 async fn all_kube_environments(
     org: Signal<Option<Organization>>,
     search: Option<String>,
+    is_shared: bool,
     pagination: Option<PagePaginationParams>,
 ) -> Result<PaginatedResult<KubeEnvironment>> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     Ok(client
-        .all_kube_environments(org.id, search, pagination)
+        .all_kube_environments(org.id, search, is_shared, pagination)
         .await??)
+}
+
+#[derive(Clone, PartialEq)]
+enum TypeTab {
+    Personal,
+    Shared,
 }
 
 #[component]
@@ -56,6 +64,7 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
     let current_page = RwSignal::new(1usize);
     let page_size = RwSignal::new(20usize);
     let is_loading = RwSignal::new(false);
+    let active_tab = RwSignal::new(TypeTab::Personal);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -90,6 +99,8 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
     let environments_result = LocalResource::new(move || {
         let search = debounced_search.get();
         let page = current_page.get();
+        let tab = active_tab.get();
+        let is_shared = tab == TypeTab::Shared;
         let search_param = if search.trim().is_empty() {
             None
         } else {
@@ -101,7 +112,7 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
         });
         async move {
             is_loading.set(true);
-            let result = all_kube_environments(org, search_param, pagination)
+            let result = all_kube_environments(org, search_param, is_shared, pagination)
                 .await
                 .unwrap_or_else(|_| PaginatedResult {
                     data: vec![],
@@ -138,6 +149,12 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
         environments_result.refetch();
     });
 
+    Effect::new(move |_| {
+        active_tab.track();
+        current_page.set(1); // Reset to first page when tab changes
+        environments_result.refetch();
+    });
+
     let environment_list = Signal::derive(move || {
         environments_result
             .get()
@@ -158,6 +175,68 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
     let current_page_signal = Signal::derive(move || current_page.get());
     let total_pages_signal = Signal::derive(move || pagination_info.with(|i| i.total_pages));
 
+    view! {
+        <Tabs default_value=active_tab>
+            <TabsList class="grid w-full grid-cols-2 mb-6">
+                <TabsTrigger
+                    value=TypeTab::Personal
+                >
+                    "Personal Environments"
+                </TabsTrigger>
+                <TabsTrigger
+                    value=TypeTab::Shared
+                >
+                    "Shared Environments"
+                </TabsTrigger>
+            </TabsList>
+
+            <TabsContent
+                value=TypeTab::Personal
+            >
+                <EnvironmentContent
+                    search_query
+                    debounced_search
+                    environment_list
+                    pagination_info
+                    current_page_signal
+                    total_pages_signal
+                    current_page
+                    is_loading
+                    page_size
+                />
+            </TabsContent>
+
+            <TabsContent
+                value=TypeTab::Shared
+            >
+                <EnvironmentContent
+                    search_query
+                    debounced_search
+                    environment_list
+                    pagination_info
+                    current_page_signal
+                    total_pages_signal
+                    current_page
+                    is_loading
+                    page_size
+                />
+            </TabsContent>
+        </Tabs>
+    }
+}
+
+#[component]
+pub fn EnvironmentContent(
+    search_query: RwSignal<String>,
+    debounced_search: RwSignal<String>,
+    environment_list: Signal<Vec<KubeEnvironment>>,
+    pagination_info: Signal<PaginatedInfo>,
+    current_page_signal: Signal<usize>,
+    total_pages_signal: Signal<usize>,
+    current_page: RwSignal<usize>,
+    is_loading: RwSignal<bool>,
+    page_size: RwSignal<usize>,
+) -> impl IntoView {
     view! {
         <div class="flex flex-col gap-4">
             <div class="flex items-center gap-4">
@@ -202,6 +281,8 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
                             <TableHead>Name</TableHead>
                             <TableHead>Namespace</TableHead>
                             <TableHead>App Catalog</TableHead>
+                            <TableHead>Cluster</TableHead>
+                            <TableHead>Type</TableHead>
                             <TableHead>Status</TableHead>
                             <TableHead>Created</TableHead>
                             <TableHead class="pr-4">Actions</TableHead>
@@ -259,8 +340,6 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
                     }
                 }}
             </div>
-
-        // Pagination controls
         </div>
     }
 }
@@ -301,6 +380,18 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                         <span class="font-medium">{environment.app_catalog_name.clone()}</span>
                     </Button>
                 </a>
+            </TableCell>
+            <TableCell>
+                <a href=format!("/kubernetes/clusters/{}", environment.cluster_id)>
+                    <Button variant=ButtonVariant::Link class="p-0">
+                        <span class="font-medium">{environment.cluster_name.clone()}</span>
+                    </Button>
+                </a>
+            </TableCell>
+            <TableCell>
+                <Badge variant=BadgeVariant::Secondary>
+                    {if environment.is_shared { "Shared" } else { "Personal" }}
+                </Badge>
             </TableCell>
             <TableCell>
                 <Badge variant=status_variant>

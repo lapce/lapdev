@@ -2,12 +2,14 @@ use lapdev_api_hrpc::HrpcService;
 use lapdev_common::{
     hrpc::HrpcError,
     kube::{
-        CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeCluster,
-        KubeClusterInfo, KubeEnvironment, KubeNamespace, KubeWorkload, KubeWorkloadKind,
-        KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
+        CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeEnvironment, KubeNamespace,
+        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
+        PaginatedResult, PaginationParams,
     },
     UserRole,
 };
+use lapdev_rpc::error::ApiError;
 use uuid::Uuid;
 
 use crate::state::CoreState;
@@ -62,6 +64,24 @@ impl HrpcService for CoreState {
         headers: &axum::http::HeaderMap,
         org_id: Uuid,
         cluster_id: Uuid,
+        can_deploy_personal: bool,
+        can_deploy_shared: bool,
+    ) -> Result<(), HrpcError> {
+        let _ = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
+
+        self.kube_controller
+            .set_cluster_deployable(org_id, cluster_id, can_deploy_personal, can_deploy_shared)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn set_cluster_personal_deployable(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        cluster_id: Uuid,
         can_deploy: bool,
     ) -> Result<(), HrpcError> {
         let _ = self
@@ -69,7 +89,24 @@ impl HrpcService for CoreState {
             .await?;
 
         self.kube_controller
-            .set_cluster_deployable(org_id, cluster_id, can_deploy)
+            .set_cluster_personal_deployable(org_id, cluster_id, can_deploy)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn set_cluster_shared_deployable(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        cluster_id: Uuid,
+        can_deploy: bool,
+    ) -> Result<(), HrpcError> {
+        let _ = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
+
+        self.kube_controller
+            .set_cluster_shared_deployable(org_id, cluster_id, can_deploy)
             .await
             .map_err(HrpcError::from)
     }
@@ -115,16 +152,16 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
-    async fn get_namespaces(
+    async fn get_cluster_namespaces(
         &self,
         headers: &axum::http::HeaderMap,
         org_id: Uuid,
         cluster_id: Uuid,
-    ) -> Result<Vec<KubeNamespace>, HrpcError> {
+    ) -> Result<Vec<KubeNamespaceInfo>, HrpcError> {
         let _ = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
-            .get_namespaces(org_id, cluster_id)
+            .get_cluster_namespaces(org_id, cluster_id)
             .await
             .map_err(HrpcError::from)
     }
@@ -210,12 +247,13 @@ impl HrpcService for CoreState {
         headers: &axum::http::HeaderMap,
         org_id: Uuid,
         search: Option<String>,
+        is_shared: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, HrpcError> {
         let user = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
-            .get_all_kube_environments(org_id, user.id, search, pagination)
+            .get_all_kube_environments(org_id, user.id, search, is_shared, pagination)
             .await
             .map_err(HrpcError::from)
     }
@@ -294,11 +332,97 @@ impl HrpcService for CoreState {
         cluster_id: Uuid,
         name: String,
         namespace: String,
+        is_shared: bool,
     ) -> Result<(), HrpcError> {
         let user = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
-            .create_kube_environment(org_id, user.id, app_catalog_id, cluster_id, name, namespace)
+            .create_kube_environment(
+                org_id,
+                user.id,
+                app_catalog_id,
+                cluster_id,
+                name,
+                namespace,
+                is_shared,
+            )
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn create_kube_namespace(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        name: String,
+        description: Option<String>,
+        is_shared: bool,
+    ) -> Result<KubeNamespace, HrpcError> {
+        // Only admin can create shared namespaces, regular users can create personal ones
+        let required_role = if is_shared {
+            Some(UserRole::Admin)
+        } else {
+            None
+        };
+        let user = self.authorize(headers, org_id, required_role).await?;
+
+        self.kube_controller
+            .create_kube_namespace(org_id, user.id, name, description, is_shared)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn all_kube_namespaces(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        is_shared: bool,
+    ) -> Result<Vec<KubeNamespace>, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+
+        self.kube_controller
+            .get_all_kube_namespaces(org_id, user.id, is_shared)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn delete_kube_namespace(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        namespace_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        // Get the namespace first to check if it's shared
+        let namespace = self
+            .kube_controller
+            .db
+            .get_kube_namespace(namespace_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Namespace not found".to_string()))?;
+
+        if namespace.organization_id != org_id {
+            return Err(ApiError::Unauthorized)?;
+        }
+
+        // For shared namespaces, only admin can delete
+        // For personal namespaces, any user can delete (with ownership check below)
+        let required_role = if namespace.is_shared {
+            Some(UserRole::Admin)
+        } else {
+            None
+        };
+        let user = self.authorize(headers, org_id, required_role).await?;
+
+        // For personal namespaces, only the creator can delete
+        if !namespace.is_shared && namespace.user_id != user.id {
+            return Err(ApiError::InvalidRequest(
+                "You can only delete namespaces you created".to_string(),
+            ))?;
+        }
+
+        self.kube_controller
+            .delete_kube_namespace(org_id, namespace_id)
             .await
             .map_err(HrpcError::from)
     }

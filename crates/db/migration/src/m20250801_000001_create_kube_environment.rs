@@ -31,7 +31,6 @@ impl MigrationTrait for Migration {
                             .uuid()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(KubeEnvironment::CreatedBy).uuid().not_null())
                     .col(ColumnDef::new(KubeEnvironment::UserId).uuid().not_null())
                     .col(
                         ColumnDef::new(KubeEnvironment::AppCatalogId)
@@ -46,6 +45,11 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(ColumnDef::new(KubeEnvironment::Status).string())
+                    .col(
+                        ColumnDef::new(KubeEnvironment::IsShared)
+                            .boolean()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(KubeEnvironment::Table, KubeEnvironment::AppCatalogId)
@@ -71,16 +75,17 @@ impl MigrationTrait for Migration {
             .execute_unprepared("CREATE EXTENSION IF NOT EXISTS btree_gin;")
             .await?;
 
-        // Create B-tree index for exact lookups without name search
+        // Create optimal composite index for get_all_kube_environments query
+        // Covers: organization_id, is_shared, user_id, deleted_at
         manager
             .create_index(
                 Index::create()
-                    .name("kube_environment_org_user_deleted_created_idx")
+                    .name("kube_environment_org_shared_user_deleted_idx")
                     .table(KubeEnvironment::Table)
                     .col(KubeEnvironment::OrganizationId)
+                    .col(KubeEnvironment::IsShared)
                     .col(KubeEnvironment::UserId)
                     .col(KubeEnvironment::DeletedAt)
-                    .col(KubeEnvironment::CreatedAt)
                     .to_owned(),
             )
             .await?;
@@ -119,6 +124,22 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Create unique index to ensure same app catalog can only be deployed once per (cluster_id, namespace)
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_environment_app_cluster_namespace_unique_idx")
+                    .table(KubeEnvironment::Table)
+                    .col(KubeEnvironment::AppCatalogId)
+                    .col(KubeEnvironment::ClusterId)
+                    .col(KubeEnvironment::Namespace)
+                    .col(KubeEnvironment::DeletedAt)
+                    .nulls_not_distinct()
+                    .unique()
+                    .to_owned(),
+            )
+            .await?;
+
         Ok(())
     }
 }
@@ -130,11 +151,11 @@ enum KubeEnvironment {
     CreatedAt,
     DeletedAt,
     OrganizationId,
-    CreatedBy,
     UserId,
     AppCatalogId,
     ClusterId,
     Name,
     Namespace,
     Status,
+    IsShared,
 }

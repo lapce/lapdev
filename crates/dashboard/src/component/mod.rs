@@ -19,5 +19,6 @@ pub mod select;
 pub mod separator;
 pub mod sidebar;
 pub mod table;
+pub mod tabs;
 pub mod textarea;
 pub mod typography;

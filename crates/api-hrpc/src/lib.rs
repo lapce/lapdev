@@ -1,7 +1,7 @@
 use lapdev_common::kube::{
-    CreateKubeClusterResponse, KubeCluster, KubeClusterInfo, KubeNamespace, KubeWorkload,
-    KubeWorkloadKind, KubeWorkloadList, PaginationParams, PagePaginationParams, PaginatedResult,
-    KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeContainerInfo,
+    CreateKubeClusterResponse, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeCluster,
+    KubeClusterInfo, KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
+    KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
 };
 use uuid::Uuid;
 
@@ -9,7 +9,6 @@ pub use lapdev_common::hrpc::HrpcError;
 pub use lapdev_common::kube::{KubeAppCatalog, KubeEnvironment};
 // For backward compatibility
 pub use lapdev_common::kube::KubeAppCatalog as AppCatalog;
-
 
 #[lapdev_hrpc::service]
 pub trait HrpcService {
@@ -21,13 +20,24 @@ pub trait HrpcService {
         name: String,
     ) -> Result<CreateKubeClusterResponse, HrpcError>;
 
-    async fn delete_kube_cluster(
+    async fn delete_kube_cluster(&self, org_id: Uuid, cluster_id: Uuid) -> Result<(), HrpcError>;
+
+    async fn set_cluster_deployable(
         &self,
         org_id: Uuid,
         cluster_id: Uuid,
+        can_deploy_personal: bool,
+        can_deploy_shared: bool,
     ) -> Result<(), HrpcError>;
 
-    async fn set_cluster_deployable(
+    async fn set_cluster_personal_deployable(
+        &self,
+        org_id: Uuid,
+        cluster_id: Uuid,
+        can_deploy: bool,
+    ) -> Result<(), HrpcError>;
+
+    async fn set_cluster_shared_deployable(
         &self,
         org_id: Uuid,
         cluster_id: Uuid,
@@ -52,11 +62,11 @@ pub trait HrpcService {
         namespace: String,
     ) -> Result<Option<KubeWorkload>, HrpcError>;
 
-    async fn get_namespaces(
+    async fn get_cluster_namespaces(
         &self,
         org_id: Uuid,
         cluster_id: Uuid,
-    ) -> Result<Vec<KubeNamespace>, HrpcError>;
+    ) -> Result<Vec<KubeNamespaceInfo>, HrpcError>;
 
     async fn get_cluster_info(
         &self,
@@ -73,7 +83,12 @@ pub trait HrpcService {
         workloads: Vec<KubeAppCatalogWorkloadCreate>,
     ) -> Result<Uuid, HrpcError>;
 
-    async fn all_app_catalogs(&self, org_id: Uuid, search: Option<String>, pagination: Option<PagePaginationParams>) -> Result<PaginatedResult<KubeAppCatalog>, HrpcError>;
+    async fn all_app_catalogs(
+        &self,
+        org_id: Uuid,
+        search: Option<String>,
+        pagination: Option<PagePaginationParams>,
+    ) -> Result<PaginatedResult<KubeAppCatalog>, HrpcError>;
 
     async fn get_app_catalog(
         &self,
@@ -87,11 +102,7 @@ pub trait HrpcService {
         catalog_id: Uuid,
     ) -> Result<Vec<KubeAppCatalogWorkload>, HrpcError>;
 
-    async fn delete_app_catalog(
-        &self,
-        org_id: Uuid,
-        catalog_id: Uuid,
-    ) -> Result<(), HrpcError>;
+    async fn delete_app_catalog(&self, org_id: Uuid, catalog_id: Uuid) -> Result<(), HrpcError>;
 
     async fn delete_app_catalog_workload(
         &self,
@@ -120,7 +131,35 @@ pub trait HrpcService {
         cluster_id: Uuid,
         name: String,
         namespace: String,
+        is_shared: bool,
     ) -> Result<(), HrpcError>;
 
-    async fn all_kube_environments(&self, org_id: Uuid, search: Option<String>, pagination: Option<PagePaginationParams>) -> Result<PaginatedResult<KubeEnvironment>, HrpcError>;
+    async fn all_kube_environments(
+        &self,
+        org_id: Uuid,
+        search: Option<String>,
+        is_shared: bool,
+        pagination: Option<PagePaginationParams>,
+    ) -> Result<PaginatedResult<KubeEnvironment>, HrpcError>;
+
+    // Kube Namespace operations
+    async fn create_kube_namespace(
+        &self,
+        org_id: Uuid,
+        name: String,
+        description: Option<String>,
+        is_shared: bool,
+    ) -> Result<KubeNamespace, HrpcError>;
+
+    async fn all_kube_namespaces(
+        &self,
+        org_id: Uuid,
+        is_shared: bool,
+    ) -> Result<Vec<KubeNamespace>, HrpcError>;
+
+    async fn delete_kube_namespace(
+        &self,
+        org_id: Uuid,
+        namespace_id: Uuid,
+    ) -> Result<(), HrpcError>;
 }

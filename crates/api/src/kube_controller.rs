@@ -6,9 +6,9 @@ use anyhow::Result;
 use lapdev_common::{
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkloadCreate, KubeCluster,
-        KubeClusterInfo, KubeClusterStatus, KubeContainerImage, KubeEnvironment, KubeNamespace, KubeWorkload,
-        KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedInfo, PaginatedResult,
-        PaginationParams,
+        KubeClusterInfo, KubeClusterStatus, KubeContainerImage, KubeEnvironment, KubeNamespace,
+        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
+        PaginatedInfo, PaginatedResult, PaginationParams,
     },
     token::PlainToken,
 };
@@ -52,7 +52,8 @@ impl KubeController {
             .map(|c| KubeCluster {
                 id: c.id,
                 name: c.name.clone(),
-                can_deploy: c.can_deploy,
+                can_deploy_personal: c.can_deploy_personal,
+                can_deploy_shared: c.can_deploy_shared,
                 info: KubeClusterInfo {
                     cluster_name: Some(c.name),
                     cluster_version: c.cluster_version.unwrap_or("Unknown".to_string()),
@@ -169,6 +170,34 @@ impl KubeController {
         &self,
         org_id: Uuid,
         cluster_id: Uuid,
+        can_deploy_personal: bool,
+        can_deploy_shared: bool,
+    ) -> Result<(), ApiError> {
+        // Verify cluster belongs to the organization
+        let cluster = self
+            .db
+            .get_kube_cluster(cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        if cluster.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Update the deployment capability fields
+        self.db
+            .set_cluster_deployable(cluster_id, can_deploy_personal, can_deploy_shared)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(())
+    }
+
+    pub async fn set_cluster_personal_deployable(
+        &self,
+        org_id: Uuid,
+        cluster_id: Uuid,
         can_deploy: bool,
     ) -> Result<(), ApiError> {
         // Verify cluster belongs to the organization
@@ -183,9 +212,36 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
-        // Update the can_deploy field
+        // Update only the personal deployment capability
         self.db
-            .set_cluster_deployable(cluster_id, can_deploy)
+            .set_cluster_deployable(cluster_id, can_deploy, cluster.can_deploy_shared)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(())
+    }
+
+    pub async fn set_cluster_shared_deployable(
+        &self,
+        org_id: Uuid,
+        cluster_id: Uuid,
+        can_deploy: bool,
+    ) -> Result<(), ApiError> {
+        // Verify cluster belongs to the organization
+        let cluster = self
+            .db
+            .get_kube_cluster(cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        if cluster.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Update only the shared deployment capability
+        self.db
+            .set_cluster_deployable(cluster_id, cluster.can_deploy_personal, can_deploy)
             .await
             .map_err(ApiError::from)?;
 
@@ -289,11 +345,11 @@ impl KubeController {
         }
     }
 
-    pub async fn get_namespaces(
+    pub async fn get_cluster_namespaces(
         &self,
         org_id: Uuid,
         cluster_id: Uuid,
-    ) -> Result<Vec<KubeNamespace>, ApiError> {
+    ) -> Result<Vec<KubeNamespaceInfo>, ApiError> {
         // Verify cluster belongs to the organization
         let cluster = self
             .db
@@ -475,29 +531,40 @@ impl KubeController {
         org_id: Uuid,
         user_id: Uuid,
         search: Option<String>,
+        is_shared: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, ApiError> {
         let pagination = pagination.unwrap_or_default();
 
-        let (environments_with_catalogs, total_count) = self
+        let (environments_with_catalogs_and_clusters, total_count) = self
             .db
-            .get_all_kube_environments_paginated(org_id, user_id, search, Some(pagination.clone()))
+            .get_all_kube_environments_paginated(
+                org_id,
+                user_id,
+                search,
+                is_shared,
+                Some(pagination.clone()),
+            )
             .await
             .map_err(ApiError::from)?;
 
-        let kube_environments = environments_with_catalogs
+        let kube_environments = environments_with_catalogs_and_clusters
             .into_iter()
-            .filter_map(|(env, catalog)| {
+            .filter_map(|(env, catalog, cluster)| {
                 let catalog = catalog?;
+                let cluster = cluster?;
                 Some(KubeEnvironment {
                     id: env.id,
                     name: env.name,
                     namespace: env.namespace,
                     app_catalog_id: env.app_catalog_id,
                     app_catalog_name: catalog.name,
+                    cluster_id: env.cluster_id,
+                    cluster_name: cluster.name,
                     status: env.status,
                     created_at: env.created_at.to_string(),
-                    created_by: env.created_by,
+                    user_id: env.user_id,
+                    is_shared: env.is_shared,
                 })
             })
             .collect();
@@ -732,6 +799,7 @@ impl KubeController {
         cluster_id: Uuid,
         name: String,
         namespace: String,
+        is_shared: bool,
     ) -> Result<(), ApiError> {
         // Verify app catalog belongs to the organization
         let app_catalog = self
@@ -757,10 +825,16 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
-        // Check if the cluster allows deployments
-        if !cluster.can_deploy {
+        // Check if the cluster allows deployments for the requested environment type
+        if is_shared && !cluster.can_deploy_shared {
             return Err(ApiError::InvalidRequest(
-                "Deployments are not allowed on this cluster".to_string(),
+                "Shared deployments are not allowed on this cluster".to_string(),
+            ));
+        }
+
+        if !is_shared && !cluster.can_deploy_personal {
+            return Err(ApiError::InvalidRequest(
+                "Personal deployments are not allowed on this cluster".to_string(),
             ));
         }
 
@@ -778,7 +852,8 @@ impl KubeController {
         let workloads_with_resources = self.get_workloads_yaml_for_catalog(&app_catalog).await?;
 
         // Create the environment in database only after successful YAML retrieval
-        self.db
+        match self
+            .db
             .create_kube_environment(
                 org_id,
                 user_id,
@@ -787,13 +862,94 @@ impl KubeController {
                 name.clone(),
                 namespace.clone(),
                 Some("Pending".to_string()),
+                is_shared,
             )
             .await
-            .map_err(ApiError::from)?;
+        {
+            Ok(_) => {}
+            Err(db_err) => {
+                // Check if this is a unique constraint violation for app catalog + cluster + namespace
+                if matches!(
+                    db_err.sql_err(),
+                    Some(sea_orm::SqlErr::UniqueConstraintViolation(_))
+                ) {
+                    return Err(ApiError::InvalidRequest(
+                        "This app catalog is already deployed to the specified namespace in this cluster".to_string(),
+                    ));
+                } else {
+                    return Err(ApiError::from(anyhow::Error::from(db_err)));
+                }
+            }
+        }
 
         // Deploy the app catalog resources to the cluster using pre-fetched YAML
         self.deploy_app_catalog_with_yaml(&server, &namespace, &name, workloads_with_resources)
             .await?;
+
+        Ok(())
+    }
+
+    // Kube Namespace operations
+    pub async fn create_kube_namespace(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        name: String,
+        description: Option<String>,
+        is_shared: bool,
+    ) -> Result<lapdev_common::kube::KubeNamespace, ApiError> {
+        let namespace = self
+            .db
+            .create_kube_namespace(org_id, user_id, name, description, is_shared)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(lapdev_common::kube::KubeNamespace {
+            id: namespace.id,
+            name: namespace.name,
+            description: namespace.description,
+            is_shared: namespace.is_shared,
+            created_at: namespace.created_at,
+            created_by: namespace.user_id,
+        })
+    }
+
+    pub async fn get_all_kube_namespaces(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        is_shared: bool,
+    ) -> Result<Vec<lapdev_common::kube::KubeNamespace>, ApiError> {
+        let namespaces = self
+            .db
+            .get_all_kube_namespaces(org_id, user_id, is_shared)
+            .await
+            .map_err(ApiError::from)?;
+
+        let kube_namespaces = namespaces
+            .into_iter()
+            .map(|ns| lapdev_common::kube::KubeNamespace {
+                id: ns.id,
+                name: ns.name,
+                description: ns.description,
+                is_shared: ns.is_shared,
+                created_at: ns.created_at,
+                created_by: ns.user_id,
+            })
+            .collect();
+
+        Ok(kube_namespaces)
+    }
+
+    pub async fn delete_kube_namespace(
+        &self,
+        org_id: Uuid,
+        namespace_id: Uuid,
+    ) -> Result<(), ApiError> {
+        self.db
+            .delete_kube_namespace(namespace_id)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(())
     }
@@ -810,7 +966,7 @@ impl KubeController {
             .map_err(ApiError::from)?;
 
         if workloads.is_empty() {
-            return Err(ApiError::InternalError(format!(
+            return Err(ApiError::InvalidRequest(format!(
                 "No workloads found for app catalog '{}'",
                 app_catalog.name
             )));

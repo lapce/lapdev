@@ -2,12 +2,14 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
 use lapdev_common::kube::{
-    KubeAppCatalog, KubeCluster, KubeClusterStatus, PagePaginationParams, PaginatedInfo,
-    PaginatedResult,
+    KubeAppCatalog, KubeCluster, KubeClusterStatus, KubeNamespace, PagePaginationParams,
+    PaginatedInfo, PaginatedResult,
 };
 use leptos::prelude::*;
+use uuid::Uuid;
 
 use crate::component::hover_card::HoverCardPlacement;
+use crate::component::select::SelectSeparator;
 use crate::{
     component::{
         badge::{Badge, BadgeVariant},
@@ -436,6 +438,9 @@ pub fn CreateEnvironmentModal(
     let environment_name = RwSignal::new_local("".to_string());
     let namespace = RwSignal::new_local("".to_string());
     let selected_cluster = RwSignal::new(app_catalog.cluster_id);
+    let is_shared = RwSignal::new(false);
+    let selected_namespace_id = RwSignal::new(None::<Uuid>);
+    let namespace_creation_modal_open = RwSignal::new(false);
     let org = get_current_org();
     let client = HrpcServiceClient::new("/api/rpc".to_string());
 
@@ -444,6 +449,18 @@ pub fn CreateEnvironmentModal(
         let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
         let client = HrpcServiceClient::new("/api/rpc".to_string());
         Ok::<Vec<KubeCluster>, anyhow::Error>(client.all_kube_clusters(org.id).await??)
+    });
+
+    // Load available namespaces based on environment type
+    let namespaces_resource = LocalResource::new(move || {
+        let is_shared_val = is_shared.get();
+        async move {
+            let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+            let client = HrpcServiceClient::new("/api/rpc".to_string());
+            Ok::<Vec<KubeNamespace>, anyhow::Error>(
+                client.all_kube_namespaces(org.id, is_shared_val).await??,
+            )
+        }
     });
 
     let clusters = Signal::derive(move || {
@@ -455,9 +472,30 @@ pub fn CreateEnvironmentModal(
         })
     });
 
+    let namespaces = Signal::derive(move || {
+        namespaces_resource.with(|result| {
+            result
+                .as_ref()
+                .map(|res| res.as_ref().unwrap_or(&vec![]).clone())
+                .unwrap_or_default()
+        })
+    });
+
     let create_action = Action::new_local(move |_| {
         let client = client.clone();
         async move {
+            // Get the selected namespace name
+            let namespace_name = selected_namespace_id
+                .get_untracked()
+                .and_then(|ns_id| {
+                    namespaces
+                        .get_untracked()
+                        .into_iter()
+                        .find(|ns| ns.id == ns_id)
+                        .map(|ns| ns.name)
+                })
+                .ok_or_else(|| anyhow!("Please select a namespace"))?;
+
             client
                 .create_kube_environment(
                     org.get_untracked()
@@ -466,7 +504,8 @@ pub fn CreateEnvironmentModal(
                     app_catalog.id,
                     selected_cluster.get_untracked(),
                     environment_name.get_untracked(),
-                    namespace.get_untracked(),
+                    namespace_name,
+                    is_shared.get_untracked(),
                 )
                 .await??;
 
@@ -475,7 +514,7 @@ pub fn CreateEnvironmentModal(
             });
             modal_open.set(false);
             environment_name.set("".to_string());
-            namespace.set("".to_string());
+            selected_namespace_id.set(None);
             Ok(())
         }
     });
@@ -509,7 +548,7 @@ pub fn CreateEnvironmentModal(
                                         let cluster_id = selected_cluster.get();
                                         if let Some(cluster) = clusters.get()
                                             .into_iter()
-                                            .find(|c| c.id == cluster_id && c.can_deploy) {
+                                            .find(|c| c.id == cluster_id && (c.can_deploy_personal || c.can_deploy_shared)) {
                                             let status_variant = match cluster.info.status {
                                                 KubeClusterStatus::Ready => BadgeVariant::Secondary,
                                                 KubeClusterStatus::Provisioning => BadgeVariant::Secondary,
@@ -532,7 +571,7 @@ pub fn CreateEnvironmentModal(
                                     {move || {
                                         clusters.get()
                                             .into_iter()
-                                            .filter(|cluster| cluster.can_deploy)
+                                            .filter(|cluster| cluster.can_deploy_personal || cluster.can_deploy_shared)
                                             .map(|cluster| {
                                                 let status_variant = match cluster.info.status {
                                                     KubeClusterStatus::Ready => BadgeVariant::Secondary,
@@ -562,14 +601,110 @@ pub fn CreateEnvironmentModal(
                 </div>
                 <div class="flex flex-col gap-2">
                     <Label>Namespace</Label>
-                    <Input
-                        prop:value=move || namespace.get()
-                        on:input=move |ev| {
-                            namespace.set(event_target_value(&ev));
+                    {
+                        let namespace_dropdown_open = RwSignal::new(false);
+                        view! {
+                            <Select value=selected_namespace_id open=namespace_dropdown_open class="w-full">
+                                <SelectTrigger class="w-full">
+                                    {move || {
+                                        if let Some(namespace_id) = selected_namespace_id.get() {
+                                            if let Some(namespace) = namespaces.get()
+                                                .into_iter()
+                                                .find(|ns| ns.id == namespace_id) {
+                                                view! {
+                                                    <div class="flex items-center justify-between w-full">
+                                                        <span class="max-w-60 text-ellipsis overflow-hidden whitespace-nowrap">{namespace.name}</span>
+                                                        <Badge variant=BadgeVariant::Secondary class="ml-2 text-xs">
+                                                            {if namespace.is_shared { "Shared" } else { "Personal" }}
+                                                        </Badge>
+                                                    </div>
+                                                }.into_any()
+                                            } else {
+                                                view! { "Select namespace" }.into_any()
+                                            }
+                                        } else {
+                                            view! { "Select namespace" }.into_any()
+                                        }
+                                    }}
+                                </SelectTrigger>
+                                <SelectContent class="w-full">
+                                    {move || {
+                                        let mut items = vec![
+                                            view! {
+                                                <SelectItem
+                                                    value=()
+                                                    on:click=move |_| {
+                                                        namespace_dropdown_open.set(false);
+                                                        namespace_creation_modal_open.set(true);
+                                                    }
+                                                    class="cursor-pointer"
+                                                >
+                                                    <div class="flex items-center gap-2">
+                                                        <lucide_leptos::Plus size=16 />
+                                                        <span class="font-medium">Create New Namespace</span>
+                                                    </div>
+                                                </SelectItem>
+                                                <SelectSeparator />
+                                            }.into_any()
+                                        ];
+
+                                        let namespace_items: Vec<_> = namespaces.get()
+                                            .into_iter()
+                                            .map(|namespace| {
+                                                view! {
+                                                    <SelectItem
+                                                        value=namespace.id
+                                                        on:click=move |_| {
+                                                            selected_namespace_id.set(Some(namespace.id));
+                                                            namespace_dropdown_open.set(false);
+                                                        }
+                                                        class="cursor-pointer"
+                                                    >
+                                                        <div class="flex items-center justify-between w-full">
+                                                            <span class="max-w-60 text-ellipsis overflow-hidden whitespace-nowrap">{namespace.name.clone()}</span>
+                                                            <Badge variant=BadgeVariant::Secondary class="ml-2 text-xs">
+                                                                {if namespace.is_shared { "Shared" } else { "Personal" }}
+                                                            </Badge>
+                                                        </div>
+                                                    </SelectItem>
+                                                }.into_any()
+                                            })
+                                            .collect();
+
+                                        items.extend(namespace_items);
+                                        items.into_iter().collect_view()
+                                    }}
+                                </SelectContent>
+                            </Select>
                         }
-                        attr:placeholder="Enter Kubernetes namespace"
-                        attr:required=true
-                    />
+                    }
+                </div>
+                <div class="flex flex-col gap-2">
+                    <Label>Environment Type</Label>
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <input
+                                type="radio"
+                                id="personal"
+                                name="environment_type"
+                                checked=move || !is_shared.get()
+                                on:change=move |_| is_shared.set(false)
+                                class="radio radio-primary"
+                            />
+                            <label for="personal" class="text-sm font-medium">Personal</label>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <input
+                                type="radio"
+                                id="shared"
+                                name="environment_type"
+                                checked=move || is_shared.get()
+                                on:change=move |_| is_shared.set(true)
+                                class="radio radio-primary"
+                            />
+                            <label for="shared" class="text-sm font-medium">Shared</label>
+                        </div>
+                    </div>
                 </div>
                 <div class="flex flex-col gap-2 p-4 bg-muted rounded-lg text-wrap">
                     <P class="font-medium text-sm">App Catalog Details:</P>
@@ -580,6 +715,115 @@ pub fn CreateEnvironmentModal(
                             view! { <li>{format!("• Description: {}", desc)}</li> }
                         })}
                     </ul>
+                </div>
+            </div>
+        </Modal>
+
+        // Namespace Creation Modal
+        <CreateNamespaceModal
+            modal_open=namespace_creation_modal_open
+            is_shared=is_shared.read_only()
+            on_created=Callback::new(move |new_namespace: Uuid| {
+                // Refresh the namespaces resource to include the new namespace
+                namespaces_resource.refetch();
+                // Select the newly created namespace
+                selected_namespace_id.set(Some(new_namespace));
+            })
+        />
+    }
+}
+
+#[component]
+pub fn CreateNamespaceModal(
+    modal_open: RwSignal<bool>,
+    is_shared: ReadSignal<bool>,
+    on_created: Callback<Uuid>,
+) -> impl IntoView {
+    let namespace_name = RwSignal::new_local("".to_string());
+    let namespace_description = RwSignal::new_local("".to_string());
+    let org = get_current_org();
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    let create_namespace_action = Action::new_local(move |_| {
+        let client = client.clone();
+        let name = namespace_name.get_untracked();
+        let description = namespace_description.get_untracked();
+        let is_shared_val = is_shared.get_untracked();
+        async move {
+            let namespace = client
+                .create_kube_namespace(
+                    org.get_untracked()
+                        .ok_or_else(|| anyhow!("can't get org"))?
+                        .id,
+                    name,
+                    if description.is_empty() {
+                        None
+                    } else {
+                        Some(description)
+                    },
+                    is_shared_val,
+                )
+                .await??;
+
+            on_created.run(namespace.id);
+            modal_open.set(false);
+            namespace_name.set("".to_string());
+            namespace_description.set("".to_string());
+            Ok(())
+        }
+    });
+
+    view! {
+        <Modal
+            open=modal_open
+            action=create_namespace_action
+            title="Create Namespace"
+        >
+            <div class="flex flex-col gap-4">
+                <H3>Create New Namespace</H3>
+                <div class="flex flex-col gap-4">
+                    <div class="flex flex-col gap-2">
+                        <Label>Namespace Name</Label>
+                        <Input
+                            prop:value=move || namespace_name.get()
+                            on:input=move |ev| {
+                                namespace_name.set(event_target_value(&ev));
+                            }
+                            attr:placeholder="Enter namespace name"
+                            attr:required=true
+                        />
+                    </div>
+                    <div class="flex flex-col gap-2">
+                        <Label>Description (Optional)</Label>
+                        <Input
+                            prop:value=move || namespace_description.get()
+                            on:input=move |ev| {
+                                namespace_description.set(event_target_value(&ev));
+                            }
+                            attr:placeholder="Enter namespace description"
+                        />
+                    </div>
+                    <div class="flex flex-col gap-2 p-4 bg-muted rounded-lg">
+                        <P class="font-medium text-sm">Namespace Type:</P>
+                        <div class="flex items-center gap-2">
+                            <Badge variant={
+                                if is_shared.get() {
+                                    BadgeVariant::Secondary
+                                } else {
+                                    BadgeVariant::Default
+                                }
+                            }>
+                                {if is_shared.get() { "Shared" } else { "Personal" }}
+                            </Badge>
+                            <span class="text-sm text-muted-foreground">
+                                {if is_shared.get() {
+                                    "This namespace will be accessible by all organization members"
+                                } else {
+                                    "This namespace will be private to you"
+                                }}
+                            </span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </Modal>

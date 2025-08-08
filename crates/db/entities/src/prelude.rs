@@ -7,6 +7,7 @@ pub use super::kube_app_catalog_workload::Entity as KubeAppCatalogWorkload;
 pub use super::kube_cluster::Entity as KubeCluster;
 pub use super::kube_cluster_token::Entity as KubeClusterToken;
 pub use super::kube_environment::Entity as KubeEnvironment;
+pub use super::kube_namespace::Entity as KubeNamespace;
 pub use super::machine_type::Entity as MachineType;
 pub use super::oauth_connection::Entity as OauthConnection;
 pub use super::organization::Entity as Organization;

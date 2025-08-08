@@ -16,7 +16,8 @@ pub struct Model {
     pub status: Option<String>,
     pub region: Option<String>,
     pub last_reported_at: Option<DateTimeWithTimeZone>,
-    pub can_deploy: bool,
+    pub can_deploy_personal: bool,
+    pub can_deploy_shared: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -171,6 +171,17 @@ pub struct KubeAppCatalogWorkloadCreate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeEnvironmentWorkload {
+    pub id: Uuid,
+    pub created_at: String,
+    pub environment_id: Uuid,
+    pub name: String,
+    pub namespace: String,
+    pub kind: String,
+    pub containers: Vec<KubeContainerInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeEnvVar {
     pub name: String,
     pub value: String,

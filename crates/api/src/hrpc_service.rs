@@ -3,7 +3,7 @@ use lapdev_common::{
     hrpc::HrpcError,
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
-        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeEnvironment, KubeNamespace,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeEnvironment, KubeEnvironmentWorkload, KubeNamespace,
         KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
         PaginatedResult, PaginationParams,
     },
@@ -258,6 +258,32 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn get_kube_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<KubeEnvironment, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .get_kube_environment(org_id, user.id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn delete_kube_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .delete_kube_environment(org_id, user.id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn delete_app_catalog(
         &self,
         headers: &axum::http::HeaderMap,
@@ -333,7 +359,7 @@ impl HrpcService for CoreState {
         name: String,
         namespace: String,
         is_shared: bool,
-    ) -> Result<(), HrpcError> {
+    ) -> Result<KubeEnvironment, HrpcError> {
         let user = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
@@ -346,6 +372,47 @@ impl HrpcService for CoreState {
                 namespace,
                 is_shared,
             )
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn get_environment_workloads(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<Vec<KubeEnvironmentWorkload>, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .get_environment_workloads(org_id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn get_environment_workload(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<Option<KubeEnvironmentWorkload>, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .get_environment_workload(org_id, workload_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn delete_environment_workload(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let _ = self
+            .authorize(headers, org_id, Some(UserRole::Admin))
+            .await?;
+        self.kube_controller
+            .delete_environment_workload(org_id, workload_id)
             .await
             .map_err(HrpcError::from)
     }

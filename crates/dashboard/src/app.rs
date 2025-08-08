@@ -21,6 +21,8 @@ use crate::{
     kube_app_catalog_workload::KubeAppCatalogWorkload,
     kube_cluster::KubeCluster,
     kube_environment::KubeEnvironment,
+    kube_environment_detail::KubeEnvironmentDetail,
+    kube_environment_workload::KubeEnvironmentWorkload,
     kube_resource::KubeResource,
     license::{LicenseView, SignLicenseView},
     nav::{AdminSideNav, NavExpanded, SideNav, TopNav},
@@ -117,6 +119,8 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/kubernetes/catalogs/:catalog_id") view=move || view! { <WrappedView element=KubeAppCatalogDetail /> } />
                 <Route path=path!("/kubernetes/catalogs/:catalog_id/workloads/:workload_id") view=move || view! { <WrappedView element=KubeAppCatalogWorkload /> } />
                 <Route path=path!("/kubernetes/environments") view=move || view! { <WrappedView element=KubeEnvironment /> } />
+                <Route path=path!("/kubernetes/environments/:environment_id") view=move || view! { <WrappedView element=KubeEnvironmentDetail /> } />
+                <Route path=path!("/kubernetes/environments/:environment_id/workloads/:workload_id") view=move || view! { <WrappedView element=KubeEnvironmentWorkload /> } />
                 <Route path=path!("/kubernetes/clusters/:cluster_id") view=move || view! { <WrappedView element=KubeResource /> } />
                 <Route path=path!("/kubernetes/clusters") view=move || view! { <WrappedView element=KubeCluster /> } />
                 <Route path=path!("/account") view=move || view! { <WrappedView element=AccountSettings /> } />

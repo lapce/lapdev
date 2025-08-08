@@ -582,6 +582,104 @@ impl KubeController {
         })
     }
 
+    pub async fn get_kube_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<KubeEnvironment, ApiError> {
+        // Get the environment from database
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        // Check authorization
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // If it's a personal environment, check ownership
+        if !environment.is_shared && environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Get related catalog and cluster info
+        let catalog = self
+            .db
+            .get_app_catalog(environment.app_catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        let cluster = self
+            .db
+            .get_kube_cluster(environment.cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        Ok(KubeEnvironment {
+            id: environment.id,
+            user_id: environment.user_id,
+            name: environment.name,
+            namespace: environment.namespace,
+            app_catalog_id: environment.app_catalog_id,
+            app_catalog_name: catalog.name,
+            cluster_id: environment.cluster_id,
+            cluster_name: cluster.name,
+            status: environment.status,
+            created_at: environment.created_at.format("%Y-%m-%d %H:%M:%S%.f %z").to_string(),
+            is_shared: environment.is_shared,
+        })
+    }
+
+    pub async fn delete_kube_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), ApiError> {
+        // First get the environment to check ownership
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        // Check authorization
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // If it's a personal environment, check ownership
+        if !environment.is_shared && environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // TODO: Clean up Kubernetes resources from the cluster
+        // Get cluster server to perform cleanup if needed
+        if let Some(_cluster_server) = self.get_random_kube_cluster_server(environment.cluster_id).await {
+            tracing::info!(
+                "Deleting environment '{}' in namespace '{}'",
+                environment.name,
+                environment.namespace
+            );
+            // TODO: Implement actual K8s resource cleanup
+        }
+
+        // Delete from database (soft delete)
+        self.db
+            .delete_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(())
+    }
+
     pub async fn get_app_catalog(
         &self,
         org_id: Uuid,
@@ -800,7 +898,7 @@ impl KubeController {
         name: String,
         namespace: String,
         is_shared: bool,
-    ) -> Result<(), ApiError> {
+    ) -> Result<lapdev_common::kube::KubeEnvironment, ApiError> {
         // Verify app catalog belongs to the organization
         let app_catalog = self
             .db
@@ -852,7 +950,7 @@ impl KubeController {
         let workloads_with_resources = self.get_workloads_yaml_for_catalog(&app_catalog).await?;
 
         // Create the environment in database only after successful YAML retrieval
-        match self
+        let created_env = match self
             .db
             .create_kube_environment(
                 org_id,
@@ -866,7 +964,7 @@ impl KubeController {
             )
             .await
         {
-            Ok(_) => {}
+            Ok(env) => env,
             Err(db_err) => {
                 // Check if this is a unique constraint violation for app catalog + cluster + namespace
                 if matches!(
@@ -880,13 +978,26 @@ impl KubeController {
                     return Err(ApiError::from(anyhow::Error::from(db_err)));
                 }
             }
-        }
+        };
 
         // Deploy the app catalog resources to the cluster using pre-fetched YAML
         self.deploy_app_catalog_with_yaml(&server, &namespace, &name, workloads_with_resources)
             .await?;
 
-        Ok(())
+        // Convert the database model to the API type
+        Ok(lapdev_common::kube::KubeEnvironment {
+            id: created_env.id,
+            user_id: created_env.user_id,
+            name: created_env.name,
+            namespace: created_env.namespace,
+            status: created_env.status,
+            is_shared: created_env.is_shared,
+            app_catalog_id: created_env.app_catalog_id,
+            app_catalog_name: app_catalog.name,
+            cluster_id: created_env.cluster_id,
+            cluster_name: cluster.name,
+            created_at: created_env.created_at.to_string(),
+        })
     }
 
     // Kube Namespace operations
@@ -1219,6 +1330,84 @@ impl KubeController {
         } else {
             false
         }
+    }
+
+    pub async fn get_environment_workloads(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<Vec<lapdev_common::kube::KubeEnvironmentWorkload>, ApiError> {
+        // Verify environment belongs to the organization
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+        self.db
+            .get_environment_workloads(environment_id)
+            .await
+            .map_err(ApiError::from)
+    }
+
+    pub async fn get_environment_workload(
+        &self,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<Option<lapdev_common::kube::KubeEnvironmentWorkload>, ApiError> {
+        // First get the workload to find its environment
+        if let Some(workload) = self
+            .db
+            .get_environment_workload(workload_id)
+            .await
+            .map_err(ApiError::from)?
+        {
+            // Verify the environment belongs to the organization
+            let environment = self
+                .db
+                .get_kube_environment(workload.environment_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+            if environment.organization_id != org_id {
+                return Err(ApiError::Unauthorized);
+            }
+            Ok(Some(workload))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn delete_environment_workload(
+        &self,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), ApiError> {
+        // First get the workload to find its environment
+        let workload = self
+            .db
+            .get_environment_workload(workload_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
+        // Verify the environment belongs to the organization
+        let environment = self
+            .db
+            .get_kube_environment(workload.environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+        // Delete the workload
+        self.db
+            .delete_environment_workload(workload_id)
+            .await
+            .map_err(ApiError::from)
     }
 }
 

@@ -9,6 +9,10 @@ use crate::{
     component::{
         badge::{Badge, BadgeVariant},
         button::{Button, ButtonVariant},
+        dropdown_menu::{
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+            DropdownPlacement,
+        },
         pagination::PagePagination,
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         tabs::{Tabs, TabsContent, TabsList, TabsTrigger},
@@ -349,15 +353,17 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
     let env_name = environment.name.clone();
     let env_name_for_delete = environment.name.clone();
 
-    let view_details = move |_| {
-        // TODO: Navigate to environment details or show modal
-        leptos::logging::log!("View details for environment: {}", env_name);
-    };
+    let navigate = leptos_router::hooks::use_navigate();
+    let environment_id = environment.id;
+    // let view_details = move |_| {
+    //     let url = format!("/kubernetes/environments/{}", environment_id);
+    //     navigate(&url, Default::default());
+    // };
 
-    let delete_environment = move |_| {
-        // TODO: Implement delete functionality
-        leptos::logging::log!("Delete environment: {}", env_name_for_delete);
-    };
+    // let delete_environment = move |_| {
+    //     // TODO: Implement delete functionality
+    //     leptos::logging::log!("Delete environment: {}", env_name_for_delete);
+    // };
 
     let status_variant = match environment.status.as_deref() {
         Some("Running") => BadgeVariant::Secondary,
@@ -366,23 +372,37 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
         _ => BadgeVariant::Outline,
     };
 
+    let dropdown_expanded = RwSignal::new(false);
+    let env_name_for_delete_clone = env_name_for_delete.clone();
+    let details_url = format!("/kubernetes/environments/{}", environment_id);
+    let catalog_url = format!("/kubernetes/catalogs/{}", environment.app_catalog_id);
+    let cluster_url = format!("/kubernetes/clusters/{}", environment.cluster_id);
+    let resources_url = format!(
+        "/kubernetes/clusters/{}?namespace={}",
+        environment.cluster_id, environment.namespace
+    );
+
     view! {
         <TableRow>
             <TableCell>
-                <span class="font-medium">{environment.name.clone()}</span>
+                <a href={format!("/kubernetes/environments/{}", environment.id)}>
+                    <Button variant=ButtonVariant::Link class="p-0">
+                        <span class="font-medium">{environment.name.clone()}</span>
+                    </Button>
+                </a>
             </TableCell>
             <TableCell>
                 <Badge variant=BadgeVariant::Outline>{environment.namespace.clone()}</Badge>
             </TableCell>
             <TableCell>
-                <a href=format!("/kubernetes/catalogs/{}", environment.app_catalog_id)>
+                <a href={format!("/kubernetes/catalogs/{}", environment.app_catalog_id)}>
                     <Button variant=ButtonVariant::Link class="p-0">
                         <span class="font-medium">{environment.app_catalog_name.clone()}</span>
                     </Button>
                 </a>
             </TableCell>
             <TableCell>
-                <a href=format!("/kubernetes/clusters/{}", environment.cluster_id)>
+                <a href={format!("/kubernetes/clusters/{}", environment.cluster_id)}>
                     <Button variant=ButtonVariant::Link class="p-0">
                         <span class="font-medium">{environment.cluster_name.clone()}</span>
                     </Button>
@@ -407,24 +427,50 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                 }}
             </TableCell>
             <TableCell class="pr-4">
-                <div class="flex items-center gap-2">
-                    <Button
-                        variant=ButtonVariant::Outline
-                        size=crate::component::button::ButtonSize::Sm
-                        on:click=view_details
+                <DropdownMenu open=dropdown_expanded>
+                    <DropdownMenuTrigger
+                        open=dropdown_expanded
+                        placement=DropdownPlacement::BottomRight
                     >
-                        <lucide_leptos::Eye />
-                        Details
-                    </Button>
-                    <Button
-                        variant=ButtonVariant::Destructive
-                        size=crate::component::button::ButtonSize::Sm
-                        on:click=delete_environment
+                        <Button variant=ButtonVariant::Ghost size=crate::component::button::ButtonSize::Sm class="px-2">
+                            <lucide_leptos::EllipsisVertical />
+                        </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                        open=dropdown_expanded.read_only()
+                        class="min-w-48 -translate-x-2"
                     >
-                        <lucide_leptos::Trash2 />
-                        Delete
-                    </Button>
-                </div>
+                        <DropdownMenuItem class="p-0">
+                            <a href=format!("/kubernetes/environments/{}", environment_id) class="flex items-center gap-2 px-2 py-1.5 w-full">
+                                <lucide_leptos::Eye />
+                                View Details
+                            </a>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem class="p-0">
+                            <a href=format!("/kubernetes/catalogs/{}", environment.app_catalog_id) class="flex items-center gap-2 px-2 py-1.5 w-full">
+                                <lucide_leptos::Package />
+                                View App Catalog
+                            </a>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem class="p-0">
+                            <a href=format!("/kubernetes/clusters/{}", environment.cluster_id) class="flex items-center gap-2 px-2 py-1.5 w-full">
+                                <lucide_leptos::Server />
+                                View Cluster
+                            </a>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            on:click=move |_| {
+                                dropdown_expanded.set(false);
+                                // TODO: Implement delete functionality
+                                // leptos::logging::log!("Delete environment: {}", env_name_for_delete_clone);
+                            }
+                            class="cursor-pointer text-destructive focus:text-destructive"
+                        >
+                            <lucide_leptos::Trash2 />
+                            Delete
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             </TableCell>
         </TableRow>
     }

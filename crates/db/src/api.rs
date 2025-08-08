@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED,
-    kube::{KubeAppCatalogWorkload, KubeWorkloadDetails, PagePaginationParams},
+    kube::{KubeAppCatalogWorkload, KubeContainerInfo, KubeEnvironmentWorkload, KubeWorkloadDetails, PagePaginationParams},
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
 };
@@ -1381,6 +1381,28 @@ impl DbApi {
         Ok(environment)
     }
 
+    pub async fn get_kube_environment(
+        &self,
+        environment_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_environment::Model>, sea_orm::DbErr> {
+        lapdev_db_entities::kube_environment::Entity::find()
+            .filter(lapdev_db_entities::kube_environment::Column::Id.eq(environment_id))
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await
+    }
+
+    pub async fn delete_kube_environment(&self, environment_id: Uuid) -> Result<()> {
+        lapdev_db_entities::kube_environment::ActiveModel {
+            id: ActiveValue::Set(environment_id),
+            deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
+
     // Kube Namespace operations
     pub async fn create_kube_namespace(
         &self,
@@ -1500,6 +1522,110 @@ impl DbApi {
                 containers: ActiveValue::Set(containers_json),
             }
             .insert(txn)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn get_environment_workloads(
+        &self,
+        environment_id: Uuid,
+    ) -> Result<Vec<KubeEnvironmentWorkload>> {
+        let workloads = lapdev_db_entities::kube_environment_workload::Entity::find()
+            .filter(
+                lapdev_db_entities::kube_environment_workload::Column::EnvironmentId.eq(environment_id),
+            )
+            .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        let mut result = Vec::new();
+        for workload in workloads {
+            let containers: Vec<KubeContainerInfo> = if let Ok(containers) = 
+                serde_json::from_value(workload.containers.clone()) {
+                containers
+            } else {
+                vec![]
+            };
+
+            result.push(KubeEnvironmentWorkload {
+                id: workload.id,
+                created_at: workload.created_at.to_string(),
+                environment_id: workload.environment_id,
+                name: workload.name,
+                namespace: workload.namespace,
+                kind: workload.kind,
+                containers,
+            });
+        }
+        Ok(result)
+    }
+
+    pub async fn get_environment_workload(
+        &self,
+        workload_id: Uuid,
+    ) -> Result<Option<KubeEnvironmentWorkload>> {
+        let workload = lapdev_db_entities::kube_environment_workload::Entity::find_by_id(workload_id)
+            .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?;
+
+        if let Some(workload) = workload {
+            let containers: Vec<KubeContainerInfo> = if let Ok(containers) = 
+                serde_json::from_value(workload.containers.clone()) {
+                containers
+            } else {
+                vec![]
+            };
+
+            Ok(Some(KubeEnvironmentWorkload {
+                id: workload.id,
+                created_at: workload.created_at.to_string(),
+                environment_id: workload.environment_id,
+                name: workload.name,
+                namespace: workload.namespace,
+                kind: workload.kind,
+                containers,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn delete_environment_workload(&self, workload_id: Uuid) -> Result<()> {
+        lapdev_db_entities::kube_environment_workload::ActiveModel {
+            id: ActiveValue::Set(workload_id),
+            deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn create_environment_workloads(
+        &self,
+        environment_id: Uuid,
+        workloads: Vec<KubeWorkloadDetails>,
+    ) -> Result<()> {
+        let created_at = Utc::now().into();
+        for workload in workloads {
+            // Serialize all containers
+            let containers_json = serde_json::to_value(&workload.containers)
+                .map(Json::from)
+                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
+            lapdev_db_entities::kube_environment_workload::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                created_at: ActiveValue::Set(created_at),
+                deleted_at: ActiveValue::Set(None),
+                environment_id: ActiveValue::Set(environment_id),
+                name: ActiveValue::Set(workload.name),
+                namespace: ActiveValue::Set(workload.namespace),
+                kind: ActiveValue::Set(workload.kind.to_string()),
+                containers: ActiveValue::Set(containers_json),
+            }
+            .insert(&self.conn)
             .await?;
         }
         Ok(())

@@ -1,6 +1,6 @@
 use lapdev_common::kube::{
     CreateKubeClusterResponse, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeCluster,
-    KubeClusterInfo, KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
+    KubeClusterInfo, KubeContainerInfo, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
     KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
 };
 use uuid::Uuid;
@@ -132,7 +132,7 @@ pub trait HrpcService {
         name: String,
         namespace: String,
         is_shared: bool,
-    ) -> Result<(), HrpcError>;
+    ) -> Result<KubeEnvironment, HrpcError>;
 
     async fn all_kube_environments(
         &self,
@@ -141,6 +141,37 @@ pub trait HrpcService {
         is_shared: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, HrpcError>;
+
+    async fn get_kube_environment(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<KubeEnvironment, HrpcError>;
+
+    async fn delete_kube_environment(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError>;
+
+    // Kube Environment Workload operations
+    async fn get_environment_workloads(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<Vec<KubeEnvironmentWorkload>, HrpcError>;
+
+    async fn get_environment_workload(
+        &self,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<Option<KubeEnvironmentWorkload>, HrpcError>;
+
+    async fn delete_environment_workload(
+        &self,
+        org_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), HrpcError>;
 
     // Kube Namespace operations
     async fn create_kube_namespace(

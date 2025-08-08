@@ -24,6 +24,7 @@ mod m20250801_000000_create_kube_app_catalog;
 mod m20250801_000001_create_kube_environment;
 mod m20250801_000002_create_kube_app_catalog_workload;
 mod m20250808_000001_create_kube_namespace;
+mod m20250808_000002_create_kube_environment_workload;
 
 pub struct Migrator;
 
@@ -55,6 +56,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20250801_000001_create_kube_environment::Migration),
             Box::new(m20250801_000002_create_kube_app_catalog_workload::Migration),
             Box::new(m20250808_000001_create_kube_namespace::Migration),
+            Box::new(m20250808_000002_create_kube_environment_workload::Migration),
         ]
     }
 }

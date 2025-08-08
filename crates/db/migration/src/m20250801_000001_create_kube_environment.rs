@@ -145,7 +145,7 @@ impl MigrationTrait for Migration {
 }
 
 #[derive(DeriveIden)]
-enum KubeEnvironment {
+pub enum KubeEnvironment {
     Table,
     Id,
     CreatedAt,

@@ -37,6 +37,8 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     KubeCluster,
+    #[sea_orm(has_many = "super::kube_environment_workload::Entity")]
+    KubeEnvironmentWorkload,
 }
 
 impl Related<super::kube_app_catalog::Entity> for Entity {
@@ -48,6 +50,12 @@ impl Related<super::kube_app_catalog::Entity> for Entity {
 impl Related<super::kube_cluster::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::KubeCluster.def()
+    }
+}
+
+impl Related<super::kube_environment_workload::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::KubeEnvironmentWorkload.def()
     }
 }
 

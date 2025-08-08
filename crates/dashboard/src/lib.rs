@@ -10,6 +10,8 @@ pub mod kube_app_catalog_detail;
 pub mod kube_app_catalog_workload;
 pub mod kube_cluster;
 pub mod kube_environment;
+pub mod kube_environment_detail;
+pub mod kube_environment_workload;
 pub mod kube_resource;
 pub mod license;
 pub mod modal;

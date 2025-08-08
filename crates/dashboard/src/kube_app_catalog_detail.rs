@@ -97,6 +97,21 @@ async fn delete_workload(
     Ok(())
 }
 
+async fn delete_catalog(
+    org: Signal<Option<Organization>>,
+    catalog_id: Uuid,
+    delete_modal_open: RwSignal<bool>,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client.delete_app_catalog(org.id, catalog_id).await??;
+
+    delete_modal_open.set(false);
+
+    Ok(())
+}
+
 #[component]
 pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
     let org = get_current_org();
@@ -105,6 +120,7 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
     let debounced_search = RwSignal::new(String::new());
     let update_counter = RwSignal::new(0usize);
     let create_env_modal_open = RwSignal::new(false);
+    let delete_catalog_modal_open = RwSignal::new(false);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -159,6 +175,20 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
     let catalog_info = Signal::derive(move || catalog_result.get().flatten());
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
 
+    let navigate = leptos_router::hooks::use_navigate();
+    let delete_catalog_action = Action::new_local(move |_| {
+        let nav = navigate.clone();
+        async move {
+            match delete_catalog(org, catalog_id, delete_catalog_modal_open).await {
+                Ok(_) => {
+                    nav("/kubernetes/catalogs", Default::default());
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    });
+
     // Filter workloads based on search query
     let filtered_workloads = Signal::derive(move || {
         let workloads = all_workloads.get();
@@ -178,7 +208,7 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
         <div class="flex flex-col gap-4">
             // App Catalog Information Section
             <Show when=move || catalog_info.get().is_some()>
-                <AppCatalogInfo catalog=catalog_info />
+                <AppCatalogInfo catalog=catalog_info delete_modal_open=delete_catalog_modal_open delete_action=delete_catalog_action />
             </Show>
 
             // Search Input and Action Buttons
@@ -298,6 +328,21 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                     }
                 }}
             </Show>
+
+            // Delete Catalog Modal
+            {move || {
+                if let Some(catalog) = catalog_info.get() {
+                    view! {
+                        <DeleteModal
+                            resource=catalog.name
+                            open=delete_catalog_modal_open
+                            delete_action=delete_catalog_action
+                        />
+                    }.into_any()
+                } else {
+                    view! { <div></div> }.into_any()
+                }
+            }}
         </div>
     }
 }
@@ -329,10 +374,12 @@ pub fn WorkloadItem(
                 </a>
             </TableCell>
             <TableCell>
-                <span class="text-muted-foreground">{workload.namespace}</span>
+                <Badge variant=BadgeVariant::Secondary>
+                    {workload.namespace}
+                </Badge>
             </TableCell>
             <TableCell>
-                <Badge variant=kind_variant>
+                <Badge variant=BadgeVariant::Outline>
                     {workload.kind.to_string()}
                 </Badge>
             </TableCell>
@@ -377,20 +424,33 @@ pub fn WorkloadItem(
 }
 
 #[component]
-pub fn AppCatalogInfo(catalog: Signal<Option<KubeAppCatalog>>) -> impl IntoView {
+pub fn AppCatalogInfo(
+    catalog: Signal<Option<KubeAppCatalog>>,
+    delete_modal_open: RwSignal<bool>,
+    delete_action: Action<(), Result<(), ErrorResponse>>,
+) -> impl IntoView {
     view! {
         {move || {
             if let Some(catalog) = catalog.get() {
                 view! {
                     <Card class="p-6">
                         <div class="flex flex-col gap-4">
-                            <div class="flex flex-col gap-2">
-                                <H3>{catalog.name.clone()}</H3>
-                                {catalog.description.clone().map(|desc| {
-                                    view! {
-                                        <P class="text-muted-foreground">{desc}</P>
-                                    }
-                                })}
+                            <div class="flex items-start justify-between">
+                                <div class="flex flex-col gap-2">
+                                    <H3>{catalog.name.clone()}</H3>
+                                    {catalog.description.clone().map(|desc| {
+                                        view! {
+                                            <P class="text-muted-foreground">{desc}</P>
+                                        }
+                                    })}
+                                </div>
+                                <Button
+                                    variant=ButtonVariant::Destructive
+                                    on:click=move |_| delete_modal_open.set(true)
+                                >
+                                    <lucide_leptos::Trash2 />
+                                    Delete Catalog
+                                </Button>
                             </div>
                             <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm">
                                 <div class="flex items-center gap-2 text-muted-foreground font-medium">

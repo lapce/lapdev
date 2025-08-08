@@ -245,10 +245,6 @@ pub fn DropdownMenuItem(
     #[prop(into, optional)] disabled: MaybeProp<bool>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
-    let children = children
-        .map(|c| c().into_any())
-        .unwrap_or_else(|| ().into_any());
-
     view! {
         <div
             class=move || {
@@ -260,7 +256,7 @@ pub fn DropdownMenuItem(
             data-slot="dropdown-menu-item"
             data-disabled=move || disabled.get()
         >
-            {children}
+            {children.map(|c| c().into_any()).unwrap_or_else(|| ().into_any())}
         </div>
     }
 }

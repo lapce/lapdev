@@ -481,8 +481,10 @@ pub fn CreateEnvironmentModal(
         })
     });
 
+    let navigate = leptos_router::hooks::use_navigate();
     let create_action = Action::new_local(move |_| {
         let client = client.clone();
+        let nav = navigate.clone();
         async move {
             // Get the selected namespace name
             let namespace_name = selected_namespace_id
@@ -496,7 +498,7 @@ pub fn CreateEnvironmentModal(
                 })
                 .ok_or_else(|| anyhow!("Please select a namespace"))?;
 
-            client
+            let created_environment = client
                 .create_kube_environment(
                     org.get_untracked()
                         .ok_or_else(|| anyhow!("can't get org"))?
@@ -515,6 +517,10 @@ pub fn CreateEnvironmentModal(
             modal_open.set(false);
             environment_name.set("".to_string());
             selected_namespace_id.set(None);
+            
+            // Navigate to the created environment detail page
+            nav(&format!("/kubernetes/environments/{}", created_environment.id), Default::default());
+            
             Ok(())
         }
     });

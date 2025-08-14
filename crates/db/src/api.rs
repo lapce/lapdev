@@ -1525,7 +1525,7 @@ impl DbApi {
 
             result.push(KubeEnvironmentWorkload {
                 id: workload.id,
-                created_at: workload.created_at.to_string(),
+                created_at: workload.created_at,
                 environment_id: workload.environment_id,
                 name: workload.name,
                 namespace: workload.namespace,
@@ -1556,7 +1556,7 @@ impl DbApi {
 
             Ok(Some(KubeEnvironmentWorkload {
                 id: workload.id,
-                created_at: workload.created_at.to_string(),
+                created_at: workload.created_at,
                 environment_id: workload.environment_id,
                 name: workload.name,
                 namespace: workload.namespace,
@@ -1609,7 +1609,7 @@ impl DbApi {
             app_catalog_id: ActiveValue::Set(app_catalog_id),
             cluster_id: ActiveValue::Set(cluster_id),
             name: ActiveValue::Set(name),
-            namespace: ActiveValue::Set(namespace),
+            namespace: ActiveValue::Set(namespace.clone()),
             status: ActiveValue::Set(status),
             is_shared: ActiveValue::Set(is_shared),
         }
@@ -1629,7 +1629,7 @@ impl DbApi {
                 deleted_at: ActiveValue::Set(None),
                 environment_id: ActiveValue::Set(environment_id),
                 name: ActiveValue::Set(workload.name),
-                namespace: ActiveValue::Set(workload.namespace),
+                namespace: ActiveValue::Set(namespace.clone()),
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
             }
@@ -1655,7 +1655,7 @@ impl DbApi {
                 deleted_at: ActiveValue::Set(None),
                 environment_id: ActiveValue::Set(environment_id),
                 name: ActiveValue::Set(service_name),
-                namespace: ActiveValue::Set(service_with_yaml.details.name),
+                namespace: ActiveValue::Set(namespace.clone()),
                 yaml: ActiveValue::Set(service_with_yaml.yaml),
                 ports: ActiveValue::Set(ports_json),
                 selector: ActiveValue::Set(selector_json),
@@ -1701,7 +1701,7 @@ impl DbApi {
 
             result.push(lapdev_common::kube::KubeEnvironmentService {
                 id: service.id,
-                created_at: service.created_at.to_string(),
+                created_at: service.created_at,
                 environment_id: service.environment_id,
                 name: service.name,
                 namespace: service.namespace,

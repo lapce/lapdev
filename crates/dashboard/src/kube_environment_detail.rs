@@ -22,6 +22,7 @@ use crate::{
         input::Input,
         label::Label,
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
+        tabs::{Tabs, TabsContent, TabsList, TabsTrigger},
         typography::{H3, H4, P},
     },
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
@@ -259,23 +260,16 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                 />
             </Show>
 
-            // Environment Workloads Card
+            // Environment Resources (Workloads & Services)
             <Show when=move || environment_info.get().is_some()>
-                <EnvironmentWorkloadsCard
+                <EnvironmentResourcesTabs
                     environment_id
                     filtered_workloads
                     search_query
                     debounced_search
                     all_workloads
-                    update_counter
-                />
-            </Show>
-
-            // Environment Services Card
-            <Show when=move || environment_info.get().is_some()>
-                <EnvironmentServicesCard
-                    environment_id
                     all_services
+                    update_counter
                 />
             </Show>
 
@@ -508,8 +502,71 @@ pub fn EnvironmentResourcesCard(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceTab {
+    Workloads,
+    Services,
+}
+
+impl std::fmt::Display for ResourceTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResourceTab::Workloads => write!(f, "workloads"),
+            ResourceTab::Services => write!(f, "services"),
+        }
+    }
+}
+
 #[component]
-pub fn EnvironmentWorkloadsCard(
+pub fn EnvironmentResourcesTabs(
+    environment_id: Uuid,
+    filtered_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
+    search_query: RwSignal<String>,
+    debounced_search: RwSignal<String>,
+    all_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
+    all_services: Signal<Vec<KubeEnvironmentService>>,
+    update_counter: RwSignal<usize>,
+) -> impl IntoView {
+    view! {
+        <Tabs default_value=RwSignal::new(ResourceTab::Workloads)>
+            <TabsList class="grid w-full grid-cols-2">
+                <TabsTrigger value=ResourceTab::Workloads>
+                    "Workloads"
+                    <Badge variant=BadgeVariant::Secondary class="ml-2">
+                        {move || all_workloads.get().len()}
+                    </Badge>
+                </TabsTrigger>
+                <TabsTrigger value=ResourceTab::Services>
+                    "Services"
+                    <Badge variant=BadgeVariant::Secondary class="ml-2">
+                        {move || all_services.get().len()}
+                    </Badge>
+                </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value=ResourceTab::Workloads>
+                <EnvironmentWorkloadsContent
+                    environment_id
+                    filtered_workloads
+                    search_query
+                    debounced_search
+                    all_workloads
+                    update_counter
+                />
+            </TabsContent>
+
+            <TabsContent value=ResourceTab::Services>
+                <EnvironmentServicesContent
+                    environment_id
+                    all_services
+                />
+            </TabsContent>
+        </Tabs>
+    }
+}
+
+#[component]
+pub fn EnvironmentWorkloadsContent(
     environment_id: Uuid,
     filtered_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
     search_query: RwSignal<String>,
@@ -658,7 +715,7 @@ pub fn EnvironmentWorkloadItem(
                 </div>
             </TableCell>
             <TableCell>
-                <span class="text-sm text-muted-foreground">{workload.created_at}</span>
+                <DatetimeModal time=workload.created_at />
             </TableCell>
             <TableCell>
                 <Button
@@ -705,20 +762,11 @@ pub fn ContainerDisplay(container: KubeContainerInfo) -> impl IntoView {
 }
 
 #[component]
-pub fn EnvironmentServicesCard(
+pub fn EnvironmentServicesContent(
     environment_id: Uuid,
     all_services: Signal<Vec<KubeEnvironmentService>>,
 ) -> impl IntoView {
     view! {
-        <Card>
-            <div class="p-6">
-                <div class="flex items-center justify-between mb-6">
-                    <H4>Services</H4>
-                    <Badge variant=BadgeVariant::Secondary>
-                        {move || all_services.get().len()} Services
-                    </Badge>
-                </div>
-
                 // Services table
                 <div class="rounded-lg border relative">
                     <Table>
@@ -763,29 +811,27 @@ pub fn EnvironmentServicesCard(
                         }
                     }}
                 </div>
-            </div>
-        </Card>
     }
 }
 
 #[component]
-pub fn EnvironmentServiceItem(
-    service: KubeEnvironmentService,
-) -> impl IntoView {
-    let ports_display = service.ports.iter()
+pub fn EnvironmentServiceItem(service: KubeEnvironmentService) -> impl IntoView {
+    let ports_display = service
+        .ports
+        .iter()
         .map(|port| {
-            let target_port = port.target_port
+            let target_port = port
+                .target_port
                 .map(|tp| format!(":{tp}"))
                 .unwrap_or_default();
-            let protocol = port.protocol
-                .as_deref()
-                .unwrap_or("TCP");
+            let protocol = port.protocol.as_deref().unwrap_or("TCP");
             format!("{}{} ({})", port.port, target_port, protocol)
         })
         .collect::<Vec<_>>()
         .join(", ");
 
-    let selectors_display = service.selector
+    let selectors_display = service
+        .selector
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
@@ -820,9 +866,7 @@ pub fn EnvironmentServiceItem(
                 </div>
             </TableCell>
             <TableCell>
-                <div class="text-sm text-muted-foreground">
-                    {service.created_at.clone()}
-                </div>
+                <DatetimeModal time=service.created_at />
             </TableCell>
         </TableRow>
     }

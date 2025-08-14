@@ -12,6 +12,7 @@ pub struct Model {
     pub environment_id: Uuid,
     pub name: String,
     pub namespace: String,
+    #[sea_orm(column_type = "Text")]
     pub yaml: String,
     pub ports: Json,
     pub selector: Json,

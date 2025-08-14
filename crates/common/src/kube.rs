@@ -173,7 +173,7 @@ pub struct KubeAppCatalogWorkloadCreate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeEnvironmentWorkload {
     pub id: Uuid,
-    pub created_at: String,
+    pub created_at: DateTime<FixedOffset>,
     pub environment_id: Uuid,
     pub name: String,
     pub namespace: String,
@@ -255,7 +255,7 @@ pub struct KubeServiceWithYaml {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeEnvironmentService {
     pub id: Uuid,
-    pub created_at: String,
+    pub created_at: DateTime<FixedOffset>,
     pub environment_id: Uuid,
     pub name: String,
     pub namespace: String,

@@ -21,7 +21,7 @@ use crate::{
         input::Input,
         typography::{H3, H4, P},
     },
-    modal::{DeleteModal, ErrorResponse},
+    modal::{DatetimeModal, DeleteModal, ErrorResponse},
     organization::get_current_org,
 };
 
@@ -68,7 +68,9 @@ async fn get_environment_workload_detail(
     let client = HrpcServiceClient::new("/api/rpc".to_string());
 
     // Get environment info
-    let environment = client.get_kube_environment(org.id, environment_id).await??;
+    let environment = client
+        .get_kube_environment(org.id, environment_id)
+        .await??;
 
     // Get all workloads and find the specific one
     let workloads = client
@@ -109,9 +111,13 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
 
     let workload_result = LocalResource::new(move || async move {
         is_loading.set(true);
-        let result = get_environment_workload_detail(org, environment_id, workload_id).await.ok();
+        let result = get_environment_workload_detail(org, environment_id, workload_id)
+            .await
+            .ok();
         if let Some((env, workload)) = result.as_ref() {
-            config.current_page.set(format!("{} / {}", env.name, workload.name));
+            config
+                .current_page
+                .set(format!("{} / {}", env.name, workload.name));
         }
         is_loading.set(false);
         result
@@ -125,7 +131,10 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
         async move {
             match delete_environment_workload(org, workload_id, delete_modal_open).await {
                 Ok(_) => {
-                    nav(&format!("/kubernetes/environments/{}", environment_id), Default::default());
+                    nav(
+                        &format!("/kubernetes/environments/{}", environment_id),
+                        Default::default(),
+                    );
                     Ok(())
                 }
                 Err(e) => Err(e),
@@ -278,7 +287,7 @@ pub fn EnvironmentWorkloadInfoCard(
                                     <span>Created</span>
                                 </div>
                                 <div>
-                                    <span class="text-sm text-muted-foreground">{created_at_str}</span>
+                                    <DatetimeModal time=workload.created_at />
                                 </div>
                             </div>
                         </div>

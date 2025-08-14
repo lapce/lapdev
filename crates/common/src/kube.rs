@@ -251,3 +251,15 @@ pub struct KubeServiceWithYaml {
     pub yaml: String,
     pub details: KubeServiceDetails,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeEnvironmentService {
+    pub id: Uuid,
+    pub created_at: String,
+    pub environment_id: Uuid,
+    pub name: String,
+    pub namespace: String,
+    pub yaml: String,
+    pub ports: Vec<KubeServicePort>,
+    pub selector: std::collections::HashMap<String, String>,
+}

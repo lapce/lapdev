@@ -42,6 +42,7 @@ Working on **kube** branch implementing Kubernetes provider functionality for La
 - Add workspace scheduling to Kubernetes
 - Integration with existing lapdev-conductor
 - Testing and validation
+- get_environment_workloads and get_environment_services need to check ownership
 
 ## Development Commands
 ```bash

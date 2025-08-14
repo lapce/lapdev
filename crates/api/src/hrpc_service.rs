@@ -389,6 +389,19 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn get_environment_services(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<Vec<lapdev_common::kube::KubeEnvironmentService>, HrpcError> {
+        let _ = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .get_environment_services(org_id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn get_environment_workload(
         &self,
         headers: &axum::http::HeaderMap,

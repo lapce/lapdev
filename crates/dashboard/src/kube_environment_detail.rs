@@ -6,7 +6,7 @@ use lapdev_common::{
     console::Organization,
     kube::{
         KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeEnvironment,
-        KubeEnvironmentWorkload,
+        KubeEnvironmentService, KubeEnvironmentWorkload,
     },
 };
 use leptos::prelude::*;
@@ -85,6 +85,17 @@ async fn get_environment_workloads(
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     Ok(client
         .get_environment_workloads(org.id, environment_id)
+        .await??)
+}
+
+async fn get_environment_services(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+) -> Result<Vec<lapdev_common::kube::KubeEnvironmentService>> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+    Ok(client
+        .get_environment_services(org.id, environment_id)
         .await??)
 }
 
@@ -184,8 +195,19 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
+    let services_result = LocalResource::new(move || {
+        update_counter.track();
+        async move {
+            let result = get_environment_services(org, environment_id)
+                .await
+                .unwrap_or_else(|_| vec![]);
+            result
+        }
+    });
+
     let environment_info = Signal::derive(move || environment_result.get().flatten());
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
+    let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
 
     // Filter workloads based on search query
     let filtered_workloads = Signal::derive(move || {
@@ -246,6 +268,14 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     debounced_search
                     all_workloads
                     update_counter
+                />
+            </Show>
+
+            // Environment Services Card
+            <Show when=move || environment_info.get().is_some()>
+                <EnvironmentServicesCard
+                    environment_id
+                    all_services
                 />
             </Show>
 
@@ -671,5 +701,129 @@ pub fn ContainerDisplay(container: KubeContainerInfo) -> impl IntoView {
                 </div>
             </div>
         </div>
+    }
+}
+
+#[component]
+pub fn EnvironmentServicesCard(
+    environment_id: Uuid,
+    all_services: Signal<Vec<KubeEnvironmentService>>,
+) -> impl IntoView {
+    view! {
+        <Card>
+            <div class="p-6">
+                <div class="flex items-center justify-between mb-6">
+                    <H4>Services</H4>
+                    <Badge variant=BadgeVariant::Secondary>
+                        {move || all_services.get().len()} Services
+                    </Badge>
+                </div>
+
+                // Services table
+                <div class="rounded-lg border relative">
+                    <Table>
+                        <TableHeader class="bg-muted">
+                            <TableRow>
+                                <TableHead>Name</TableHead>
+                                <TableHead>Namespace</TableHead>
+                                <TableHead>Ports</TableHead>
+                                <TableHead>Selectors</TableHead>
+                                <TableHead>Created</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            <For
+                                each=move || all_services.get()
+                                key=|service| format!("{}-{}", service.name, service.namespace)
+                                children=move |service| {
+                                    view! { <EnvironmentServiceItem service=service.clone() /> }
+                                }
+                            />
+                        </TableBody>
+                    </Table>
+
+                    // Empty state
+                    {move || {
+                        let services = all_services.get();
+                        if services.is_empty() {
+                            view! {
+                                <div class="flex flex-col items-center justify-center py-12 text-center">
+                                    <div class="rounded-full bg-muted p-3 mb-4">
+                                        <lucide_leptos::Network />
+                                    </div>
+                                    <H4 class="mb-2">No Services Found</H4>
+                                    <P class="text-muted-foreground mb-4 max-w-sm">
+                                        "This environment doesn't contain any services yet."
+                                    </P>
+                                </div>
+                            }
+                            .into_any()
+                        } else {
+                            view! { <div></div> }.into_any()
+                        }
+                    }}
+                </div>
+            </div>
+        </Card>
+    }
+}
+
+#[component]
+pub fn EnvironmentServiceItem(
+    service: KubeEnvironmentService,
+) -> impl IntoView {
+    let ports_display = service.ports.iter()
+        .map(|port| {
+            let target_port = port.target_port
+                .map(|tp| format!(":{tp}"))
+                .unwrap_or_default();
+            let protocol = port.protocol
+                .as_deref()
+                .unwrap_or("TCP");
+            format!("{}{} ({})", port.port, target_port, protocol)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let selectors_display = service.selector
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    view! {
+        <TableRow>
+            <TableCell>
+                <div class="font-medium">{service.name.clone()}</div>
+            </TableCell>
+            <TableCell>
+                <Badge variant=BadgeVariant::Secondary>
+                    {service.namespace.clone()}
+                </Badge>
+            </TableCell>
+            <TableCell>
+                <div class="text-sm">
+                    {if ports_display.is_empty() {
+                        "No ports".to_string()
+                    } else {
+                        ports_display
+                    }}
+                </div>
+            </TableCell>
+            <TableCell>
+                <div class="text-sm text-muted-foreground">
+                    {if selectors_display.is_empty() {
+                        "No selectors".to_string()
+                    } else {
+                        selectors_display
+                    }}
+                </div>
+            </TableCell>
+            <TableCell>
+                <div class="text-sm text-muted-foreground">
+                    {service.created_at.clone()}
+                </div>
+            </TableCell>
+        </TableRow>
     }
 }

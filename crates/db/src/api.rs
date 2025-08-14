@@ -1669,4 +1669,47 @@ impl DbApi {
 
         Ok(environment)
     }
+
+    pub async fn get_environment_services(
+        &self,
+        environment_id: Uuid,
+    ) -> Result<Vec<lapdev_common::kube::KubeEnvironmentService>> {
+        let services = lapdev_db_entities::kube_environment_service::Entity::find()
+            .filter(
+                lapdev_db_entities::kube_environment_service::Column::EnvironmentId
+                    .eq(environment_id),
+            )
+            .filter(lapdev_db_entities::kube_environment_service::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        let mut result = Vec::new();
+        for service in services {
+            let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                if let Ok(ports) = serde_json::from_value(service.ports.clone()) {
+                    ports
+                } else {
+                    vec![]
+                };
+
+            let selector: std::collections::HashMap<String, String> =
+                if let Ok(selector) = serde_json::from_value(service.selector.clone()) {
+                    selector
+                } else {
+                    std::collections::HashMap::new()
+                };
+
+            result.push(lapdev_common::kube::KubeEnvironmentService {
+                id: service.id,
+                created_at: service.created_at.to_string(),
+                environment_id: service.environment_id,
+                name: service.name,
+                namespace: service.namespace,
+                yaml: service.yaml,
+                ports,
+                selector,
+            });
+        }
+        Ok(result)
+    }
 }

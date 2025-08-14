@@ -1,6 +1,6 @@
 use lapdev_common::kube::{
     CreateKubeClusterResponse, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeCluster,
-    KubeClusterInfo, KubeContainerInfo, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
+    KubeClusterInfo, KubeContainerInfo, KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
     KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
 };
 use uuid::Uuid;
@@ -160,6 +160,12 @@ pub trait HrpcService {
         org_id: Uuid,
         environment_id: Uuid,
     ) -> Result<Vec<KubeEnvironmentWorkload>, HrpcError>;
+
+    async fn get_environment_services(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<Vec<KubeEnvironmentService>, HrpcError>;
 
     async fn get_environment_workload(
         &self,

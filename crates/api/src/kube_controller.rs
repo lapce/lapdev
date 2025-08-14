@@ -5,10 +5,11 @@ use uuid::Uuid;
 use anyhow::Result;
 use lapdev_common::{
     kube::{
-        CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkloadCreate, KubeCluster,
-        KubeClusterInfo, KubeClusterStatus, KubeContainerImage, KubeEnvironment, KubeNamespace,
-        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
-        PaginatedInfo, PaginatedResult, PaginationParams,
+        CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeClusterStatus,
+        KubeContainerImage, KubeEnvironment, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
+        KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedInfo, PaginatedResult,
+        PaginationParams,
     },
     token::PlainToken,
 };
@@ -631,7 +632,10 @@ impl KubeController {
             cluster_id: environment.cluster_id,
             cluster_name: cluster.name,
             status: environment.status,
-            created_at: environment.created_at.format("%Y-%m-%d %H:%M:%S%.f %z").to_string(),
+            created_at: environment
+                .created_at
+                .format("%Y-%m-%d %H:%M:%S%.f %z")
+                .to_string(),
             is_shared: environment.is_shared,
         })
     }
@@ -662,7 +666,10 @@ impl KubeController {
 
         // TODO: Clean up Kubernetes resources from the cluster
         // Get cluster server to perform cleanup if needed
-        if let Some(_cluster_server) = self.get_random_kube_cluster_server(environment.cluster_id).await {
+        if let Some(_cluster_server) = self
+            .get_random_kube_cluster_server(environment.cluster_id)
+            .await
+        {
             tracing::info!(
                 "Deleting environment '{}' in namespace '{}'",
                 environment.name,
@@ -946,13 +953,39 @@ impl KubeController {
                 )
             })?;
 
-        // First, get workloads YAML before creating in database to validate success
-        let workloads_with_resources = self.get_workloads_yaml_for_catalog(&app_catalog).await?;
+        let workloads = self
+            .db
+            .get_app_catalog_workloads(app_catalog.id)
+            .await
+            .map_err(ApiError::from)?;
 
-        // Create the environment in database only after successful YAML retrieval
+        if workloads.is_empty() {
+            return Err(ApiError::InvalidRequest(format!(
+                "No workloads found for app catalog '{}'",
+                app_catalog.name
+            )));
+        }
+
+        // First, get workloads YAML before creating in database to validate success
+        let workloads_with_resources = self
+            .get_workloads_yaml_for_catalog(&app_catalog, workloads.clone())
+            .await?;
+
+        // Store the environment workloads in the database before deployment
+        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> = workloads
+            .into_iter()
+            .map(|workload| lapdev_common::kube::KubeWorkloadDetails {
+                name: workload.name,
+                namespace: namespace.clone(),
+                kind: workload.kind,
+                containers: workload.containers,
+            })
+            .collect();
+
+        // Create the environment and workloads in a single transaction
         let created_env = match self
             .db
-            .create_kube_environment(
+            .create_kube_environment_with_workloads(
                 org_id,
                 user_id,
                 app_catalog_id,
@@ -961,6 +994,7 @@ impl KubeController {
                 namespace.clone(),
                 Some("Pending".to_string()),
                 is_shared,
+                workload_details,
             )
             .await
         {
@@ -1068,22 +1102,8 @@ impl KubeController {
     async fn get_workloads_yaml_for_catalog(
         &self,
         app_catalog: &lapdev_db_entities::kube_app_catalog::Model,
+        workloads: Vec<KubeAppCatalogWorkload>,
     ) -> Result<lapdev_kube_rpc::KubeWorkloadsWithResources, ApiError> {
-        // Step 1: Get workloads from the kube_app_catalog_workload table
-        let workloads = self
-            .db
-            .get_app_catalog_workloads(app_catalog.id)
-            .await
-            .map_err(ApiError::from)?;
-
-        if workloads.is_empty() {
-            return Err(ApiError::InvalidRequest(format!(
-                "No workloads found for app catalog '{}'",
-                app_catalog.name
-            )));
-        }
-
-        // Step 2: Get the source cluster server where the app catalog was created
         let source_server = self
             .get_random_kube_cluster_server(app_catalog.cluster_id)
             .await
@@ -1093,7 +1113,6 @@ impl KubeController {
                 )
             })?;
 
-        // Step 3: Retrieve workload YAMLs from source cluster
         match source_server
             .rpc_client
             .get_workloads_yaml(tarpc::context::current(), workloads)

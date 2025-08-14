@@ -50,6 +50,7 @@ members = [
   "crates/kube",
   "crates/kube-rpc",
   "crates/kube-manager",
+  "crates/kube-sidecar-proxy",
   "crates/dashboard",
   "crates/db",
   "crates/db/migration",
@@ -142,6 +143,7 @@ lapdev-guest-agent = { path = "./crates/guest-agent" }
 lapdev-kube = { path = "./crates/kube" }
 lapdev-kube-rpc = { path = "./crates/kube-rpc" }
 lapdev-kube-manager = { path = "./crates/kube-manager" }
+lapdev-kube-sidecar-proxy = { path = "./crates/kube-sidecar-proxy" }
 lapdev-hrpc = { path = "./crates/hrpc" }
 lapdev-hrpc-proc-macro = { path = "./crates/hrpc-proc-macro" }
 

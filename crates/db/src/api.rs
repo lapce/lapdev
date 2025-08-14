@@ -1630,4 +1630,67 @@ impl DbApi {
         }
         Ok(())
     }
+
+    /// Creates a kube environment and its associated workloads within a single database transaction.
+    /// This ensures atomicity - either both operations succeed or both are rolled back.
+    pub async fn create_kube_environment_with_workloads(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        name: String,
+        namespace: String,
+        status: Option<String>,
+        is_shared: bool,
+        workloads: Vec<KubeWorkloadDetails>,
+    ) -> Result<lapdev_db_entities::kube_environment::Model, sea_orm::DbErr> {
+        let txn = self.conn.begin().await?;
+        
+        let environment_id = Uuid::new_v4();
+        let created_at = Utc::now().into();
+
+        // Create the environment
+        let environment = lapdev_db_entities::kube_environment::ActiveModel {
+            id: ActiveValue::Set(environment_id),
+            created_at: ActiveValue::Set(created_at),
+            deleted_at: ActiveValue::Set(None),
+            organization_id: ActiveValue::Set(org_id),
+            user_id: ActiveValue::Set(user_id),
+            app_catalog_id: ActiveValue::Set(app_catalog_id),
+            cluster_id: ActiveValue::Set(cluster_id),
+            name: ActiveValue::Set(name),
+            namespace: ActiveValue::Set(namespace),
+            status: ActiveValue::Set(status),
+            is_shared: ActiveValue::Set(is_shared),
+        }
+        .insert(&txn)
+        .await?;
+
+        // Create all associated workloads
+        for workload in workloads {
+            // Serialize all containers
+            let containers_json = serde_json::to_value(&workload.containers)
+                .map(Json::from)
+                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
+            lapdev_db_entities::kube_environment_workload::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                created_at: ActiveValue::Set(created_at),
+                deleted_at: ActiveValue::Set(None),
+                environment_id: ActiveValue::Set(environment_id),
+                name: ActiveValue::Set(workload.name),
+                namespace: ActiveValue::Set(workload.namespace),
+                kind: ActiveValue::Set(workload.kind.to_string()),
+                containers: ActiveValue::Set(containers_json),
+            }
+            .insert(&txn)
+            .await?;
+        }
+
+        // Commit the transaction
+        txn.commit().await?;
+        
+        Ok(environment)
+    }
 }

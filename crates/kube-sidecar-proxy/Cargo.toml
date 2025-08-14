@@ -1,0 +1,7 @@
+[package]
+name = "lapdev-kube-sidecar-proxy"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]

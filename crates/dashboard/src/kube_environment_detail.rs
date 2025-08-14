@@ -4,7 +4,10 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeEnvironment, KubeEnvironmentWorkload},
+    kube::{
+        KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeEnvironment,
+        KubeEnvironmentWorkload,
+    },
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -234,20 +237,15 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                 />
             </Show>
 
-            // Environment Resources Card
-            <Show when=move || environment_info.get().is_some()>
-                <EnvironmentResourcesCard environment_info />
-            </Show>
-
             // Environment Workloads Card
             <Show when=move || environment_info.get().is_some()>
-                <EnvironmentWorkloadsCard 
-                    environment_id 
-                    filtered_workloads 
-                    search_query 
-                    debounced_search 
-                    all_workloads 
-                    update_counter 
+                <EnvironmentWorkloadsCard
+                    environment_id
+                    filtered_workloads
+                    search_query
+                    debounced_search
+                    all_workloads
+                    update_counter
                 />
             </Show>
 
@@ -490,22 +488,17 @@ pub fn EnvironmentWorkloadsCard(
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
-        <Card class="p-6">
             <div class="flex flex-col gap-6">
-                // Header
-                <div class="flex items-center justify-between">
-                    <H4>Environment Workloads</H4>
-                    <div class="relative max-w-sm">
-                        <lucide_leptos::Search attr:class="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
-                        <Input
-                            attr:placeholder="Search workloads..."
-                            class="pl-10"
-                            prop:value=move || search_query.get()
-                            on:input=move |ev| {
-                                search_query.set(event_target_value(&ev));
-                            }
-                        />
-                    </div>
+                <div class="relative max-w-sm">
+                    <lucide_leptos::Search attr:class="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+                    <Input
+                        attr:placeholder="Search workloads..."
+                        class="pl-10"
+                        prop:value=move || search_query.get()
+                        on:input=move |ev| {
+                            search_query.set(event_target_value(&ev));
+                        }
+                    />
                 </div>
 
                 // Workloads table
@@ -578,7 +571,6 @@ pub fn EnvironmentWorkloadsCard(
                     }}
                 </div>
             </div>
-        </Card>
     }
 }
 

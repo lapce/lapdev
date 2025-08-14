@@ -3237,6 +3237,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lapdev-kube-sidecar-proxy"
+version = "0.1.0"
+
+[[package]]
 name = "lapdev-proxy-http"
 version = "0.1.0"
 dependencies = [

@@ -15,13 +15,13 @@ use k8s_openapi::{
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
-    KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
-    KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
-    DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER,
-    KUBE_CLUSTER_URL_ENV_VAR,
+    KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort, 
+    KubeServiceWithYaml, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, 
+    PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, 
+    KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
+    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml, 
     KubeWorkloadYamlOnly, KubeWorkloadsWithResources, WorkloadIdentifier,
 };
 use lapdev_rpc::spawn_twoway;
@@ -1053,6 +1053,51 @@ impl KubeManager {
             name: original_metadata.name,
             labels: original_metadata.labels,
             ..Default::default()
+        }
+    }
+
+    fn extract_service_details(&self, service: &Service) -> KubeServiceDetails {
+        let name = service
+            .metadata
+            .name
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_string();
+
+        let ports = service
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.ports.as_ref())
+            .map(|ports| {
+                ports
+                    .iter()
+                    .map(|port| KubeServicePort {
+                        name: port.name.clone(),
+                        port: port.port,
+                        target_port: port.target_port.as_ref().and_then(|tp| match tp {
+                            k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i) => {
+                                Some(*i)
+                            }
+                            _ => None,
+                        }),
+                        protocol: port.protocol.clone(),
+                        node_port: port.node_port,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let selector = service
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.selector.clone())
+            .map(|btree| btree.into_iter().collect())
+            .unwrap_or_default();
+
+        KubeServiceDetails {
+            name,
+            ports,
+            selector,
         }
     }
 
@@ -2178,7 +2223,7 @@ impl KubeManager {
         needed_configmaps_by_namespace: &HashMap<String, std::collections::HashSet<String>>,
         needed_secrets_by_namespace: &HashMap<String, std::collections::HashSet<String>>,
     ) -> Result<(
-        HashMap<String, String>,
+        HashMap<String, KubeServiceWithYaml>,
         HashMap<String, String>,
         HashMap<String, String>,
     )> {
@@ -2193,9 +2238,16 @@ impl KubeManager {
                     if let Some(service_name) = &service.metadata.name {
                         if needed_services.contains(service_name) {
                             let clean_service = self.clean_service_spec(service.clone());
+                            let service_details = self.extract_service_details(&service);
 
                             if let Ok(service_yaml) = serde_yaml::to_string(&clean_service) {
-                                services_yaml_map.insert(service_name.clone(), service_yaml);
+                                services_yaml_map.insert(
+                                    service_name.clone(),
+                                    KubeServiceWithYaml {
+                                        yaml: service_yaml,
+                                        details: service_details,
+                                    },
+                                );
                             }
                         }
                     }
@@ -2529,9 +2581,9 @@ impl KubeManager {
         }
 
         // Step 4: Apply services last as they reference workloads
-        for (name, service_yaml) in &workloads_with_resources.services {
+        for (name, service_with_yaml) in &workloads_with_resources.services {
             tracing::info!("Applying Service '{}' to namespace '{}'", name, namespace);
-            self.apply_single_service(client, &namespace, service_yaml, &labels)
+            self.apply_single_service(client, &namespace, &service_with_yaml.yaml, &labels)
                 .await?;
         }
 

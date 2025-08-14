@@ -1,6 +1,6 @@
 use lapdev_common::kube::{
-    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespace, KubeNamespaceInfo, KubeWorkloadDetails,
-    KubeWorkloadKind, KubeWorkloadList, PaginationParams,
+    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceWithYaml, 
+    KubeWorkloadDetails, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -45,9 +45,9 @@ pub enum KubeWorkloadYamlOnly {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeWorkloadsWithResources {
     pub workloads: Vec<KubeWorkloadYamlOnly>,
-    pub services: HashMap<String, String>, // name -> YAML content
-    pub configmaps: HashMap<String, String>, // name -> YAML content
-    pub secrets: HashMap<String, String>,  // name -> YAML content
+    pub services: HashMap<String, KubeServiceWithYaml>, // name -> service with YAML and details
+    pub configmaps: HashMap<String, String>,            // name -> YAML content
+    pub secrets: HashMap<String, String>,               // name -> YAML content
 }
 
 #[tarpc::service]

@@ -982,10 +982,10 @@ impl KubeController {
             })
             .collect();
 
-        // Create the environment and workloads in a single transaction
+        // Create the environment, workloads, and services in a single transaction
         let created_env = match self
             .db
-            .create_kube_environment_with_workloads(
+            .create_kube_environment(
                 org_id,
                 user_id,
                 app_catalog_id,
@@ -995,6 +995,7 @@ impl KubeController {
                 Some("Pending".to_string()),
                 is_shared,
                 workload_details,
+                workloads_with_resources.services.clone(),
             )
             .await
         {

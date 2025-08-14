@@ -229,3 +229,25 @@ pub struct KubeEnvironment {
     pub created_at: String,
     pub is_shared: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeServicePort {
+    pub name: Option<String>,
+    pub port: i32,
+    pub target_port: Option<i32>,
+    pub protocol: Option<String>,
+    pub node_port: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeServiceDetails {
+    pub name: String,
+    pub ports: Vec<KubeServicePort>,
+    pub selector: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeServiceWithYaml {
+    pub yaml: String,
+    pub details: KubeServiceDetails,
+}

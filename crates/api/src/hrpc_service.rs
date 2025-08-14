@@ -382,9 +382,9 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         environment_id: Uuid,
     ) -> Result<Vec<KubeEnvironmentWorkload>, HrpcError> {
-        let _ = self.authorize(headers, org_id, None).await?;
+        let user = self.authorize(headers, org_id, None).await?;
         self.kube_controller
-            .get_environment_workloads(org_id, environment_id)
+            .get_environment_workloads(org_id, user.id, environment_id)
             .await
             .map_err(HrpcError::from)
     }
@@ -395,9 +395,9 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         environment_id: Uuid,
     ) -> Result<Vec<lapdev_common::kube::KubeEnvironmentService>, HrpcError> {
-        let _ = self.authorize(headers, org_id, None).await?;
+        let user = self.authorize(headers, org_id, None).await?;
         self.kube_controller
-            .get_environment_services(org_id, environment_id)
+            .get_environment_services(org_id, user.id, environment_id)
             .await
             .map_err(HrpcError::from)
     }

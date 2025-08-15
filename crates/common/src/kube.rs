@@ -73,6 +73,25 @@ pub enum KubeWorkloadStatus {
     Unknown,
 }
 
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, strum_macros::EnumString, strum_macros::Display,
+)]
+pub enum PreviewUrlAccessLevel {
+    Personal, // Only accessible by the owner with authentication
+    Shared,   // Accessible by organization members with authentication
+    Public,   // Accessible by anyone without authentication
+}
+
+impl PreviewUrlAccessLevel {
+    pub fn get_detailed_message(&self) -> &'static str {
+        match self {
+            PreviewUrlAccessLevel::Personal => "Personal - Only you can access",
+            PreviewUrlAccessLevel::Shared => "Shared - Organization members can access",
+            PreviewUrlAccessLevel::Public => "Public - Anyone can access without authentication",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeWorkloadList {
     pub workloads: Vec<KubeWorkload>,
@@ -262,4 +281,37 @@ pub struct KubeEnvironmentService {
     pub yaml: String,
     pub ports: Vec<KubeServicePort>,
     pub selector: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeEnvironmentPreviewUrl {
+    pub id: Uuid,
+    pub created_at: DateTime<FixedOffset>,
+    pub environment_id: Uuid,
+    pub service_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub port: i32,
+    pub port_name: Option<String>,
+    pub protocol: String,
+    pub access_level: PreviewUrlAccessLevel,
+    pub created_by: Uuid,
+    pub last_accessed_at: Option<DateTime<FixedOffset>>,
+    pub url: String, // Full preview URL
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateKubeEnvironmentPreviewUrlRequest {
+    pub description: Option<String>,
+    pub service_id: Uuid,
+    pub port: i32,
+    pub port_name: Option<String>,
+    pub protocol: Option<String>,                    // Default to "HTTP"
+    pub access_level: Option<PreviewUrlAccessLevel>, // Default to Personal
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateKubeEnvironmentPreviewUrlRequest {
+    pub description: Option<String>,
+    pub access_level: Option<PreviewUrlAccessLevel>,
 }

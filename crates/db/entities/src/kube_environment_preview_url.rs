@@ -3,19 +3,25 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "kube_environment_service")]
+#[sea_orm(table_name = "kube_environment_preview_url")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub created_at: DateTimeWithTimeZone,
+    pub updated_at: DateTimeWithTimeZone,
     pub deleted_at: Option<DateTimeWithTimeZone>,
     pub environment_id: Uuid,
+    pub service_id: Uuid,
     pub name: String,
-    pub namespace: String,
-    #[sea_orm(column_type = "Text")]
-    pub yaml: String,
-    pub ports: Json,
-    pub selector: Json,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub description: Option<String>,
+    pub port: i32,
+    pub port_name: Option<String>,
+    pub protocol: String,
+    pub access_level: String,
+    pub created_by: Uuid,
+    pub last_accessed_at: Option<DateTimeWithTimeZone>,
+    pub metadata: Json,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -28,8 +34,14 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     KubeEnvironment,
-    #[sea_orm(has_many = "super::kube_environment_preview_url::Entity")]
-    KubeEnvironmentPreviewUrl,
+    #[sea_orm(
+        belongs_to = "super::kube_environment_service::Entity",
+        from = "Column::ServiceId",
+        to = "super::kube_environment_service::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    KubeEnvironmentService,
 }
 
 impl Related<super::kube_environment::Entity> for Entity {
@@ -38,9 +50,9 @@ impl Related<super::kube_environment::Entity> for Entity {
     }
 }
 
-impl Related<super::kube_environment_preview_url::Entity> for Entity {
+impl Related<super::kube_environment_service::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::KubeEnvironmentPreviewUrl.def()
+        Relation::KubeEnvironmentService.def()
     }
 }
 

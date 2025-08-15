@@ -177,13 +177,10 @@ pub fn Button(
         )
     });
 
-    let children = children
-        .map(|c| c().into_any())
-        .unwrap_or_else(|| ().into_any());
     view! {
         <button
             class={move || class.get()}
             disabled=move || disabled.get().unwrap_or(false)
-        >{ children }</button>
+        >{ children.map(|c| c().into_any()).unwrap_or_else(|| ().into_any()) }</button>
     }
 }

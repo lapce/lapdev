@@ -517,10 +517,13 @@ pub fn CreateEnvironmentModal(
             modal_open.set(false);
             environment_name.set("".to_string());
             selected_namespace_id.set(None);
-            
+
             // Navigate to the created environment detail page
-            nav(&format!("/kubernetes/environments/{}", created_environment.id), Default::default());
-            
+            nav(
+                &format!("/kubernetes/environments/{}", created_environment.id),
+                Default::default(),
+            );
+
             Ok(())
         }
     });

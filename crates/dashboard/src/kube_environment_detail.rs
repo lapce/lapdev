@@ -17,7 +17,7 @@ use crate::{
     app::AppConfig,
     component::{
         badge::{Badge, BadgeVariant},
-        button::{Button, ButtonVariant},
+        button::{Button, ButtonSize, ButtonVariant},
         card::Card,
         input::Input,
         label::Label,
@@ -97,6 +97,17 @@ async fn get_environment_services(
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     Ok(client
         .get_environment_services(org.id, environment_id)
+        .await??)
+}
+
+async fn get_environment_preview_urls(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+) -> Result<Vec<lapdev_common::kube::KubeEnvironmentPreviewUrl>> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+    Ok(client
+        .get_environment_preview_urls(org.id, environment_id)
         .await??)
 }
 
@@ -206,9 +217,19 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
+    let preview_urls_result = LocalResource::new(move || {
+        update_counter.track();
+        async move {
+            get_environment_preview_urls(org, environment_id)
+                .await
+                .unwrap_or_else(|_| vec![])
+        }
+    });
+
     let environment_info = Signal::derive(move || environment_result.get().flatten());
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
     let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
+    let all_preview_urls = Signal::derive(move || preview_urls_result.get().unwrap_or_default());
 
     // Filter workloads based on search query
     let filtered_workloads = Signal::derive(move || {
@@ -269,6 +290,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     debounced_search
                     all_workloads
                     all_services
+                    all_preview_urls
                     update_counter
                 />
             </Show>
@@ -506,6 +528,7 @@ pub fn EnvironmentResourcesCard(
 enum ResourceTab {
     Workloads,
     Services,
+    PreviewUrls,
 }
 
 impl std::fmt::Display for ResourceTab {
@@ -513,6 +536,7 @@ impl std::fmt::Display for ResourceTab {
         match self {
             ResourceTab::Workloads => write!(f, "workloads"),
             ResourceTab::Services => write!(f, "services"),
+            ResourceTab::PreviewUrls => write!(f, "preview-urls"),
         }
     }
 }
@@ -525,21 +549,28 @@ pub fn EnvironmentResourcesTabs(
     debounced_search: RwSignal<String>,
     all_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
     all_services: Signal<Vec<KubeEnvironmentService>>,
+    all_preview_urls: Signal<Vec<lapdev_common::kube::KubeEnvironmentPreviewUrl>>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
-        <Tabs default_value=RwSignal::new(ResourceTab::Workloads)>
-            <TabsList class="grid w-full grid-cols-2">
+        <Tabs default_value=RwSignal::new(ResourceTab::Workloads) class="gap-4">
+            <TabsList>
                 <TabsTrigger value=ResourceTab::Workloads>
                     "Workloads"
-                    <Badge variant=BadgeVariant::Secondary class="ml-2">
+                    <Badge variant=BadgeVariant::Secondary>
                         {move || all_workloads.get().len()}
                     </Badge>
                 </TabsTrigger>
                 <TabsTrigger value=ResourceTab::Services>
                     "Services"
-                    <Badge variant=BadgeVariant::Secondary class="ml-2">
+                    <Badge variant=BadgeVariant::Secondary>
                         {move || all_services.get().len()}
+                    </Badge>
+                </TabsTrigger>
+                <TabsTrigger value=ResourceTab::PreviewUrls>
+                    "Preview URLs"
+                    <Badge variant=BadgeVariant::Secondary>
+                        {move || all_preview_urls.get().len()}
                     </Badge>
                 </TabsTrigger>
             </TabsList>
@@ -559,6 +590,16 @@ pub fn EnvironmentResourcesTabs(
                 <EnvironmentServicesContent
                     environment_id
                     all_services
+                    update_counter
+                />
+            </TabsContent>
+
+            <TabsContent value=ResourceTab::PreviewUrls>
+                <crate::kube_environment_preview_url::PreviewUrlsContent
+                    environment_id
+                    services=all_services
+                    preview_urls=all_preview_urls
+                    update_counter
                 />
             </TabsContent>
         </Tabs>
@@ -575,7 +616,7 @@ pub fn EnvironmentWorkloadsContent(
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
-            <div class="flex flex-col gap-6">
+            <div class="flex flex-col gap-4">
                 <div class="relative max-w-sm">
                     <lucide_leptos::Search attr:class="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
                     <Input
@@ -765,6 +806,7 @@ pub fn ContainerDisplay(container: KubeContainerInfo) -> impl IntoView {
 pub fn EnvironmentServicesContent(
     environment_id: Uuid,
     all_services: Signal<Vec<KubeEnvironmentService>>,
+    update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
                 // Services table
@@ -777,6 +819,7 @@ pub fn EnvironmentServicesContent(
                                 <TableHead>Ports</TableHead>
                                 <TableHead>Selectors</TableHead>
                                 <TableHead>Created</TableHead>
+                                <TableHead>Actions</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -784,7 +827,14 @@ pub fn EnvironmentServicesContent(
                                 each=move || all_services.get()
                                 key=|service| format!("{}-{}", service.name, service.namespace)
                                 children=move |service| {
-                                    view! { <EnvironmentServiceItem service=service.clone() /> }
+                                    view! {
+                                        <EnvironmentServiceItem
+                                            environment_id
+                                            service=service.clone()
+                                            all_services
+                                            update_counter
+                                        />
+                                    }
                                 }
                             />
                         </TableBody>
@@ -815,27 +865,17 @@ pub fn EnvironmentServicesContent(
 }
 
 #[component]
-pub fn EnvironmentServiceItem(service: KubeEnvironmentService) -> impl IntoView {
-    let ports_display = service
-        .ports
-        .iter()
-        .map(|port| {
-            let target_port = port
-                .target_port
-                .map(|tp| format!(":{tp}"))
-                .unwrap_or_default();
-            let protocol = port.protocol.as_deref().unwrap_or("TCP");
-            format!("{}{} ({})", port.port, target_port, protocol)
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let selectors_display = service
-        .selector
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(", ");
+pub fn EnvironmentServiceItem(
+    environment_id: Uuid,
+    service: KubeEnvironmentService,
+    all_services: Signal<Vec<KubeEnvironmentService>>,
+    update_counter: RwSignal<usize>,
+) -> impl IntoView {
+    let create_preview_url_modal_open = RwSignal::new(false);
+    let ports = service.ports.clone();
+    let selectors = service.selector.clone();
+    let service_for_button = service.clone();
+    let service_for_modal = service.clone();
 
     view! {
         <TableRow>
@@ -848,25 +888,63 @@ pub fn EnvironmentServiceItem(service: KubeEnvironmentService) -> impl IntoView 
                 </Badge>
             </TableCell>
             <TableCell>
-                <div class="text-sm">
-                    {if ports_display.is_empty() {
-                        "No ports".to_string()
+                <div class="text-sm flex flex-col gap-1">
+                    {if ports.is_empty() {
+                        view! { <span class="text-muted-foreground">"No ports"</span> }.into_any()
                     } else {
-                        ports_display
+                        ports.into_iter().map(|port| {
+                            let target_port = port
+                                .target_port
+                                .map(|tp| format!(":{tp}"))
+                                .unwrap_or_default();
+                            let protocol = port.protocol.as_deref().unwrap_or("TCP");
+                            let port_text = format!("{}{} ({})", port.port, target_port, protocol);
+                            view! {
+                                <Badge variant=BadgeVariant::Outline class="text-xs">
+                                    {port_text}
+                                </Badge>
+                            }
+                        }).collect::<Vec<_>>().into_any()
                     }}
                 </div>
             </TableCell>
             <TableCell>
-                <div class="text-sm text-muted-foreground">
-                    {if selectors_display.is_empty() {
-                        "No selectors".to_string()
+                <div class="text-sm flex flex-col gap-1">
+                    {if selectors.is_empty() {
+                        view! { <span class="text-muted-foreground">"No selectors"</span> }.into_any()
                     } else {
-                        selectors_display
+                        selectors.into_iter().map(|(k, v)| {
+                            let selector_text = format!("{k}={v}");
+                            view! {
+                                <Badge variant=BadgeVariant::Secondary class="text-xs">
+                                    {selector_text}
+                                </Badge>
+                            }
+                        }).collect::<Vec<_>>().into_any()
                     }}
                 </div>
             </TableCell>
             <TableCell>
                 <DatetimeModal time=service.created_at />
+            </TableCell>
+            <TableCell>
+                <Button
+                    variant=ButtonVariant::Outline
+                    size=ButtonSize::Sm
+                    on:click=move |_| create_preview_url_modal_open.set(true)
+                    disabled=Signal::derive(move || service_for_button.ports.is_empty())
+                >
+                    <lucide_leptos::Globe />
+                    "Create Preview URL"
+                </Button>
+
+                // Quick Create Preview URL Modal
+                <crate::kube_environment_preview_url::CreatePreviewUrlModal
+                    open=create_preview_url_modal_open
+                    environment_id
+                    service=service_for_modal.clone()
+                    update_counter
+                />
             </TableCell>
         </TableRow>
     }

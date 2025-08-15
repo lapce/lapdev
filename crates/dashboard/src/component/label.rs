@@ -4,6 +4,7 @@ use tailwind_fuse::*;
 #[component]
 pub fn Label(
     #[prop(into, optional)] class: MaybeProp<String>,
+    #[prop(into, optional)] for_: MaybeProp<String>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     let children = children
@@ -16,6 +17,7 @@ pub fn Label(
                 "flex items-center gap-2 text-sm leading-none font-medium select-none group-data-[disabled=true]:pointer-events-none group-data-[disabled=true]:opacity-50 peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
                 class.get()
             )
+            for=move || for_.get()
             data-slot="label"
         >
             {children}

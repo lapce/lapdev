@@ -2,6 +2,7 @@ use lapdev_common::kube::{
     CreateKubeClusterResponse, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeCluster,
     KubeClusterInfo, KubeContainerInfo, KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
     KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
+    KubeEnvironmentPreviewUrl, CreateKubeEnvironmentPreviewUrlRequest, UpdateKubeEnvironmentPreviewUrlRequest,
 };
 use uuid::Uuid;
 
@@ -198,5 +199,32 @@ pub trait HrpcService {
         &self,
         org_id: Uuid,
         namespace_id: Uuid,
+    ) -> Result<(), HrpcError>;
+
+    // Kube Environment Preview URL operations
+    async fn create_environment_preview_url(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+        request: CreateKubeEnvironmentPreviewUrlRequest,
+    ) -> Result<KubeEnvironmentPreviewUrl, HrpcError>;
+
+    async fn get_environment_preview_urls(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<Vec<KubeEnvironmentPreviewUrl>, HrpcError>;
+
+    async fn update_environment_preview_url(
+        &self,
+        org_id: Uuid,
+        preview_url_id: Uuid,
+        request: UpdateKubeEnvironmentPreviewUrlRequest,
+    ) -> Result<KubeEnvironmentPreviewUrl, HrpcError>;
+
+    async fn delete_environment_preview_url(
+        &self,
+        org_id: Uuid,
+        preview_url_id: Uuid,
     ) -> Result<(), HrpcError>;
 }

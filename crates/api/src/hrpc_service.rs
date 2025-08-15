@@ -506,4 +506,58 @@ impl HrpcService for CoreState {
             .await
             .map_err(HrpcError::from)
     }
+
+    async fn create_environment_preview_url(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+        request: lapdev_common::kube::CreateKubeEnvironmentPreviewUrlRequest,
+    ) -> Result<lapdev_common::kube::KubeEnvironmentPreviewUrl, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .create_environment_preview_url(org_id, user.id, environment_id, request)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn get_environment_preview_urls(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<Vec<lapdev_common::kube::KubeEnvironmentPreviewUrl>, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .get_environment_preview_urls(org_id, user.id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn update_environment_preview_url(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        preview_url_id: Uuid,
+        request: lapdev_common::kube::UpdateKubeEnvironmentPreviewUrlRequest,
+    ) -> Result<lapdev_common::kube::KubeEnvironmentPreviewUrl, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .update_environment_preview_url(org_id, user.id, preview_url_id, request)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn delete_environment_preview_url(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        preview_url_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .delete_environment_preview_url(org_id, user.id, preview_url_id)
+            .await
+            .map_err(HrpcError::from)
+    }
 }

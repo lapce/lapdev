@@ -1712,4 +1712,155 @@ impl DbApi {
         }
         Ok(result)
     }
+
+    pub async fn get_kube_environment_service_by_id(
+        &self,
+        service_id: Uuid,
+    ) -> Result<Option<lapdev_common::kube::KubeEnvironmentService>> {
+        let service = lapdev_db_entities::kube_environment_service::Entity::find()
+            .filter(lapdev_db_entities::kube_environment_service::Column::Id.eq(service_id))
+            .filter(lapdev_db_entities::kube_environment_service::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?;
+
+        if let Some(service) = service {
+            let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                if let Ok(ports) = serde_json::from_value(service.ports.clone()) {
+                    ports
+                } else {
+                    vec![]
+                };
+
+            let selector: std::collections::HashMap<String, String> =
+                if let Ok(selector) = serde_json::from_value(service.selector.clone()) {
+                    selector
+                } else {
+                    std::collections::HashMap::new()
+                };
+
+            Ok(Some(lapdev_common::kube::KubeEnvironmentService {
+                id: service.id,
+                created_at: service.created_at,
+                environment_id: service.environment_id,
+                name: service.name,
+                namespace: service.namespace,
+                yaml: service.yaml,
+                ports,
+                selector,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Preview URL operations
+    pub async fn create_environment_preview_url(
+        &self,
+        environment_id: Uuid,
+        service_id: Uuid,
+        user_id: Uuid,
+        name: String,
+        description: Option<String>,
+        port: i32,
+        port_name: Option<String>,
+        protocol: String,
+        access_level: lapdev_common::kube::PreviewUrlAccessLevel,
+    ) -> Result<lapdev_db_entities::kube_environment_preview_url::Model, sea_orm::DbErr> {
+        let now = Utc::now();
+        let preview_url = lapdev_db_entities::kube_environment_preview_url::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            environment_id: ActiveValue::Set(environment_id),
+            service_id: ActiveValue::Set(service_id),
+            name: ActiveValue::Set(name),
+            description: ActiveValue::Set(description),
+            port: ActiveValue::Set(port),
+            port_name: ActiveValue::Set(port_name),
+            protocol: ActiveValue::Set(protocol),
+            access_level: ActiveValue::Set(access_level.to_string()),
+            created_by: ActiveValue::Set(user_id),
+            last_accessed_at: ActiveValue::Set(None),
+            metadata: ActiveValue::Set(serde_json::json!({})),
+            deleted_at: ActiveValue::Set(None),
+            created_at: ActiveValue::Set(now.into()),
+            updated_at: ActiveValue::Set(now.into()),
+        }
+        .insert(&self.conn)
+        .await?;
+        Ok(preview_url)
+    }
+
+    pub async fn get_environment_preview_urls(
+        &self,
+        environment_id: Uuid,
+    ) -> Result<Vec<lapdev_db_entities::kube_environment_preview_url::Model>, sea_orm::DbErr> {
+        lapdev_db_entities::kube_environment_preview_url::Entity::find()
+            .filter(
+                lapdev_db_entities::kube_environment_preview_url::Column::EnvironmentId
+                    .eq(environment_id),
+            )
+            .filter(lapdev_db_entities::kube_environment_preview_url::Column::DeletedAt.is_null())
+            .order_by_asc(lapdev_db_entities::kube_environment_preview_url::Column::CreatedAt)
+            .all(&self.conn)
+            .await
+    }
+
+    pub async fn get_environment_preview_url(
+        &self,
+        preview_url_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_environment_preview_url::Model>, sea_orm::DbErr>
+    {
+        lapdev_db_entities::kube_environment_preview_url::Entity::find_by_id(preview_url_id)
+            .filter(lapdev_db_entities::kube_environment_preview_url::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await
+    }
+
+    pub async fn update_environment_preview_url(
+        &self,
+        preview_url_id: Uuid,
+        description: Option<String>,
+        access_level: Option<lapdev_common::kube::PreviewUrlAccessLevel>,
+    ) -> Result<lapdev_db_entities::kube_environment_preview_url::Model, sea_orm::DbErr> {
+        let mut active_model = lapdev_db_entities::kube_environment_preview_url::ActiveModel {
+            id: ActiveValue::Set(preview_url_id),
+            ..Default::default()
+        };
+
+        if let Some(description) = description {
+            active_model.description = ActiveValue::Set(Some(description));
+        }
+        if let Some(access_level) = access_level {
+            active_model.access_level = ActiveValue::Set(access_level.to_string());
+        }
+
+        active_model.update(&self.conn).await
+    }
+
+    pub async fn delete_environment_preview_url(
+        &self,
+        preview_url_id: Uuid,
+    ) -> Result<(), sea_orm::DbErr> {
+        lapdev_db_entities::kube_environment_preview_url::ActiveModel {
+            id: ActiveValue::Set(preview_url_id),
+            deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_preview_url_last_accessed(
+        &self,
+        preview_url_id: Uuid,
+    ) -> Result<(), sea_orm::DbErr> {
+        lapdev_db_entities::kube_environment_preview_url::ActiveModel {
+            id: ActiveValue::Set(preview_url_id),
+            last_accessed_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
 }

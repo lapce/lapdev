@@ -17,6 +17,7 @@ pub struct Model {
     pub namespace: String,
     pub status: Option<String>,
     pub is_shared: bool,
+    pub base_environment_id: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -43,6 +44,14 @@ pub enum Relation {
     KubeEnvironmentService,
     #[sea_orm(has_many = "super::kube_environment_workload::Entity")]
     KubeEnvironmentWorkload,
+    #[sea_orm(
+        belongs_to = "Entity",
+        from = "Column::BaseEnvironmentId",
+        to = "Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    BaseEnvironment,
 }
 
 impl Related<super::kube_app_catalog::Entity> for Entity {
@@ -72,6 +81,12 @@ impl Related<super::kube_environment_service::Entity> for Entity {
 impl Related<super::kube_environment_workload::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::KubeEnvironmentWorkload.def()
+    }
+}
+
+impl Related<Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::BaseEnvironment.def()
     }
 }
 

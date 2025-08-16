@@ -567,6 +567,7 @@ impl KubeController {
                     created_at: env.created_at.to_string(),
                     user_id: env.user_id,
                     is_shared: env.is_shared,
+                    base_environment_id: env.base_environment_id,
                 })
             })
             .collect();
@@ -638,6 +639,7 @@ impl KubeController {
                 .format("%Y-%m-%d %H:%M:%S%.f %z")
                 .to_string(),
             is_shared: environment.is_shared,
+            base_environment_id: environment.base_environment_id,
         })
     }
 
@@ -995,6 +997,7 @@ impl KubeController {
                 namespace.clone(),
                 Some("Pending".to_string()),
                 is_shared,
+                None, // No base environment for regular environments
                 workload_details,
                 workloads_with_resources.services.clone(),
             )
@@ -1033,6 +1036,147 @@ impl KubeController {
             cluster_id: created_env.cluster_id,
             cluster_name: cluster.name,
             created_at: created_env.created_at.to_string(),
+            base_environment_id: created_env.base_environment_id,
+        })
+    }
+
+    pub async fn create_branch_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        base_environment_id: Uuid,
+        name: String,
+    ) -> Result<lapdev_common::kube::KubeEnvironment, ApiError> {
+        // Get the base environment
+        let base_environment = self
+            .db
+            .get_kube_environment(base_environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Base environment not found".to_string()))?;
+
+        // Verify base environment belongs to the same organization
+        if base_environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // Verify base environment is shared (only shared environments can be used as base)
+        if !base_environment.is_shared {
+            return Err(ApiError::InvalidRequest(
+                "Only shared environments can be used as base environments".to_string(),
+            ));
+        }
+
+        // Verify base environment is not itself a branch environment
+        if base_environment.base_environment_id.is_some() {
+            return Err(ApiError::InvalidRequest(
+                "Cannot create a branch from another branch environment".to_string(),
+            ));
+        }
+
+        // Get the cluster to verify personal deployments are allowed
+        let cluster = self
+            .db
+            .get_kube_cluster(base_environment.cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
+
+        // Check if the cluster allows personal deployments (branch environments are always personal)
+        if !cluster.can_deploy_personal {
+            return Err(ApiError::InvalidRequest(
+                "Personal deployments are not allowed on this cluster".to_string(),
+            ));
+        }
+
+        // Get workloads and services from the base environment
+        let base_workloads = self
+            .db
+            .get_environment_workloads(base_environment_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let base_services = self
+            .db
+            .get_environment_services(base_environment_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        // Convert workloads to the format needed for database creation
+        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> = base_workloads
+            .into_iter()
+            .filter_map(|workload| {
+                workload.kind.parse().ok().map(|kind| lapdev_common::kube::KubeWorkloadDetails {
+                    name: workload.name,
+                    namespace: base_environment.namespace.clone(),
+                    kind,
+                    containers: workload.containers,
+                })
+            })
+            .collect();
+
+        // Convert services to the format needed for database creation
+        let services_map: std::collections::HashMap<String, lapdev_common::kube::KubeServiceWithYaml> = base_services
+            .into_iter()
+            .map(|service| {
+                (
+                    service.name.clone(),
+                    lapdev_common::kube::KubeServiceWithYaml {
+                        yaml: service.yaml,
+                        details: lapdev_common::kube::KubeServiceDetails {
+                            name: service.name,
+                            ports: service.ports,
+                            selector: service.selector,
+                        },
+                    },
+                )
+            })
+            .collect();
+
+        // Get app catalog info for the response
+        let app_catalog = self
+            .db
+            .get_app_catalog(base_environment.app_catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        // Create the branch environment in the database
+        let created_env = self
+            .db
+            .create_kube_environment(
+                org_id,
+                user_id,
+                base_environment.app_catalog_id,
+                base_environment.cluster_id,
+                name.clone(),
+                base_environment.namespace.clone(), // Use same namespace as base
+                Some("Pending".to_string()),
+                false, // Branch environments are always personal (not shared)
+                Some(base_environment_id), // Set the base environment reference
+                workload_details,
+                services_map,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        // TODO: Deploy the copied workloads and services to the cluster
+        // For now, we just create the database records
+
+        // Convert the database model to the API type
+        Ok(lapdev_common::kube::KubeEnvironment {
+            id: created_env.id,
+            user_id: created_env.user_id,
+            name: created_env.name,
+            namespace: created_env.namespace,
+            status: created_env.status,
+            is_shared: created_env.is_shared,
+            app_catalog_id: created_env.app_catalog_id,
+            app_catalog_name: app_catalog.name,
+            cluster_id: created_env.cluster_id,
+            cluster_name: cluster.name,
+            created_at: created_env.created_at.to_string(),
+            base_environment_id: created_env.base_environment_id,
         })
     }
 

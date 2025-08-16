@@ -50,6 +50,7 @@ impl MigrationTrait for Migration {
                             .boolean()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(KubeEnvironment::BaseEnvironmentId).uuid())
                     .foreign_key(
                         ForeignKey::create()
                             .from(KubeEnvironment::Table, KubeEnvironment::AppCatalogId)
@@ -59,6 +60,11 @@ impl MigrationTrait for Migration {
                         ForeignKey::create()
                             .from(KubeEnvironment::Table, KubeEnvironment::ClusterId)
                             .to(KubeCluster::Table, KubeCluster::Id),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(KubeEnvironment::Table, KubeEnvironment::BaseEnvironmentId)
+                            .to(KubeEnvironment::Table, KubeEnvironment::Id),
                     )
                     .to_owned(),
             )
@@ -158,4 +164,5 @@ pub enum KubeEnvironment {
     Namespace,
     Status,
     IsShared,
+    BaseEnvironmentId,
 }

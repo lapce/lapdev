@@ -376,6 +376,21 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn create_branch_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        base_environment_id: Uuid,
+        name: String,
+    ) -> Result<KubeEnvironment, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+
+        self.kube_controller
+            .create_branch_environment(org_id, user.id, base_environment_id, name)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn get_environment_workloads(
         &self,
         headers: &axum::http::HeaderMap,

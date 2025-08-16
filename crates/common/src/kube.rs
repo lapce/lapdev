@@ -247,6 +247,7 @@ pub struct KubeEnvironment {
     pub status: Option<String>,
     pub created_at: String,
     pub is_shared: bool,
+    pub base_environment_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

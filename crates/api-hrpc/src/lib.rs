@@ -135,6 +135,13 @@ pub trait HrpcService {
         is_shared: bool,
     ) -> Result<KubeEnvironment, HrpcError>;
 
+    async fn create_branch_environment(
+        &self,
+        org_id: Uuid,
+        base_environment_id: Uuid,
+        name: String,
+    ) -> Result<KubeEnvironment, HrpcError>;
+
     async fn all_kube_environments(
         &self,
         org_id: Uuid,

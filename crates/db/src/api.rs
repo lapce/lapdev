@@ -42,6 +42,7 @@ struct KubeEnvironmentWithRelated {
     pub env_organization_id: Uuid,
     pub env_user_id: Uuid,
     pub env_deleted_at: Option<DateTimeWithTimeZone>,
+    pub env_base_environment_id: Option<Uuid>,
 
     // App catalog fields
     pub catalog_name: Option<String>,
@@ -1271,6 +1272,10 @@ impl DbApi {
                 lapdev_db_entities::kube_environment::Column::DeletedAt,
                 "env_deleted_at",
             )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::BaseEnvironmentId,
+                "env_base_environment_id",
+            )
             // Join and select app catalog columns
             .join(
                 JoinType::LeftJoin,
@@ -1313,6 +1318,7 @@ impl DbApi {
                     namespace: related.env_namespace,
                     status: related.env_status,
                     is_shared: related.env_is_shared,
+                    base_environment_id: related.env_base_environment_id,
                 };
 
                 let catalog =
@@ -1591,6 +1597,7 @@ impl DbApi {
         namespace: String,
         status: Option<String>,
         is_shared: bool,
+        base_environment_id: Option<Uuid>,
         workloads: Vec<KubeWorkloadDetails>,
         services: std::collections::HashMap<String, lapdev_common::kube::KubeServiceWithYaml>,
     ) -> Result<lapdev_db_entities::kube_environment::Model, sea_orm::DbErr> {
@@ -1612,6 +1619,7 @@ impl DbApi {
             namespace: ActiveValue::Set(namespace.clone()),
             status: ActiveValue::Set(status),
             is_shared: ActiveValue::Set(is_shared),
+            base_environment_id: ActiveValue::Set(base_environment_id),
         }
         .insert(&txn)
         .await?;

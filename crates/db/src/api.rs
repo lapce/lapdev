@@ -1180,6 +1180,7 @@ impl DbApi {
         user_id: Uuid,
         search: Option<String>,
         is_shared: bool,
+        is_branch: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<(
         Vec<(
@@ -1196,6 +1197,22 @@ impl DbApi {
             .filter(lapdev_db_entities::kube_environment::Column::OrganizationId.eq(org_id))
             .filter(lapdev_db_entities::kube_environment::Column::IsShared.eq(is_shared))
             .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null());
+
+        // Filter by branch environment
+        match is_branch {
+            true => {
+                // Return only branch environments
+                base_query = base_query.filter(
+                    lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.is_not_null(),
+                );
+            }
+            false => {
+                // Return only regular environments
+                base_query = base_query.filter(
+                    lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.is_null(),
+                );
+            }
+        }
 
         // For personal environments, only show user's own environments
         if !is_shared {

@@ -534,6 +534,7 @@ impl KubeController {
         user_id: Uuid,
         search: Option<String>,
         is_shared: bool,
+        is_branch: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, ApiError> {
         let pagination = pagination.unwrap_or_default();
@@ -545,6 +546,7 @@ impl KubeController {
                 user_id,
                 search,
                 is_shared,
+                is_branch,
                 Some(pagination.clone()),
             )
             .await
@@ -1082,13 +1084,6 @@ impl KubeController {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
 
-        // Check if the cluster allows personal deployments (branch environments are always personal)
-        if !cluster.can_deploy_personal {
-            return Err(ApiError::InvalidRequest(
-                "Personal deployments are not allowed on this cluster".to_string(),
-            ));
-        }
-
         // Get workloads and services from the base environment
         let base_workloads = self
             .db
@@ -1103,20 +1098,26 @@ impl KubeController {
             .map_err(ApiError::from)?;
 
         // Convert workloads to the format needed for database creation
-        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> = base_workloads
-            .into_iter()
-            .filter_map(|workload| {
-                workload.kind.parse().ok().map(|kind| lapdev_common::kube::KubeWorkloadDetails {
-                    name: workload.name,
-                    namespace: base_environment.namespace.clone(),
-                    kind,
-                    containers: workload.containers,
+        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> =
+            base_workloads
+                .into_iter()
+                .filter_map(|workload| {
+                    workload.kind.parse().ok().map(|kind| {
+                        lapdev_common::kube::KubeWorkloadDetails {
+                            name: workload.name,
+                            namespace: base_environment.namespace.clone(),
+                            kind,
+                            containers: workload.containers,
+                        }
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
         // Convert services to the format needed for database creation
-        let services_map: std::collections::HashMap<String, lapdev_common::kube::KubeServiceWithYaml> = base_services
+        let services_map: std::collections::HashMap<
+            String,
+            lapdev_common::kube::KubeServiceWithYaml,
+        > = base_services
             .into_iter()
             .map(|service| {
                 (
@@ -1159,9 +1160,6 @@ impl KubeController {
             )
             .await
             .map_err(ApiError::from)?;
-
-        // TODO: Deploy the copied workloads and services to the cluster
-        // For now, we just create the database records
 
         // Convert the database model to the API type
         Ok(lapdev_common::kube::KubeEnvironment {

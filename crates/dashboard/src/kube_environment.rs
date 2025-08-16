@@ -45,12 +45,13 @@ async fn all_kube_environments(
     org: Signal<Option<Organization>>,
     search: Option<String>,
     is_shared: bool,
+    is_branch: bool,
     pagination: Option<PagePaginationParams>,
 ) -> Result<PaginatedResult<KubeEnvironment>> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     Ok(client
-        .all_kube_environments(org.id, search, is_shared, pagination)
+        .all_kube_environments(org.id, search, is_shared, is_branch, pagination)
         .await??)
 }
 
@@ -58,6 +59,7 @@ async fn all_kube_environments(
 enum TypeTab {
     Personal,
     Shared,
+    Branch,
 }
 
 #[component]
@@ -105,6 +107,7 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
         let page = current_page.get();
         let tab = active_tab.get();
         let is_shared = tab == TypeTab::Shared;
+        let is_branch = tab == TypeTab::Branch;
         let search_param = if search.trim().is_empty() {
             None
         } else {
@@ -116,7 +119,7 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
         });
         async move {
             is_loading.set(true);
-            let result = all_kube_environments(org, search_param, is_shared, pagination)
+            let result = all_kube_environments(org, search_param, is_shared, is_branch, pagination)
                 .await
                 .unwrap_or_else(|_| PaginatedResult {
                     data: vec![],
@@ -181,7 +184,7 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
 
     view! {
         <Tabs default_value=active_tab>
-            <TabsList class="grid w-full grid-cols-2 mb-6">
+            <TabsList class="grid w-full grid-cols-3 mb-6">
                 <TabsTrigger
                     value=TypeTab::Personal
                 >
@@ -191,6 +194,11 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
                     value=TypeTab::Shared
                 >
                     "Shared Environments"
+                </TabsTrigger>
+                <TabsTrigger
+                    value=TypeTab::Branch
+                >
+                    "Branch Environments"
                 </TabsTrigger>
             </TabsList>
 
@@ -212,6 +220,22 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
 
             <TabsContent
                 value=TypeTab::Shared
+            >
+                <EnvironmentContent
+                    search_query
+                    debounced_search
+                    environment_list
+                    pagination_info
+                    current_page_signal
+                    total_pages_signal
+                    current_page
+                    is_loading
+                    page_size
+                />
+            </TabsContent>
+
+            <TabsContent
+                value=TypeTab::Branch
             >
                 <EnvironmentContent
                     search_query
@@ -410,7 +434,13 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
             </TableCell>
             <TableCell>
                 <Badge variant=BadgeVariant::Secondary>
-                    {if environment.is_shared { "Shared" } else { "Personal" }}
+                    {if environment.base_environment_id.is_some() {
+                        "Branch"
+                    } else if environment.is_shared {
+                        "Shared"
+                    } else {
+                        "Personal"
+                    }}
                 </Badge>
             </TableCell>
             <TableCell>

@@ -147,11 +147,31 @@ async fn delete_environment(
     Ok(())
 }
 
+async fn create_branch_environment(
+    org: Signal<Option<Organization>>,
+    base_environment_id: Uuid,
+    name: String,
+    create_branch_modal_open: RwSignal<bool>,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .create_branch_environment(org.id, base_environment_id, name)
+        .await??;
+
+    create_branch_modal_open.set(false);
+
+    Ok(())
+}
+
 #[component]
 pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let org = get_current_org();
     let is_loading = RwSignal::new(false);
     let delete_modal_open = RwSignal::new(false);
+    let create_branch_modal_open = RwSignal::new(false);
+    let branch_name = RwSignal::new(String::new());
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     let update_counter = RwSignal::new(0usize);
@@ -247,10 +267,33 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     });
 
     let navigate = leptos_router::hooks::use_navigate();
+    let navigate_clone = navigate.clone();
     let delete_action = Action::new_local(move |_| {
         let nav = navigate.clone();
         async move {
             match delete_environment(org, environment_id, delete_modal_open).await {
+                Ok(_) => {
+                    nav("/kubernetes/environments", Default::default());
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    });
+
+    let create_branch_action = Action::new_local(move |_| {
+        let nav = navigate_clone.clone();
+        async move {
+            let name = branch_name.get().trim().to_string();
+            if name.is_empty() {
+                return Err(ErrorResponse {
+                    error: "Branch environment name is required".to_string(),
+                });
+            }
+
+            match create_branch_environment(org, environment_id, name, create_branch_modal_open)
+                .await
+            {
                 Ok(_) => {
                     nav("/kubernetes/environments", Default::default());
                     Ok(())
@@ -278,6 +321,9 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     environment_info
                     delete_modal_open
                     delete_action
+                    create_branch_modal_open
+                    create_branch_action
+                    branch_name
                 />
             </Show>
 
@@ -318,6 +364,9 @@ pub fn EnvironmentInfoCard(
     environment_info: Signal<Option<KubeEnvironment>>,
     delete_modal_open: RwSignal<bool>,
     delete_action: Action<(), Result<(), ErrorResponse>>,
+    create_branch_modal_open: RwSignal<bool>,
+    create_branch_action: Action<(), Result<(), ErrorResponse>>,
+    branch_name: RwSignal<String>,
 ) -> impl IntoView {
     view! {
         <Show when=move || environment_info.get().is_some() fallback=|| view! { <div></div> }>
@@ -330,6 +379,7 @@ pub fn EnvironmentInfoCard(
                 let env_status2 = environment.status.clone().unwrap_or_else(|| "Unknown".to_string());
                 let created_at_str = environment.created_at.clone();
                 let is_shared = environment.is_shared;
+                let is_branch = environment.base_environment_id.is_some();
                 let app_catalog_id = environment.app_catalog_id;
                 let app_catalog_name = environment.app_catalog_name.clone();
                 let cluster_id = environment.cluster_id;
@@ -355,13 +405,24 @@ pub fn EnvironmentInfoCard(
                                         </Badge>
                                     </div>
                                 </div>
-                                <Button
-                                    variant=ButtonVariant::Destructive
-                                    on:click=move |_| delete_modal_open.set(true)
-                                >
-                                    <lucide_leptos::Trash2 />
-                                    Delete Environment
-                                </Button>
+                                <div class="flex items-center gap-2">
+                                    <Show when=move || is_shared>
+                                        <Button
+                                            variant=ButtonVariant::Outline
+                                            on:click=move |_| create_branch_modal_open.set(true)
+                                        >
+                                            <lucide_leptos::GitBranch />
+                                            Create Branch
+                                        </Button>
+                                    </Show>
+                                    <Button
+                                        variant=ButtonVariant::Destructive
+                                        on:click=move |_| delete_modal_open.set(true)
+                                    >
+                                        <lucide_leptos::Trash2 />
+                                        Delete Environment
+                                    </Button>
+                                </div>
                             </div>
 
                             // Metadata grid
@@ -408,7 +469,9 @@ pub fn EnvironmentInfoCard(
                                 </div>
                                 <div>
                                     <Badge variant=BadgeVariant::Secondary>
-                                        {if is_shared {
+                                        {if is_branch {
+                                            "Branch - Based on another environment"
+                                        } else if is_shared {
                                             "Shared - Accessible by all organization members"
                                         } else {
                                             "Personal - Private to you"
@@ -445,6 +508,13 @@ pub fn EnvironmentInfoCard(
                             </div>
                         </div>
                     </Card>
+
+                    // Create Branch Environment Modal
+                    <CreateBranchEnvironmentModal
+                        open=create_branch_modal_open
+                        create_branch_action
+                        branch_name
+                    />
                 }
             }
         </Show>
@@ -947,5 +1017,46 @@ pub fn EnvironmentServiceItem(
                 />
             </TableCell>
         </TableRow>
+    }
+}
+
+#[component]
+pub fn CreateBranchEnvironmentModal(
+    open: RwSignal<bool>,
+    create_branch_action: Action<(), Result<(), ErrorResponse>>,
+    branch_name: RwSignal<String>,
+) -> impl IntoView {
+    // Reset form when modal opens/closes
+    Effect::new(move |_| {
+        if !open.get() {
+            branch_name.set(String::new());
+        }
+    });
+
+    view! {
+        <Modal
+            open=open
+            action=create_branch_action
+            title="Create Branch Environment"
+            action_text="Create Branch"
+            action_progress_text="Creating..."
+        >
+            <div class="flex flex-col gap-4">
+                <div class="flex flex-col gap-2">
+                    <Label for_="branch-name">Branch Environment Name</Label>
+                    <Input
+                        attr:id="branch-name"
+                        prop:value=move || branch_name.get()
+                        on:input=move |ev| {
+                            branch_name.set(event_target_value(&ev));
+                        }
+                        attr:placeholder="Enter a name for the branch environment"
+                    />
+                    <P class="text-sm text-muted-foreground">
+                        "A new environment will be created based on this environment's configuration."
+                    </P>
+                </div>
+            </div>
+        </Modal>
     }
 }

@@ -131,18 +131,13 @@ impl MigrationTrait for Migration {
             .await?;
 
         // Create unique index to ensure same app catalog can only be deployed once per (cluster_id, namespace)
+        // for base environments (base_environment_id IS NULL), but allow multiple branch environments
         manager
-            .create_index(
-                Index::create()
-                    .name("kube_environment_app_cluster_namespace_unique_idx")
-                    .table(KubeEnvironment::Table)
-                    .col(KubeEnvironment::AppCatalogId)
-                    .col(KubeEnvironment::ClusterId)
-                    .col(KubeEnvironment::Namespace)
-                    .col(KubeEnvironment::DeletedAt)
-                    .nulls_not_distinct()
-                    .unique()
-                    .to_owned(),
+            .get_connection()
+            .execute_unprepared(
+                "CREATE UNIQUE INDEX kube_environment_app_cluster_namespace_unique_idx
+                 ON kube_environment (app_catalog_id, cluster_id, namespace, deleted_at) NULLS NOT DISTINCT
+                 WHERE base_environment_id IS NULL",
             )
             .await?;
 

@@ -3,9 +3,9 @@ use lapdev_common::{
     hrpc::HrpcError,
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
-        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeEnvironment, KubeEnvironmentWorkload, KubeNamespace,
-        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
-        PaginatedResult, PaginationParams,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeEnvironment,
+        KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
+        KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
     },
     UserRole,
 };
@@ -248,12 +248,13 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         search: Option<String>,
         is_shared: bool,
+        is_branch: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, HrpcError> {
         let user = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
-            .get_all_kube_environments(org_id, user.id, search, is_shared, pagination)
+            .get_all_kube_environments(org_id, user.id, search, is_shared, is_branch, pagination)
             .await
             .map_err(HrpcError::from)
     }

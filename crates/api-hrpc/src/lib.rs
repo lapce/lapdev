@@ -1,8 +1,9 @@
 use lapdev_common::kube::{
-    CreateKubeClusterResponse, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeCluster,
-    KubeClusterInfo, KubeContainerInfo, KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo, KubeWorkload,
-    KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
-    KubeEnvironmentPreviewUrl, CreateKubeEnvironmentPreviewUrlRequest, UpdateKubeEnvironmentPreviewUrlRequest,
+    CreateKubeClusterResponse, CreateKubeEnvironmentPreviewUrlRequest, KubeAppCatalogWorkload,
+    KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeContainerInfo,
+    KubeEnvironmentPreviewUrl, KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace,
+    KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
+    PaginatedResult, PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
 };
 use uuid::Uuid;
 
@@ -147,6 +148,7 @@ pub trait HrpcService {
         org_id: Uuid,
         search: Option<String>,
         is_shared: bool,
+        is_branch: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, HrpcError>;
 

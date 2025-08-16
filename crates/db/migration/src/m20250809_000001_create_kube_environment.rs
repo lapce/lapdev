@@ -86,12 +86,13 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("kube_environment_org_shared_user_deleted_idx")
+                    .name("kube_environment_org_shared_base_deleted_user_idx")
                     .table(KubeEnvironment::Table)
                     .col(KubeEnvironment::OrganizationId)
                     .col(KubeEnvironment::IsShared)
-                    .col(KubeEnvironment::UserId)
+                    .col(KubeEnvironment::BaseEnvironmentId)
                     .col(KubeEnvironment::DeletedAt)
+                    .col(KubeEnvironment::UserId)
                     .to_owned(),
             )
             .await?;

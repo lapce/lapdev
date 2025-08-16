@@ -1,6 +1,6 @@
 use sea_orm_migration::prelude::*;
 
-use crate::m20250801_000001_create_kube_environment::KubeEnvironment;
+use crate::m20250809_000001_create_kube_environment::KubeEnvironment;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -11,58 +11,53 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(KubeEnvironmentService::Table)
+                    .table(KubeEnvironmentWorkload::Table)
                     .if_not_exists()
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::Id)
+                        ColumnDef::new(KubeEnvironmentWorkload::Id)
                             .uuid()
                             .not_null()
                             .primary_key(),
                     )
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::CreatedAt)
+                        ColumnDef::new(KubeEnvironmentWorkload::CreatedAt)
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::DeletedAt)
+                        ColumnDef::new(KubeEnvironmentWorkload::DeletedAt)
                             .timestamp_with_time_zone(),
                     )
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::EnvironmentId)
+                        ColumnDef::new(KubeEnvironmentWorkload::EnvironmentId)
                             .uuid()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::Name)
+                        ColumnDef::new(KubeEnvironmentWorkload::Name)
                             .string()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::Namespace)
+                        ColumnDef::new(KubeEnvironmentWorkload::Namespace)
                             .string()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::Yaml)
-                            .text()
+                        ColumnDef::new(KubeEnvironmentWorkload::Kind)
+                            .string()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(KubeEnvironmentService::Ports)
-                            .json()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(KubeEnvironmentService::Selector)
+                        ColumnDef::new(KubeEnvironmentWorkload::Containers)
                             .json()
                             .not_null(),
                     )
                     .foreign_key(
                         ForeignKey::create()
                             .from(
-                                KubeEnvironmentService::Table,
-                                KubeEnvironmentService::EnvironmentId,
+                                KubeEnvironmentWorkload::Table,
+                                KubeEnvironmentWorkload::EnvironmentId,
                             )
                             .to(KubeEnvironment::Table, KubeEnvironment::Id),
                     )
@@ -74,24 +69,25 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("kube_environment_service_environment_deleted_idx")
-                    .table(KubeEnvironmentService::Table)
-                    .col(KubeEnvironmentService::EnvironmentId)
-                    .col(KubeEnvironmentService::DeletedAt)
+                    .name("kube_environment_workload_environment_deleted_idx")
+                    .table(KubeEnvironmentWorkload::Table)
+                    .col(KubeEnvironmentWorkload::EnvironmentId)
+                    .col(KubeEnvironmentWorkload::DeletedAt)
                     .to_owned(),
             )
             .await?;
 
-        // Create unique index to prevent duplicate services per environment
+        // Create unique index to prevent duplicate workloads per environment
         manager
             .create_index(
                 Index::create()
-                    .name("kube_environment_service_unique_idx")
-                    .table(KubeEnvironmentService::Table)
-                    .col(KubeEnvironmentService::EnvironmentId)
-                    .col(KubeEnvironmentService::Name)
-                    .col(KubeEnvironmentService::Namespace)
-                    .col(KubeEnvironmentService::DeletedAt)
+                    .name("kube_environment_workload_unique_idx")
+                    .table(KubeEnvironmentWorkload::Table)
+                    .col(KubeEnvironmentWorkload::EnvironmentId)
+                    .col(KubeEnvironmentWorkload::Name)
+                    .col(KubeEnvironmentWorkload::Namespace)
+                    .col(KubeEnvironmentWorkload::Kind)
+                    .col(KubeEnvironmentWorkload::DeletedAt)
                     .unique()
                     .nulls_not_distinct()
                     .to_owned(),
@@ -100,20 +96,10 @@ impl MigrationTrait for Migration {
 
         Ok(())
     }
-
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .drop_table(
-                Table::drop()
-                    .table(KubeEnvironmentService::Table)
-                    .to_owned(),
-            )
-            .await
-    }
 }
 
 #[derive(DeriveIden)]
-pub enum KubeEnvironmentService {
+pub enum KubeEnvironmentWorkload {
     Table,
     Id,
     CreatedAt,
@@ -121,7 +107,6 @@ pub enum KubeEnvironmentService {
     EnvironmentId,
     Name,
     Namespace,
-    Yaml,
-    Ports,
-    Selector,
+    Kind,
+    Containers,
 }

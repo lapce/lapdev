@@ -1,7 +1,7 @@
 use sea_orm_migration::prelude::*;
 
-use crate::m20250801_000001_create_kube_environment::KubeEnvironment;
-use crate::m20250808_000003_create_kube_environment_service::KubeEnvironmentService;
+use crate::m20250809_000001_create_kube_environment::KubeEnvironment;
+use crate::m20250809_000003_create_kube_environment_service::KubeEnvironmentService;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;

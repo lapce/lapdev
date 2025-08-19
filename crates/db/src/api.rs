@@ -17,7 +17,7 @@ use pasetors::{
 };
 use sea_orm::{
     prelude::{DateTimeWithTimeZone, Json},
-    sea_query::{Expr, Func, OnConflict},
+    sea_query::{Expr, Func, OnConflict, Alias},
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, DatabaseTransaction,
     EntityTrait, FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
     RelationTrait, TransactionTrait,
@@ -50,6 +50,9 @@ struct KubeEnvironmentWithRelated {
 
     // Cluster fields
     pub cluster_name: Option<String>,
+
+    // Base environment fields
+    pub base_environment_name: Option<String>,
 }
 
 pub const LAPDEV_PIN_UNPIN_ERROR: &str = "lapdev-pin-unpin-error";
@@ -1187,6 +1190,7 @@ impl DbApi {
             lapdev_db_entities::kube_environment::Model,
             Option<lapdev_db_entities::kube_app_catalog::Model>,
             Option<lapdev_db_entities::kube_cluster::Model>,
+            Option<String>, // base_environment_name
         )>,
         usize,
     )> {
@@ -1315,6 +1319,16 @@ impl DbApi {
                 lapdev_db_entities::kube_cluster::Column::Name,
                 "cluster_name",
             )
+            // Join with base environment (self-referencing join)
+            .join_as(
+                JoinType::LeftJoin,
+                lapdev_db_entities::kube_environment::Relation::SelfRef.def(),
+                Alias::new("base_env"),
+            )
+            .expr_as(
+                Expr::col((Alias::new("base_env"), lapdev_db_entities::kube_environment::Column::Name)),
+                "base_environment_name",
+            )
             .into_model::<KubeEnvironmentWithRelated>()
             .all(&self.conn)
             .await?;
@@ -1371,7 +1385,7 @@ impl DbApi {
                             can_deploy_shared: true,
                         });
 
-                (env, catalog, cluster)
+                (env, catalog, cluster, related.base_environment_name)
             })
             .collect();
 
@@ -1595,6 +1609,22 @@ impl DbApi {
         lapdev_db_entities::kube_environment_workload::ActiveModel {
             id: ActiveValue::Set(workload_id),
             deleted_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_environment_workload(
+        &self,
+        workload_id: Uuid,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+    ) -> Result<()> {
+        let containers_json = serde_json::to_value(containers)?;
+        lapdev_db_entities::kube_environment_workload::ActiveModel {
+            id: ActiveValue::Set(workload_id),
+            containers: ActiveValue::Set(containers_json),
             ..Default::default()
         }
         .update(&self.conn)

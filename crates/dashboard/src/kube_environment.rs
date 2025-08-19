@@ -433,15 +433,31 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                 </a>
             </TableCell>
             <TableCell>
-                <Badge variant=BadgeVariant::Secondary>
-                    {if environment.base_environment_id.is_some() {
-                        "Branch"
-                    } else if environment.is_shared {
-                        "Shared"
+                <div class="flex flex-col gap-1">
+                    <Badge variant=BadgeVariant::Secondary>
+                        {if environment.base_environment_id.is_some() {
+                            "Branch"
+                        } else if environment.is_shared {
+                            "Shared"
+                        } else {
+                            "Personal"
+                        }}
+                    </Badge>
+                    {if let (Some(base_name), Some(base_env_id)) = (environment.base_environment_name.clone(), environment.base_environment_id) {
+                        view! {
+                            <span class="text-xs text-muted-foreground">
+                                {"from "}
+                                <a href={format!("/kubernetes/environments/{}", base_env_id)}>
+                                    <Button variant=ButtonVariant::Link class="p-0 h-auto text-xs text-muted-foreground hover:text-foreground">
+                                        {base_name}
+                                    </Button>
+                                </a>
+                            </span>
+                        }.into_any()
                     } else {
-                        "Personal"
+                        view! { <div></div> }.into_any()
                     }}
-                </Badge>
+                </div>
             </TableCell>
             <TableCell>
                 <Badge variant=status_variant>

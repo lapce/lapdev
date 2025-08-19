@@ -437,11 +437,55 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         workload_id: Uuid,
     ) -> Result<(), HrpcError> {
-        let _ = self
-            .authorize(headers, org_id, Some(UserRole::Admin))
-            .await?;
+        // Get the workload and environment to determine required role
+        let workload = self.db.get_environment_workload(workload_id).await
+            .map_err(|e| HrpcError::from(ApiError::from(e)))?
+            .ok_or_else(|| HrpcError::from(ApiError::InvalidRequest("Workload not found".to_string())))?;
+        
+        let environment = self.db.get_kube_environment(workload.environment_id).await
+            .map_err(|e| HrpcError::from(ApiError::from(e)))?
+            .ok_or_else(|| HrpcError::from(ApiError::InvalidRequest("Environment not found".to_string())))?;
+        
+        // Determine required role based on environment type
+        let required_role = if environment.is_shared {
+            Some(UserRole::Admin) // Shared environments require admin
+        } else {
+            None // Personal/branch environments allow any authenticated user (owner check in controller)
+        };
+        
+        let user = self.authorize(headers, org_id, required_role).await?;
         self.kube_controller
-            .delete_environment_workload(org_id, workload_id)
+            .delete_environment_workload(org_id, user.id, workload_id, environment)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn update_environment_workload(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        workload_id: Uuid,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+    ) -> Result<(), HrpcError> {
+        // Get the workload and environment to determine required role
+        let workload = self.db.get_environment_workload(workload_id).await
+            .map_err(|e| HrpcError::from(ApiError::from(e)))?
+            .ok_or_else(|| HrpcError::from(ApiError::InvalidRequest("Workload not found".to_string())))?;
+        
+        let environment = self.db.get_kube_environment(workload.environment_id).await
+            .map_err(|e| HrpcError::from(ApiError::from(e)))?
+            .ok_or_else(|| HrpcError::from(ApiError::InvalidRequest("Environment not found".to_string())))?;
+        
+        // Determine required role based on environment type
+        let required_role = if environment.is_shared {
+            Some(UserRole::Admin) // Shared environments require admin
+        } else {
+            None // Personal/branch environments allow any authenticated user (owner check in controller)
+        };
+        
+        let user = self.authorize(headers, org_id, required_role).await?;
+        self.kube_controller
+            .update_environment_workload(org_id, user.id, workload_id, containers, environment)
             .await
             .map_err(HrpcError::from)
     }

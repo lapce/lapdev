@@ -554,7 +554,7 @@ impl KubeController {
 
         let kube_environments = environments_with_catalogs_and_clusters
             .into_iter()
-            .filter_map(|(env, catalog, cluster)| {
+            .filter_map(|(env, catalog, cluster, base_environment_name)| {
                 let catalog = catalog?;
                 let cluster = cluster?;
                 Some(KubeEnvironment {
@@ -570,6 +570,7 @@ impl KubeController {
                     user_id: env.user_id,
                     is_shared: env.is_shared,
                     base_environment_id: env.base_environment_id,
+                    base_environment_name,
                 })
             })
             .collect();
@@ -626,6 +627,17 @@ impl KubeController {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
 
+        // Get base environment name if this is a branch environment
+        let base_environment_name = if let Some(base_env_id) = environment.base_environment_id {
+            self.db
+                .get_kube_environment(base_env_id)
+                .await
+                .map_err(ApiError::from)?
+                .map(|base_env| base_env.name)
+        } else {
+            None
+        };
+
         Ok(KubeEnvironment {
             id: environment.id,
             user_id: environment.user_id,
@@ -642,6 +654,7 @@ impl KubeController {
                 .to_string(),
             is_shared: environment.is_shared,
             base_environment_id: environment.base_environment_id,
+            base_environment_name,
         })
     }
 
@@ -1039,6 +1052,7 @@ impl KubeController {
             cluster_name: cluster.name,
             created_at: created_env.created_at.to_string(),
             base_environment_id: created_env.base_environment_id,
+            base_environment_name: None, // Regular environments have no base environment
         })
     }
 
@@ -1175,6 +1189,7 @@ impl KubeController {
             cluster_name: cluster.name,
             created_at: created_env.created_at.to_string(),
             base_environment_id: created_env.base_environment_id,
+            base_environment_name: Some(base_environment.name), // Branch environments have the base environment name
         })
     }
 
@@ -1556,28 +1571,48 @@ impl KubeController {
     pub async fn delete_environment_workload(
         &self,
         org_id: Uuid,
+        user_id: Uuid,
         workload_id: Uuid,
+        environment: lapdev_db_entities::kube_environment::Model,
     ) -> Result<(), ApiError> {
-        // First get the workload to find its environment
-        let workload = self
-            .db
-            .get_environment_workload(workload_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
         // Verify the environment belongs to the organization
-        let environment = self
-            .db
-            .get_kube_environment(workload.environment_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
         if environment.organization_id != org_id {
             return Err(ApiError::Unauthorized);
         }
+        
+        // For personal/branch environments, verify ownership
+        if !environment.is_shared && environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+        
         // Delete the workload
         self.db
             .delete_environment_workload(workload_id)
+            .await
+            .map_err(ApiError::from)
+    }
+
+    pub async fn update_environment_workload(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        workload_id: Uuid,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+        environment: lapdev_db_entities::kube_environment::Model,
+    ) -> Result<(), ApiError> {
+        // Verify the environment belongs to the organization
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+        
+        // For personal/branch environments, verify ownership
+        if !environment.is_shared && environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+        
+        // Update the workload containers
+        self.db
+            .update_environment_workload(workload_id, containers)
             .await
             .map_err(ApiError::from)
     }

@@ -189,6 +189,13 @@ pub trait HrpcService {
         workload_id: Uuid,
     ) -> Result<(), HrpcError>;
 
+    async fn update_environment_workload(
+        &self,
+        org_id: Uuid,
+        workload_id: Uuid,
+        containers: Vec<KubeContainerInfo>,
+    ) -> Result<(), HrpcError>;
+
     // Kube Namespace operations
     async fn create_kube_namespace(
         &self,

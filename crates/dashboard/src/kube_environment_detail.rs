@@ -32,11 +32,13 @@ use crate::{
 #[component]
 pub fn KubeEnvironmentDetail() -> impl IntoView {
     let params = use_params_map();
-    let environment_id = params.with_untracked(|params| {
-        params
-            .get("environment_id")
-            .and_then(|id| Uuid::from_str(id.as_str()).ok())
-            .unwrap_or_default()
+    let environment_id = Signal::derive(move || {
+        params.with(|params| {
+            params
+                .get("environment_id")
+                .and_then(|id| Uuid::from_str(id.as_str()).ok())
+                .unwrap_or_default()
+        })
     });
 
     view! {
@@ -53,7 +55,11 @@ pub fn KubeEnvironmentDetail() -> impl IntoView {
                 </a>
             </div>
 
-            <EnvironmentDetailView environment_id />
+            {
+                move || view!{
+                    <EnvironmentDetailView environment_id=environment_id.get() />
+                }
+            }
         </div>
     }
 }
@@ -450,6 +456,24 @@ pub fn EnvironmentInfoCard(
                                         {cluster_name}
                                     </a>
                                 </div>
+                                // Show base environment if this is a branch
+                                {if let (Some(base_name), Some(base_env_id)) = (environment.base_environment_name.clone(), environment.base_environment_id) {
+                                    view! {
+                                        <div class="flex items-center gap-2 text-muted-foreground font-medium">
+                                            <div class="[&>svg]:size-4 [&>svg]:shrink-0">
+                                                <lucide_leptos::GitBranch />
+                                            </div>
+                                            <span>Base Environment</span>
+                                        </div>
+                                        <div>
+                                            <a href=format!("/kubernetes/environments/{}", base_env_id) class="text-foreground hover:underline">
+                                                {base_name}
+                                            </a>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    ().into_any()
+                                }}
 
                                 <div class="flex items-center gap-2 text-muted-foreground font-medium">
                                     <div class="[&>svg]:size-4 [&>svg]:shrink-0">
@@ -855,6 +879,16 @@ pub fn ContainerDisplay(container: KubeContainerInfo) -> impl IntoView {
         <div class="flex flex-col p-2 bg-muted/30 rounded border">
             <div class="flex justify-between items-center">
                 <span class="font-medium text-foreground">{container.name.clone()}</span>
+                {if container.is_customized() {
+                    view! {
+                        <Badge variant=BadgeVariant::Secondary class="text-xs">
+                            <lucide_leptos::Settings attr:class="w-3 h-3 mr-1" />
+                            "Customized"
+                        </Badge>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
             </div>
 
             <div class="text-sm text-foreground mt-1">

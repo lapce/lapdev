@@ -200,6 +200,13 @@ pub struct KubeEnvironmentWorkload {
     pub containers: Vec<KubeContainerInfo>,
 }
 
+impl KubeEnvironmentWorkload {
+    /// Returns true if any containers in this workload have been customized
+    pub fn has_customized_containers(&self) -> bool {
+        self.containers.iter().any(|c| c.is_customized())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeEnvVar {
     pub name: String,
@@ -226,6 +233,16 @@ pub struct KubeContainerInfo {
     pub env_vars: Vec<KubeEnvVar>,
 }
 
+impl KubeContainerInfo {
+    /// Returns true if this container has been customized from its original configuration
+    pub fn is_customized(&self) -> bool {
+        // Check if image is customized
+        matches!(self.image, KubeContainerImage::Custom(_))
+            // Check if environment variables are customized (non-empty indicates customization)
+            || !self.env_vars.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeWorkloadDetails {
     pub name: String,
@@ -248,6 +265,7 @@ pub struct KubeEnvironment {
     pub created_at: String,
     pub is_shared: bool,
     pub base_environment_id: Option<Uuid>,
+    pub base_environment_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -22,8 +22,7 @@ pub fn ContainersCard(
     update_counter: RwSignal<usize>,
     config: ContainerEditorConfig,
     update_action: Action<Vec<KubeContainerInfo>, Result<(), ErrorResponse>>,
-) -> impl IntoView
-{
+) -> impl IntoView {
     view! {
         <Card class="p-6">
             <div class="flex flex-col gap-6">
@@ -624,21 +623,152 @@ pub fn EnvVarsEditor(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoVie
 #[component]
 pub fn EnvVarsDisplay(env_vars: Vec<KubeEnvVar>) -> impl IntoView {
     view! {
-        <div class="space-y-1">
+        <div class="space-y-2">
             {
                 if env_vars.is_empty() {
-                    view! { <div class="text-sm text-muted-foreground">No environment variables</div> }.into_any()
+                    view! {
+                        <div class="text-sm text-muted-foreground italic text-center py-4">
+                            No environment variables configured
+                        </div>
+                    }.into_any()
                 } else {
                     env_vars.into_iter().map(|env_var| {
+                        let is_long_value = env_var.value.len() > 60;
+                        let is_expanded = RwSignal::new(false);
+                        let should_mask = should_mask_env_value(&env_var.name);
+                        let is_value_visible = RwSignal::new(!should_mask);
+
                         view! {
-                            <div class="flex items-center justify-between p-2 bg-muted/30 rounded text-xs">
-                                <code class="font-semibold break-all">{env_var.name}</code>
-                                <code class="text-muted-foreground truncate max-w-32">{env_var.value}</code>
-                            </div>
+                            <EnvVarCard
+                                env_var
+                                is_long_value
+                                is_expanded
+                                should_mask
+                                is_value_visible
+                            />
                         }
                     }).collect::<Vec<_>>().into_any()
                 }
             }
         </div>
     }
+}
+
+#[component]
+fn EnvVarCard(
+    env_var: KubeEnvVar,
+    is_long_value: bool,
+    is_expanded: RwSignal<bool>,
+    should_mask: bool,
+    is_value_visible: RwSignal<bool>,
+) -> impl IntoView {
+    // Clone values upfront to avoid move conflicts
+    let env_name = env_var.name.clone();
+    let env_value = env_var.value.clone();
+
+    view! {
+        <div class="border rounded-lg p-3 bg-card hover:bg-muted/20 transition-colors">
+            <div class="flex items-start justify-between gap-3">
+                <div class="flex-1 min-w-0">
+                    // Environment variable name
+                    <div class="flex items-center gap-2 mb-2">
+                        <code class="font-mono text-sm font-semibold text-foreground break-all">
+                            {env_name.clone()}
+                        </code>
+                        {if should_mask {
+                            view! {
+                                <Badge variant=BadgeVariant::Secondary class="text-xs px-1 py-0">
+                                    <lucide_leptos::Lock attr:class="w-3 h-3 mr-1" />
+                                    "Sensitive"
+                                </Badge>
+                            }.into_any()
+                        } else {
+                            view! { <div></div> }.into_any()
+                        }}
+                    </div>
+
+                    // Environment variable value
+                    <div class="font-mono text-xs text-muted-foreground">
+                        {
+                            let env_value_for_display = env_value.clone();
+                            move || {
+                                let display_value = if is_value_visible.get() {
+                                    if is_long_value && !is_expanded.get() {
+                                        format!("{}...", &env_value_for_display[..57])
+                                    } else {
+                                        env_value_for_display.clone()
+                                    }
+                                } else {
+                                    "••••••••••••••••".to_string()
+                                };
+
+                                view! {
+                                    <div class="break-all leading-relaxed">
+                                        {display_value}
+                                    </div>
+                                }
+                            }
+                        }
+                    </div>
+                </div>
+
+                // Action buttons
+                <div class="flex gap-1">
+                    // Show/hide sensitive values button
+                    {if should_mask {
+                        view! {
+                            <Button
+                                variant=ButtonVariant::Ghost
+                                class="h-6 w-6 p-0 hover:bg-muted"
+                                on:click=move |_| is_value_visible.update(|v| *v = !*v)
+                                attr:title=move || if is_value_visible.get() { "Hide value" } else { "Show value" }
+                            >
+                                {move || if is_value_visible.get() {
+                                    view! { <lucide_leptos::EyeOff attr:class="w-3 h-3" /> }.into_any()
+                                } else {
+                                    view! { <lucide_leptos::Eye attr:class="w-3 h-3" /> }.into_any()
+                                }}
+                            </Button>
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }}
+
+                    // Expand/collapse long values button
+                    {if is_long_value {
+                        view! {
+                            <Button
+                                variant=ButtonVariant::Ghost
+                                class="h-6 w-6 p-0 hover:bg-muted"
+                                on:click=move |_| is_expanded.update(|e| *e = !*e)
+                                attr:title=move || if is_expanded.get() { "Collapse" } else { "Expand" }
+                            >
+                                {move || if is_expanded.get() {
+                                    view! { <lucide_leptos::ChevronUp attr:class="w-3 h-3" /> }.into_any()
+                                } else {
+                                    view! { <lucide_leptos::ChevronDown attr:class="w-3 h-3" /> }.into_any()
+                                }}
+                            </Button>
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }}
+                </div>
+            </div>
+        </div>
+    }
+}
+
+// Helper function to determine if an environment variable value should be masked
+fn should_mask_env_value(name: &str) -> bool {
+    let name_lower = name.to_lowercase();
+    name_lower.contains("password")
+        || name_lower.contains("secret")
+        || name_lower.contains("key")
+        || name_lower.contains("token")
+        || name_lower.contains("api_key")
+        || name_lower.contains("auth")
+        || name_lower.ends_with("_key")
+        || name_lower.ends_with("_secret")
+        || name_lower.ends_with("_token")
 }

@@ -3,9 +3,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, Result};
 use lapdev_common::{
     console::Organization,
-    kube::{
-        KubeContainerInfo, KubeEnvironment, KubeEnvironmentWorkload,
-    },
+    kube::{KubeContainerInfo, KubeEnvironment, KubeEnvironmentWorkload},
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -135,9 +133,13 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
                 .await
                 .ok();
             if let Some((env, workload)) = result.as_ref() {
-                config
-                    .current_page
-                    .set(format!("{} / {}", env.name, workload.name));
+                config.current_page.set(workload.name.clone());
+                config.header_links.update(|header_links| {
+                    header_links.push((
+                        env.name.clone(),
+                        format!("/kubernetes/environments/{environment_id}"),
+                    ));
+                });
             }
             is_loading.set(false);
             result
@@ -196,7 +198,7 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
                                 update_environment_workload_containers(org, workload_id, containers, update_counter).await
                             }
                         });
-                        
+
                         let config = ContainerEditorConfig {
                             enable_resource_limits: false,
                             show_customization_badge: true,
@@ -347,4 +349,3 @@ pub fn EnvironmentWorkloadInfoCard(
         </Show>
     }
 }
-

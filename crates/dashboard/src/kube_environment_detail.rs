@@ -117,7 +117,6 @@ async fn get_environment_preview_urls(
         .await??)
 }
 
-
 async fn delete_environment(
     org: Signal<Option<Organization>>,
     environment_id: Uuid,
@@ -140,17 +139,17 @@ async fn create_branch_environment(
     base_environment_id: Uuid,
     name: String,
     create_branch_modal_open: RwSignal<bool>,
-) -> Result<(), ErrorResponse> {
+) -> Result<KubeEnvironment, ErrorResponse> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
 
-    client
+    let env = client
         .create_branch_environment(org.id, base_environment_id, name)
         .await??;
 
     create_branch_modal_open.set(false);
 
-    Ok(())
+    Ok(env)
 }
 
 #[component]
@@ -261,7 +260,21 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         async move {
             match delete_environment(org, environment_id, delete_modal_open).await {
                 Ok(_) => {
-                    nav("/kubernetes/environments", Default::default());
+                    let t = if let Some(info) = environment_info.get_untracked() {
+                        if info.base_environment_id.is_some() {
+                            "branch"
+                        } else if info.is_shared {
+                            "shared"
+                        } else {
+                            "personal"
+                        }
+                    } else {
+                        "personal"
+                    };
+                    nav(
+                        &format!("/kubernetes/environments?type={t}"),
+                        Default::default(),
+                    );
                     Ok(())
                 }
                 Err(e) => Err(e),
@@ -282,8 +295,11 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
             match create_branch_environment(org, environment_id, name, create_branch_modal_open)
                 .await
             {
-                Ok(_) => {
-                    nav("/kubernetes/environments", Default::default());
+                Ok(env) => {
+                    nav(
+                        &format!("/kubernetes/environments/{}", env.id),
+                        Default::default(),
+                    );
                     Ok(())
                 }
                 Err(e) => Err(e),
@@ -784,7 +800,6 @@ pub fn EnvironmentWorkloadItem(
     workload: KubeEnvironmentWorkload,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
-
     view! {
         <TableRow>
             <TableCell>

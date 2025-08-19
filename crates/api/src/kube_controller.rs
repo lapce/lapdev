@@ -992,11 +992,18 @@ impl KubeController {
         // Store the environment workloads in the database before deployment
         let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> = workloads
             .into_iter()
-            .map(|workload| lapdev_common::kube::KubeWorkloadDetails {
-                name: workload.name,
-                namespace: namespace.clone(),
-                kind: workload.kind,
-                containers: workload.containers,
+            .map(|workload| {
+                let mut containers = workload.containers;
+                for container in &mut containers {
+                    container.original_env_vars = container.env_vars.clone();
+                    container.env_vars.clear();
+                }
+                lapdev_common::kube::KubeWorkloadDetails {
+                    name: workload.name,
+                    namespace: namespace.clone(),
+                    kind: workload.kind,
+                    containers,
+                }
             })
             .collect();
 
@@ -1112,20 +1119,24 @@ impl KubeController {
             .map_err(ApiError::from)?;
 
         // Convert workloads to the format needed for database creation
-        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> =
-            base_workloads
-                .into_iter()
-                .filter_map(|workload| {
-                    workload.kind.parse().ok().map(|kind| {
-                        lapdev_common::kube::KubeWorkloadDetails {
-                            name: workload.name,
-                            namespace: base_environment.namespace.clone(),
-                            kind,
-                            containers: workload.containers,
-                        }
-                    })
+        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> = base_workloads
+            .into_iter()
+            .filter_map(|workload| {
+                workload.kind.parse().ok().map(|kind| {
+                    let mut containers = workload.containers;
+                    for container in &mut containers {
+                        container.original_env_vars = container.env_vars.clone();
+                        container.env_vars.clear();
+                    }
+                    lapdev_common::kube::KubeWorkloadDetails {
+                        name: workload.name,
+                        namespace: base_environment.namespace.clone(),
+                        kind,
+                        containers,
+                    }
                 })
-                .collect();
+            })
+            .collect();
 
         // Convert services to the format needed for database creation
         let services_map: std::collections::HashMap<

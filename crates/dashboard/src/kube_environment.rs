@@ -4,6 +4,7 @@ use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
 use lapdev_common::kube::{KubeEnvironment, PagePaginationParams, PaginatedInfo, PaginatedResult};
 use leptos::prelude::*;
+use leptos_router::hooks::use_location;
 
 use crate::{
     component::{
@@ -65,12 +66,26 @@ enum TypeTab {
 #[component]
 pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> impl IntoView {
     let org = get_current_org();
+    let location = use_location();
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     let current_page = RwSignal::new(1usize);
     let page_size = RwSignal::new(20usize);
     let is_loading = RwSignal::new(false);
-    let active_tab = RwSignal::new(TypeTab::Personal);
+    
+    // Initialize from URL search parameters
+    let initial_tab = move || {
+        let search = location.search.get_untracked();
+        let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+        params.get("type").and_then(|t| match t.as_str() {
+            "shared" => Some(TypeTab::Shared),
+            "branch" => Some(TypeTab::Branch),
+            "personal" => Some(TypeTab::Personal),
+            _ => None,
+        })
+    };
+    
+    let active_tab = RwSignal::new(initial_tab().unwrap_or(TypeTab::Personal));
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -160,6 +175,39 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
         active_tab.track();
         current_page.set(1); // Reset to first page when tab changes
         environments_result.refetch();
+    });
+    
+    // Sync active tab with URL parameters
+    Effect::new(move |_| {
+        let tab = active_tab.get();
+        let current_path = location.pathname.get_untracked();
+        let search = location.search.get_untracked();
+        let params = web_sys::UrlSearchParams::new_with_str(&search)
+            .unwrap_or_else(|_| web_sys::UrlSearchParams::new().unwrap());
+        
+        let param_value = match tab {
+            TypeTab::Personal => "personal",
+            TypeTab::Shared => "shared",
+            TypeTab::Branch => "branch",
+        };
+        
+        params.set("type", param_value);
+        
+        let new_search = params.to_string().as_string().unwrap_or_default();
+        let new_url = if new_search.is_empty() {
+            current_path
+        } else {
+            format!("{}?{}", current_path, new_search)
+        };
+        
+        // Use replaceState to update URL without navigation
+        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+            let _ = history.replace_state_with_url(
+                &wasm_bindgen::JsValue::NULL,
+                "",
+                Some(&new_url),
+            );
+        }
     });
 
     let environment_list = Signal::derive(move || {

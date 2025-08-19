@@ -144,6 +144,7 @@ fn ContainerEditor(
         let container_name = container.name.clone();
         let all_containers_clone = all_containers.clone();
         let original_image = container.original_image.clone();
+        let original_env_vars = container.original_env_vars.clone();
         let enable_resources = config.enable_resource_limits;
 
         Callback::new(move |_| {
@@ -178,6 +179,7 @@ fn ContainerEditor(
                     .into_iter()
                     .filter(|var| !var.name.trim().is_empty())
                     .collect(),
+                original_env_vars: original_env_vars.clone(),
             };
 
             let mut updated_containers = all_containers_clone.clone();

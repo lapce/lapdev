@@ -15,13 +15,13 @@ use k8s_openapi::{
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
-    KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort, 
-    KubeServiceWithYaml, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, 
-    PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, 
+    KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort,
+    KubeServiceWithYaml, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus,
+    PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
     KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml, 
+    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
     KubeWorkloadYamlOnly, KubeWorkloadsWithResources, WorkloadIdentifier,
 };
 use lapdev_rpc::spawn_twoway;
@@ -3353,6 +3353,7 @@ impl KubeManager {
                     memory_request,
                     memory_limit,
                     env_vars: vec![],
+                    original_env_vars: vec![],
                 })
             })
             .collect()

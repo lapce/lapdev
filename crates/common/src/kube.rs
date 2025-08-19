@@ -231,6 +231,7 @@ pub struct KubeContainerInfo {
     pub memory_request: Option<String>,
     pub memory_limit: Option<String>,
     pub env_vars: Vec<KubeEnvVar>,
+    pub original_env_vars: Vec<KubeEnvVar>,
 }
 
 impl KubeContainerInfo {

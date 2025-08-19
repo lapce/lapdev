@@ -19,7 +19,7 @@ use crate::{
         card::Card,
         typography::{H3, P},
     },
-    kube_container::{ContainerEditor, ContainerEditorConfig, ContainersCard},
+    kube_container::{ContainerEditorConfig, ContainersCard},
     modal::{DatetimeModal, DeleteModal, ErrorResponse},
     organization::get_current_org,
 };
@@ -190,10 +190,6 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
                     if let Some((_, workload)) = workload_info.get() {
                         let workload_id = workload.id;
                         let all_containers = workload.containers.clone();
-                        let containers_signal = Signal::derive({
-                            let containers = all_containers.clone();
-                            move || containers.clone()
-                        });
                         let update_action = Action::new_local(move |containers: &Vec<KubeContainerInfo>| {
                             let containers = containers.clone();
                             async move {
@@ -201,28 +197,19 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
                             }
                         });
                         
+                        let config = ContainerEditorConfig {
+                            enable_resource_limits: false,
+                            show_customization_badge: true,
+                        };
                         view! {
                             <ContainersCard
-                                containers=containers_signal
+                                all_containers
                                 title="Container Configuration"
                                 empty_message="This workload doesn't have any container configurations."
-                                children=move |index, container| {
-                                    let config = ContainerEditorConfig {
-                                        enable_resource_limits: false,
-                                        show_customization_badge: true,
-                                    };
-                                    view! {
-                                        <ContainerEditor
-                                            workload_id
-                                            container_index=index
-                                            container
-                                            all_containers=all_containers.clone()
-                                            update_counter
-                                            config
-                                            update_action
-                                        />
-                                    }.into_any()
-                                }
+                                workload_id
+                                update_counter
+                                config
+                                update_action
                             />
                         }.into_any()
                     } else {

@@ -14,14 +14,15 @@ use crate::{
 };
 
 #[component]
-pub fn ContainersCard<F>(
-    containers: Signal<Vec<KubeContainerInfo>>,
+pub fn ContainersCard(
+    all_containers: Vec<KubeContainerInfo>,
     title: &'static str,
     empty_message: &'static str,
-    children: F,
+    workload_id: Uuid,
+    update_counter: RwSignal<usize>,
+    config: ContainerEditorConfig,
+    update_action: Action<Vec<KubeContainerInfo>, Result<(), ErrorResponse>>,
 ) -> impl IntoView
-where
-    F: Fn(usize, KubeContainerInfo) -> AnyView + 'static + Send,
 {
     view! {
         <Card class="p-6">
@@ -29,16 +30,12 @@ where
                 <div class="flex items-center justify-between">
                     <H4>{title}</H4>
                     <Badge variant=BadgeVariant::Secondary>
-                        {move || {
-                            let len = containers.get().len();
-                            format!("{} container{}", len, if len != 1 { "s" } else { "" })
-                        }}
+                        {format!("{} container{}", all_containers.len(), if all_containers.len() != 1 { "s" } else { "" })}
                     </Badge>
                 </div>
 
-                {move || {
-                    let containers_vec = containers.get();
-                    if containers_vec.is_empty() {
+                {
+                    if all_containers.is_empty() {
                         view! {
                             <div class="flex flex-col items-center justify-center py-12 text-center">
                                 <div class="rounded-full bg-muted p-3 mb-4">
@@ -54,14 +51,24 @@ where
                         view! {
                             <div class="space-y-4">
                                 {
-                                    containers_vec.into_iter().enumerate().map(|(index, container)| {
-                                        children(index, container)
+                                    all_containers.iter().enumerate().map(|(index, container)| {
+                                        view! {
+                                            <ContainerEditor
+                                                workload_id
+                                                container_index=index
+                                                container=container.clone()
+                                                all_containers=all_containers.clone()
+                                                update_counter
+                                                config=config.clone()
+                                                update_action
+                                            />
+                                        }.into_any()
                                     }).collect::<Vec<_>>()
                                 }
                             </div>
                         }.into_any()
                     }
-                }}
+                }
             </div>
         </Card>
     }
@@ -83,7 +90,7 @@ impl Default for ContainerEditorConfig {
 }
 
 #[component]
-pub fn ContainerEditor(
+fn ContainerEditor(
     workload_id: Uuid,
     container_index: usize,
     container: KubeContainerInfo,

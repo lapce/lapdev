@@ -5,7 +5,7 @@ use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
     kube::{
-        KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerImage, KubeContainerInfo, KubeEnvVar,
+        KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo,
     },
 };
 use leptos::prelude::*;
@@ -18,9 +18,9 @@ use crate::{
         badge::{Badge, BadgeVariant},
         button::{Button, ButtonVariant},
         card::Card,
-        input::Input,
-        typography::{H3, H4, P},
+        typography::{H3, P},
     },
+    kube_container::{ContainerEditor, ContainerEditorConfig, ContainersCard},
     modal::{DeleteModal, ErrorResponse},
     organization::get_current_org,
 };
@@ -185,7 +185,49 @@ pub fn WorkloadDetail(catalog_id: Uuid, workload_id: Uuid) -> impl IntoView {
 
             // Containers Section
             <Show when=move || workload_info.get().is_some()>
-                <ContainersSection workload_info update_counter />
+                {move || {
+                    if let Some(workload) = workload_info.get() {
+                        let workload_id = workload.id;
+                        let all_containers = workload.containers.clone();
+                        let containers_signal = Signal::derive({
+                            let containers = all_containers.clone();
+                            move || containers.clone()
+                        });
+                        let update_action = Action::new_local(move |containers: &Vec<KubeContainerInfo>| {
+                            let containers = containers.clone();
+                            async move {
+                                update_workload_containers(org, workload_id, containers, update_counter).await
+                            }
+                        });
+                        
+                        view! {
+                            <ContainersCard
+                                containers=containers_signal
+                                title="Container Configuration"
+                                empty_message="This workload doesn't have any container configurations."
+                                children=move |index, container| {
+                                    let config = ContainerEditorConfig {
+                                        enable_resource_limits: true,
+                                        show_customization_badge: false,
+                                    };
+                                    view! {
+                                        <ContainerEditor
+                                            workload_id
+                                            container_index=index
+                                            container
+                                            all_containers=all_containers.clone()
+                                            update_counter
+                                            config
+                                            update_action
+                                        />
+                                    }.into_any()
+                                }
+                            />
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }
+                }}
             </Show>
 
             // Delete Modal
@@ -316,547 +358,4 @@ pub fn WorkloadInfoCard(
     }
 }
 
-#[component]
-pub fn ContainersSection(
-    workload_info: Signal<Option<KubeAppCatalogWorkload>>,
-    update_counter: RwSignal<usize>,
-) -> impl IntoView {
-    view! {
-        {move || {
-            if let Some(workload) = workload_info.get() {
-                view! {
-                    <Card class="p-6">
-                        <div class="flex flex-col gap-4">
-                            <H4>Containers</H4>
-                            <div class="space-y-4">
-                                {
-                                    workload.containers.iter().enumerate().map(|(index, container)| {
-                                        let workload_id = workload.id;
-                                        let container_idx = index;
-                                        view! {
-                                            <DetailedContainerEditor
-                                                workload_id
-                                                container_index=container_idx
-                                                container=container.clone()
-                                                all_containers=workload.containers.clone()
-                                                update_counter
-                                            />
-                                        }
-                                    }).collect::<Vec<_>>()
-                                }
-                                {if workload.containers.is_empty() {
-                                    view! {
-                                        <div class="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
-                                            <lucide_leptos::Box attr:class="h-12 w-12 mb-2 opacity-50" />
-                                            <P>No containers configured for this workload</P>
-                                        </div>
-                                    }.into_any()
-                                } else {
-                                    view! { <div></div> }.into_any()
-                                }}
-                            </div>
-                        </div>
-                    </Card>
-                }
-                .into_any()
-            } else {
-                view! { <div></div> }.into_any()
-            }
-        }}
-    }
-}
 
-#[component]
-pub fn DetailedContainerEditor(
-    workload_id: Uuid,
-    container_index: usize,
-    container: KubeContainerInfo,
-    all_containers: Vec<KubeContainerInfo>,
-    update_counter: RwSignal<usize>,
-) -> impl IntoView {
-    let org = get_current_org();
-    let is_editing = RwSignal::new(false);
-    let error_message = RwSignal::new(None::<String>);
-
-    // Create signals for all editable fields
-    let image_signal = RwSignal::new(container.image.clone());
-    let custom_image_signal = RwSignal::new(match &container.image {
-        KubeContainerImage::Custom(img) => img.clone(),
-        KubeContainerImage::FollowOriginal => String::new(),
-    });
-    let cpu_request_signal = RwSignal::new(container.cpu_request.clone().unwrap_or_default());
-    let cpu_limit_signal = RwSignal::new(container.cpu_limit.clone().unwrap_or_default());
-    let memory_request_signal = RwSignal::new(container.memory_request.clone().unwrap_or_default());
-    let memory_limit_signal = RwSignal::new(container.memory_limit.clone().unwrap_or_default());
-    let env_vars_signal = RwSignal::new(container.env_vars.clone());
-
-    let name = container.name.clone();
-
-    let update_action = Action::new_local(move |containers: &Vec<KubeContainerInfo>| {
-        let error_msg = error_message;
-        let containers = containers.clone();
-        error_msg.set(None);
-        async move {
-            match update_workload_containers(org, workload_id, containers.clone(), update_counter)
-                .await
-            {
-                Ok(_) => {
-                    // Success - clear any errors and close editing mode
-                    error_msg.set(None);
-                    is_editing.set(false);
-                    Ok(())
-                }
-                Err(err) => {
-                    // Error - display the error message and keep editing mode open
-                    error_msg.set(Some(err.error.clone()));
-                    Err(err)
-                }
-            }
-        }
-    });
-
-    let save_changes = {
-        let container_name = container.name.clone();
-        let all_containers_clone = all_containers.clone();
-        let original_image = container.original_image.clone();
-        Callback::new(move |_| {
-            let updated_container = KubeContainerInfo {
-                name: container_name.clone(),
-                original_image: original_image.clone(),
-                image: image_signal.get(),
-                cpu_request: if cpu_request_signal.get().trim().is_empty() {
-                    None
-                } else {
-                    Some(cpu_request_signal.get().trim().to_string())
-                },
-                cpu_limit: if cpu_limit_signal.get().trim().is_empty() {
-                    None
-                } else {
-                    Some(cpu_limit_signal.get().trim().to_string())
-                },
-                memory_request: if memory_request_signal.get().trim().is_empty() {
-                    None
-                } else {
-                    Some(memory_request_signal.get().trim().to_string())
-                },
-                memory_limit: if memory_limit_signal.get().trim().is_empty() {
-                    None
-                } else {
-                    Some(memory_limit_signal.get().trim().to_string())
-                },
-                env_vars: env_vars_signal
-                    .get()
-                    .into_iter()
-                    .filter(|var| !var.name.trim().is_empty())
-                    .collect(),
-            };
-
-            // Update all containers with the modified one
-            let mut updated_containers = all_containers_clone.clone();
-            updated_containers[container_index] = updated_container;
-
-            update_action.dispatch(updated_containers);
-        })
-    };
-
-    let cancel_changes = {
-        let container_image = container.image.clone();
-        let custom_img_value = match &container.image {
-            KubeContainerImage::Custom(img) => img.clone(),
-            KubeContainerImage::FollowOriginal => String::new(),
-        };
-        Callback::new(move |_| {
-            // Reset to original values
-            image_signal.set(container_image.clone());
-            custom_image_signal.set(custom_img_value.clone());
-            cpu_request_signal.set(container.cpu_request.clone().unwrap_or_default());
-            cpu_limit_signal.set(container.cpu_limit.clone().unwrap_or_default());
-            memory_request_signal.set(container.memory_request.clone().unwrap_or_default());
-            memory_limit_signal.set(container.memory_limit.clone().unwrap_or_default());
-            env_vars_signal.set(container.env_vars.clone());
-            // Clear any error messages and exit editing mode
-            error_message.set(None);
-            is_editing.set(false);
-        })
-    };
-
-    let original_image = container.original_image.clone();
-
-    view! {
-        <div class="border rounded-lg p-4 bg-card">
-            <div class="flex flex-col gap-4">
-                // Container header with name and actions
-                <div class="flex justify-between items-center">
-                    <div class="flex items-center gap-2">
-                        <lucide_leptos::Box attr:class="h-5 w-5 text-muted-foreground" />
-                        <H4 class="text-lg">{name}</H4>
-                    </div>
-                    <div class="flex gap-2">
-                        <Show when=move || !is_editing.get()>
-                            <Button
-                                variant=ButtonVariant::Outline
-                                on:click=move |_| is_editing.set(true)
-                            >
-                                <lucide_leptos::Pen attr:class="w-4 h-4" />
-                                Edit
-                            </Button>
-                        </Show>
-                        <Show when=move || is_editing.get()>
-                            <Button
-                                variant=ButtonVariant::Default
-                                on:click=move |_| save_changes.run(())
-                            >
-                                <lucide_leptos::Check attr:class="w-4 h-4" />
-                                Save
-                            </Button>
-                            <Button
-                                variant=ButtonVariant::Outline
-                                on:click=move |_| cancel_changes.run(())
-                            >
-                                <lucide_leptos::X attr:class="w-4 h-4" />
-                                Cancel
-                            </Button>
-                        </Show>
-                    </div>
-                </div>
-
-                // Error display
-                <Show when=move || error_message.get().is_some()>
-                    <div class="p-3 bg-destructive/10 border border-destructive/20 rounded-md">
-                        <div class="flex items-start gap-2">
-                            <lucide_leptos::CircleAlert attr:class="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
-                            <div class="text-sm text-destructive">
-                                {move || error_message.get().unwrap_or_default()}
-                            </div>
-                        </div>
-                    </div>
-                </Show>
-
-                // Container Configuration - reorganized into vertical sections
-                <div class="flex flex-col gap-6">
-                    // 1. Container Image
-                    <div class="flex flex-col gap-3">
-                        <div class="flex items-center gap-2 text-sm font-medium text-foreground border-b border-border pb-2">
-                            <lucide_leptos::Image attr:class="h-4 w-4" />
-                            Container Image
-                        </div>
-
-                        <Show
-                            when=move || is_editing.get()
-                            fallback=move || {
-                                let display_text = match image_signal.get() {
-                                    KubeContainerImage::FollowOriginal => {
-                                        format!("Follow Original: {}", original_image)
-                                    }
-                                    KubeContainerImage::Custom(img) => {
-                                        format!("Custom: {}", img)
-                                    }
-                                };
-                                view! {
-                                    <div class="p-3 bg-muted rounded-md font-mono text-sm break-all">
-                                        {display_text}
-                                    </div>
-                                }
-                            }
-                        >
-                            <div class="flex flex-col gap-4">
-                                // Radio buttons for image mode
-                                <div class="flex flex-col gap-3">
-                                    <label class="flex items-center gap-2">
-                                        <input
-                                            type="radio"
-                                            name=format!("image-mode-{}", container.name)
-                                            prop:checked=move || matches!(image_signal.get(), KubeContainerImage::FollowOriginal)
-                                            on:change=move |_| {
-                                                image_signal.set(KubeContainerImage::FollowOriginal);
-                                            }
-                                        />
-                                        <span class="text-sm">Follow Original Image</span>
-                                    </label>
-                                    <div class="ml-6 text-xs text-muted-foreground font-mono">
-                                        {format!("Current: {}", container.original_image.clone())}
-                                    </div>
-
-                                    <label class="flex items-center gap-2">
-                                        <input
-                                            type="radio"
-                                            name=format!("image-mode-{}", container.name)
-                                            prop:checked=move || matches!(image_signal.get(), KubeContainerImage::Custom(_))
-                                            on:change=move |_| {
-                                                let custom_img = custom_image_signal.get();
-                                                image_signal.set(KubeContainerImage::Custom(custom_img));
-                                            }
-                                        />
-                                        <span class="text-sm">Use Custom Image</span>
-                                    </label>
-
-                                    // Custom image input - only show when Custom is selected
-                                    <Show when=move || matches!(image_signal.get(), KubeContainerImage::Custom(_))>
-                                        <div class="ml-6">
-                                            <Input
-                                                prop:value=move || custom_image_signal.get()
-                                                on:input=move |ev| {
-                                                    let new_value = event_target_value(&ev);
-                                                    custom_image_signal.set(new_value.clone());
-                                                    image_signal.set(KubeContainerImage::Custom(new_value));
-                                                }
-                                                attr:placeholder="Container image (e.g., nginx:1.21, postgres:13)"
-                                                class="font-mono"
-                                            />
-                                        </div>
-                                    </Show>
-                                </div>
-                            </div>
-                        </Show>
-                    </div>
-
-                    // 2. Resource Configuration
-                    <div class="flex flex-col gap-4">
-                        <div class="flex items-center gap-2 text-sm font-medium text-foreground border-b border-border pb-2">
-                            <lucide_leptos::Gauge attr:class="h-4 w-4" />
-                            Resource Configuration
-                        </div>
-
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            // CPU Configuration
-                            <div class="flex flex-col gap-3">
-                                <div class="flex items-center gap-2 text-xs font-semibold text-foreground">
-                                    <lucide_leptos::Cpu attr:class="h-4 w-4" />
-                                    CPU
-                                </div>
-                                <div class="grid grid-cols-2 gap-3">
-                                    <div class="flex flex-col gap-2">
-                                        <label class="text-xs font-medium text-muted-foreground">Request</label>
-                                        <Show
-                                            when=move || is_editing.get()
-                                            fallback=move || view! {
-                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
-                                                    {move || if cpu_request_signal.get().is_empty() { "-".to_string() } else { cpu_request_signal.get() }}
-                                                </div>
-                                            }
-                                        >
-                                            <Input
-                                                prop:value=move || cpu_request_signal.get()
-                                                on:input=move |ev| cpu_request_signal.set(event_target_value(&ev))
-                                                class="text-xs font-mono"
-                                            />
-                                        </Show>
-                                    </div>
-                                    <div class="flex flex-col gap-2">
-                                        <label class="text-xs font-medium text-muted-foreground">Limit</label>
-                                        <Show
-                                            when=move || is_editing.get()
-                                            fallback=move || view! {
-                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
-                                                    {move || if cpu_limit_signal.get().is_empty() { "-".to_string() } else { cpu_limit_signal.get() }}
-                                                </div>
-                                            }
-                                        >
-                                            <Input
-                                                prop:value=move || cpu_limit_signal.get()
-                                                on:input=move |ev| cpu_limit_signal.set(event_target_value(&ev))
-                                                class="text-xs font-mono"
-                                            />
-                                        </Show>
-                                    </div>
-                                </div>
-                            </div>
-
-                            // Memory Configuration
-                            <div class="flex flex-col gap-3">
-                                <div class="flex items-center gap-2 text-xs font-semibold text-foreground">
-                                    <lucide_leptos::MemoryStick attr:class="h-4 w-4" />
-                                    Memory
-                                </div>
-                                <div class="grid grid-cols-2 gap-3">
-                                    <div class="flex flex-col gap-2">
-                                        <label class="text-xs font-medium text-muted-foreground">Request</label>
-                                        <Show
-                                            when=move || is_editing.get()
-                                            fallback=move || view! {
-                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
-                                                    {move || if memory_request_signal.get().is_empty() { "-".to_string() } else { memory_request_signal.get() }}
-                                                </div>
-                                            }
-                                        >
-                                            <Input
-                                                prop:value=move || memory_request_signal.get()
-                                                on:input=move |ev| memory_request_signal.set(event_target_value(&ev))
-                                                class="text-xs font-mono"
-                                            />
-                                        </Show>
-                                    </div>
-                                    <div class="flex flex-col gap-2">
-                                        <label class="text-xs font-medium text-muted-foreground">Limit</label>
-                                        <Show
-                                            when=move || is_editing.get()
-                                            fallback=move || view! {
-                                                <div class="p-2 bg-muted rounded text-xs font-mono min-h-[36px] flex items-center">
-                                                    {move || if memory_limit_signal.get().is_empty() { "-".to_string() } else { memory_limit_signal.get() }}
-                                                </div>
-                                            }
-                                        >
-                                            <Input
-                                                prop:value=move || memory_limit_signal.get()
-                                                on:input=move |ev| memory_limit_signal.set(event_target_value(&ev))
-                                                class="text-xs font-mono"
-                                            />
-                                        </Show>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    // 3. Environment Variables
-                    <div class="flex flex-col gap-4">
-                        <div class="flex items-center gap-2 text-sm font-medium text-foreground border-b border-border pb-2">
-                            <lucide_leptos::Settings attr:class="h-4 w-4" />
-                            Environment Variables
-                        </div>
-
-                        <Show when=move || is_editing.get()>
-                            <EnvVarsEditor env_vars_signal />
-                        </Show>
-
-                        <Show when=move || !is_editing.get()>
-                            <EnvVarsDisplay env_vars_signal />
-                        </Show>
-                    </div>
-                </div>
-            </div>
-        </div>
-    }
-}
-
-#[component]
-fn EnvVarsEditor(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
-    let add_env_var = Callback::new(move |_| {
-        env_vars_signal.update(|vars| {
-            vars.push(KubeEnvVar {
-                name: String::new(),
-                value: String::new(),
-            });
-        });
-    });
-
-    view! {
-        <div class="flex flex-col gap-2">
-            <div class="flex items-center justify-between">
-                <span class="text-xs font-medium text-muted-foreground">Variables</span>
-                <Button
-                    variant=ButtonVariant::Outline
-                    class="px-2 py-1 h-auto text-xs"
-                    on:click=move |_| add_env_var.run(())
-                >
-                    <lucide_leptos::Plus attr:class="w-3 h-3" />
-                    Add Variable
-                </Button>
-            </div>
-
-            <div class="space-y-2">
-                {move || {
-                    env_vars_signal.with(|env_vars| {
-                        env_vars.iter().enumerate().map(|(index, env_var)| {
-                            let env_var_name = env_var.name.clone();
-                            let env_var_value = env_var.value.clone();
-
-                            view! {
-                                <div class="flex gap-2 items-center">
-                                    <Input
-                                        prop:value=env_var_name.clone()
-                                        on:input=move |ev| {
-                                            let new_name = event_target_value(&ev);
-                                            env_vars_signal.update(|vars| {
-                                                if let Some(var) = vars.get_mut(index) {
-                                                    var.name = new_name;
-                                                }
-                                            });
-                                        }
-                                        attr:placeholder="Variable name"
-                                        class="text-xs font-mono flex-1"
-                                    />
-                                    <Input
-                                        prop:value=env_var_value.clone()
-                                        on:input=move |ev| {
-                                            let new_value = event_target_value(&ev);
-                                            env_vars_signal.update(|vars| {
-                                                if let Some(var) = vars.get_mut(index) {
-                                                    var.value = new_value;
-                                                }
-                                            });
-                                        }
-                                        attr:placeholder="Variable value"
-                                        class="text-xs font-mono flex-1"
-                                    />
-                                    <Button
-                                        variant=ButtonVariant::Ghost
-                                        class="px-2 py-1 h-auto text-red-600 hover:text-red-700"
-                                        on:click=move |_| {
-                                            env_vars_signal.update(|vars| {
-                                                if index < vars.len() {
-                                                    vars.remove(index);
-                                                }
-                                            });
-                                        }
-                                    >
-                                        <lucide_leptos::Trash2 attr:class="w-3 h-3" />
-                                    </Button>
-                                </div>
-                            }
-                        }).collect::<Vec<_>>()
-                    })
-                }}
-
-                {move || {
-                    let vars = env_vars_signal.get();
-                    if vars.is_empty() {
-                        view! {
-                            <div class="text-xs text-muted-foreground italic py-2">
-                                No environment variables configured
-                            </div>
-                        }.into_any()
-                    } else {
-                        view! { <div></div> }.into_any()
-                    }
-                }}
-            </div>
-        </div>
-    }
-}
-
-#[component]
-fn EnvVarsDisplay(env_vars_signal: RwSignal<Vec<KubeEnvVar>>) -> impl IntoView {
-    view! {
-        <div class="space-y-1">
-            {
-                let env_vars = env_vars_signal.get();
-                env_vars.iter().map(|env_var| {
-                    let env_var_name = env_var.name.clone();
-                    let env_var_value = env_var.value.clone();
-
-                    view! {
-                        <div class="flex gap-2 text-xs">
-                            <span class="font-mono font-medium min-w-0 flex-shrink-0">{env_var_name}</span>
-                            <span class="text-muted-foreground">=</span>
-                            <span class="font-mono text-muted-foreground truncate min-w-0 flex-1">{env_var_value}</span>
-                        </div>
-                    }
-                }).collect::<Vec<_>>()
-            }
-
-            {move || {
-                let vars = env_vars_signal.get();
-                if vars.is_empty() {
-                    view! {
-                        <div class="text-xs text-muted-foreground italic py-1">
-                            No environment variables configured
-                        </div>
-                    }.into_any()
-                } else {
-                    view! { <div></div> }.into_any()
-                }
-            }}
-        </div>
-    }
-}

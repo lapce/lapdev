@@ -183,12 +183,6 @@ pub trait HrpcService {
         workload_id: Uuid,
     ) -> Result<Option<KubeEnvironmentWorkload>, HrpcError>;
 
-    async fn delete_environment_workload(
-        &self,
-        org_id: Uuid,
-        workload_id: Uuid,
-    ) -> Result<(), HrpcError>;
-
     async fn update_environment_workload(
         &self,
         org_id: Uuid,

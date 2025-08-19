@@ -117,24 +117,6 @@ async fn get_environment_preview_urls(
         .await??)
 }
 
-async fn delete_environment_workload(
-    org: Signal<Option<Organization>>,
-    workload_id: Uuid,
-    delete_modal_open: RwSignal<bool>,
-    update_counter: RwSignal<usize>,
-) -> Result<(), ErrorResponse> {
-    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
-    let client = HrpcServiceClient::new("/api/rpc".to_string());
-
-    client
-        .delete_environment_workload(org.id, workload_id)
-        .await??;
-
-    delete_modal_open.set(false);
-    update_counter.update(|c| *c += 1);
-
-    Ok(())
-}
 
 async fn delete_environment(
     org: Signal<Option<Organization>>,
@@ -802,14 +784,6 @@ pub fn EnvironmentWorkloadItem(
     workload: KubeEnvironmentWorkload,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
-    let org = get_current_org();
-    let delete_modal_open = RwSignal::new(false);
-    let workload_name = workload.name.clone();
-    let workload_id = workload.id;
-
-    let delete_action = Action::new_local(move |_| {
-        delete_environment_workload(org, workload_id, delete_modal_open, update_counter)
-    });
 
     view! {
         <TableRow>
@@ -853,21 +827,7 @@ pub fn EnvironmentWorkloadItem(
                 <DatetimeModal time=workload.created_at />
             </TableCell>
             <TableCell>
-                <Button
-                    variant=ButtonVariant::Ghost
-                    class="px-2"
-                    on:click=move |_| {
-                        delete_modal_open.set(true);
-                    }
-                >
-                    <lucide_leptos::Trash />
-                </Button>
-
-                <DeleteModal
-                    resource=workload_name.clone()
-                    open=delete_modal_open
-                    delete_action
-                />
+                // Actions removed - workload deletion is no longer available
             </TableCell>
         </TableRow>
     }

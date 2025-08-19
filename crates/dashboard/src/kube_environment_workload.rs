@@ -18,7 +18,7 @@ use crate::{
         typography::{H3, P},
     },
     kube_container::{ContainerEditorConfig, ContainersCard},
-    modal::{DatetimeModal, DeleteModal, ErrorResponse},
+    modal::{DatetimeModal, ErrorResponse},
     organization::get_current_org,
 };
 
@@ -81,22 +81,6 @@ async fn get_environment_workload_detail(
     Ok((environment, workload))
 }
 
-async fn delete_environment_workload(
-    org: Signal<Option<Organization>>,
-    workload_id: Uuid,
-    delete_modal_open: RwSignal<bool>,
-) -> Result<(), ErrorResponse> {
-    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
-    let client = get_hrpc_client();
-
-    client
-        .delete_environment_workload(org.id, workload_id)
-        .await??;
-
-    delete_modal_open.set(false);
-
-    Ok(())
-}
 
 async fn update_environment_workload_containers(
     org: Signal<Option<Organization>>,
@@ -120,7 +104,6 @@ async fn update_environment_workload_containers(
 pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> impl IntoView {
     let org = get_current_org();
     let is_loading = RwSignal::new(false);
-    let delete_modal_open = RwSignal::new(false);
     let update_counter = RwSignal::new(0usize);
 
     let config = use_context::<AppConfig>().unwrap();
@@ -148,22 +131,6 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
 
     let workload_info = Signal::derive(move || workload_result.get().flatten());
 
-    let navigate = leptos_router::hooks::use_navigate();
-    let delete_action = Action::new_local(move |_| {
-        let nav = navigate.clone();
-        async move {
-            match delete_environment_workload(org, workload_id, delete_modal_open).await {
-                Ok(_) => {
-                    nav(
-                        &format!("/kubernetes/environments/{}", environment_id),
-                        Default::default(),
-                    );
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
-    });
 
     view! {
         <div class="flex flex-col gap-6">
@@ -181,8 +148,6 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
             <Show when=move || workload_info.get().is_some()>
                 <EnvironmentWorkloadInfoCard
                     workload_info
-                    delete_modal_open
-                    delete_action
                 />
             </Show>
 
@@ -220,20 +185,6 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
                 }}
             </Show>
 
-            // Delete Modal
-            {move || {
-                if let Some((_, workload)) = workload_info.get() {
-                    view! {
-                        <DeleteModal
-                            resource=workload.name
-                            open=delete_modal_open
-                            delete_action
-                        />
-                    }.into_any()
-                } else {
-                    view! { <div></div> }.into_any()
-                }
-            }}
         </div>
     }
 }
@@ -241,8 +192,6 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
 #[component]
 pub fn EnvironmentWorkloadInfoCard(
     workload_info: Signal<Option<(KubeEnvironment, KubeEnvironmentWorkload)>>,
-    delete_modal_open: RwSignal<bool>,
-    delete_action: Action<(), Result<(), ErrorResponse>>,
 ) -> impl IntoView {
     view! {
         <Show when=move || workload_info.get().is_some() fallback=|| view! { <div></div> }>
@@ -262,26 +211,17 @@ pub fn EnvironmentWorkloadInfoCard(
                 view! {
                     <Card class="p-6">
                         <div class="flex flex-col gap-6">
-                            // Header with actions
-                            <div class="flex items-start justify-between">
-                                <div class="flex flex-col gap-2">
-                                    <H3>{workload_name}</H3>
-                                    <div class="flex items-center gap-2">
-                                        <Badge variant=BadgeVariant::Secondary>
-                                            {workload_namespace}
-                                        </Badge>
-                                        <Badge variant=BadgeVariant::Outline>
-                                            {workload_kind}
-                                        </Badge>
-                                    </div>
+                            // Header
+                            <div class="flex flex-col gap-2">
+                                <H3>{workload_name}</H3>
+                                <div class="flex items-center gap-2">
+                                    <Badge variant=BadgeVariant::Secondary>
+                                        {workload_namespace}
+                                    </Badge>
+                                    <Badge variant=BadgeVariant::Outline>
+                                        {workload_kind}
+                                    </Badge>
                                 </div>
-                                <Button
-                                    variant=ButtonVariant::Destructive
-                                    on:click=move |_| delete_modal_open.set(true)
-                                >
-                                    <lucide_leptos::Trash2 />
-                                    Delete Workload
-                                </Button>
                             </div>
 
                             // Metadata grid

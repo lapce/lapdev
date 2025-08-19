@@ -1579,12 +1579,12 @@ impl KubeController {
         if environment.organization_id != org_id {
             return Err(ApiError::Unauthorized);
         }
-        
+
         // For personal/branch environments, verify ownership
         if !environment.is_shared && environment.user_id != user_id {
             return Err(ApiError::Unauthorized);
         }
-        
+
         // Delete the workload
         self.db
             .delete_environment_workload(workload_id)
@@ -1604,12 +1604,12 @@ impl KubeController {
         if environment.organization_id != org_id {
             return Err(ApiError::Unauthorized);
         }
-        
+
         // For personal/branch environments, verify ownership
         if !environment.is_shared && environment.user_id != user_id {
             return Err(ApiError::Unauthorized);
         }
-        
+
         // Update the workload containers
         self.db
             .update_environment_workload(workload_id, containers)

@@ -12,6 +12,7 @@ pub mod kube_cluster;
 pub mod kube_environment;
 pub mod kube_environment_detail;
 pub mod kube_environment_preview_url;
+pub mod kube_container;
 pub mod kube_environment_workload;
 pub mod kube_resource;
 pub mod license;

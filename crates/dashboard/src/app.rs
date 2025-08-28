@@ -20,7 +20,7 @@ use crate::{
     kube_app_catalog_detail::KubeAppCatalogDetail,
     kube_app_catalog_workload::KubeAppCatalogWorkload,
     kube_cluster::KubeCluster,
-    kube_environment::KubeEnvironment,
+    kube_environment::{EnvironmentType, KubeEnvironment},
     kube_environment_detail::KubeEnvironmentDetail,
     kube_environment_workload::KubeEnvironmentWorkload,
     kube_resource::KubeResource,
@@ -37,6 +37,7 @@ use crate::{
 #[derive(Clone)]
 pub struct AppConfig {
     pub show_lapdev_website: RwSignal<bool>,
+    pub environment_type: RwSignal<EnvironmentType>,
     pub current_page: RwSignal<String>,
     pub header_links: RwSignal<Vec<(String, String)>>,
 }
@@ -88,6 +89,7 @@ pub fn set_context() {
 
     provide_context(AppConfig {
         show_lapdev_website: RwSignal::new(false),
+        environment_type: RwSignal::new(EnvironmentType::Personal),
         current_page: RwSignal::new(String::new()),
         header_links: RwSignal::new(Vec::new()),
     });

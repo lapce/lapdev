@@ -7,6 +7,13 @@ pub const KUBE_CLUSTER_TOKEN_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_TOKEN";
 pub const KUBE_CLUSTER_URL_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_URL";
 pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/ws";
 
+pub const SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAGER_ADDR";
+pub const SIDECAR_PROXY_MANAGER_PORT_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAGER_PORT";
+pub const DEFAULT_SIDECAR_PROXY_MANAGER_PORT: u16 = 5001;
+pub const SIDECAR_PROXY_PORT_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_PORT";
+pub const DEFAULT_SIDECAR_PROXY_PORT: u16 = 15001;
+pub const SIDECAR_PROXY_WORKLOAD_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_WORKLOAD";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeCluster {
     pub id: Uuid,

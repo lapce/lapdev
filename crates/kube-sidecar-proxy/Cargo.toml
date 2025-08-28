@@ -4,4 +4,65 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "lapdev-kube-sidecar-proxy"
+path = "src/main.rs"
+
 [dependencies]
+# Kubernetes
+kube = { workspace = true, features = ["runtime", "derive"] }
+k8s-openapi.workspace = true
+
+# HTTP/Proxy
+axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+tower.workspace = true
+tower-http = { workspace = true, features = ["cors", "timeout", "trace"] }
+
+# Async runtime
+tokio.workspace = true
+tokio-util.workspace = true
+
+# RPC
+tarpc.workspace = true
+
+# Async runtime utilities
+futures.workspace = true
+futures-util.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging and tracing
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Lapdev crates
+lapdev-common.workspace = true
+lapdev-hrpc.workspace = true
+lapdev-kube-rpc.workspace = true
+lapdev-rpc.workspace = true
+
+# Utilities
+uuid.workspace = true
+chrono.workspace = true
+bytes.workspace = true
+url = "2.5"
+
+# System level networking for iptables redirection
+libc = "0.2"
+nix = { version = "0.29", features = ["socket", "net"] }
+
+# Additional networking support
+socket2 = "0.5"
+
+# CLI
+clap = { workspace = true, features = ["derive", "env"] }

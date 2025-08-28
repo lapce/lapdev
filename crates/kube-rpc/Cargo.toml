@@ -5,6 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
+uuid.workspace = true
 tarpc.workspace = true
 serde.workspace = true
 k8s-openapi.workspace = true

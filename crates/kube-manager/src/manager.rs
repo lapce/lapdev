@@ -15,29 +15,32 @@ use k8s_openapi::{
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
-    KubeContainerInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort,
-    KubeServiceWithYaml, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus,
-    PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
+    KubeContainerInfo, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort, KubeServiceWithYaml,
+    KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor,
+    PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
     KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
-    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, WorkloadIdentifier,
+    KubeWorkloadYamlOnly, KubeWorkloadsWithResources,
 };
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;
 use tarpc::server::{BaseChannel, Channel};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
+use uuid::Uuid;
 
-use crate::websocket_transport::WebSocketTransport;
+use crate::manager_rpc::KubeManagerRpcServer;
+use crate::{sidecar_proxy_manager::SidecarProxyManager, websocket_transport::WebSocketTransport};
 
 const SCOPE: &[&str] = &["https://www.googleapis.com/auth/cloud-platform"];
 
 #[derive(Clone)]
 pub struct KubeManager {
-    rpc_client: KubeClusterRpcClient,
-    kube_client: Option<Arc<kube::Client>>,
+    kube_client: Arc<kube::Client>,
+    // rpc_client: KubeClusterRpcClient,
+    proxy_manager: Arc<SidecarProxyManager>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +91,13 @@ pub struct Cluster {
 
 impl KubeManager {
     pub async fn connect_cluster() -> Result<()> {
+        let kube_client = Self::new_kube_client().await.map_err(|e| {
+            tracing::error!("Failed to create Kubernetes client: {}", e);
+            e
+        })?;
+
+        let proxy_manager = Arc::new(SidecarProxyManager::new().await?);
+
         let token = std::env::var(KUBE_CLUSTER_TOKEN_ENV_VAR)
             .map_err(|_| anyhow::anyhow!("can't find env var {}", KUBE_CLUSTER_TOKEN_ENV_VAR))?;
         let url = std::env::var(KUBE_CLUSTER_URL_ENV_VAR)
@@ -100,18 +110,26 @@ impl KubeManager {
             .headers_mut()
             .insert(KUBE_CLUSTER_TOKEN_HEADER, token.parse()?);
 
+        let manager = KubeManager {
+            kube_client: Arc::new(kube_client),
+            proxy_manager,
+        };
+
         loop {
-            match Self::handle_connection_cycle(request.clone()).await {
-                Ok(_) => {}
+            match manager.handle_connection_cycle(request.clone()).await {
+                Ok(_) => {
+                    tracing::warn!("Connection cycle completed, will retry in 5 second...");
+                }
                 Err(e) => {
                     tracing::warn!("Connection cycle failed: {}, retrying in 5 seconds...", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
 
     async fn handle_connection_cycle(
+        &self,
         request: tokio_tungstenite::tungstenite::http::Request<()>,
     ) -> Result<()> {
         tracing::info!("Attempting to connect to cluster...");
@@ -130,31 +148,28 @@ impl KubeManager {
         let rpc_client =
             KubeClusterRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
-        let kube_client = Self::new_kube_client()
-            .await
-            .map_err(|e| {
-                tracing::warn!("Failed to create Kubernetes client: {}", e);
-                e
-            })
-            .ok();
+        let rpc_server = KubeManagerRpcServer::new(self.clone(), rpc_client);
 
-        let rpc_server = KubeManager {
-            rpc_client,
-            kube_client: kube_client.map(Arc::new),
-        };
-
-        // Spawn the RPC server mainloop in the background
+        // Spawn the WebSocket RPC server mainloop in the background
         let rpc_clone = rpc_server.clone();
-        let server_task = tokio::spawn(async move {
-            tracing::info!("Starting RPC server...");
+        let websocket_server_task = tokio::spawn(async move {
+            tracing::info!("Starting WebSocket RPC server...");
             BaseChannel::with_defaults(server_chan)
                 .execute(rpc_clone.serve())
                 .for_each(|resp| async move {
                     tokio::spawn(resp);
                 })
                 .await;
-            tracing::info!("RPC server stopped");
+            tracing::info!("WebSocket RPC server stopped");
         });
+
+        // // Spawn the TCP server for sidecar proxies in the background
+        // let tcp_proxy_manager = proxy_manager.clone();
+        // let tcp_server_task = tokio::spawn(async move {
+        //     if let Err(e) = tcp_proxy_manager.start_tcp_server().await {
+        //         tracing::error!("TCP server failed: {}", e);
+        //     }
+        // });
 
         // Report cluster info immediately after connection
         if let Err(e) = rpc_server.report_cluster_info().await {
@@ -164,13 +179,9 @@ impl KubeManager {
             tracing::info!("Successfully reported cluster info");
         }
 
-        // Wait for the server task to complete
-        if let Err(e) = server_task.await {
-            return Err(anyhow!("RPC server task failed: {}", e));
+        if let Err(e) = websocket_server_task.await {
+            return Err(anyhow!("WebSocket RPC server task failed: {}", e));
         }
-
-        tracing::debug!("Connection cycle completed, will retry in 1 second...");
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         Ok(())
     }
@@ -258,11 +269,8 @@ impl KubeManager {
 }
 
 impl KubeManager {
-    async fn collect_cluster_info(&self) -> Result<KubeClusterInfo> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+    pub(crate) async fn collect_cluster_info(&self) -> Result<KubeClusterInfo> {
+        let client = &self.kube_client;
 
         // Get cluster version
         let version = client.apiserver_version().await?;
@@ -436,22 +444,6 @@ impl KubeManager {
         (detected_provider, detected_region)
     }
 
-    async fn report_cluster_info(&self) -> Result<()> {
-        let cluster_info = self.collect_cluster_info().await?;
-        tracing::info!("Reporting cluster info: {:?}", cluster_info);
-
-        match self
-            .rpc_client
-            .report_cluster_info(tarpc::context::current(), cluster_info)
-            .await
-        {
-            Ok(_) => tracing::info!("Successfully reported cluster info"),
-            Err(e) => tracing::error!("RPC call failed: {}", e),
-        }
-
-        Ok(())
-    }
-
     fn detect_provider_from_instance_type(instance_type: &str) -> Option<String> {
         if instance_type.starts_with('m')
             || instance_type.starts_with('c')
@@ -485,7 +477,7 @@ impl KubeManager {
         None
     }
 
-    async fn collect_workloads(
+    pub(crate) async fn collect_workloads(
         &self,
         namespace: Option<String>,
         workload_kind_filter: Option<KubeWorkloadKind>,
@@ -654,11 +646,8 @@ impl KubeManager {
         })
     }
 
-    async fn collect_namespaces(&self) -> Result<Vec<KubeNamespaceInfo>> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+    pub(crate) async fn collect_namespaces(&self) -> Result<Vec<KubeNamespaceInfo>> {
+        let client = &self.kube_client;
         let namespaces: kube::Api<Namespace> = kube::Api::all((**client).clone());
 
         let namespace_list = namespaces.list(&ListParams::default()).await?;
@@ -707,10 +696,7 @@ impl KubeManager {
         T::DynamicType: Default,
         F: Fn(T) -> KubeWorkload,
     {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let client = &self.kube_client;
         let api: kube::Api<T> = if let Some(ns) = namespace {
             kube::Api::namespaced((**client).clone(), ns)
         } else {
@@ -996,15 +982,12 @@ impl KubeManager {
         }
     }
 
-    async fn get_workload_by_name(
+    pub(crate) async fn get_workload_by_name(
         &self,
         name: String,
         namespace: String,
     ) -> Result<Option<KubeWorkload>> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let client = &self.kube_client;
 
         // Try to find the workload by checking different resource types
         // Check Deployment first
@@ -1597,14 +1580,27 @@ impl KubeManager {
         Ok(all_services)
     }
 
-    async fn retrieve_workloads_yaml(
+    pub(crate) async fn retrieve_single_workload_yaml(
+        &self,
+        catalog_workload: KubeAppCatalogWorkload,
+    ) -> Result<KubeWorkloadYaml> {
+        let client = &self.kube_client;
+
+        // Get ClusterIP services for the workload's namespace
+        let all_services = self
+            .retrieve_cluster_ip_services_in_namespace(client, &catalog_workload.namespace)
+            .await?;
+
+        // Retrieve the single workload with its associated resources
+        self.retrieve_single_workload_with_resources(client, &catalog_workload, &all_services)
+            .await
+    }
+
+    pub(crate) async fn retrieve_workloads_yaml(
         &self,
         catalog_workloads: Vec<KubeAppCatalogWorkload>,
     ) -> Result<KubeWorkloadsWithResources> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let client = &self.kube_client;
 
         let mut workloads = Vec::new();
         let mut all_services_set_by_namespace: HashMap<String, std::collections::HashSet<String>> =
@@ -2312,248 +2308,14 @@ impl KubeManager {
         Ok((services_yaml_map, configmaps_yaml_map, secrets_yaml_map))
     }
 
-    async fn apply_workload_yaml(
+    pub(crate) async fn apply_workloads_with_resources(
         &self,
-        namespace: String,
-        workload_yaml: KubeWorkloadYaml,
-        labels: std::collections::HashMap<String, String>,
-    ) -> Result<()> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
-
-        // Step 1: Ensure namespace exists
-        self.ensure_namespace_exists(&namespace).await?;
-
-        // Step 2: Apply the resource based on workload type
-        match workload_yaml {
-            KubeWorkloadYaml::Deployment(workload_with_services) => {
-                tracing::info!(
-                    "Applying Deployment to namespace '{}' with labels: {:?}",
-                    namespace,
-                    labels
-                );
-                self.apply_deployment(
-                    client,
-                    &namespace,
-                    &workload_with_services.workload_yaml,
-                    &labels,
-                )
-                .await?;
-                self.apply_services(
-                    client,
-                    &namespace,
-                    &workload_with_services.services,
-                    &labels,
-                )
-                .await?;
-                self.apply_configmaps(
-                    client,
-                    &namespace,
-                    &workload_with_services.configmaps,
-                    &labels,
-                )
-                .await?;
-                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
-                    .await?;
-            }
-            KubeWorkloadYaml::StatefulSet(workload_with_services) => {
-                tracing::info!(
-                    "Applying StatefulSet to namespace '{}' with labels: {:?}",
-                    namespace,
-                    labels
-                );
-                self.apply_statefulset(
-                    client,
-                    &namespace,
-                    &workload_with_services.workload_yaml,
-                    &labels,
-                )
-                .await?;
-                self.apply_services(
-                    client,
-                    &namespace,
-                    &workload_with_services.services,
-                    &labels,
-                )
-                .await?;
-                self.apply_configmaps(
-                    client,
-                    &namespace,
-                    &workload_with_services.configmaps,
-                    &labels,
-                )
-                .await?;
-                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
-                    .await?;
-            }
-            KubeWorkloadYaml::DaemonSet(workload_with_services) => {
-                tracing::info!(
-                    "Applying DaemonSet to namespace '{}' with labels: {:?}",
-                    namespace,
-                    labels
-                );
-                self.apply_daemonset(
-                    client,
-                    &namespace,
-                    &workload_with_services.workload_yaml,
-                    &labels,
-                )
-                .await?;
-                self.apply_services(
-                    client,
-                    &namespace,
-                    &workload_with_services.services,
-                    &labels,
-                )
-                .await?;
-                self.apply_configmaps(
-                    client,
-                    &namespace,
-                    &workload_with_services.configmaps,
-                    &labels,
-                )
-                .await?;
-                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
-                    .await?;
-            }
-            KubeWorkloadYaml::Pod(workload_with_services) => {
-                tracing::info!(
-                    "Applying Pod to namespace '{}' with labels: {:?}",
-                    namespace,
-                    labels
-                );
-                self.apply_pod(
-                    client,
-                    &namespace,
-                    &workload_with_services.workload_yaml,
-                    &labels,
-                )
-                .await?;
-                self.apply_services(
-                    client,
-                    &namespace,
-                    &workload_with_services.services,
-                    &labels,
-                )
-                .await?;
-                self.apply_configmaps(
-                    client,
-                    &namespace,
-                    &workload_with_services.configmaps,
-                    &labels,
-                )
-                .await?;
-                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
-                    .await?;
-            }
-            KubeWorkloadYaml::Job(workload_with_services) => {
-                tracing::info!(
-                    "Applying Job to namespace '{}' with labels: {:?}",
-                    namespace,
-                    labels
-                );
-                self.apply_job(
-                    client,
-                    &namespace,
-                    &workload_with_services.workload_yaml,
-                    &labels,
-                )
-                .await?;
-                self.apply_services(
-                    client,
-                    &namespace,
-                    &workload_with_services.services,
-                    &labels,
-                )
-                .await?;
-                self.apply_configmaps(
-                    client,
-                    &namespace,
-                    &workload_with_services.configmaps,
-                    &labels,
-                )
-                .await?;
-                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
-                    .await?;
-            }
-            KubeWorkloadYaml::CronJob(workload_with_services) => {
-                tracing::info!(
-                    "Applying CronJob to namespace '{}' with labels: {:?}",
-                    namespace,
-                    labels
-                );
-                self.apply_cronjob(
-                    client,
-                    &namespace,
-                    &workload_with_services.workload_yaml,
-                    &labels,
-                )
-                .await?;
-                self.apply_services(
-                    client,
-                    &namespace,
-                    &workload_with_services.services,
-                    &labels,
-                )
-                .await?;
-                self.apply_configmaps(
-                    client,
-                    &namespace,
-                    &workload_with_services.configmaps,
-                    &labels,
-                )
-                .await?;
-                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
-                    .await?;
-            }
-            KubeWorkloadYaml::ReplicaSet(workload_with_services) => {
-                tracing::info!(
-                    "Applying ReplicaSet to namespace '{}' with labels: {:?}",
-                    namespace,
-                    labels
-                );
-                self.apply_replicaset(
-                    client,
-                    &namespace,
-                    &workload_with_services.workload_yaml,
-                    &labels,
-                )
-                .await?;
-                self.apply_services(
-                    client,
-                    &namespace,
-                    &workload_with_services.services,
-                    &labels,
-                )
-                .await?;
-                self.apply_configmaps(
-                    client,
-                    &namespace,
-                    &workload_with_services.configmaps,
-                    &labels,
-                )
-                .await?;
-                self.apply_secrets(client, &namespace, &workload_with_services.secrets, &labels)
-                    .await?;
-            }
-        }
-
-        tracing::info!("Successfully applied workload to namespace '{}'", namespace);
-        Ok(())
-    }
-
-    async fn apply_workloads_with_resources(
-        &self,
+        environment_id: Option<Uuid>,
         namespace: String,
         workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
     ) -> Result<()> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let client = &self.kube_client;
 
         // Step 1: Ensure namespace exists
         self.ensure_namespace_exists(&namespace).await?;
@@ -2576,7 +2338,7 @@ impl KubeManager {
         // Step 3: Apply all workloads
         for workload in &workloads_with_resources.workloads {
             tracing::info!("Applying workload to namespace '{}'", namespace);
-            self.apply_workload_only(client, &namespace, workload, &labels)
+            self.apply_workload_only(client, environment_id, &namespace, workload, &labels)
                 .await?;
         }
 
@@ -2869,13 +2631,14 @@ impl KubeManager {
     async fn apply_workload_only(
         &self,
         client: &kube::Client,
+        environment_id: Option<Uuid>,
         namespace: &str,
         workload: &KubeWorkloadYamlOnly,
         labels: &std::collections::HashMap<String, String>,
     ) -> Result<()> {
         match workload {
             KubeWorkloadYamlOnly::Deployment(yaml) => {
-                self.apply_deployment(client, namespace, yaml, labels)
+                self.apply_deployment(environment_id, namespace, yaml, labels)
                     .await?;
             }
             KubeWorkloadYamlOnly::StatefulSet(yaml) => {
@@ -2904,10 +2667,7 @@ impl KubeManager {
     }
 
     async fn ensure_namespace_exists(&self, namespace: &str) -> Result<()> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let client = &self.kube_client;
 
         let namespaces: kube::Api<Namespace> = kube::Api::all((**client).clone());
 
@@ -2930,9 +2690,84 @@ impl KubeManager {
         Ok(())
     }
 
+    fn inject_sidecar_proxy_into_deployment(
+        &self,
+        environment_id: Uuid,
+        namespace: &str,
+        deployment: &mut k8s_openapi::api::apps::v1::Deployment,
+    ) -> Result<()> {
+        use k8s_openapi::api::core::v1::{Container, ContainerPort, EnvVar};
+
+        if let Some(ref mut spec) = deployment.spec {
+            if let Some(ref mut template) = spec.template.spec {
+                // Create the sidecar proxy container
+                let sidecar_container = Container {
+                    name: "lapdev-sidecar-proxy".to_string(),
+                    image: Some("lapdev/kube-sidecar-proxy:latest".to_string()),
+                    ports: Some(vec![
+                        ContainerPort {
+                            container_port: 8080,
+                            name: Some("proxy".to_string()),
+                            protocol: Some("TCP".to_string()),
+                            ..Default::default()
+                        },
+                        ContainerPort {
+                            container_port: 9090,
+                            name: Some("metrics".to_string()),
+                            protocol: Some("TCP".to_string()),
+                            ..Default::default()
+                        },
+                    ]),
+                    env: Some(vec![
+                        EnvVar {
+                            name: "LAPDEV_ENVIRONMENT_ID".to_string(),
+                            value: Some(environment_id.to_string()),
+                            ..Default::default()
+                        },
+                        EnvVar {
+                            name: "KUBERNETES_NAMESPACE".to_string(),
+                            value: Some(namespace.to_string()),
+                            ..Default::default()
+                        },
+                        EnvVar {
+                            name: "HOSTNAME".to_string(),
+                            value_from: Some(k8s_openapi::api::core::v1::EnvVarSource {
+                                field_ref: Some(k8s_openapi::api::core::v1::ObjectFieldSelector {
+                                    field_path: "metadata.name".to_string(),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        },
+                    ]),
+                    args: Some(vec![
+                        "--listen-addr".to_string(),
+                        "0.0.0.0:8080".to_string(),
+                        "--target-addr".to_string(),
+                        "127.0.0.1:3000".to_string(), // Assume main app is on port 3000
+                    ]),
+                    ..Default::default()
+                };
+
+                // Add the sidecar container to the pod spec
+                template.containers.push(sidecar_container);
+
+                tracing::info!(
+                    "Injected sidecar proxy into deployment '{}' in namespace '{}' for environment '{}'",
+                    deployment.metadata.name.as_ref().unwrap_or(&"unknown".to_string()),
+                    namespace,
+                    environment_id
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     async fn apply_deployment(
         &self,
-        client: &kube::Client,
+        environment_id: Option<Uuid>,
         namespace: &str,
         yaml_manifest: &str,
         labels: &std::collections::HashMap<String, String>,
@@ -2945,7 +2780,13 @@ impl KubeManager {
         // Force namespace
         deployment.metadata.namespace = Some(namespace.to_string());
 
-        let api: kube::Api<Deployment> = kube::Api::namespaced((*client).clone(), namespace);
+        // Inject sidecar proxy if this is a base environment (not a branch)
+        if let Some(environment_id) = environment_id {
+            self.inject_sidecar_proxy_into_deployment(environment_id, namespace, &mut deployment)?;
+        }
+
+        let api: kube::Api<Deployment> =
+            kube::Api::namespaced((*self.kube_client).clone(), namespace);
 
         // Try to create or update the deployment
         match api
@@ -3223,16 +3064,13 @@ impl KubeManager {
         }
     }
 
-    async fn get_workload_resource_details(
+    pub(crate) async fn get_workload_resource_details(
         &self,
         name: &str,
         namespace: &str,
         kind: &KubeWorkloadKind,
     ) -> Result<Vec<KubeContainerInfo>> {
-        let client = self
-            .kube_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("Kubernetes client not available"))?;
+        let client = &self.kube_client;
 
         match kind {
             KubeWorkloadKind::Deployment => {
@@ -3374,166 +3212,302 @@ impl KubeManager {
             format!("{}B", bytes)
         }
     }
-}
 
-impl KubeManagerRpc for KubeManager {
-    async fn get_workloads(
-        self,
-        _context: ::tarpc::context::Context,
-        namespace: Option<String>,
-        workload_kind_filter: Option<KubeWorkloadKind>,
-        include_system_workloads: bool,
-        pagination: Option<PaginationParams>,
-    ) -> Result<KubeWorkloadList, String> {
-        match self
-            .collect_workloads(
-                namespace,
-                workload_kind_filter,
-                include_system_workloads,
-                pagination,
-            )
-            .await
-        {
-            Ok(workloads) => {
-                tracing::info!(
-                    "Successfully collected {} workloads",
-                    workloads.workloads.len()
-                );
-                Ok(workloads)
-            }
-            Err(e) => {
-                tracing::error!("Failed to collect workloads: {e}");
-                Err(format!("Failed to collect workloads: {e}"))
-            }
-        }
-    }
-
-    async fn get_workload_details(
-        self,
-        _context: ::tarpc::context::Context,
+    /// Atomically updates a workload's containers by:
+    /// 1. Retrieving the current workload YAML
+    /// 2. Applying the updated container information
+    /// 3. Deploying the updated YAML
+    /// This combines get_workloads_yaml + deploy_workload_yaml into one atomic operation
+    pub(crate) async fn update_workload_containers_atomic(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
         name: String,
         namespace: String,
-    ) -> Result<Option<KubeWorkload>, String> {
-        match self
-            .get_workload_by_name(name.clone(), namespace.clone())
-            .await
-        {
-            Ok(workload) => {
-                if workload.is_some() {
-                    tracing::info!("Successfully found workload: {namespace}/{name}");
-                } else {
-                    tracing::warn!("Workload not found: {namespace}/{name}");
-                }
-                Ok(workload)
-            }
-            Err(e) => {
-                tracing::error!("Failed to get workload details for {namespace}/{name}: {e}");
-                Err(format!("Failed to get workload details: {e}"))
-            }
-        }
-    }
-
-    async fn get_namespaces(
-        self,
-        _context: ::tarpc::context::Context,
-    ) -> Result<Vec<KubeNamespaceInfo>, String> {
-        match self.collect_namespaces().await {
-            Ok(namespaces) => {
-                tracing::info!("Successfully collected {} namespaces", namespaces.len());
-                Ok(namespaces)
-            }
-            Err(e) => {
-                tracing::error!("Failed to collect namespaces: {e}");
-                Err(format!("Failed to collect namespaces: {e}"))
-            }
-        }
-    }
-
-    async fn get_workloads_yaml(
-        self,
-        _context: ::tarpc::context::Context,
-        workloads: Vec<KubeAppCatalogWorkload>,
-    ) -> Result<KubeWorkloadsWithResources, String> {
-        match self.retrieve_workloads_yaml(workloads.clone()).await {
-            Ok(workloads_with_resources) => {
-                tracing::info!(
-                    "Successfully retrieved {} workloads with {} services, {} configmaps, {} secrets",
-                    workloads_with_resources.workloads.len(),
-                    workloads_with_resources.services.len(),
-                    workloads_with_resources.configmaps.len(),
-                    workloads_with_resources.secrets.len()
-                );
-                Ok(workloads_with_resources)
-            }
-            Err(e) => {
-                tracing::error!("Failed to retrieve workloads YAML: {}", e);
-                Err(format!("Failed to retrieve workloads YAML: {}", e))
-            }
-        }
-    }
-
-    async fn deploy_workload_yaml(
-        self,
-        _context: ::tarpc::context::Context,
-        namespace: String,
-        workloads_with_resources: KubeWorkloadsWithResources,
+        kind: lapdev_common::kube::KubeWorkloadKind,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
         labels: std::collections::HashMap<String, String>,
-    ) -> Result<(), String> {
-        match self
-            .apply_workloads_with_resources(namespace.clone(), workloads_with_resources, labels)
+    ) -> Result<()> {
+        tracing::info!(
+            "Starting atomic workload update for {}/{} (id: {}) with {} containers",
+            namespace,
+            name,
+            workload_id,
+            containers.len()
+        );
+
+        // Step 1: Create KubeAppCatalogWorkload for the workload we want to update
+        let catalog_workload = lapdev_common::kube::KubeAppCatalogWorkload {
+            id: workload_id,
+            name: name.clone(),
+            namespace: namespace.clone(),
+            kind,
+            containers,
+        };
+
+        // Step 2: Get the current workload YAML with all its resources
+        let workloads_with_resources = self
+            .retrieve_workloads_yaml(vec![catalog_workload])
             .await
-        {
-            Ok(()) => {
-                tracing::info!("Successfully deployed workloads to namespace: {namespace}");
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("Failed to deploy workloads to namespace {namespace}: {e}");
-                Err(format!("Failed to deploy workloads: {e}"))
-            }
-        }
-    }
-
-    async fn get_workloads_details(
-        self,
-        _context: ::tarpc::context::Context,
-        workloads: Vec<WorkloadIdentifier>,
-    ) -> Result<Vec<lapdev_common::kube::KubeWorkloadDetails>, String> {
-        let mut details = Vec::new();
-
-        for workload in workloads {
-            match self
-                .get_workload_resource_details(&workload.name, &workload.namespace, &workload.kind)
-                .await
-            {
-                Ok(containers) => {
-                    details.push(lapdev_common::kube::KubeWorkloadDetails {
-                        name: workload.name,
-                        namespace: workload.namespace,
-                        kind: workload.kind,
-                        containers,
-                    });
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to get workload details for {}/{}: {}",
-                        workload.namespace,
-                        workload.name,
-                        e
-                    );
-                    return Err(format!(
-                        "Failed to get workload details for {}/{}: {}",
-                        workload.namespace, workload.name, e
-                    ));
-                }
-            }
-        }
+            .map_err(|e| {
+            tracing::error!(
+                "Failed to retrieve workload YAML for {}/{}: {}",
+                namespace,
+                name,
+                e
+            );
+            anyhow::anyhow!("Failed to retrieve workload YAML: {}", e)
+        })?;
 
         tracing::info!(
-            "Successfully retrieved details for {} workloads",
-            details.len()
+            "Retrieved workload YAML for {}/{}: {} workloads, {} services, {} configmaps, {} secrets",
+            namespace, name,
+            workloads_with_resources.workloads.len(),
+            workloads_with_resources.services.len(),
+            workloads_with_resources.configmaps.len(),
+            workloads_with_resources.secrets.len()
         );
-        Ok(details)
+
+        // Step 3: Apply the updated workload with resources atomically
+        // Use a zero UUID for branch workloads since they don't get sidecar injection
+        self.apply_workloads_with_resources(
+            Some(environment_id),
+            namespace.clone(),
+            workloads_with_resources,
+            labels,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Failed to apply updated workload {}/{}: {}",
+                namespace,
+                name,
+                e
+            );
+            anyhow::anyhow!("Failed to apply updated workload: {}", e)
+        })?;
+
+        tracing::info!(
+            "Successfully completed atomic update for workload {}/{} (id: {})",
+            namespace,
+            name,
+            workload_id
+        );
+
+        Ok(())
+    }
+
+    /// Creates a new deployment for a branch environment by:
+    /// 1. Retrieving the base workload YAML
+    /// 2. Creating a new deployment with a unique name based on branch environment
+    /// 3. Applying the container customizations
+    /// 4. Deploying the new branch deployment
+    pub(crate) async fn create_branch_workload_atomic(
+        &self,
+        base_workload_id: uuid::Uuid,
+        base_workload_name: String,
+        branch_environment_id: uuid::Uuid,
+        namespace: String,
+        kind: lapdev_common::kube::KubeWorkloadKind,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        tracing::info!(
+            "Starting atomic branch deployment creation for environment '{}' based on {}/{} (id: {}) with {} containers",
+            branch_environment_id, namespace, base_workload_name, base_workload_id, containers.len()
+        );
+
+        // Step 1: Create KubeAppCatalogWorkload for the base workload to get its YAML
+        let base_catalog_workload = lapdev_common::kube::KubeAppCatalogWorkload {
+            id: base_workload_id,
+            name: base_workload_name.clone(),
+            namespace: namespace.clone(),
+            kind,
+            containers: containers.clone(), // Use the customized containers for the branch
+        };
+
+        // Step 2: Get the base workload YAML with all its resources
+        let mut workloads_with_resources = self
+            .retrieve_workloads_yaml(vec![base_catalog_workload])
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to retrieve base workload YAML for {}/{}: {}",
+                    namespace,
+                    base_workload_name,
+                    e
+                );
+                anyhow::anyhow!("Failed to retrieve base workload YAML: {}", e)
+            })?;
+
+        // Step 3: Modify the workload names to create branch-specific deployments
+        let branch_deployment_name =
+            format!("{}-{}", base_workload_name, branch_environment_id.simple());
+
+        // Update the workload YAML to use the branch deployment name
+        for workload_yaml in &mut workloads_with_resources.workloads {
+            match workload_yaml {
+                lapdev_kube_rpc::KubeWorkloadYamlOnly::Deployment(yaml) => {
+                    *yaml = self.update_deployment_name_in_yaml(yaml, &branch_deployment_name)?;
+                }
+                lapdev_kube_rpc::KubeWorkloadYamlOnly::StatefulSet(yaml) => {
+                    *yaml = self.update_statefulset_name_in_yaml(yaml, &branch_deployment_name)?;
+                }
+                lapdev_kube_rpc::KubeWorkloadYamlOnly::DaemonSet(yaml) => {
+                    *yaml = self.update_daemonset_name_in_yaml(yaml, &branch_deployment_name)?;
+                }
+                lapdev_kube_rpc::KubeWorkloadYamlOnly::ReplicaSet(yaml) => {
+                    *yaml = self.update_replicaset_name_in_yaml(yaml, &branch_deployment_name)?;
+                }
+                _ => {
+                    // For other workload types, we'll need to implement similar methods if needed
+                    tracing::warn!(
+                        "Branch deployment creation not fully supported for workload type: {:?}",
+                        workload_yaml
+                    );
+                }
+            }
+        }
+
+        // Step 4: Add branch-specific labels to distinguish from base environment
+        let mut branch_labels = labels.clone();
+        branch_labels.insert(
+            "lapdev.branch-environment".to_string(),
+            branch_environment_id.to_string(),
+        );
+        branch_labels.insert(
+            "lapdev.base-workload".to_string(),
+            base_workload_name.clone(),
+        );
+
+        tracing::info!(
+            "Retrieved and modified workload YAML for branch '{}' based on {}/{}: {} workloads, {} services, {} configmaps, {} secrets",
+            branch_environment_id, namespace, base_workload_name,
+            workloads_with_resources.workloads.len(),
+            workloads_with_resources.services.len(),
+            workloads_with_resources.configmaps.len(),
+            workloads_with_resources.secrets.len()
+        );
+
+        // Step 5: Apply the branch workload with resources atomically
+        // Use a zero UUID for branch workloads since they don't get sidecar injection
+        self.apply_workloads_with_resources(
+            None,
+            namespace.clone(),
+            workloads_with_resources,
+            branch_labels,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Failed to apply branch workload for environment '{}' based on {}/{}: {}",
+                branch_environment_id,
+                namespace,
+                base_workload_name,
+                e
+            );
+            anyhow::anyhow!("Failed to apply branch workload: {}", e)
+        })?;
+
+        tracing::info!(
+            "Successfully created branch deployment '{}' based on {}/{} (base id: {})",
+            branch_environment_id,
+            namespace,
+            base_workload_name,
+            base_workload_id
+        );
+        Ok(())
+    }
+
+    // Helper method to update deployment name in YAML
+    fn update_deployment_name_in_yaml(&self, yaml: &str, new_name: &str) -> Result<String> {
+        use k8s_openapi::api::apps::v1::Deployment;
+
+        let mut deployment: Deployment = serde_yaml::from_str(yaml)?;
+        deployment.metadata.name = Some(new_name.to_string());
+
+        // Also update the selector labels to ensure they match the new deployment
+        if let Some(ref mut spec) = deployment.spec {
+            if let Some(ref mut selector) = spec.selector.match_labels {
+                selector.insert("app".to_string(), new_name.to_string());
+            }
+            if let Some(ref mut metadata) = &mut spec.template.metadata {
+                if let Some(ref mut labels) = &mut metadata.labels {
+                    labels.insert("app".to_string(), new_name.to_string());
+                }
+            }
+        }
+
+        serde_yaml::to_string(&deployment)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize deployment YAML: {}", e))
+    }
+
+    // Helper method to update statefulset name in YAML
+    fn update_statefulset_name_in_yaml(&self, yaml: &str, new_name: &str) -> Result<String> {
+        use k8s_openapi::api::apps::v1::StatefulSet;
+
+        let mut statefulset: StatefulSet = serde_yaml::from_str(yaml)?;
+        statefulset.metadata.name = Some(new_name.to_string());
+
+        if let Some(ref mut spec) = statefulset.spec {
+            if let Some(ref mut selector) = spec.selector.match_labels {
+                selector.insert("app".to_string(), new_name.to_string());
+            }
+            if let Some(ref mut metadata) = &mut spec.template.metadata {
+                if let Some(ref mut labels) = &mut metadata.labels {
+                    labels.insert("app".to_string(), new_name.to_string());
+                }
+            }
+        }
+
+        serde_yaml::to_string(&statefulset)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize statefulset YAML: {}", e))
+    }
+
+    // Helper method to update daemonset name in YAML
+    fn update_daemonset_name_in_yaml(&self, yaml: &str, new_name: &str) -> Result<String> {
+        use k8s_openapi::api::apps::v1::DaemonSet;
+
+        let mut daemonset: DaemonSet = serde_yaml::from_str(yaml)?;
+        daemonset.metadata.name = Some(new_name.to_string());
+
+        if let Some(ref mut spec) = daemonset.spec {
+            if let Some(ref mut selector) = spec.selector.match_labels {
+                selector.insert("app".to_string(), new_name.to_string());
+            }
+            if let Some(ref mut metadata) = &mut spec.template.metadata {
+                if let Some(ref mut labels) = &mut metadata.labels {
+                    labels.insert("app".to_string(), new_name.to_string());
+                }
+            }
+        }
+
+        serde_yaml::to_string(&daemonset)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize daemonset YAML: {}", e))
+    }
+
+    // Helper method to update replicaset name in YAML
+    fn update_replicaset_name_in_yaml(&self, yaml: &str, new_name: &str) -> Result<String> {
+        use k8s_openapi::api::apps::v1::ReplicaSet;
+
+        let mut replicaset: ReplicaSet = serde_yaml::from_str(yaml)?;
+        replicaset.metadata.name = Some(new_name.to_string());
+
+        if let Some(ref mut spec) = replicaset.spec {
+            if let Some(ref mut selector) = spec.selector.match_labels {
+                selector.insert("app".to_string(), new_name.to_string());
+            }
+            if let Some(ref mut template) = &mut spec.template {
+                if let Some(ref mut metadata) = &mut template.metadata {
+                    if let Some(ref mut labels) = &mut metadata.labels {
+                        labels.insert("app".to_string(), new_name.to_string());
+                    }
+                }
+            }
+        }
+
+        serde_yaml::to_string(&replicaset)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize replicaset YAML: {}", e))
     }
 }
 

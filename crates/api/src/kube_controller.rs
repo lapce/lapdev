@@ -995,8 +995,21 @@ impl KubeController {
             .map(|workload| {
                 let mut containers = workload.containers;
                 for container in &mut containers {
+                    // Preserve the original environment variables
                     container.original_env_vars = container.env_vars.clone();
                     container.env_vars.clear();
+
+                    // If the app catalog has a customized image, use it as the original_image
+                    // for the new environment (so the environment starts from the customized state)
+                    match &container.image {
+                        KubeContainerImage::Custom(custom_image) => {
+                            container.original_image = custom_image.clone();
+                            container.image = KubeContainerImage::FollowOriginal;
+                        }
+                        KubeContainerImage::FollowOriginal => {
+                            // Keep the current original_image and FollowOriginal setting
+                        }
+                    }
                 }
                 lapdev_common::kube::KubeWorkloadDetails {
                     name: workload.name,
@@ -1042,8 +1055,14 @@ impl KubeController {
         };
 
         // Deploy the app catalog resources to the cluster using pre-fetched YAML
-        self.deploy_app_catalog_with_yaml(&server, &namespace, &name, workloads_with_resources)
-            .await?;
+        self.deploy_app_catalog_with_yaml(
+            &server,
+            &namespace,
+            &name,
+            created_env.id,
+            workloads_with_resources,
+        )
+        .await?;
 
         // Convert the database model to the API type
         Ok(lapdev_common::kube::KubeEnvironment {
@@ -1125,8 +1144,21 @@ impl KubeController {
                 workload.kind.parse().ok().map(|kind| {
                     let mut containers = workload.containers;
                     for container in &mut containers {
+                        // Preserve the original environment variables
                         container.original_env_vars = container.env_vars.clone();
                         container.env_vars.clear();
+
+                        // If the base environment has a customized image, use it as the original_image
+                        // for the new branch environment (so the branch starts from the customized state)
+                        match &container.image {
+                            KubeContainerImage::Custom(custom_image) => {
+                                container.original_image = custom_image.clone();
+                                container.image = KubeContainerImage::FollowOriginal;
+                            }
+                            KubeContainerImage::FollowOriginal => {
+                                // Keep the current original_image and FollowOriginal setting
+                            }
+                        }
                     }
                     lapdev_common::kube::KubeWorkloadDetails {
                         name: workload.name,
@@ -1309,6 +1341,7 @@ impl KubeController {
         target_server: &KubeClusterServer,
         namespace: &str,
         environment_name: &str,
+        environment_id: Uuid,
         workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
     ) -> Result<(), ApiError> {
         tracing::info!(
@@ -1341,6 +1374,7 @@ impl KubeController {
             .rpc_client
             .deploy_workload_yaml(
                 tarpc::context::current(),
+                environment_id,
                 namespace.to_string(),
                 workloads_with_resources,
                 environment_labels.clone(),
@@ -1621,11 +1655,137 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
-        // Update the workload containers
-        self.db
+        // Update the workload containers in database
+        let updated_db_model = self
+            .db
             .update_environment_workload(workload_id, containers)
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        // Convert database model to API type
+        let updated_workload = {
+            let containers: Vec<lapdev_common::kube::KubeContainerInfo> =
+                serde_json::from_value(updated_db_model.containers.clone()).unwrap_or_default();
+
+            lapdev_common::kube::KubeEnvironmentWorkload {
+                id: updated_db_model.id,
+                created_at: updated_db_model.created_at,
+                environment_id: updated_db_model.environment_id,
+                name: updated_db_model.name.clone(),
+                namespace: updated_db_model.namespace.clone(),
+                kind: updated_db_model.kind.clone(),
+                containers,
+            }
+        };
+
+        // After successful database update, deploy the workload to the cluster
+        let cluster_server = self
+            .get_random_kube_cluster_server(environment.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest("No connected KubeManager for this cluster".to_string())
+            })?;
+
+        // Convert to proper workload kind
+        let workload_kind = updated_workload.kind.parse().map_err(|_| {
+            ApiError::InvalidRequest(format!("Invalid workload kind: {}", updated_workload.kind))
+        })?;
+
+        // Prepare environment-specific labels
+        let mut environment_labels = std::collections::HashMap::new();
+        environment_labels.insert("lapdev.environment".to_string(), environment.name.clone());
+        environment_labels.insert("lapdev.managed-by".to_string(), "lapdev".to_string());
+
+        // Check if this is a branch environment - if so, create a new deployment
+        if environment.base_environment_id.is_some() {
+            tracing::info!(
+                "Creating branch deployment for workload '{}' in branch environment '{}' (namespace '{}')",
+                updated_workload.name,
+                environment.name,
+                environment.namespace
+            );
+
+            // For branch environments, we need to get the base workload name and create a branch deployment
+            // The base workload name is the original workload name without branch suffix
+            let base_workload_name = updated_workload.name.clone();
+            let branch_environment_id = environment.id;
+
+            match cluster_server
+                .rpc_client
+                .create_branch_workload(
+                    tarpc::context::current(),
+                    updated_workload.id,
+                    base_workload_name.clone(),
+                    branch_environment_id,
+                    updated_workload.namespace.clone(),
+                    workload_kind,
+                    updated_workload.containers,
+                    environment_labels,
+                )
+                .await
+            {
+                Ok(Ok(())) => {
+                    tracing::info!(
+                        "Successfully created branch deployment for workload '{}' in branch environment '{}' (namespace '{}')",
+                        updated_workload.name,
+                        environment.name,
+                        environment.namespace
+                    );
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Failed to create branch deployment: {}", e);
+                    Err(ApiError::InvalidRequest(format!(
+                        "Failed to create branch deployment: {e}"
+                    )))
+                }
+                Err(e) => Err(ApiError::InvalidRequest(format!(
+                    "Connection error during branch deployment creation: {e}"
+                ))),
+            }
+        } else {
+            // For regular environments, update the existing workload containers
+            tracing::info!(
+                "Updating workload containers for '{}' in regular environment '{}' (namespace '{}')",
+                updated_workload.name,
+                environment.name,
+                environment.namespace
+            );
+
+            match cluster_server
+                .rpc_client
+                .update_workload_containers(
+                    tarpc::context::current(),
+                    environment.id,
+                    updated_workload.id,
+                    updated_workload.name.clone(),
+                    updated_workload.namespace.clone(),
+                    workload_kind,
+                    updated_workload.containers,
+                    environment_labels,
+                )
+                .await
+            {
+                Ok(Ok(())) => {
+                    tracing::info!(
+                        "Successfully updated workload containers for '{}' in environment '{}' (namespace '{}')",
+                        updated_workload.name,
+                        environment.name,
+                        environment.namespace
+                    );
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Failed to atomically update workload containers: {}", e);
+                    Err(ApiError::InvalidRequest(format!(
+                        "Failed to update workload containers: {e}"
+                    )))
+                }
+                Err(e) => Err(ApiError::InvalidRequest(format!(
+                    "Connection error during atomic workload update: {e}"
+                ))),
+            }
+        }
     }
 
     pub async fn get_environment_services(
@@ -1935,6 +2095,7 @@ impl KubeController {
 #[cfg(test)]
 mod tests {
     use super::KubeController;
+    use lapdev_common::kube::{KubeContainerImage, KubeContainerInfo};
 
     #[test]
     fn test_cpu_validation() {

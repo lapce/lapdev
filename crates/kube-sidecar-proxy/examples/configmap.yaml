@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lapdev-proxy-config
+  namespace: lapdev-environments
+  labels:
+    lapdev.io/proxy-config: "true"
+data:
+  proxy-config.yaml: |
+    listen_addr: "0.0.0.0:8080"
+    default_target: "127.0.0.1:3000"
+    namespace: "lapdev-environments"
+    routes:
+      - path: "/api/*"
+        target:
+          Service:
+            name: "backend-service"
+            namespace: "lapdev-environments"
+            port: 8000
+        headers:
+          X-Forwarded-Service: "backend"
+        timeout_ms: 10000
+        requires_auth: true
+        access_level: "Personal"
+      - path: "/public/*"
+        target:
+          Address: "127.0.0.1:3000"
+        headers:
+          Cache-Control: "no-cache"
+        requires_auth: false
+        access_level: "Public"
+    health_check:
+      path: "/health"
+      interval_seconds: 30
+      timeout_ms: 5000
+      failure_threshold: 3
+    metrics:
+      enabled: true
+      path: "/metrics"

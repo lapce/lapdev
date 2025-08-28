@@ -81,7 +81,6 @@ async fn get_environment_workload_detail(
     Ok((environment, workload))
 }
 
-
 async fn update_environment_workload_containers(
     org: Signal<Option<Organization>>,
     workload_id: Uuid,
@@ -130,7 +129,6 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
     });
 
     let workload_info = Signal::derive(move || workload_result.get().flatten());
-
 
     view! {
         <div class="flex flex-col gap-6">

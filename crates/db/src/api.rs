@@ -17,7 +17,7 @@ use pasetors::{
 };
 use sea_orm::{
     prelude::{DateTimeWithTimeZone, Json},
-    sea_query::{Expr, Func, OnConflict, Alias},
+    sea_query::{Alias, Expr, Func, OnConflict},
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, DatabaseTransaction,
     EntityTrait, FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
     RelationTrait, TransactionTrait,
@@ -1326,7 +1326,10 @@ impl DbApi {
                 Alias::new("base_env"),
             )
             .expr_as(
-                Expr::col((Alias::new("base_env"), lapdev_db_entities::kube_environment::Column::Name)),
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::Name,
+                )),
                 "base_environment_name",
             )
             .into_model::<KubeEnvironmentWithRelated>()
@@ -1620,16 +1623,16 @@ impl DbApi {
         &self,
         workload_id: Uuid,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-    ) -> Result<()> {
+    ) -> Result<lapdev_db_entities::kube_environment_workload::Model> {
         let containers_json = serde_json::to_value(containers)?;
-        lapdev_db_entities::kube_environment_workload::ActiveModel {
+        let updated_model = lapdev_db_entities::kube_environment_workload::ActiveModel {
             id: ActiveValue::Set(workload_id),
             containers: ActiveValue::Set(containers_json),
             ..Default::default()
         }
         .update(&self.conn)
         .await?;
-        Ok(())
+        Ok(updated_model)
     }
 
     /// Creates a kube environment and its associated workloads within a single database transaction.

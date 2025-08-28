@@ -1,9 +1,10 @@
 use lapdev_common::kube::{
-    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceWithYaml, 
+    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceWithYaml,
     KubeWorkloadDetails, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeWorkloadWithServices {
@@ -75,7 +76,12 @@ pub trait KubeManagerRpc {
         workloads: Vec<KubeAppCatalogWorkload>,
     ) -> Result<KubeWorkloadsWithResources, String>;
 
+    async fn get_workload_yaml(
+        workload: KubeAppCatalogWorkload,
+    ) -> Result<KubeWorkloadYaml, String>;
+
     async fn deploy_workload_yaml(
+        environment_id: uuid::Uuid,
         namespace: String,
         workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
@@ -84,4 +90,42 @@ pub trait KubeManagerRpc {
     async fn get_workloads_details(
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeWorkloadDetails>, String>;
+
+    async fn update_workload_containers(
+        environment_id: Uuid,
+        workload_id: Uuid,
+        name: String,
+        namespace: String,
+        kind: KubeWorkloadKind,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Result<(), String>;
+
+    async fn create_branch_workload(
+        base_workload_id: uuid::Uuid,
+        base_workload_name: String,
+        branch_environment_id: uuid::Uuid,
+        namespace: String,
+        kind: KubeWorkloadKind,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Result<(), String>;
+}
+
+#[tarpc::service]
+pub trait SidecarProxyManagerRpc {
+    async fn register_sidecar_proxy(workload_id: Uuid) -> Result<(), String>;
+
+    async fn heartbeat() -> Result<(), String>;
+
+    async fn report_routing_metrics(
+        request_count: u64,
+        byte_count: u64,
+        active_connections: u32,
+    ) -> Result<(), String>;
+}
+
+#[tarpc::service]
+pub trait SidecarProxyRpc {
+    async fn heartbeat() -> Result<(), String>;
 }

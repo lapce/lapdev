@@ -3379,6 +3379,20 @@ impl KubeManager {
             "lapdev.base-workload".to_string(),
             base_workload_name.clone(),
         );
+        
+        // Add sidecar proxy routing annotations for automatic discovery
+        branch_labels.insert(
+            "lapdev.io/branch-environment-id".to_string(),
+            branch_environment_id.to_string(),
+        );
+        branch_labels.insert(
+            "lapdev.io/routing-key".to_string(),
+            format!("branch-{}", branch_environment_id),
+        );
+        branch_labels.insert(
+            "lapdev.io/proxy-target-port".to_string(),
+            "8080".to_string(), // Default port, could be made configurable
+        );
 
         tracing::info!(
             "Retrieved and modified workload YAML for branch '{}' based on {}/{}: {} workloads, {} services, {} configmaps, {} secrets",

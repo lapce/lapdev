@@ -5,7 +5,9 @@ use uuid::Uuid;
 pub const KUBE_CLUSTER_TOKEN_HEADER: &str = "X-Cluster-Token";
 pub const KUBE_CLUSTER_TOKEN_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_TOKEN";
 pub const KUBE_CLUSTER_URL_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_URL";
-pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/ws";
+pub const KUBE_CLUSTER_TUNNEL_URL_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_TUNNEL_URL";
+pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/rpc";
+pub const DEFAULT_KUBE_CLUSTER_TUNNEL_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/tunnel";
 
 pub const SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAGER_ADDR";
 pub const SIDECAR_PROXY_MANAGER_PORT_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAGER_PORT";

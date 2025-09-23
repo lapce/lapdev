@@ -5,6 +5,7 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadsWithResources, WorkloadIdentifier,
+    TunnelEstablishmentResponse, TunnelStatus,
 };
 use uuid::Uuid;
 
@@ -343,5 +344,48 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                 Err(format!("Failed to create branch deployment: {}", e))
             }
         }
+    }
+
+    async fn establish_data_plane_tunnel(
+        self,
+        _context: ::tarpc::context::Context,
+        controller_endpoint: String,
+        auth_token: String,
+    ) -> Result<TunnelEstablishmentResponse, String> {
+        tracing::info!("Establishing data plane tunnel to {}", controller_endpoint);
+        
+        match self
+            .manager
+            .establish_tunnel(controller_endpoint, auth_token)
+            .await
+        {
+            Ok(response) => {
+                tracing::info!("Successfully established tunnel: {:?}", response);
+                Ok(response)
+            }
+            Err(e) => {
+                tracing::error!("Failed to establish tunnel: {}", e);
+                Err(format!("Failed to establish tunnel: {}", e))
+            }
+        }
+    }
+
+    async fn get_tunnel_status(
+        self,
+        _context: ::tarpc::context::Context,
+    ) -> Result<TunnelStatus, String> {
+        self.manager.get_tunnel_status().await
+            .map_err(|e| format!("Failed to get tunnel status: {}", e))
+    }
+
+    async fn close_tunnel_connection(
+        self,
+        _context: ::tarpc::context::Context,
+        tunnel_id: String,
+    ) -> Result<(), String> {
+        tracing::info!("Closing tunnel connection: {}", tunnel_id);
+        
+        self.manager.close_tunnel_connection(tunnel_id).await
+            .map_err(|e| format!("Failed to close tunnel connection: {}", e))
     }
 }

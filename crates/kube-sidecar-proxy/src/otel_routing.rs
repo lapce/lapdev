@@ -1,4 +1,3 @@
-use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
 use tracing::{debug, warn};
 
@@ -33,8 +32,8 @@ pub struct RoutingContext {
     pub custom_headers: HashMap<String, String>,
 }
 
-/// Extract OpenTelemetry and routing context from axum HeaderMap
-pub fn extract_routing_context(headers: &HeaderMap) -> RoutingContext {
+/// Extract OpenTelemetry and routing context from parsed headers
+pub fn extract_routing_context(headers: &[(String, String)]) -> RoutingContext {
     let trace_context = extract_trace_context(headers);
     
     RoutingContext {
@@ -47,7 +46,7 @@ pub fn extract_routing_context(headers: &HeaderMap) -> RoutingContext {
 }
 
 /// Extract OpenTelemetry trace context from headers
-fn extract_trace_context(headers: &HeaderMap) -> TraceContext {
+fn extract_trace_context(headers: &[(String, String)]) -> TraceContext {
     let mut trace_context = TraceContext {
         trace_id: None,
         span_id: None,
@@ -78,12 +77,12 @@ fn extract_trace_context(headers: &HeaderMap) -> TraceContext {
     trace_context
 }
 
-/// Get header value as String from HeaderMap
-fn get_header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+/// Get header value as String from parsed headers
+fn get_header_value(headers: &[(String, String)], name: &str) -> Option<String> {
     headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
+        .iter()
+        .find(|(h_name, _)| h_name.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
 }
 
 /// Parse W3C traceparent header
@@ -121,15 +120,12 @@ fn parse_baggage(baggage: &str) -> HashMap<String, String> {
 }
 
 /// Extract custom routing headers (prefixed with x-routing-)
-fn extract_custom_headers(headers: &HeaderMap) -> HashMap<String, String> {
+fn extract_custom_headers(headers: &[(String, String)]) -> HashMap<String, String> {
     let mut custom_headers = HashMap::new();
     
-    for (name, value) in headers.iter() {
-        let name_str = name.as_str();
-        if name_str.starts_with("x-routing-") {
-            if let Ok(value_str) = value.to_str() {
-                custom_headers.insert(name_str.to_string(), value_str.to_string());
-            }
+    for (name, value) in headers {
+        if name.starts_with("x-routing-") {
+            custom_headers.insert(name.clone(), value.clone());
         }
     }
     
@@ -230,19 +226,20 @@ fn is_high_priority_trace(trace_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    fn create_test_headers(headers: &[(&str, &str)]) -> Vec<(String, String)> {
+        headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
 
     #[test]
     fn test_extract_trace_context() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("traceparent"),
-            HeaderValue::from_static("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
-        );
-        headers.insert(
-            HeaderName::from_static("baggage"),
-            HeaderValue::from_static("userId=alice,serverNode=DF28")
-        );
+        let headers = create_test_headers(&[
+            ("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+            ("baggage", "userId=alice,serverNode=DF28"),
+        ]);
         
         let context = extract_routing_context(&headers);
         
@@ -253,15 +250,10 @@ mod tests {
 
     #[test]
     fn test_custom_routing_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("x-routing-key"),
-            HeaderValue::from_static("premium-customer")
-        );
-        headers.insert(
-            HeaderName::from_static("x-canary-deployment"),
-            HeaderValue::from_static("true")
-        );
+        let headers = create_test_headers(&[
+            ("x-routing-key", "premium-customer"),
+            ("x-canary-deployment", "true"),
+        ]);
         
         let context = extract_routing_context(&headers);
         

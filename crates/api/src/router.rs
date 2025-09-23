@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Body,
     debug_handler,
-    extract::{FromRequestParts, Request, State, WebSocketUpgrade},
+    extract::{FromRequestParts, Path, Request, State, WebSocketUpgrade},
+    http::{HeaderMap, Method, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, delete, get, post, put},
@@ -18,7 +20,7 @@ use lapdev_rpc::error::ApiError;
 
 use crate::{
     account, admin,
-    kube::kube_cluster_websocket,
+    kube::{kube_cluster_websocket, kube_data_plane_websocket},
     machine_type, organization, project,
     session::{logout, new_session, session_authorize},
     state::CoreState,
@@ -33,6 +35,7 @@ const PAGE_NOT_AUTHORISED: &[u8] = include_bytes!("../pages/not_authorised.html"
 const PAGE_NOT_RUNNING: &[u8] = include_bytes!("../pages/not_running.html");
 const PAGE_NOT_FORWARDED: &[u8] = include_bytes!("../pages/not_forwarded.html");
 const PAGE_CSS: &[u8] = include_bytes!("../pages/main.css");
+
 
 fn private_routes() -> Router<Arc<CoreState>> {
     Router::new()
@@ -62,7 +65,8 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
             "/join/{invitation_id}",
             put(organization::join_organization),
         )
-        .route("/kube/cluster/ws", any(kube_cluster_websocket))
+        .route("/kube/cluster/rpc", any(kube_cluster_websocket))
+        .route("/kube/cluster/tunnel", any(kube_data_plane_websocket))
         .route("/organizations", post(organization::create_organization))
         .route(
             "/organizations/{org_id}",

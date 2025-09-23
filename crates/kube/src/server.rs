@@ -6,6 +6,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use crate::tunnel::TunnelRegistry;
+
+
 /// KubeClusterServer is the central server where
 /// KubeManager and KubeCli connects to
 #[derive(Clone)]
@@ -14,6 +17,7 @@ pub struct KubeClusterServer {
     pub rpc_client: KubeManagerRpcClient,
     db: DbApi,
     kube_cluster_servers: Arc<RwLock<HashMap<Uuid, Vec<KubeClusterServer>>>>,
+    tunnel_registry: Arc<TunnelRegistry>,
 }
 
 impl KubeClusterServer {
@@ -22,12 +26,14 @@ impl KubeClusterServer {
         client: KubeManagerRpcClient,
         db: DbApi,
         kube_cluster_servers: Arc<RwLock<HashMap<Uuid, Vec<KubeClusterServer>>>>,
+        tunnel_registry: Arc<TunnelRegistry>,
     ) -> Self {
         Self {
             cluster_id,
             rpc_client: client,
             db,
             kube_cluster_servers,
+            tunnel_registry,
         }
     }
 
@@ -77,7 +83,8 @@ impl KubeClusterRpc for KubeClusterServer {
     ) -> Result<(), String> {
         tracing::info!(
             "Received cluster info for cluster {}: {:?}",
-            self.cluster_id, cluster_info
+            self.cluster_id,
+            cluster_info
         );
 
         // Verify cluster exists, error out if not found
@@ -106,5 +113,38 @@ impl KubeClusterRpc for KubeClusterServer {
         );
 
         Ok(())
+    }
+
+    async fn tunnel_heartbeat(self, _context: ::tarpc::context::Context) -> Result<(), String> {
+        tracing::debug!("Received heartbeat from cluster {}", self.cluster_id);
+
+        self.tunnel_registry.update_heartbeat(self.cluster_id).await
+    }
+
+    async fn report_tunnel_metrics(
+        self,
+        _context: ::tarpc::context::Context,
+        active_connections: u32,
+        bytes_transferred: u64,
+        connection_count: u64,
+        connection_errors: u64,
+    ) -> Result<(), String> {
+        tracing::debug!(
+            "Received tunnel metrics from cluster {}: connections={}, bytes={}, errors={}",
+            self.cluster_id,
+            active_connections,
+            bytes_transferred,
+            connection_errors
+        );
+
+        self.tunnel_registry
+            .update_metrics(
+                self.cluster_id,
+                active_connections,
+                bytes_transferred,
+                connection_count,
+                connection_errors,
+            )
+            .await
     }
 }

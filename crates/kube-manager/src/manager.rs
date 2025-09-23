@@ -17,12 +17,13 @@ use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
     KubeContainerInfo, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort, KubeServiceWithYaml,
     KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor,
-    PaginationParams, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
-    KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_URL_ENV_VAR,
+    PaginationParams, DEFAULT_KUBE_CLUSTER_TUNNEL_URL, DEFAULT_KUBE_CLUSTER_URL,
+    KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_TUNNEL_URL_ENV_VAR,
+    KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
-    KubeWorkloadYamlOnly, KubeWorkloadsWithResources,
+    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, TunnelEstablishmentResponse, TunnelStatus,
 };
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;
@@ -32,7 +33,10 @@ use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
 
 use crate::manager_rpc::KubeManagerRpcServer;
-use crate::{sidecar_proxy_manager::SidecarProxyManager, websocket_transport::WebSocketTransport};
+use crate::{
+    sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager,
+    websocket_transport::WebSocketTransport,
+};
 
 const SCOPE: &[&str] = &["https://www.googleapis.com/auth/cloud-platform"];
 
@@ -41,6 +45,7 @@ pub struct KubeManager {
     kube_client: Arc<kube::Client>,
     // rpc_client: KubeClusterRpcClient,
     proxy_manager: Arc<SidecarProxyManager>,
+    tunnel_manager: TunnelManager,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +107,8 @@ impl KubeManager {
             .map_err(|_| anyhow::anyhow!("can't find env var {}", KUBE_CLUSTER_TOKEN_ENV_VAR))?;
         let url = std::env::var(KUBE_CLUSTER_URL_ENV_VAR)
             .unwrap_or_else(|_| DEFAULT_KUBE_CLUSTER_URL.to_string());
+        let tunnel_url = std::env::var(KUBE_CLUSTER_TUNNEL_URL_ENV_VAR)
+            .unwrap_or_else(|_| DEFAULT_KUBE_CLUSTER_TUNNEL_URL.to_string());
 
         tracing::info!("Connecting to Lapdev cluster at: {}", url);
 
@@ -110,21 +117,50 @@ impl KubeManager {
             .headers_mut()
             .insert(KUBE_CLUSTER_TOKEN_HEADER, token.parse()?);
 
+        let mut tunnel_request = tunnel_url.into_client_request()?;
+        tunnel_request
+            .headers_mut()
+            .insert(KUBE_CLUSTER_TOKEN_HEADER, token.parse()?);
+
         let manager = KubeManager {
             kube_client: Arc::new(kube_client),
             proxy_manager,
+            tunnel_manager: TunnelManager::new(tunnel_request),
         };
 
-        loop {
-            match manager.handle_connection_cycle(request.clone()).await {
-                Ok(_) => {
-                    tracing::warn!("Connection cycle completed, will retry in 5 second...");
-                }
-                Err(e) => {
-                    tracing::warn!("Connection cycle failed: {}, retrying in 5 seconds...", e);
-                }
+        // Start the tunnel manager connection cycle in the background
+        let tunnel_manager = manager.tunnel_manager.clone();
+        let tunnel_task = tokio::spawn(async move {
+            if let Err(e) = tunnel_manager.start_tunnel_cycle().await {
+                tracing::error!("Tunnel connection cycle failed: {}", e);
             }
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+
+        // Start the main RPC connection cycle
+        let main_task = tokio::spawn(async move {
+            loop {
+                match manager.handle_connection_cycle(request.clone()).await {
+                    Ok(_) => {
+                        tracing::warn!("Connection cycle completed, will retry in 5 second...");
+                    }
+                    Err(e) => {
+                        tracing::warn!("Connection cycle failed: {}, retrying in 5 seconds...", e);
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+
+        // Wait for either task to complete (they should run forever)
+        tokio::select! {
+            result = tunnel_task => {
+                tracing::error!("Tunnel task completed unexpectedly: {:?}", result);
+                return Err(anyhow!("Tunnel task completed unexpectedly"));
+            }
+            result = main_task => {
+                tracing::error!("Main task completed unexpectedly: {:?}", result);
+                return Err(anyhow!("Main task completed unexpectedly"));
+            }
         }
     }
 
@@ -3379,7 +3415,7 @@ impl KubeManager {
             "lapdev.base-workload".to_string(),
             base_workload_name.clone(),
         );
-        
+
         // Add sidecar proxy routing annotations for automatic discovery
         branch_labels.insert(
             "lapdev.io/branch-environment-id".to_string(),
@@ -3523,6 +3559,26 @@ impl KubeManager {
         serde_yaml::to_string(&replicaset)
             .map_err(|e| anyhow::anyhow!("Failed to serialize replicaset YAML: {}", e))
     }
+
+    // Tunnel management methods (delegated to TunnelManager)
+    pub async fn establish_tunnel(
+        &self,
+        controller_endpoint: String,
+        auth_token: String,
+    ) -> Result<TunnelEstablishmentResponse> {
+        self.tunnel_manager
+            .establish_tunnel(controller_endpoint, auth_token)
+            .await
+    }
+
+    pub async fn get_tunnel_status(&self) -> Result<TunnelStatus> {
+        self.tunnel_manager.get_tunnel_status().await
+    }
+
+    pub async fn close_tunnel_connection(&self, tunnel_id: String) -> Result<()> {
+        self.tunnel_manager.close_tunnel_connection(tunnel_id).await
+    }
+
 }
 
 #[cfg(test)]

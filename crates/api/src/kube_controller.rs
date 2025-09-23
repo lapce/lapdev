@@ -16,6 +16,7 @@ use lapdev_common::{
 };
 use lapdev_db::api::DbApi;
 use lapdev_kube::server::KubeClusterServer;
+use lapdev_kube::tunnel::TunnelRegistry;
 use lapdev_rpc::error::ApiError;
 use sea_orm::TransactionTrait;
 use secrecy::ExposeSecret;
@@ -24,6 +25,8 @@ use secrecy::ExposeSecret;
 pub struct KubeController {
     // KubeManager connections per cluster
     pub kube_cluster_servers: Arc<RwLock<HashMap<Uuid, Vec<KubeClusterServer>>>>,
+    // Tunnel registry for preview URL functionality
+    pub tunnel_registry: Arc<TunnelRegistry>,
     // Database API
     pub db: DbApi,
 }
@@ -32,6 +35,7 @@ impl KubeController {
     pub fn new(db: DbApi) -> Self {
         Self {
             kube_cluster_servers: Arc::new(RwLock::new(HashMap::new())),
+            tunnel_registry: Arc::new(TunnelRegistry::new()),
             db,
         }
     }

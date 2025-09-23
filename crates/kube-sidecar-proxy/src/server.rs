@@ -2,7 +2,6 @@ use crate::{
     config::ProxyConfig,
     discovery::ServiceDiscovery,
     error::{Result, SidecarProxyError},
-    http_buffer_parser::{parse_http_request_from_buffer, ParsedHttpRequest},
     original_dest::get_original_destination,
     otel_routing::{determine_routing_target, extract_routing_context},
     protocol_detector::{detect_protocol, ProtocolType},
@@ -12,7 +11,7 @@ use anyhow::anyhow;
 use futures::StreamExt;
 use kube::Client;
 use lapdev_common::kube::{SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR};
-use lapdev_kube_rpc::{SidecarProxyManagerRpcClient, SidecarProxyRpc};
+use lapdev_kube_rpc::{SidecarProxyManagerRpcClient, SidecarProxyRpc, http_parser};
 use lapdev_rpc::spawn_twoway;
 use std::{io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
@@ -318,63 +317,6 @@ async fn handle_connection(
     }
 }
 
-/// Try to parse a complete HTTP request, reading more data if needed
-async fn try_parse_complete_http_request(
-    stream: &mut TcpStream,
-    buffer: &mut Vec<u8>,
-) -> io::Result<(ParsedHttpRequest, usize)> {
-    const MAX_HEADER_SIZE: usize = 8192; // Maximum size for HTTP headers
-    const READ_CHUNK_SIZE: usize = 1024;
-    
-    // First try to parse with existing data
-    match parse_http_request_from_buffer(buffer) {
-        Ok(result) => return Ok(result),
-        Err(e) => {
-            // Check if it's specifically an incomplete request error
-            if !e.to_string().contains("Incomplete HTTP request") {
-                return Err(e); // Other parsing errors should propagate
-            }
-        }
-    }
-    
-    // Read more data until we have complete headers or reach max size
-    while buffer.len() < MAX_HEADER_SIZE {
-        let mut temp_buffer = vec![0u8; READ_CHUNK_SIZE];
-        let bytes_read = stream.read(&mut temp_buffer).await?;
-        
-        if bytes_read == 0 {
-            // EOF reached, return incomplete request error
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Connection closed before complete HTTP headers received"
-            ));
-        }
-        
-        temp_buffer.truncate(bytes_read);
-        buffer.extend_from_slice(&temp_buffer);
-        
-        // Try parsing again with the additional data
-        match parse_http_request_from_buffer(buffer) {
-            Ok(result) => {
-                debug!("Successfully parsed HTTP request after reading {} total bytes", buffer.len());
-                return Ok(result);
-            }
-            Err(e) => {
-                // If it's not an incomplete request error, propagate it
-                if !e.to_string().contains("Incomplete HTTP request") {
-                    return Err(e);
-                }
-                // Otherwise continue reading more data
-            }
-        }
-    }
-    
-    // Reached max header size without finding complete headers
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("HTTP headers exceed maximum size of {} bytes", MAX_HEADER_SIZE)
-    ))
-}
 
 /// Handle HTTP proxying with OpenTelemetry header parsing and intelligent routing
 async fn handle_http_proxy(
@@ -383,7 +325,7 @@ async fn handle_http_proxy(
     mut initial_data: Vec<u8>,
 ) -> io::Result<()> {
     // Try to parse the HTTP request, reading more data if needed
-    let (http_request, _body_start) = match try_parse_complete_http_request(&mut inbound_stream, &mut initial_data).await {
+    let (http_request, _body_start) = match http_parser::parse_complete_http_request(&mut inbound_stream, &mut initial_data).await {
         Ok(parsed) => parsed,
         Err(e) => {
             warn!(

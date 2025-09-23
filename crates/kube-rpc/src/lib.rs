@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// HTTP parsing utilities
+pub mod http_parser;
+
 // TCP Tunneling Protocol Structures
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

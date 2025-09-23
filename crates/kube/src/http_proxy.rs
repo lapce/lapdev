@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri},
     response::IntoResponse,
 };
-use std::sync::Arc;
+use std::{io, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -17,6 +17,7 @@ use crate::{
     tunnel::{TunnelRegistry, TunnelResponse},
 };
 use lapdev_db::api::DbApi;
+use lapdev_kube_rpc::http_parser;
 
 pub struct PreviewUrlProxy {
     url_resolver: PreviewUrlResolver,
@@ -66,48 +67,18 @@ impl PreviewUrlProxy {
 
     /// Handle a single client TCP connection with direct TCP stream proxying
     async fn handle_client_connection(&self, mut stream: TcpStream) -> Result<(), ProxyError> {
-        // Use a 64KB buffer - should handle virtually all HTTP requests without looping
-        let mut buffer = vec![0u8; 64 * 1024];
-        let bytes_read = stream
-            .read(&mut buffer)
-            .await
-            .map_err(|e| ProxyError::Internal(format!("Failed to read from stream: {e}")))?;
+        // Use the shared HTTP parser that handles incremental reading
+        let mut buffer = Vec::new();
 
-        if bytes_read == 0 {
-            return Err(ProxyError::Internal(
-                "Connection closed unexpectedly".to_string(),
-            ));
-        }
-
-        // Parse HTTP request using httparse
-        let mut headers_buf = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers_buf);
-
-        match req.parse(&buffer[..bytes_read]) {
-            Ok(httparse::Status::Complete(headers_len)) => {
-                let method = req
-                    .method
-                    .ok_or_else(|| ProxyError::Internal("Missing HTTP method".to_string()))?;
-                let method = Method::from_bytes(method.as_bytes())
+        match http_parser::parse_complete_http_request(&mut stream, &mut buffer).await {
+            Ok((parsed_request, headers_len)) => {
+                let method = Method::from_bytes(parsed_request.method.as_bytes())
                     .map_err(|_| ProxyError::Internal("Invalid HTTP method".to_string()))?;
 
-                let path = req
-                    .path
-                    .ok_or_else(|| ProxyError::Internal("Missing request path".to_string()))?;
-                debug!("Parsed request: {} {}", method, path);
+                debug!("Parsed request: {} {}", parsed_request.method, parsed_request.path);
 
-                // Extract Host header
-                let mut host_header = None;
-                for header in req.headers {
-                    if header.name.to_lowercase() == "host" {
-                        if let Ok(host_str) = std::str::from_utf8(header.value) {
-                            host_header = Some(host_str.to_string());
-                            break;
-                        }
-                    }
-                }
-
-                let host = host_header
+                // Extract Host header using the shared utility
+                let host = http_parser::get_host_header(&parsed_request.headers)
                     .ok_or_else(|| ProxyError::InvalidUrl("Missing Host header".to_string()))?;
 
                 let subdomain = host
@@ -128,7 +99,7 @@ impl PreviewUrlProxy {
 
                 // Modify the initial request data to add environment ID to tracestate header
                 let initial_request_data = self.add_environment_id_to_headers(
-                    &buffer[..bytes_read],
+                    &buffer,
                     headers_len,
                     target.environment_id,
                 )?;
@@ -137,8 +108,8 @@ impl PreviewUrlProxy {
                 self.start_tcp_proxy(stream, target, initial_request_data)
                     .await
             }
-            Ok(httparse::Status::Partial) => {
-                // Request is larger than 64KB - reject it
+            Err(e) if e.kind() == io::ErrorKind::InvalidData && e.to_string().contains("exceed maximum size") => {
+                // Request headers are too large - reject it
                 self.send_error_response(&mut stream, 413, "Request Entity Too Large")
                     .await
             }
@@ -1212,30 +1183,26 @@ mod tests {
     }
 
     #[test]
-    fn test_httparse_integration() {
-        // Test httparse parsing directly to ensure it works as expected
+    fn test_shared_http_parser_integration() {
+        // Test shared HTTP parser to ensure it works as expected
         let request_data = b"GET /path HTTP/1.1\r\nHost: webapp-8080-abc123.example.com\r\nContent-Length: 13\r\n\r\nHello, world!";
 
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut req = httparse::Request::new(&mut headers);
+        let (parsed_request, body_start) = http_parser::parse_http_request_from_buffer(request_data).unwrap();
 
-        let result = req.parse(request_data).unwrap();
-        assert!(matches!(result, httparse::Status::Complete(_)));
+        assert_eq!(parsed_request.method, "GET");
+        assert_eq!(parsed_request.path, "/path");
 
-        assert_eq!(req.method, Some("GET"));
-        assert_eq!(req.path, Some("/path"));
-
-        // Find Host header
-        let host_header = req.headers.iter().find(|h| h.name == "Host");
+        // Find Host header using shared utility
+        let host_header = http_parser::get_host_header(&parsed_request.headers);
         assert!(host_header.is_some());
-        assert_eq!(
-            host_header.unwrap().value,
-            b"webapp-8080-abc123.example.com"
-        );
+        assert_eq!(host_header.unwrap(), "webapp-8080-abc123.example.com");
 
-        // Find Content-Length header
-        let content_length_header = req.headers.iter().find(|h| h.name == "Content-Length");
-        assert!(content_length_header.is_some());
-        assert_eq!(content_length_header.unwrap().value, b"13");
+        // Find Content-Length header using shared utility
+        let content_length = http_parser::get_content_length(&parsed_request.headers);
+        assert_eq!(content_length, Some(13));
+
+        // Verify body parsing
+        let body = &request_data[body_start..];
+        assert_eq!(body, b"Hello, world!");
     }
 }

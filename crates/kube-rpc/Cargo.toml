@@ -12,3 +12,6 @@ serde_json.workspace = true
 chrono.workspace = true
 k8s-openapi.workspace = true
 lapdev-common.workspace = true
+tokio.workspace = true
+httparse = "1.8"
+tracing.workspace = true

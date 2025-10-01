@@ -1,11 +1,14 @@
-use crate::{config::{ProxyConfig, RouteConfig, RouteTarget, AccessLevel}, error::{Result, SidecarProxyError}};
-use k8s_openapi::api::core::v1::{Pod, Service, Endpoints, ConfigMap};
+use crate::{
+    config::{AccessLevel, ProxyConfig, RouteConfig, RouteTarget},
+    error::{Result, SidecarProxyError},
+};
+use futures::{StreamExt, TryStreamExt};
+use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Pod, Service};
 use kube::{
     api::{Api, ListParams},
     runtime::{watcher, WatchStreamExt},
     Client, ResourceExt,
 };
-use futures::{StreamExt, TryStreamExt};
 use std::collections::HashMap;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
@@ -31,7 +34,7 @@ impl ServiceDiscovery {
         initial_config: ProxyConfig,
     ) -> Self {
         let (config_tx, _) = broadcast::channel(16);
-        
+
         Self {
             client,
             namespace,
@@ -55,16 +58,16 @@ impl ServiceDiscovery {
     /// Start watching Kubernetes resources for configuration changes
     pub async fn start_watching(&self) -> Result<()> {
         let namespace = self.namespace.as_deref().unwrap_or("default");
-        
+
         // Watch ConfigMaps for proxy configuration
         let configmap_task = self.watch_configmaps(namespace);
-        
+
         // Watch Services for routing targets
         let services_task = self.watch_services(namespace);
-        
+
         // Watch Endpoints for service discovery
         let endpoints_task = self.watch_endpoints(namespace);
-        
+
         // Watch our own pod for annotations
         if let Some(pod_name) = &self.pod_name {
             let pod_task = self.watch_pod(namespace, pod_name);
@@ -72,7 +75,7 @@ impl ServiceDiscovery {
         } else {
             tokio::try_join!(configmap_task, services_task, endpoints_task)?;
         }
-        
+
         Ok(())
     }
 
@@ -81,15 +84,15 @@ impl ServiceDiscovery {
         let config = watcher::Config::default();
 
         let mut stream = watcher(api, config).applied_objects().boxed();
-        
+
         info!("Starting ConfigMap watcher in namespace: {}", namespace);
-        
+
         while let Some(configmap) = stream.try_next().await? {
             if let Err(e) = self.handle_configmap_event(&configmap).await {
                 error!("Error handling ConfigMap event: {}", e);
             }
         }
-        
+
         Ok(())
     }
 
@@ -97,16 +100,28 @@ impl ServiceDiscovery {
         let api: Api<Service> = Api::namespaced(self.client.clone(), namespace);
         let config = watcher::Config::default();
 
-        let mut stream = watcher(api, config).applied_objects().boxed();
-        
+        let mut stream = watcher(api, config).boxed();
+
         info!("Starting Service watcher in namespace: {}", namespace);
-        
-        while let Some(service) = stream.try_next().await? {
-            if let Err(e) = self.handle_service_event(&service).await {
-                error!("Error handling Service event: {}", e);
+
+        while let Some(event) = stream.try_next().await? {
+            match event {
+                watcher::Event::Apply(service) | watcher::Event::InitApply(service) => {
+                    if let Err(e) = self.handle_service_event(&service).await {
+                        error!("Error handling Service event: {}", e);
+                    }
+                }
+                watcher::Event::Delete(service) => {
+                    if let Err(e) = self.handle_service_deletion(&service).await {
+                        error!("Error handling Service deletion: {}", e);
+                    }
+                }
+                watcher::Event::Init | watcher::Event::InitDone => {
+                    info!("Service watcher initialized");
+                }
             }
         }
-        
+
         Ok(())
     }
 
@@ -115,15 +130,15 @@ impl ServiceDiscovery {
         let config = watcher::Config::default();
 
         let mut stream = watcher(api, config).applied_objects().boxed();
-        
+
         info!("Starting Endpoints watcher in namespace: {}", namespace);
-        
+
         while let Some(endpoints) = stream.try_next().await? {
             if let Err(e) = self.handle_endpoints_event(&endpoints).await {
                 error!("Error handling Endpoints event: {}", e);
             }
         }
-        
+
         Ok(())
     }
 
@@ -133,42 +148,51 @@ impl ServiceDiscovery {
         let config = watcher::Config::default();
 
         let mut stream = watcher(api, config).applied_objects().boxed();
-        
-        info!("Starting Pod watcher for pod: {} in namespace: {}", pod_name, namespace);
-        
+
+        info!(
+            "Starting Pod watcher for pod: {} in namespace: {}",
+            pod_name, namespace
+        );
+
         while let Some(pod) = stream.try_next().await? {
             if let Err(e) = self.handle_pod_event(&pod).await {
                 error!("Error handling Pod event: {}", e);
             }
         }
-        
+
         Ok(())
     }
 
     async fn handle_configmap_event(&self, configmap: &ConfigMap) -> Result<()> {
         debug!("Processing ConfigMap: {}", configmap.name_any());
-        
+
         if let Some(data) = &configmap.data {
             if let Some(config_yaml) = data.get("proxy-config.yaml") {
                 match serde_yaml::from_str::<ProxyConfig>(config_yaml) {
                     Ok(new_config) => {
-                        info!("Updating proxy configuration from ConfigMap: {}", configmap.name_any());
+                        info!(
+                            "Updating proxy configuration from ConfigMap: {}",
+                            configmap.name_any()
+                        );
                         self.update_config(new_config).await?;
-                    },
+                    }
                     Err(e) => {
-                        error!("Failed to parse proxy configuration from ConfigMap {}: {}", 
-                              configmap.name_any(), e);
+                        error!(
+                            "Failed to parse proxy configuration from ConfigMap {}: {}",
+                            configmap.name_any(),
+                            e
+                        );
                     }
                 }
             }
         }
-        
+
         Ok(())
     }
 
     async fn handle_service_event(&self, service: &Service) -> Result<()> {
         debug!("Processing Service: {}", service.name_any());
-        
+
         // Check if this service has proxy annotations
         if let Some(annotations) = &service.metadata.annotations {
             if self.has_proxy_annotations(annotations) {
@@ -176,55 +200,100 @@ impl ServiceDiscovery {
                 self.update_service_routes(service, annotations).await?;
             }
         }
-        
+
+        Ok(())
+    }
+
+    async fn handle_service_deletion(&self, service: &Service) -> Result<()> {
+        let service_name = service.name_any();
+        info!("Removing routes for deleted Service: {}", service_name);
+
+        let mut config = self.config.write().await;
+
+        // Remove all routes for this service
+        let before = config.routes.len();
+        config.routes.retain(|r| {
+            if let RouteTarget::Service { name, .. } = &r.target {
+                name != &service_name
+            } else {
+                true
+            }
+        });
+        let after = config.routes.len();
+
+        if before != after {
+            // Notify subscribers
+            let _ = self.config_tx.send(config.clone());
+            info!(
+                "Removed {} route(s) for deleted service: {}",
+                before - after,
+                service_name
+            );
+        }
+
         Ok(())
     }
 
     async fn handle_endpoints_event(&self, endpoints: &Endpoints) -> Result<()> {
         debug!("Processing Endpoints: {}", endpoints.name_any());
-        
+
         // Update routing targets based on endpoint changes
         // This ensures the proxy routes to healthy backends only
         if let Some(subsets) = &endpoints.subsets {
             for subset in subsets {
                 if let Some(addresses) = &subset.addresses {
-                    debug!("Service {} has {} healthy endpoints", 
-                          endpoints.name_any(), addresses.len());
+                    debug!(
+                        "Service {} has {} healthy endpoints",
+                        endpoints.name_any(),
+                        addresses.len()
+                    );
                 }
             }
         }
-        
+
         Ok(())
     }
 
     async fn handle_pod_event(&self, pod: &Pod) -> Result<()> {
         debug!("Processing Pod: {}", pod.name_any());
-        
+
         // Update configuration based on pod annotations
         if let Some(annotations) = &pod.metadata.annotations {
             if self.has_proxy_annotations(annotations) {
-                info!("Updating configuration from Pod annotations: {}", pod.name_any());
+                info!(
+                    "Updating configuration from Pod annotations: {}",
+                    pod.name_any()
+                );
                 self.update_pod_config(annotations).await?;
             }
         }
-        
+
         Ok(())
     }
 
-    fn has_proxy_annotations(&self, annotations: &std::collections::BTreeMap<String, String>) -> bool {
-        annotations.keys().any(|key| key.starts_with("lapdev.io/proxy-"))
+    fn has_proxy_annotations(
+        &self,
+        annotations: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        annotations
+            .keys()
+            .any(|key| key.starts_with("lapdev.io/proxy-"))
     }
 
-    async fn update_service_routes(&self, service: &Service, annotations: &std::collections::BTreeMap<String, String>) -> Result<()> {
+    async fn update_service_routes(
+        &self,
+        service: &Service,
+        annotations: &std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
         let service_name = service.name_any();
         let namespace = service.namespace().unwrap_or_else(|| "default".to_string());
-        
+
         // Extract configuration from annotations
         let target_port = annotations
             .get("lapdev.io/proxy-target-port")
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(80);
-            
+
         let access_level = annotations
             .get("lapdev.io/proxy-access-level")
             .and_then(|level| match level.as_str() {
@@ -234,7 +303,7 @@ impl ServiceDiscovery {
                 _ => None,
             })
             .unwrap_or(AccessLevel::Personal);
-            
+
         let requires_auth = annotations
             .get("lapdev.io/proxy-require-auth")
             .map(|auth| auth == "true")
@@ -258,7 +327,7 @@ impl ServiceDiscovery {
 
         // Update configuration
         let mut config = self.config.write().await;
-        
+
         // Remove existing routes for this service and add the new one
         config.routes.retain(|r| {
             if let RouteTarget::Service { name, .. } = &r.target {
@@ -267,17 +336,20 @@ impl ServiceDiscovery {
                 true
             }
         });
-        
+
         config.routes.push(route);
-        
+
         // Notify subscribers
         let _ = self.config_tx.send(config.clone());
-        
+
         info!("Updated routes for service: {}", service_name);
         Ok(())
     }
 
-    async fn update_pod_config(&self, annotations: &std::collections::BTreeMap<String, String>) -> Result<()> {
+    async fn update_pod_config(
+        &self,
+        annotations: &std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
         let mut config = self.config.write().await;
         let mut updated = false;
 
@@ -325,12 +397,12 @@ impl ServiceDiscovery {
             let mut config = self.config.write().await;
             *config = new_config.clone();
         }
-        
+
         // Notify all subscribers of the configuration change
         if let Err(e) = self.config_tx.send(new_config) {
             warn!("Failed to notify configuration subscribers: {}", e);
         }
-        
+
         Ok(())
     }
 
@@ -343,16 +415,16 @@ impl ServiceDiscovery {
     ) -> Result<Vec<std::net::SocketAddr>> {
         let ns = namespace.unwrap_or("default");
         let endpoints_api: Api<Endpoints> = Api::namespaced(self.client.clone(), ns);
-        
-        let endpoints = endpoints_api
-            .get(name)
-            .await
-            .map_err(|e| SidecarProxyError::ServiceDiscovery(format!(
-                "Failed to get endpoints for service {}: {}", name, e
-            )))?;
-            
+
+        let endpoints = endpoints_api.get(name).await.map_err(|e| {
+            SidecarProxyError::ServiceDiscovery(format!(
+                "Failed to get endpoints for service {}: {}",
+                name, e
+            ))
+        })?;
+
         let mut addresses = Vec::new();
-        
+
         if let Some(subsets) = endpoints.subsets {
             for subset in subsets {
                 if let Some(ready_addresses) = subset.addresses {
@@ -366,13 +438,13 @@ impl ServiceDiscovery {
                 }
             }
         }
-        
+
         if addresses.is_empty() {
-            return Err(SidecarProxyError::TargetNotFound { 
-                service_name: name.to_string() 
+            return Err(SidecarProxyError::TargetNotFound {
+                service_name: name.to_string(),
             });
         }
-        
+
         Ok(addresses)
     }
 }

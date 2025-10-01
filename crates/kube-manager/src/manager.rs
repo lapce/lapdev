@@ -3377,8 +3377,7 @@ impl KubeManager {
             })?;
 
         // Step 3: Modify the workload names to create branch-specific deployments
-        let branch_deployment_name =
-            format!("{}-{}", base_workload_name, branch_environment_id.simple());
+        let branch_deployment_name = format!("{base_workload_name}-{branch_environment_id}",);
 
         // Update the workload YAML to use the branch deployment name
         for workload_yaml in &mut workloads_with_resources.workloads {
@@ -3405,7 +3404,32 @@ impl KubeManager {
             }
         }
 
-        // Step 4: Add branch-specific labels to distinguish from base environment
+        // Step 4: Update service names to match the branch deployment
+        let mut updated_services = HashMap::new();
+        for (service_name, service_with_yaml) in workloads_with_resources.services {
+            let branch_service_name = format!("{service_name}-{branch_environment_id}");
+            let updated_yaml = self.update_service_name_in_yaml(
+                &service_with_yaml.yaml,
+                &branch_service_name,
+                &branch_deployment_name,
+            )?;
+
+            updated_services.insert(
+                branch_service_name,
+                KubeServiceWithYaml {
+                    yaml: updated_yaml,
+                    details: service_with_yaml.details,
+                },
+            );
+        }
+        workloads_with_resources.services = updated_services;
+
+        // Step 5: Clear ConfigMaps and Secrets - branch workloads share these with base
+        // Only workloads and services need to be created for branches
+        workloads_with_resources.configmaps.clear();
+        workloads_with_resources.secrets.clear();
+
+        // Step 6: Add branch-specific labels to distinguish from base environment
         let mut branch_labels = labels.clone();
         branch_labels.insert(
             "lapdev.branch-environment".to_string(),
@@ -3431,16 +3455,14 @@ impl KubeManager {
         );
 
         tracing::info!(
-            "Retrieved and modified workload YAML for branch '{}' based on {}/{}: {} workloads, {} services, {} configmaps, {} secrets",
+            "Retrieved and modified workload YAML for branch '{}' based on {}/{}: {} workloads, {} services (configmaps and secrets shared with base)",
             branch_environment_id, namespace, base_workload_name,
             workloads_with_resources.workloads.len(),
-            workloads_with_resources.services.len(),
-            workloads_with_resources.configmaps.len(),
-            workloads_with_resources.secrets.len()
+            workloads_with_resources.services.len()
         );
 
-        // Step 5: Apply the branch workload with resources atomically
-        // Use a zero UUID for branch workloads since they don't get sidecar injection
+        // Step 7: Apply the branch workload with resources atomically
+        // Use None for branch workloads since they don't get sidecar injection
         self.apply_workloads_with_resources(
             None,
             namespace.clone(),
@@ -3560,6 +3582,28 @@ impl KubeManager {
             .map_err(|e| anyhow::anyhow!("Failed to serialize replicaset YAML: {}", e))
     }
 
+    // Helper method to update service name in YAML and update selector to match new workload name
+    fn update_service_name_in_yaml(
+        &self,
+        yaml: &str,
+        new_service_name: &str,
+        new_workload_name: &str,
+    ) -> Result<String> {
+        let mut service: Service = serde_yaml::from_str(yaml)?;
+        service.metadata.name = Some(new_service_name.to_string());
+
+        // Update the selector to match the new workload name
+        if let Some(ref mut spec) = service.spec {
+            if let Some(ref mut selector) = spec.selector {
+                // Update the app label in the selector to match the new workload name
+                selector.insert("app".to_string(), new_workload_name.to_string());
+            }
+        }
+
+        serde_yaml::to_string(&service)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize service YAML: {}", e))
+    }
+
     // Tunnel management methods (delegated to TunnelManager)
     pub async fn establish_tunnel(
         &self,
@@ -3578,7 +3622,6 @@ impl KubeManager {
     pub async fn close_tunnel_connection(&self, tunnel_id: String) -> Result<()> {
         self.tunnel_manager.close_tunnel_connection(tunnel_id).await
     }
-
 }
 
 #[cfg(test)]

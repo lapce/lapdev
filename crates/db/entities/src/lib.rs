@@ -8,6 +8,8 @@ pub mod kube_app_catalog;
 pub mod kube_app_catalog_workload;
 pub mod kube_cluster;
 pub mod kube_cluster_token;
+pub mod kube_devbox_session;
+pub mod kube_devbox_workload_intercept;
 pub mod kube_environment;
 pub mod kube_environment_preview_url;
 pub mod kube_environment_service;

@@ -6,6 +6,8 @@ pub use super::kube_app_catalog::Entity as KubeAppCatalog;
 pub use super::kube_app_catalog_workload::Entity as KubeAppCatalogWorkload;
 pub use super::kube_cluster::Entity as KubeCluster;
 pub use super::kube_cluster_token::Entity as KubeClusterToken;
+pub use super::kube_devbox_session::Entity as KubeDevboxSession;
+pub use super::kube_devbox_workload_intercept::Entity as KubeDevboxWorkloadIntercept;
 pub use super::kube_environment::Entity as KubeEnvironment;
 pub use super::kube_environment_preview_url::Entity as KubeEnvironmentPreviewUrl;
 pub use super::kube_environment_service::Entity as KubeEnvironmentService;

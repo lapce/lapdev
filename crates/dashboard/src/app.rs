@@ -13,6 +13,8 @@ use leptos_router::{
 use crate::{
     account::{get_login, AccountSettings, JoinView, Login},
     audit_log::AuditLogView,
+    cli_auth::CliAuth,
+    cli_success::CliSuccess,
     cluster::{ClusterSettings, ClusterUsersView, MachineTypeView, WorkspaceHostView},
     component::sidebar::SidebarData,
     git_provider::GitProviderView,
@@ -136,6 +138,8 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/admin/settings") view=move || view! { <AdminWrappedView element=ClusterSettings /> } />
                 <Route path=path!("/admin/license") view=move || view! { <AdminWrappedView element=LicenseView /> } />
                 <Route path=path!("/admin/sign_license") view=move || view! { <AdminWrappedView element=SignLicenseView /> } />
+                <Route path=path!("/auth/cli") view=move || view! { <WrappedView element=CliAuth /> } />
+                <Route path=path!("/cli/success") view=CliSuccess />
             </Routes>
         </Router>
     }

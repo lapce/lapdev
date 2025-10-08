@@ -85,7 +85,7 @@ impl MigrationTrait for Migration {
 }
 
 #[derive(DeriveIden)]
-enum OauthConnection {
+pub enum OauthConnection {
     Table,
     Id,
     UserId,

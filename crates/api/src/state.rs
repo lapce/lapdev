@@ -7,6 +7,7 @@ use axum_extra::{
     headers::{self, Cookie, HeaderMapExt, UserAgent},
     TypedHeader,
 };
+use chrono::{DateTime, Utc};
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
 use lapdev_common::{UserRole, LAPDEV_BASE_HOSTNAME};
 use lapdev_conductor::{scheduler::LAPDEV_CPU_OVERCOMMIT, Conductor};
@@ -22,6 +23,7 @@ use pasetors::{
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Deserialize;
 use sqlx::postgres::PgNotification;
+use tokio::sync::RwLock;
 use tokio_rustls::rustls::sign::CertifiedKey;
 use uuid::Uuid;
 
@@ -64,6 +66,12 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestInfo {
     }
 }
 
+/// Temporary storage for CLI authentication tokens during browser login flow
+pub struct PendingCliAuth {
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Clone)]
 pub struct CoreState {
     pub conductor: Conductor,
@@ -80,6 +88,24 @@ pub struct CoreState {
     pub static_dir: Arc<Option<include_dir::Dir<'static>>>,
     // Kubernetes controller
     pub kube_controller: KubeController,
+    // Pending CLI authentication tokens (session_id -> token)
+    pub pending_cli_auth: Arc<RwLock<HashMap<Uuid, PendingCliAuth>>>,
+    // Active devbox sessions (user_id -> DevboxSessionHandle)
+    pub active_devbox_sessions: Arc<RwLock<HashMap<Uuid, DevboxSessionHandle>>>,
+}
+
+/// Handle for an active devbox session
+pub struct DevboxSessionHandle {
+    pub session_id: Uuid,
+    pub device_name: String,
+    pub notify_tx: tokio::sync::mpsc::UnboundedSender<DevboxSessionNotification>,
+    pub rpc_client: lapdev_devbox_rpc::DevboxClientRpcClient,
+}
+
+/// Notifications that can be sent to active devbox sessions
+#[derive(Debug, Clone)]
+pub enum DevboxSessionNotification {
+    Displaced { new_device_name: String },
 }
 
 impl CoreState {
@@ -111,6 +137,8 @@ impl CoreState {
             hyper_client: Arc::new(hyper_client),
             static_dir: Arc::new(static_dir),
             kube_controller: KubeController::new(db),
+            pending_cli_auth: Arc::new(RwLock::new(HashMap::new())),
+            active_devbox_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         {
@@ -119,6 +147,13 @@ impl CoreState {
                 if let Err(e) = state.monitor_config_updates().await {
                     tracing::error!("api monitor config updates error: {e}");
                 }
+            });
+        }
+
+        {
+            let state = state.clone();
+            tokio::spawn(async move {
+                state.cleanup_pending_cli_auth_loop().await;
             });
         }
 
@@ -171,6 +206,19 @@ impl CoreState {
             }
         }
         Ok(())
+    }
+
+    async fn cleanup_pending_cli_auth_loop(&self) {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            let now = Utc::now();
+            let mut pending = self.pending_cli_auth.write().await;
+            pending.retain(|_, auth| auth.expires_at > now);
+            let removed = pending.len();
+            if removed > 0 {
+                tracing::debug!("Cleaned up {} expired CLI auth tokens", removed);
+            }
+        }
     }
 
     fn cookie_token(&self, cookie: &headers::Cookie, name: &str) -> Result<TrustedToken, ApiError> {

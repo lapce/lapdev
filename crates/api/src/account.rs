@@ -295,7 +295,8 @@ pub async fn connect_git_provider(
     }
 
     let (headers, url) =
-        create_oauth_connection(&state, Some(user.id), false, &hostname, &query).await?;
+        create_oauth_connection(&state, Some(user.id), false, &hostname, &query)
+            .await?;
 
     Ok((headers, Json(NewSessionResponse { url })).into_response())
 }
@@ -331,8 +332,14 @@ pub async fn update_scope(
         }
     };
 
-    let (headers, url) =
-        create_oauth_connection(&state, Some(user.id), read_repo, &hostname, &query).await?;
+    let (headers, url) = create_oauth_connection(
+        &state,
+        Some(user.id),
+        read_repo,
+        &hostname,
+        &query,
+    )
+    .await?;
 
     Ok((headers, Json(NewSessionResponse { url })).into_response())
 }

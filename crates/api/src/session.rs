@@ -99,7 +99,8 @@ pub(crate) async fn new_session(
     Query(query): Query<HashMap<String, String>>,
     State(state): State<Arc<CoreState>>,
 ) -> Result<Response, ApiError> {
-    let (headers, url) = create_oauth_connection(&state, None, false, &hostname, &query).await?;
+    let (headers, url) =
+        create_oauth_connection(&state, None, false, &hostname, &query).await?;
     Ok((headers, Json(NewSessionResponse { url })).into_response())
 }
 

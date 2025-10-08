@@ -19,7 +19,8 @@ use lapdev_proxy_http::{forward::ProxyForward, proxy::WorkspaceForwardError};
 use lapdev_rpc::error::ApiError;
 
 use crate::{
-    account, admin,
+    account, admin, cli_auth,
+    devbox::{devbox_rpc_websocket, devbox_whoami},
     kube::{kube_cluster_websocket, kube_data_plane_websocket},
     machine_type, organization, project,
     session::{logout, new_session, session_authorize},
@@ -35,7 +36,6 @@ const PAGE_NOT_AUTHORISED: &[u8] = include_bytes!("../pages/not_authorised.html"
 const PAGE_NOT_RUNNING: &[u8] = include_bytes!("../pages/not_running.html");
 const PAGE_NOT_FORWARDED: &[u8] = include_bytes!("../pages/not_forwarded.html");
 const PAGE_CSS: &[u8] = include_bytes!("../pages/main.css");
-
 
 fn private_routes() -> Router<Arc<CoreState>> {
     Router::new()
@@ -61,12 +61,20 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
         .route("/auth_providers", get(admin::get_auth_providers))
         .route("/hostnames", get(admin::get_hostnames))
         .route("/machine_types", get(machine_type::all_machine_types))
+        // CLI authentication endpoints
+        .route(
+            "/auth/cli/generate-token",
+            post(cli_auth::generate_cli_token),
+        )
+        .route("/auth/cli/token", get(cli_auth::cli_token_poll))
+        .route("/devbox/whoami", get(devbox_whoami))
         .route(
             "/join/{invitation_id}",
             put(organization::join_organization),
         )
         .route("/kube/cluster/rpc", any(kube_cluster_websocket))
         .route("/kube/cluster/tunnel", any(kube_data_plane_websocket))
+        .route("/kube/devbox/rpc", any(devbox_rpc_websocket))
         .route("/organizations", post(organization::create_organization))
         .route(
             "/organizations/{org_id}",

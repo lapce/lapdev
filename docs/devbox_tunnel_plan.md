@@ -75,7 +75,7 @@ This approach provides clean semantics without requiring a service mesh:
    - Devbox CLI authenticates via Lapdev session token (`Authorization: Bearer <session_token>`) on dedicated `/kube/devbox/tunnel` endpoint.
    - Separate WebSocket endpoints (`/kube/cluster/tunnel`, `/kube/devbox/tunnel`) identify the caller role; no `endpoint_role` payload field needed.
    - With dedicated endpoints the tunnel protocol can remain unchanged; no capability flags are required beyond the existing message types.
-   - Token validation on devbox endpoint: extract bearer token, look up hash in `devbox_session`, verify not expired/revoked, load scope metadata and associated `oauth_connection`.
+   - Token validation on devbox endpoint: extract bearer token, look up hash in `kube_devbox_session`, verify not expired/revoked, load session and associated `oauth_connection`.
 2. **Tunnel Routing**
    - Augment `TunnelRegistry` to maintain separate sender maps for clusters and devboxes: `cluster_senders`, `devbox_senders` keyed by `(cluster_id, session_id)`.
    - Track active devbox sessions with metadata (session id, user id, organization id, environment/namespace, device name) pulled from authentication payload.
@@ -93,7 +93,7 @@ This approach provides clean semantics without requiring a service mesh:
 1. **Authentication Commands**
    - `lapdev devbox login [--device-name "My MacBook"]` — initiates OAuth device flow, opens browser for SSO authentication (user selects GitHub/GitLab in browser), stores tokens in keychain.
    - `lapdev devbox logout` — revokes current session and removes tokens from keychain.
-   - `lapdev devbox whoami` — displays current session info (user, org, provider, scopes, device name, expiry).
+   - `lapdev devbox whoami` — displays current session info (user, org, provider, device name, expiry).
    - `lapdev devbox sessions list` — displays all active devbox sessions for current user (session ID, device name, environment, created/last used/expires at).
    - `lapdev devbox sessions revoke <session-id>` — revokes a specific session.
 2. **Environment Connection Commands** (Primary Workflow)
@@ -132,7 +132,7 @@ This approach provides clean semantics without requiring a service mesh:
      - CLI reserves the requested local port, acknowledges readiness, and calls `register_service_intercept` RPC to kube-manager with current environment context.
     - CLI immediately establishes the WebSocket tunnel and starts the local TCP listener after sending the RPC; kube-manager subsequently patches the workload's sidecar configuration (ConfigMap + annotations) to add a `DevboxTunnel` route and handles retries as needed.
      - On UI stop, Ctrl+C, or `disconnect`, CLI calls `unregister_service_intercept` to restore all services.
-     - Automatic cleanup on WebSocket disconnect via `TunnelRegistry::cleanup_devbox_session`.
+     - Automatic cleanup on WebSocket disconnect via `TunnelRegistry::cleanup_kube_devbox_session`.
 6. **UX**
    - Structured logging with `tracing`; progress output for users (connected, bytes transferred, session info).
    - Device flow displays user code prominently with clear instructions: "Visit https://lapdev.example.com/device and enter code: ABCD-EFGH"
@@ -157,9 +157,9 @@ This approach provides clean semantics without requiring a service mesh:
 1. **Authentication & Session Tracking**
    - Implement OAuth 2.0 device flow endpoints in `crates/api/src/device.rs` (`device_code`, `device_token`, `device_approve`).
    - Add device authorization web page (`/device`) integrated with existing SSO; reuse `Auth` module and `oauth_connection` flow.
-   - Validate Lapdev session tokens in dedicated devbox WebSocket handler (`crates/api/src/devbox.rs::devbox_tunnel_websocket`) by looking up token hash in `devbox_session` table.
-   - **`devbox_session` table**: Stores long-lived login sessions (30 days) created during OAuth device flow. Includes `active_environment_id` field (nullable) reflecting the user's latest selection in the web UI. One session can connect to multiple environments over time.
-   - **Active Environment Selection**: Maintained via web UI updates to `devbox_session.active_environment_id`. `lapdev devbox connect` can proceed even when this field is `NULL`; intercept operations that require an environment will return a clear error if none is selected.
+   - Validate Lapdev session tokens in dedicated devbox WebSocket handler (`crates/api/src/devbox.rs::devbox_tunnel_websocket`) by looking up token hash in `kube_devbox_session` table.
+   - **`kube_devbox_session` table**: Stores long-lived login sessions (30 days) created during OAuth device flow. Includes `active_environment_id` field (nullable) reflecting the user's latest selection in the web UI. One session can connect to multiple environments over time.
+   - **Active Environment Selection**: Maintained via web UI updates to `kube_devbox_session.active_environment_id`. `lapdev devbox connect` can proceed even when this field is `NULL`; intercept operations that require an environment will return a clear error if none is selected.
    - **`DevboxRegistry` (in-memory)**: Tracks active devbox sessions. Stores (session id, user id, optional environment id, oauth_connection_id, device name, WebSocket sender, connected_at timestamp). Only one active session per user is allowed.
    - **Displacement Semantics**: Last-session-wins is enforced at connect time:
      1. CLI connects; API looks up any existing connection for the same user in `DevboxRegistry`.
@@ -167,7 +167,7 @@ This approach provides clean semantics without requiring a service mesh:
      3. API triggers cleanup of intercepts owned by the displaced session.
      4. New connection is registered in `DevboxRegistry` as the active session for that user.
    - Extend `CoreState` to hold both `TunnelRegistry` and `DevboxRegistry` (or merge into enhanced `TunnelRegistry`).
-   - Mint short-lived `devbox_intercept_token` values whenever an intercept is registered; tokens are scoped to `(intercept_id, devbox_session_id)` and used by both CLI (for tunnel auth) and sidecar containers (via env var) when opening data-plane connections.
+   - Mint short-lived `devbox_intercept_token` values whenever an intercept is registered; tokens are scoped to `(intercept_id, kube_devbox_session_id)` and used by both CLI (for tunnel auth) and sidecar containers (via env var) when opening data-plane connections.
 2. **Routing Logic**
    - Update data-plane handler to distinguish messages originating from clusters vs devboxes; forward `ClientTunnelMessage` to the opposite party based on `tunnel_id` metadata.
    - Permit `ServerTunnelMessage::OpenConnection` requests from devboxes targeting clusters and vice versa.
@@ -190,14 +190,14 @@ This approach provides clean semantics without requiring a service mesh:
    - **Note**: Displacement logic lives in API server `DevboxRegistry`; kube-manager only owns proxy configuration lifecycle per intercept.
    - **State Tracking**:
      - Maintain `active_intercepts` map: `Uuid → InterceptState` containing service name, namespace, original proxy config snapshot, ConfigMap name, routing key, devbox session id, hashed sidecar auth token, and the currently assigned tunnel id.
-     - Persist intercept metadata in `devbox_service_intercept` so kube-manager can recover state after restarts and reapply proxy configuration (including regenerating tokens when required).
+     - Persist intercept metadata in `kube_devbox_service_intercept` so kube-manager can recover state after restarts and reapply proxy configuration (including regenerating tokens when required).
    - **Cleanup Logic**:
     - On devbox WebSocket disconnect, API calls `unregister_service_intercept`; kube-manager restores the prior proxy configuration, removes the `DevboxTunnel` route, and deletes intercept state.
     - Background job checks for stale `DevboxTunnel` routes / ConfigMaps without active intercept rows and cleans them up.
      - Heartbeat mechanism leverages `SidecarProxyManager` RPC (`heartbeat`, `report_routing_metrics`) to detect stuck sidecars (>90s) and trigger restoration.
 2. **Sidecar Proxy Configuration (Reuse)**
    - Reuse existing injected `lapdev/kube-sidecar-proxy` containers; no additional pods are created.
-   - Extend sidecar configuration semantics to include a `DevboxTunnel` route entry carrying `intercept_id`, `devbox_session_id`, `target_port`, and a short-lived devbox auth token.
+   - Extend sidecar configuration semantics to include a `DevboxTunnel` route entry carrying `intercept_id`, `kube_devbox_session_id`, `target_port`, and a short-lived devbox auth token.
    - Ensure the sidecar continues to mount/consume `/etc/lapdev/proxy/proxy-config.yaml` (or equivalent) and reacts to updates via the current discovery/watch pipeline.
    - Maintain access to `SidecarProxyManager` via the existing ClusterIP service (`LAPDEV_SIDECAR_PROXY_MANAGER_ADDR`).
 3. **Sidecar Proxy RPC / Tunnel Plumbing**
@@ -207,7 +207,7 @@ This approach provides clean semantics without requiring a service mesh:
    - Track active sidecar → devbox streams so forced cleanup (displacement, CLI disconnect, pod restart) can close outstanding tunnels.
 4. **RPC Methods**
    - Implement new `KubeClusterRpc` methods:
-     - `register_service_intercept(devbox_session_id, request)` — creates intercept, returns intercept_id and tunnel_id.
+     - `register_service_intercept(kube_devbox_session_id, request)` — creates intercept, returns intercept_id and tunnel_id.
     - `unregister_service_intercept(intercept_id)` — reverts proxy configuration and clears intercept state.
      - `list_interceptable_services(namespace)` — returns services with port info and intercept status.
    - Add authentication checks: verify devbox session has RBAC permission for target namespace.
@@ -260,7 +260,7 @@ This approach provides clean semantics without requiring a service mesh:
    - Displays: "✓ Service auth-service restored"
 
 4. **Failure Handling**:
-   - **Devbox WebSocket Disconnect**: API detects disconnect, calls `cleanup_devbox_session`, which triggers `unregister_service_intercept` for all active intercepts in that environment.
+   - **Devbox WebSocket Disconnect**: API detects disconnect, calls `cleanup_kube_devbox_session`, which triggers `unregister_service_intercept` for all active intercepts in that environment.
    - **Sidecar Stuck**: Background job monitors `SidecarProxyManager` heartbeats; missing heartbeats trigger config rollback and error surfacing to the CLI/UI.
    - **Environment Already Connected**: If user connects to same environment from different device, automatic displacement occurs (last session wins).
   - **Prerequisites Not Met**: If user tries to intercept without an active CLI connection or without selecting an environment in the web UI, return clear errors instructing them to connect and/or choose an environment before retrying.
@@ -305,12 +305,12 @@ This approach provides clean semantics without requiring a service mesh:
 ### Data Model
 - **Reuse existing `oauth_connection` table**: stores GitHub/GitLab OAuth tokens (no changes needed).
 - **Create `device_authorization` table**: `id` (UUID PK), `device_code` (hashed, unique), `user_code` (unique), `expires_at`, `interval`, `authorized_user_id`, `authorized_oauth_connection_id`, `authorized_at`, `created_at`.
-- **Create `devbox_session` table (Login Sessions)**: Stores long-lived login sessions created via OAuth device flow. One session can connect to multiple environments over time. Fields: `id` (UUID PK), `user_id`, `organization_id`, `oauth_connection_id` (FK to oauth_connection), `session_token_hash` (unique), `token_prefix`, `device_name`, `scopes` (text[]), `active_environment_id` (UUID nullable, FK to environments/clusters), `created_at`, `expires_at`, `last_used_at`, `revoked_at`, `metadata` (JSONB for cluster/namespace constraints).
+- **Create `kube_devbox_session` table (Login Sessions)**: Stores long-lived login sessions created via OAuth device flow. One session can connect to multiple environments over time. Fields: `id` (UUID PK), `user_id`, `oauth_connection_id` (FK to oauth_connection), `session_token_hash` (unique), `token_prefix`, `device_name`, `active_environment_id` (UUID nullable, FK to environments/clusters), `created_at`, `expires_at`, `last_used_at`, `revoked_at`.
 - **Active Environment Selection**: `active_environment_id` field stores the user's currently selected environment. Set via web UI API endpoint (`PUT /v1/devbox/active-environment`) and consumed by intercept-related APIs; `lapdev devbox connect` does not depend on it, but intercept requests will fail if the field is `NULL`.
-- **Create `devbox_service_intercept` table**: `id` (UUID PK), `session_id` (FK to devbox_session), `user_id` (FK to users), `cluster_id` (FK to kube_cluster), `namespace`, `service_name`, `target_port`, `local_port`, `intercept_mode` (default 'full'), `config_map_name`, `routing_key`, `sidecar_auth_token_hash`, `tunnel_id`, `original_proxy_config` (TEXT), `created_at`, `restored_at` (nullable).
+- **Create `kube_devbox_service_intercept` table**: `id` (UUID PK), `session_id` (FK to kube_devbox_session), `user_id` (FK to users), `cluster_id` (FK to kube_cluster), `namespace`, `service_name`, `target_port`, `local_port`, `intercept_mode` (default 'full'), `config_map_name`, `routing_key`, `sidecar_auth_token_hash`, `tunnel_id`, `original_proxy_config` (TEXT), `created_at`, `restored_at` (nullable).
 - **Environment Connections (In-Memory Only)**: Tracked in `DevboxRegistry` struct in API server memory. Not persisted to database. Each entry represents the single active devbox session for a user (including metadata such as latest environment selection, device name, and WebSocket sender). Connecting from a new device replaces the previous entry.
 - Session tokens are Lapdev-issued opaque tokens (hashed with Argon2id); include `token_prefix` field (e.g., `ldvbx_abcd`) for support.
-- Indexes for `devbox_session`:
+- Indexes for `kube_devbox_session`:
   - `(user_id, revoked_at)` for user session queries
   - `(oauth_connection_id, revoked_at)` for OAuth revocation cascade
   - `(last_used_at)` for cleanup job
@@ -318,7 +318,7 @@ This approach provides clean semantics without requiring a service mesh:
 - Indexes for `device_authorization`:
   - `(device_code)` unique on device_authorization
   - `(user_code)` unique on device_authorization for approval lookup
-- Indexes for `devbox_service_intercept`:
+- Indexes for `kube_devbox_service_intercept`:
   - `(session_id)` for session queries
   - `(cluster_id)` for cluster queries
   - `(restored_at)` partial index for active intercepts
@@ -327,16 +327,15 @@ This approach provides clean semantics without requiring a service mesh:
   - `(sidecar_auth_token_hash)` unique for constant-time token lookup during tunnel handshakes
   - Note: Displacement happens at environment (cluster_id) level, not per-service. When a user connects to an environment from a new device, all intercepts in that environment are cleaned up via session_id cascade.
 
-### Scope & Policy Model
-- Define canonical scopes (`devbox:tunnel`, future `devbox:exec`, `devbox:port-forward`) validated at authorization time.
-- During device authorization approval, user selects scope constraints (cluster IDs, namespace selectors) via web UI.
-- Store constraints in `devbox_session.metadata` JSONB column; enforce RBAC intersection on every WebSocket handshake and tunnel operation.
+### Authorization Model
+- RBAC is enforced at the API level based on user's cluster ownership (no scope fields in session table).
+- During WebSocket handshake, verify user has access to the target cluster/namespace.
 - Session tokens are long-lived (30 days default); re-authentication required after expiry or revocation.
 
 ### API & CLI Surface
 1. `POST /v1/auth/device/code` — initiates device flow, returns `device_code`, `user_code`, `verification_uri`, `interval`.
-2. `GET /device` (web page) — device authorization approval page; user enters code, selects GitHub or GitLab provider, authenticates via SSO, selects scope constraints.
-3. `POST /v1/auth/device/approve` — browser submits approval with user_code and scope constraints; associates device authorization with authenticated user.
+2. `GET /device` (web page) — device authorization approval page; user enters code, selects GitHub or GitLab provider, authenticates via SSO.
+3. `POST /v1/auth/device/approve` — browser submits approval with user_code; associates device authorization with authenticated user.
 4. `POST /v1/auth/device/token` — CLI polls for authorization; returns Lapdev session token once approved.
 5. `GET /v1/devbox/sessions` — lists active devbox sessions for the authenticated user (requires browser session cookie).
 6. `DELETE /v1/devbox/sessions/{session_id}` — revokes a session and disconnects active tunnels.
@@ -345,12 +344,12 @@ This approach provides clean semantics without requiring a service mesh:
 
 ### Observability & Operations
 - Emit audit events: `device.initiated`, `device.authorized`, `devbox.session.created`, `devbox.session.revoked`.
-- Track metrics: `device_authorizations_pending`, `devbox_sessions_active`, `devbox_session_age_seconds`.
+- Track metrics: `device_authorizations_pending`, `kube_devbox_sessions_active`, `kube_devbox_session_age_seconds`.
 - Background job sweeps expired device codes (5 min TTL) and expired session tokens (30 days default).
 - Log all session usage with user, org, scope, and oauth_connection context for security auditing.
 
 ### Migration & Integration
-- Add SeaORM entities and migrations for `device_authorization` and `devbox_session`.
+- Add SeaORM entities and migrations for `device_authorization` and `kube_devbox_session`.
 - Reuse existing `oauth_connection` table; no schema changes required.
 - Extend existing SSO callback handlers to support device authorization approval flow (new `/device` page and approval endpoint).
 - Implement device flow endpoints in API (`crates/api/src/device.rs`).
@@ -362,23 +361,22 @@ This approach provides clean semantics without requiring a service mesh:
 - Include a short prefix (e.g., `ldvbx_`) on session tokens for log correlation and support diagnostics.
 - CLI stores session token in OS keychain under service name `com.lapdev.devbox`; fallback to AES-256-GCM encrypted file (`~/.lapdev/credentials.enc`) with PBKDF2-derived key when keychain unavailable.
 - Session token references `oauth_connection` (GitHub/GitLab OAuth token) which is used for git operations and provider API access.
-- Scope metadata (cluster IDs, namespace selectors) captured during device approval and persisted in `devbox_session.metadata`.
 
-### Scoping & Authorization
+### Authentication & Authorization
 - During devbox WebSocket handshake (`/kube/devbox/tunnel`), extract bearer token from `Authorization` header.
-- Look up token hash in `devbox_session`, verify not expired/revoked, and load scope + metadata.
+- Look up token hash in `kube_devbox_session`, verify not expired/revoked, and load session.
 - Load associated `oauth_connection` to verify user still has valid SSO; check `deleted_at` is null.
-- Intersect session scope with current user RBAC policies; materialize resolved permissions in session context for constant-time tunnel authorization.
-- Reject handshakes for expired, revoked, or scope-empty sessions; log rejection reason for audit trail.
+- Verify user has access to the target cluster/namespace using existing RBAC checks (cluster ownership).
+- Reject handshakes for expired or revoked sessions; log rejection reason for audit trail.
 
 ### Login & Session Flow
-1. User runs `lapdev devbox login [--device-name "My MacBook"]` (optionally with `--clusters c123,c456 --namespaces apps/dev` hints).
+1. User runs `lapdev devbox login [--device-name "My MacBook"]`.
 2. CLI initiates device flow (`POST /v1/auth/device/code`), displays user code and verification URL.
 3. CLI opens system browser to `/device` page; user enters device code.
 4. Web page prompts user to select authentication provider (GitHub or GitLab) and redirects to existing SSO flow (reuses `session.rs::new_session` + `session_authorize`).
-5. After SSO completes and `oauth_connection` is created/updated, user is redirected to device approval page showing scope selection (clusters, namespaces).
-6. User approves; browser submits `POST /v1/auth/device/approve` with user_code and scope constraints.
-7. API associates device authorization with authenticated user and creates `devbox_session` entry linked to `oauth_connection`.
+5. After SSO completes and `oauth_connection` is created/updated, user is redirected to device approval page.
+6. User approves; browser submits `POST /v1/auth/device/approve` with user_code.
+7. API associates device authorization with authenticated user and creates `kube_devbox_session` entry linked to `oauth_connection`.
 8. CLI polls `POST /v1/auth/device/token`; receives Lapdev session token once approved.
 9. CLI stores session token in keychain and writes session metadata to `~/.lapdev/session.json` (session ID, user info, provider, expiry for UX).
 10. Subsequent `lapdev devbox connect` commands and UI-triggered intercept instructions load session token from keychain and use it for WebSocket auth.
@@ -391,12 +389,11 @@ This approach provides clean semantics without requiring a service mesh:
 
 ### Revocation & Cleanup
 - User can revoke sessions via `lapdev devbox logout` (current session) or web UI / CLI `lapdev devbox sessions revoke <session_id>`.
-- Revocation marks `revoked_at` in `devbox_session` and triggers `DevboxRegistry` notification to disconnect live tunnels.
+- Revocation marks `revoked_at` in `kube_devbox_session` and triggers `DevboxRegistry` notification to disconnect live tunnels.
 - Background job sweeps expired session tokens hourly; logs revocations for security audit.
 - SSO provider revocation (user disconnected OAuth provider) detected on next WebSocket auth; session rejected and user prompted to re-login.
 
 ### Bootstrapping & Migration
-- Extend RBAC evaluation to consume scope metadata from `devbox_session.metadata` column.
 - Add device authorization approval UI (new `/device` web page and approval endpoint) integrated with existing SSO flow.
 - Provide admin CLI for emergency session issuance (`lapdev admin devbox create-session --user-id <uuid>`) that bypasses device flow but still respects RBAC.
 - Document OAuth device flow in user docs with screenshots; provide troubleshooting guide for keychain and browser issues.
@@ -506,7 +503,7 @@ This approach provides clean semantics without requiring a service mesh:
 5. Implement CLI `lapdev devbox connect` command and background intercept handler that reacts to UI-triggered requests (shared login flow).
 6. Raw TCP proxying without protocol inspection.
 7. Graceful cleanup on disconnect and proper error handling.
-8. Database schema for `devbox_session` and `devbox_service_intercept`.
+8. Database schema for `kube_devbox_session` and `kube_devbox_service_intercept`.
 9. **Deliverable**: Developer can connect to their environment, intercept services, and route traffic to local machine with seamless device switching.
 
 **Phase 2: Enhanced Features (2-3 weeks)**
@@ -535,10 +532,10 @@ This approach provides clean semantics without requiring a service mesh:
 
 **1. Database Schema** (`lapdev-db/`)
 - [ ] Create migration for `device_authorization` table
-- [ ] Create migration for `devbox_session` table:
+- [ ] Create migration for `kube_devbox_session` table:
   - Include `active_environment_id` field (nullable UUID, FK to environments/clusters)
   - Index on `(user_id, active_environment_id)` for quick active environment lookup
-- [ ] Create migration for `devbox_service_intercept` table
+- [ ] Create migration for `kube_devbox_service_intercept` table
 - [ ] Generate SeaORM entities for new tables
 - [ ] Add indexes for efficient queries
 
@@ -568,7 +565,7 @@ This approach provides clean semantics without requiring a service mesh:
 **4. Kube-Manager Extensions** (`lapdev-kube-manager/`)
 - [ ] Create `ServiceInterceptor` module that orchestrates ConfigMap + annotation lifecycle for intercepts
 - [ ] `intercept_service_full()` implementation:
-  - Backup relevant proxy configuration (ConfigMap contents, annotations) and persist snapshot in `devbox_service_intercept`
+  - Backup relevant proxy configuration (ConfigMap contents, annotations) and persist snapshot in `kube_devbox_service_intercept`
   - Mint short-lived `devbox_intercept_token`, patch ConfigMap (`proxy-config.yaml`) to embed the `DevboxTunnel` route, and update annotations/labels to trigger reload
   - Record `config_map_name`, `routing_key`, and hashed token in intercept state map; monitor sidecar readiness via `SidecarProxyManager` heartbeats and log/notify asynchronously if registration fails
 - [ ] `restore_service()` implementation:
@@ -589,9 +586,9 @@ This approach provides clean semantics without requiring a service mesh:
   - `GET /device` (web page)
 - [ ] Create `/kube/devbox/tunnel` WebSocket handler for devbox sessions
 - [ ] Implement devbox session token validation:
-  - Look up token in `devbox_session` table (login sessions)
+  - Look up token in `kube_devbox_session` table (login sessions)
   - Verify not expired/revoked
-  - Load user_id, oauth_connection_id, scopes
+  - Load user_id, oauth_connection_id, session info
 - [ ] Create `DevboxRegistry` struct (in-memory) for tracking the single active devbox session per user:
   - Map: `user_id → DevboxSessionEntry`
   - Store: session_id, user_id, latest environment/cluster id (optional), device name, WebSocket sender, connected_at
@@ -610,10 +607,10 @@ This approach provides clean semantics without requiring a service mesh:
   - Check `DevboxRegistry` for connections with no recent activity (>90s)
   - Trigger cleanup for stale connections
 - [ ] Add session and environment management REST endpoints:
-  - `GET /v1/devbox/sessions` (list all user's login sessions from `devbox_session` table)
+  - `GET /v1/devbox/sessions` (list all user's login sessions from `kube_devbox_session` table)
   - `GET /v1/devbox/connections` (list active devbox sessions from `DevboxRegistry`)
   - `GET /v1/devbox/environments` (list user's accessible environments for UI dropdown)
-  - `GET /v1/devbox/active-environment` (get user's active environment from `devbox_session.active_environment_id`)
+  - `GET /v1/devbox/active-environment` (get user's active environment from `kube_devbox_session.active_environment_id`)
   - `PUT /v1/devbox/active-environment` (set active environment, body: `{environment_id: UUID}`)
   - `DELETE /v1/devbox/sessions/{id}` (revoke login session, disconnect all environments)
   - `DELETE /v1/devbox/connections/{user}` (disconnect the active devbox session for a user)
@@ -668,12 +665,11 @@ This approach provides clean semantics without requiring a service mesh:
 - [ ] Device authorization page (`/device`)
   - User code entry form
   - SSO provider selection (GitHub/GitLab)
-  - Scope selection UI (clusters, namespaces)
   - Approval confirmation
 - [ ] Devbox environment selection page (`/devbox` or settings):
   - **Environment Selector**: Dropdown or list showing user's available environments
   - **Active Environment Indicator**: Clearly show which environment is currently active
-  - **Set Active Button**: Update `devbox_session.active_environment_id` via API
+  - **Set Active Button**: Update `kube_devbox_session.active_environment_id` via API
   - Real-time status: show if environment has active connection (from `DevboxRegistry`)
   - Display session info: device name, connected since, active intercepts count
 - [ ] Devbox intercept management UI (panel within `/devbox`):
@@ -753,19 +749,17 @@ This approach provides clean semantics without requiring a service mesh:
 5. **DevboxRegistry (in-memory)**: New component in API server for tracking the active devbox session per user and enforcing session displacement
 6. **Database tables**: Three new tables with migrations:
    - `device_authorization` (device flow state)
-   - `devbox_session` (login sessions, 30-day lifetime)
-   - `devbox_service_intercept` (active intercept state)
+   - `kube_devbox_session` (login sessions, 30-day lifetime)
+   - `kube_devbox_service_intercept` (active intercept state)
 7. **Session displacement**: API logic that enforces "last session wins" per user at connection time and notifies the displaced session
 
 ## Open Questions
 - Should web UI include OAuth session management (list/revoke devbox sessions), or is CLI-only sufficient for initial release?
   - **Recommendation**: CLI-only for Phase 1, web UI in Phase 2 for team management.
-- During device flow approval, should scope selection be mandatory or optional (default to all clusters user has access to)?
-  - **Recommendation**: Optional with smart defaults; require explicit selection only for restricted scopes.
 - Do we need HTTP(S) aware proxying initially, or is raw TCP sufficient for all use cases?
   - **Answer**: Raw TCP sufficient for Phase 1; HTTP awareness adds value in Phase 2 for observability.
-- Should devbox tunnels be scoped to a specific environment/workspace to prevent cross-environment access?
-  - **Recommendation**: Yes, namespace-scoped by default; RBAC enforces permissions.
+- Should devbox tunnels be restricted to a specific environment/workspace to prevent cross-environment access?
+  - **Recommendation**: Yes, environment-specific by default (via `active_environment_id`); RBAC enforces cluster ownership.
 - How will kube-manager learn which devbox instance to target when initiating reverse tunnels?
   - **Answer**: API maintains `DevboxRegistry` mapping session_id to WebSocket; kube-manager queries via RPC.
 - Should device code TTL be configurable per-org, or is a fixed 5-minute window acceptable?

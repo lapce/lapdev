@@ -36,6 +36,7 @@ tracing-journald.workspace = true
 sea-orm-cli.workspace = true
 lapdev-db.workspace = true
 lapdev-ws.workspace = true
+lapdev-cli.workspace = true
 lapdev-guest-agent.workspace = true
 lapdev-kube.workspace = true
 lapdev-kube-manager.workspace = true
@@ -44,6 +45,7 @@ lapdev-kube-manager.workspace = true
 members = [
   "crates/api",
   "crates/api-hrpc",
+  "crates/cli",
   "crates/conductor",
   "crates/ws",
   "crates/rpc",
@@ -62,6 +64,7 @@ members = [
   "crates/guest-agent",
   "crates/hrpc",
   "crates/hrpc-proc-macro",
+  "crates/devbox-rpc",
 ]
 
 [workspace.dependencies]
@@ -85,6 +88,7 @@ serde_json = "1.0.140"
 json5 = "0.4.1"
 itertools = "0.12.0"
 base64 = "0.22.0"
+hex = "0.4"
 oauth2 = "4.2.3"
 include_dir = "0.7.3"
 reqwest = {version = "0.11.26", default-features = false, features = ["rustls", "stream", "json"] }
@@ -129,6 +133,7 @@ uuid = { version = "1.6.1", features = ["v4", "serde"] }
 russh = {version = "0.53.0" }
 lapdev-api = { path = "./crates/api" }
 lapdev-api-hrpc = { path = "./crates/api-hrpc" }
+lapdev-cli = { path = "./crates/cli" }
 lapdev-ws = { path = "./crates/ws" }
 lapdev-db = { path = "./crates/db" }
 lapdev-db-entities = { path = "./crates/db/entities" }
@@ -144,6 +149,7 @@ lapdev-kube = { path = "./crates/kube" }
 lapdev-kube-rpc = { path = "./crates/kube-rpc" }
 lapdev-kube-manager = { path = "./crates/kube-manager" }
 lapdev-kube-sidecar-proxy = { path = "./crates/kube-sidecar-proxy" }
+lapdev-devbox-rpc = { path = "./crates/devbox-rpc" }
 lapdev-hrpc = { path = "./crates/hrpc" }
 lapdev-hrpc-proc-macro = { path = "./crates/hrpc-proc-macro" }
 

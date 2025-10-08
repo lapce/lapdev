@@ -27,6 +27,8 @@ mod m20250809_000001_create_kube_environment;
 mod m20250809_000002_create_kube_environment_workload;
 mod m20250809_000003_create_kube_environment_service;
 mod m20250815_000001_create_kube_environment_preview_url;
+mod m20251008_000001_create_kube_devbox_session;
+mod m20251008_000002_create_kube_devbox_workload_intercept;
 
 pub struct Migrator;
 
@@ -61,6 +63,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20250809_000002_create_kube_environment_workload::Migration),
             Box::new(m20250809_000003_create_kube_environment_service::Migration),
             Box::new(m20250815_000001_create_kube_environment_preview_url::Migration),
+            Box::new(m20251008_000001_create_kube_devbox_session::Migration),
+            Box::new(m20251008_000002_create_kube_devbox_workload_intercept::Migration),
         ]
     }
 }

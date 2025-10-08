@@ -1,0 +1,12 @@
+[package]
+name = "lapdev-devbox-rpc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+tarpc.workspace = true
+chrono.workspace = true

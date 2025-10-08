@@ -1983,4 +1983,236 @@ impl DbApi {
         .await?;
         Ok(())
     }
+
+    // Devbox Session Methods
+
+    /// Create or update a devbox session. Revokes any existing active session for the user.
+    pub async fn create_or_update_devbox_session(
+        &self,
+        user_id: Uuid,
+        session_token: &str,
+        device_name: String,
+        expires_at: DateTimeWithTimeZone,
+    ) -> Result<lapdev_db_entities::kube_devbox_session::Model> {
+        use lapdev_common::token::HashedToken;
+
+        // Hash the token
+        let token_hash_bytes = HashedToken::hash(session_token);
+        let token_hash = hex::encode(&token_hash_bytes);
+
+        // Get first 12 characters as prefix
+        let token_prefix = session_token.chars().take(12).collect::<String>();
+
+        // Start a transaction to handle the atomic operation
+        let txn = self.conn.begin().await?;
+
+        // Revoke any existing active sessions for this user
+        let now: DateTimeWithTimeZone = Utc::now().into();
+        lapdev_db_entities::kube_devbox_session::Entity::update_many()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::UserId.eq(user_id))
+            .filter(lapdev_db_entities::kube_devbox_session::Column::RevokedAt.is_null())
+            .col_expr(
+                lapdev_db_entities::kube_devbox_session::Column::RevokedAt,
+                Expr::value(now)
+            )
+            .exec(&txn)
+            .await?;
+
+        // Create new session
+        let session = lapdev_db_entities::kube_devbox_session::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            user_id: ActiveValue::Set(user_id),
+            session_token_hash: ActiveValue::Set(token_hash),
+            token_prefix: ActiveValue::Set(token_prefix),
+            device_name: ActiveValue::Set(device_name),
+            active_environment_id: ActiveValue::Set(None),
+            created_at: ActiveValue::Set(Utc::now().into()),
+            expires_at: ActiveValue::Set(expires_at),
+            last_used_at: ActiveValue::Set(Utc::now().into()),
+            revoked_at: ActiveValue::Set(None),
+        }
+        .insert(&txn)
+        .await?;
+
+        txn.commit().await?;
+
+        Ok(session)
+    }
+
+    /// Get a devbox session by token hash
+    pub async fn get_devbox_session_by_token_hash(
+        &self,
+        session_token: &str,
+    ) -> Result<Option<lapdev_db_entities::kube_devbox_session::Model>> {
+        use lapdev_common::token::HashedToken;
+
+        let token_hash_bytes = HashedToken::hash(session_token);
+        let token_hash = hex::encode(&token_hash_bytes);
+
+        let session = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionTokenHash.eq(token_hash))
+            .filter(lapdev_db_entities::kube_devbox_session::Column::RevokedAt.is_null())
+            .one(&self.conn)
+            .await?;
+
+        Ok(session)
+    }
+
+    /// Get the active devbox session for a user
+    pub async fn get_active_devbox_session(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_devbox_session::Model>> {
+        let session = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::UserId.eq(user_id))
+            .filter(lapdev_db_entities::kube_devbox_session::Column::RevokedAt.is_null())
+            .one(&self.conn)
+            .await?;
+
+        Ok(session)
+    }
+
+    /// Revoke a devbox session
+    pub async fn revoke_devbox_session(&self, session_id: Uuid) -> Result<()> {
+        lapdev_db_entities::kube_devbox_session::ActiveModel {
+            id: ActiveValue::Set(session_id),
+            revoked_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Update the last_used_at timestamp for a devbox session
+    pub async fn update_devbox_session_last_used(&self, session_id: Uuid) -> Result<()> {
+        lapdev_db_entities::kube_devbox_session::ActiveModel {
+            id: ActiveValue::Set(session_id),
+            last_used_at: ActiveValue::Set(Utc::now().into()),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Update the active environment for a devbox session
+    pub async fn update_devbox_session_active_environment(
+        &self,
+        session_id: Uuid,
+        environment_id: Option<Uuid>,
+    ) -> Result<()> {
+        lapdev_db_entities::kube_devbox_session::ActiveModel {
+            id: ActiveValue::Set(session_id),
+            active_environment_id: ActiveValue::Set(environment_id),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Get a devbox session by ID
+    pub async fn get_devbox_session(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_devbox_session::Model>> {
+        let session = lapdev_db_entities::kube_devbox_session::Entity::find_by_id(session_id)
+            .filter(lapdev_db_entities::kube_devbox_session::Column::RevokedAt.is_null())
+            .one(&self.conn)
+            .await?;
+
+        Ok(session)
+    }
+
+    // Devbox Workload Intercept Methods
+
+    /// Create a new workload intercept
+    pub async fn create_workload_intercept(
+        &self,
+        session_id: Uuid,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        port_mappings: serde_json::Value,
+    ) -> Result<lapdev_db_entities::kube_devbox_workload_intercept::Model> {
+        use lapdev_db_entities::kube_devbox_workload_intercept;
+
+        let intercept = kube_devbox_workload_intercept::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            session_id: ActiveValue::Set(session_id),
+            environment_id: ActiveValue::Set(environment_id),
+            workload_id: ActiveValue::Set(workload_id),
+            port_mappings: ActiveValue::Set(serde_json::json!(port_mappings).into()),
+            created_at: ActiveValue::Set(Utc::now().into()),
+            stopped_at: ActiveValue::Set(None),
+        }
+        .insert(&self.conn)
+        .await?;
+
+        Ok(intercept)
+    }
+
+    /// Stop a workload intercept
+    pub async fn stop_workload_intercept(
+        &self,
+        intercept_id: Uuid,
+    ) -> Result<lapdev_db_entities::kube_devbox_workload_intercept::Model> {
+        use lapdev_db_entities::kube_devbox_workload_intercept;
+
+        let intercept = kube_devbox_workload_intercept::ActiveModel {
+            id: ActiveValue::Set(intercept_id),
+            stopped_at: ActiveValue::Set(Some(Utc::now().into())),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+
+        Ok(intercept)
+    }
+
+    /// Get a workload intercept by ID
+    pub async fn get_workload_intercept(
+        &self,
+        intercept_id: Uuid,
+    ) -> Result<Option<lapdev_db_entities::kube_devbox_workload_intercept::Model>> {
+        use lapdev_db_entities::kube_devbox_workload_intercept;
+
+        let intercept = kube_devbox_workload_intercept::Entity::find_by_id(intercept_id)
+            .one(&self.conn)
+            .await?;
+        Ok(intercept)
+    }
+
+    /// Get active workload intercepts for a session
+    pub async fn get_active_intercepts_for_session(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Vec<lapdev_db_entities::kube_devbox_workload_intercept::Model>> {
+        use lapdev_db_entities::kube_devbox_workload_intercept;
+
+        let intercepts = kube_devbox_workload_intercept::Entity::find()
+            .filter(kube_devbox_workload_intercept::Column::SessionId.eq(session_id))
+            .filter(kube_devbox_workload_intercept::Column::StoppedAt.is_null())
+            .all(&self.conn)
+            .await?;
+        Ok(intercepts)
+    }
+
+    /// Get active workload intercepts for an environment
+    pub async fn get_active_intercepts_for_environment(
+        &self,
+        environment_id: Uuid,
+    ) -> Result<Vec<lapdev_db_entities::kube_devbox_workload_intercept::Model>> {
+        use lapdev_db_entities::kube_devbox_workload_intercept;
+
+        let intercepts = kube_devbox_workload_intercept::Entity::find()
+            .filter(kube_devbox_workload_intercept::Column::EnvironmentId.eq(environment_id))
+            .filter(kube_devbox_workload_intercept::Column::StoppedAt.is_null())
+            .all(&self.conn)
+            .await?;
+        Ok(intercepts)
+    }
 }

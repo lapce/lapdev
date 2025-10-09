@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::{state::CoreState, websocket_transport::WebSocketTransport};
 
-pub async fn kube_cluster_websocket(
+pub async fn kube_cluster_rpc_websocket(
     websocket: WebSocketUpgrade,
     headers: HeaderMap,
     State(state): State<Arc<CoreState>>,

@@ -861,6 +861,7 @@ pub fn EnvironmentWorkloadItem(
 ) -> impl IntoView {
     let workload_id = workload.id;
     let workload_name = workload.name.clone();
+    let workload_containers = workload.containers.clone();
     let start_intercept_modal_open = RwSignal::new(false);
 
     // Find intercepts for this workload
@@ -994,6 +995,7 @@ pub fn EnvironmentWorkloadItem(
             <StartInterceptModal
                 open=start_intercept_modal_open
                 workload_name=workload_name
+                containers=workload_containers
                 start_intercept_action
             />
         </>
@@ -1223,9 +1225,16 @@ pub fn CreateBranchEnvironmentModal(
 }
 
 #[derive(Debug, Clone)]
-struct PortMappingRow {
-    id: usize,
-    workload_port: RwSignal<String>,
+struct AvailablePort {
+    container_name: String,
+    port: i32,
+    port_name: Option<String>,
+    protocol: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PortMapping {
+    port: i32,
     local_port: RwSignal<String>,
 }
 
@@ -1233,66 +1242,52 @@ struct PortMappingRow {
 pub fn StartInterceptModal(
     open: RwSignal<bool>,
     workload_name: String,
+    containers: Vec<KubeContainerInfo>,
     start_intercept_action: Action<(Vec<DevboxPortMappingOverride>,), Result<(), ErrorResponse>>,
 ) -> impl IntoView {
-    let port_mappings = RwSignal::new(vec![PortMappingRow {
-        id: 0,
-        workload_port: RwSignal::new(String::new()),
-        local_port: RwSignal::new(String::new()),
-    }]);
-    let next_id = RwSignal::new(1usize);
+    // Extract all available ports from containers
+    let available_ports: Vec<AvailablePort> = containers
+        .iter()
+        .flat_map(|container| {
+            container.ports.iter().map(|port| AvailablePort {
+                container_name: container.name.clone(),
+                port: port.container_port,
+                port_name: port.name.clone(),
+                protocol: port.protocol.clone(),
+            })
+        })
+        .collect();
+
+    // Create port mappings (all ports will be intercepted by default)
+    let port_mappings: Vec<PortMapping> = available_ports
+        .iter()
+        .map(|ap| PortMapping {
+            port: ap.port,
+            local_port: RwSignal::new(String::new()),
+        })
+        .collect();
+    let port_mappings_stored = StoredValue::new(port_mappings);
 
     // Reset form when modal opens/closes
-    // Effect::new(move |_| {
-    //     if !open.get() {
-    //         port_mappings.set(vec![PortMappingRow {
-    //             id: 0,
-    //             workload_port: RwSignal::new(String::new()),
-    //             local_port: RwSignal::new(String::new()),
-    //         }]);
-    //         next_id.set(1);
-    //     }
-    // });
-
-    let add_port_mapping = move |_| {
-        let id = next_id.get();
-        next_id.set(id + 1);
-        port_mappings.update(|mappings| {
-            mappings.push(PortMappingRow {
-                id,
-                workload_port: RwSignal::new(String::new()),
-                local_port: RwSignal::new(String::new()),
-            });
-        });
-    };
-
-    let remove_port_mapping = move |id: usize| {
-        port_mappings.update(|mappings| {
-            mappings.retain(|m| m.id != id);
-        });
-    };
+    Effect::new(move |_| {
+        if !open.get() {
+            for mapping in &port_mappings_stored.get_value() {
+                mapping.local_port.set(String::new());
+            }
+        }
+    });
 
     // Custom action wrapper that validates and transforms the port mappings
     let wrapped_action = Action::new_local(move |_| async move {
-        let mappings = port_mappings.get();
         let mut port_overrides = Vec::new();
 
-        for mapping in mappings {
-            let workload_port_str = mapping.workload_port.get().trim().to_string();
+        // All ports are intercepted by default
+        for mapping in &port_mappings_stored.get_value() {
             let local_port_str = mapping.local_port.get().trim().to_string();
 
-            if workload_port_str.is_empty() {
-                return Err(ErrorResponse {
-                    error: "Workload port is required for all port mappings".to_string(),
-                });
-            }
-
-            let workload_port: u16 = workload_port_str.parse().map_err(|_| ErrorResponse {
-                error: format!("Invalid workload port: {}", workload_port_str),
-            })?;
-
+            // If not customized, use the same port as the workload port
             let local_port: Option<u16> = if local_port_str.is_empty() {
-                None
+                Some(mapping.port as u16)
             } else {
                 Some(local_port_str.parse().map_err(|_| ErrorResponse {
                     error: format!("Invalid local port: {}", local_port_str),
@@ -1300,14 +1295,14 @@ pub fn StartInterceptModal(
             };
 
             port_overrides.push(DevboxPortMappingOverride {
-                workload_port,
+                workload_port: mapping.port as u16,
                 local_port,
             });
         }
 
         if port_overrides.is_empty() {
             return Err(ErrorResponse {
-                error: "At least one port mapping is required".to_string(),
+                error: "No ports available to intercept".to_string(),
             });
         }
 
@@ -1325,99 +1320,93 @@ pub fn StartInterceptModal(
         >
             <div class="flex flex-col gap-4">
                 <P class="text-sm text-muted-foreground">
-                    {format!("Configure port mappings to intercept traffic for workload: {}", workload_name)}
+                    {format!("All exposed ports will be intercepted for workload: {}", workload_name)}
                 </P>
 
-                <div class="flex flex-col gap-3">
-                    <div class="flex items-center justify-between">
-                        <Label>"Port Mappings"</Label>
-                        <Button
-                            variant=ButtonVariant::Outline
-                            size=ButtonSize::Sm
-                            on:click=add_port_mapping
-                        >
-                            <lucide_leptos::Plus attr:class="h-4 w-4" />
-                            "Add Port"
-                        </Button>
-                    </div>
-
-                    <For
-                        each=move || port_mappings.get()
-                        key=|mapping| mapping.id
-                        children=move |mapping: PortMappingRow| {
-                            let mapping_id = mapping.id;
-                            let can_remove = Signal::derive(move || port_mappings.get().len() > 1);
-
-                            view! {
-                                <div class="flex gap-2 items-end">
-                                    <div class="flex-1">
-                                        <Label for_=format!("workload-port-{}", mapping_id)>
-                                            "Workload Port"
-                                            <span class="text-destructive ml-1">*</span>
-                                        </Label>
-                                        <Input
-                                            attr:id=format!("workload-port-{}", mapping_id)
-                                            attr:r#type="number"
-                                            attr:min="1"
-                                            attr:max="65535"
-                                            prop:value=move || mapping.workload_port.get()
-                                            on:input=move |ev| {
-                                                mapping.workload_port.set(event_target_value(&ev));
-                                            }
-                                            attr:placeholder="e.g. 8080"
-                                        />
-                                    </div>
-                                    <div class="flex-1">
-                                        <Label for_=format!("local-port-{}", mapping_id)>
-                                            "Local Port (optional)"
-                                        </Label>
-                                        <Input
-                                            attr:id=format!("local-port-{}", mapping_id)
-                                            attr:r#type="number"
-                                            attr:min="1"
-                                            attr:max="65535"
-                                            prop:value=move || mapping.local_port.get()
-                                            on:input=move |ev| {
-                                                mapping.local_port.set(event_target_value(&ev));
-                                            }
-                                            attr:placeholder="Auto-assign if empty"
-                                        />
-                                    </div>
-                                    {move || {
-                                        if can_remove.get() {
-                                            view! {
-                                                <Button
-                                                    variant=ButtonVariant::Outline
-                                                    size=ButtonSize::Sm
-                                                    on:click=move |_| remove_port_mapping(mapping_id)
-                                                    class="mb-0"
-                                                >
-                                                    <lucide_leptos::Trash2 attr:class="h-4 w-4" />
-                                                </Button>
-                                            }.into_any()
-                                        } else {
-                                            view! { <div class="w-9"></div> }.into_any()
-                                        }
-                                    }}
+                {if available_ports.is_empty() {
+                    view! {
+                        <div class="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded p-4">
+                            <div class="flex items-start gap-3">
+                                <lucide_leptos::TriangleAlert attr:class="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                                <div class="flex flex-col gap-1">
+                                    <span class="font-medium text-sm text-amber-900 dark:text-amber-200">
+                                        "No exposed ports found"
+                                    </span>
+                                    <span class="text-xs text-amber-800 dark:text-amber-300">
+                                        "This workload does not expose any container ports. Make sure your containers define port specifications in their Kubernetes manifests."
+                                    </span>
                                 </div>
-                            }
-                        }
-                    />
-                </div>
-
-                <div class="text-xs text-muted-foreground bg-muted/30 p-3 rounded">
-                    <div class="flex gap-2 mb-2">
-                        <lucide_leptos::Info attr:class="h-4 w-4 shrink-0 mt-0.5" />
-                        <div class="flex flex-col gap-1">
-                            <span class="font-medium">"How it works:"</span>
-                            <ul class="list-disc list-inside space-y-1">
-                                <li>"Workload Port: The port on the Kubernetes workload to intercept"</li>
-                                <li>"Local Port: The port on your local machine (auto-assigned if not specified)"</li>
-                                <li>"Traffic to the workload will be redirected to your local devbox session"</li>
-                            </ul>
+                            </div>
                         </div>
-                    </div>
-                </div>
+                    }.into_any()
+                } else {
+                    view! {
+                        <div class="flex flex-col gap-3">
+                            <div class="flex items-center justify-between">
+                                <Label>"Ports to Intercept"</Label>
+                                <Badge variant=BadgeVariant::Secondary class="text-xs">
+                                    {format!("{} port{}", available_ports.len(), if available_ports.len() == 1 { "" } else { "s" })}
+                                </Badge>
+                            </div>
+
+                            <div class="flex flex-col gap-2 max-h-64 overflow-y-auto">
+                                {available_ports.iter().enumerate().map(|(idx, port)| {
+                                    let mapping = port_mappings_stored.get_value()[idx].clone();
+                                    let port_display = if let Some(name) = &port.port_name {
+                                        format!("{} ({})", port.port, name)
+                                    } else {
+                                        format!("{}", port.port)
+                                    };
+                                    let protocol_display = port.protocol.clone().unwrap_or_else(|| "TCP".to_string());
+
+                                    view! {
+                                        <div class="flex items-center gap-3 p-3 border rounded bg-muted/30">
+                                            <div class="flex-1 flex items-center gap-2">
+                                                <lucide_leptos::Network attr:class="h-4 w-4 text-muted-foreground" />
+                                                <span class="font-medium">{port_display}</span>
+                                                <Badge variant=BadgeVariant::Outline class="text-xs">
+                                                    {protocol_display}
+                                                </Badge>
+                                                <span class="text-xs text-muted-foreground">
+                                                    {format!("({})", port.container_name)}
+                                                </span>
+                                            </div>
+                                            <div class="w-40">
+                                                <Input
+                                                    attr:id=format!("local-port-{}", idx)
+                                                    attr:r#type="number"
+                                                    attr:min="1"
+                                                    attr:max="65535"
+                                                    prop:value=move || mapping.local_port.get()
+                                                    on:input=move |ev| {
+                                                        mapping.local_port.set(event_target_value(&ev));
+                                                    }
+                                                    attr:placeholder=format!("{}", port.port)
+                                                    class="h-8 text-sm"
+                                                />
+                                            </div>
+                                        </div>
+                                    }
+                                }).collect::<Vec<_>>()}
+                            </div>
+                        </div>
+
+                        <div class="text-xs text-muted-foreground bg-muted/30 p-3 rounded">
+                            <div class="flex gap-2">
+                                <lucide_leptos::Info attr:class="h-4 w-4 shrink-0 mt-0.5" />
+                                <div class="flex flex-col gap-1">
+                                    <span class="font-medium">"How it works:"</span>
+                                    <ul class="list-disc list-inside space-y-1">
+                                        <li>"All workload ports listed above will be intercepted"</li>
+                                        <li>"By default, local ports match workload ports (e.g., 8080→8080)"</li>
+                                        <li>"Optionally customize the local port if you need a different mapping"</li>
+                                        <li>"Traffic to these ports will be redirected to your local devbox session"</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    }.into_any()
+                }}
             </div>
         </Modal>
     }

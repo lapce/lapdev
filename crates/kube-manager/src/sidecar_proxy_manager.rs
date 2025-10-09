@@ -1,9 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use futures::StreamExt;
-use lapdev_common::kube::{
-    DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR,
-    SIDECAR_PROXY_MANAGER_PORT_ENV_VAR,
-};
+use lapdev_common::kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR};
 use lapdev_kube_rpc::{SidecarProxyManagerRpc, SidecarProxyRpcClient};
 use lapdev_rpc::spawn_twoway;
 use std::{collections::HashMap, sync::Arc};
@@ -37,9 +34,6 @@ pub struct SidecarProxyManager {
 
 impl SidecarProxyManager {
     pub(crate) async fn new() -> Result<Self> {
-        let sidecar_proxy_manager_addr = std::env::var(SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR)
-            .map_err(|_| anyhow!("can't find LAPDEV_SIDECAR_PROXY_MANAGER_ADDR env var"))?;
-
         // Parse the URL to extract the port
         let port = std::env::var(SIDECAR_PROXY_MANAGER_PORT_ENV_VAR)
             .ok()

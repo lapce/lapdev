@@ -12,7 +12,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::io::{CopyToBytes, SinkWriter, StreamReader};
 
-pub struct WebSocketStream(pub tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>);
+pub struct WebSocketStream(
+    pub tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+);
 
 impl Stream for WebSocketStream {
     type Item = Result<Bytes, std::io::Error>;
@@ -101,7 +103,11 @@ impl AsyncWrite for WebSocketTransport {
 }
 
 impl WebSocketTransport {
-    pub fn new(stream: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> Self {
+    pub fn new(
+        stream: tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Self {
         let (sink, stream) = WebSocketStream(stream).split();
         let reader = StreamReader::new(stream);
         let writer = SinkWriter::new(CopyToBytes::new(sink));

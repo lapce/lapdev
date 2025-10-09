@@ -231,6 +231,13 @@ pub enum KubeContainerImage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeContainerPort {
+    pub name: Option<String>,
+    pub container_port: i32,
+    pub protocol: Option<String>, // TCP, UDP, SCTP
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeContainerInfo {
     pub name: String,
     pub original_image: String,
@@ -241,6 +248,7 @@ pub struct KubeContainerInfo {
     pub memory_limit: Option<String>,
     pub env_vars: Vec<KubeEnvVar>,
     pub original_env_vars: Vec<KubeEnvVar>,
+    pub ports: Vec<KubeContainerPort>,
 }
 
 impl KubeContainerInfo {

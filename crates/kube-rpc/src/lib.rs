@@ -43,36 +43,38 @@ pub struct TunnelInfo {
 #[serde(tag = "type")]
 pub enum ClientTunnelMessage {
     // Connection responses (KubeManager responds to server requests)
-    ConnectionOpened { 
+    ConnectionOpened {
         tunnel_id: String,
         local_addr: String,
     },
-    ConnectionFailed { 
-        tunnel_id: String, 
+    ConnectionFailed {
+        tunnel_id: String,
         error: String,
         error_code: TunnelErrorCode,
     },
-    ConnectionClosed { 
+    ConnectionClosed {
         tunnel_id: String,
         bytes_transferred: u64,
     },
-    
+
     // Connection lifecycle (KubeManager can also initiate close)
-    CloseConnection { 
+    CloseConnection {
         tunnel_id: String,
         reason: CloseReason,
     },
-    
+
     // Data transfer (bidirectional)
-    Data { 
-        tunnel_id: String, 
+    Data {
+        tunnel_id: String,
         payload: Vec<u8>,
         sequence_num: Option<u32>,
     },
-    
+
     // Control messages
-    Pong { timestamp: u64 },
-    
+    Pong {
+        timestamp: u64,
+    },
+
     // Tunnel management
     TunnelStats {
         active_connections: u32,
@@ -81,7 +83,7 @@ pub enum ClientTunnelMessage {
         bytes_received: u64,
         connection_errors: u64,
     },
-    
+
     // Authentication
     Authenticate {
         cluster_id: Uuid,
@@ -95,27 +97,29 @@ pub enum ClientTunnelMessage {
 #[serde(tag = "type")]
 pub enum ServerTunnelMessage {
     // Connection lifecycle (server requests connections)
-    OpenConnection { 
-        tunnel_id: String, 
-        target_host: String, 
+    OpenConnection {
+        tunnel_id: String,
+        target_host: String,
         target_port: u16,
         protocol_hint: Option<String>,
     },
-    CloseConnection { 
+    CloseConnection {
         tunnel_id: String,
         reason: CloseReason,
     },
-    
+
     // Data transfer (bidirectional)
-    Data { 
-        tunnel_id: String, 
+    Data {
+        tunnel_id: String,
         payload: Vec<u8>,
         sequence_num: Option<u32>,
     },
-    
+
     // Control messages
-    Ping { timestamp: u64 },
-    
+    Ping {
+        timestamp: u64,
+    },
+
     // Authentication response
     AuthenticationResult {
         success: bool,
@@ -129,41 +133,45 @@ pub enum ServerTunnelMessage {
 #[serde(tag = "type")]
 pub enum TunnelMessage {
     // Connection lifecycle
-    OpenConnection { 
-        tunnel_id: String, 
-        target_host: String, 
+    OpenConnection {
+        tunnel_id: String,
+        target_host: String,
         target_port: u16,
         protocol_hint: Option<String>,
     },
-    ConnectionOpened { 
+    ConnectionOpened {
         tunnel_id: String,
         local_addr: String,
     },
-    ConnectionFailed { 
-        tunnel_id: String, 
+    ConnectionFailed {
+        tunnel_id: String,
         error: String,
         error_code: TunnelErrorCode,
     },
-    CloseConnection { 
+    CloseConnection {
         tunnel_id: String,
         reason: CloseReason,
     },
-    ConnectionClosed { 
+    ConnectionClosed {
         tunnel_id: String,
         bytes_transferred: u64,
     },
-    
+
     // Data transfer
-    Data { 
-        tunnel_id: String, 
+    Data {
+        tunnel_id: String,
         payload: Vec<u8>,
         sequence_num: Option<u32>,
     },
-    
+
     // Control messages
-    Ping { timestamp: u64 },
-    Pong { timestamp: u64 },
-    
+    Ping {
+        timestamp: u64,
+    },
+    Pong {
+        timestamp: u64,
+    },
+
     // Tunnel management
     TunnelStats {
         active_connections: u32,
@@ -172,7 +180,7 @@ pub enum TunnelMessage {
         bytes_received: u64,
         connection_errors: u64,
     },
-    
+
     // Authentication
     Authenticate {
         cluster_id: Uuid,
@@ -215,7 +223,7 @@ impl ClientTunnelFrame {
     pub fn serialize(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
     }
-    
+
     pub fn deserialize(data: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(data)
     }
@@ -232,7 +240,7 @@ impl ServerTunnelFrame {
     pub fn serialize(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
     }
-    
+
     pub fn deserialize(data: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(data)
     }
@@ -250,7 +258,7 @@ impl TunnelFrame {
     pub fn serialize(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
     }
-    
+
     pub fn deserialize(data: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(data)
     }
@@ -304,10 +312,10 @@ pub struct KubeWorkloadsWithResources {
 #[tarpc::service]
 pub trait KubeClusterRpc {
     async fn report_cluster_info(cluster_info: KubeClusterInfo) -> Result<(), String>;
-    
+
     // Tunnel lifecycle management
     async fn tunnel_heartbeat() -> Result<(), String>;
-    
+
     async fn report_tunnel_metrics(
         active_connections: u32,
         bytes_transferred: u64,
@@ -370,15 +378,15 @@ pub trait KubeManagerRpc {
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
         labels: std::collections::HashMap<String, String>,
     ) -> Result<(), String>;
-    
+
     // Preview URL tunnel methods
     async fn establish_data_plane_tunnel(
         controller_endpoint: String,
         auth_token: String,
     ) -> Result<TunnelEstablishmentResponse, String>;
-    
+
     async fn get_tunnel_status() -> Result<TunnelStatus, String>;
-    
+
     async fn close_tunnel_connection(tunnel_id: String) -> Result<(), String>;
 }
 

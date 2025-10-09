@@ -86,6 +86,7 @@ pub fn set_context() {
     let nav_expanded = NavExpanded {
         orgnization: RwSignal::new(pathname.starts_with("/organization")),
         account: RwSignal::new(pathname.starts_with("/account")),
+        dev_environments: RwSignal::new(pathname.starts_with("/kubernetes/environments")),
     };
     provide_context(nav_expanded);
 
@@ -123,6 +124,9 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/kubernetes/catalogs/:catalog_id") view=move || view! { <WrappedView element=KubeAppCatalogDetail /> } />
                 <Route path=path!("/kubernetes/catalogs/:catalog_id/workloads/:workload_id") view=move || view! { <WrappedView element=KubeAppCatalogWorkload /> } />
                 <Route path=path!("/kubernetes/environments") view=move || view! { <WrappedView element=KubeEnvironment /> } />
+                <Route path=path!("/kubernetes/environments/personal") view=move || view! { <WrappedView element=KubeEnvironment /> } />
+                <Route path=path!("/kubernetes/environments/shared") view=move || view! { <WrappedView element=KubeEnvironment /> } />
+                <Route path=path!("/kubernetes/environments/branch") view=move || view! { <WrappedView element=KubeEnvironment /> } />
                 <Route path=path!("/kubernetes/environments/:environment_id") view=move || view! { <WrappedView element=KubeEnvironmentDetail /> } />
                 <Route path=path!("/kubernetes/environments/:environment_id/workloads/:workload_id") view=move || view! { <WrappedView element=KubeEnvironmentWorkload /> } />
                 <Route path=path!("/kubernetes/clusters/:cluster_id") view=move || view! { <WrappedView element=KubeResource /> } />

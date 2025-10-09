@@ -1,5 +1,6 @@
 pub mod config;
 pub mod console;
+pub mod devbox;
 pub mod devcontainer;
 pub mod hrpc;
 pub mod kube;

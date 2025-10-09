@@ -4,8 +4,8 @@ use lapdev_common::kube::{
     PaginationParams,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadsWithResources, WorkloadIdentifier,
-    TunnelEstablishmentResponse, TunnelStatus,
+    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadsWithResources, TunnelEstablishmentResponse,
+    TunnelStatus, WorkloadIdentifier,
 };
 use uuid::Uuid;
 
@@ -353,7 +353,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         auth_token: String,
     ) -> Result<TunnelEstablishmentResponse, String> {
         tracing::info!("Establishing data plane tunnel to {}", controller_endpoint);
-        
+
         match self
             .manager
             .establish_tunnel(controller_endpoint, auth_token)
@@ -374,7 +374,9 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         self,
         _context: ::tarpc::context::Context,
     ) -> Result<TunnelStatus, String> {
-        self.manager.get_tunnel_status().await
+        self.manager
+            .get_tunnel_status()
+            .await
             .map_err(|e| format!("Failed to get tunnel status: {}", e))
     }
 
@@ -384,8 +386,10 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         tunnel_id: String,
     ) -> Result<(), String> {
         tracing::info!("Closing tunnel connection: {}", tunnel_id);
-        
-        self.manager.close_tunnel_connection(tunnel_id).await
+
+        self.manager
+            .close_tunnel_connection(tunnel_id)
+            .await
             .map_err(|e| format!("Failed to close tunnel connection: {}", e))
     }
 }

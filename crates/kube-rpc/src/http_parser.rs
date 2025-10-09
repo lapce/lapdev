@@ -518,7 +518,8 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "Should handle boundary split at position {} ({})",
-                split_pos, description
+                split_pos,
+                description
             );
 
             let (parsed_request, _) = result.unwrap();
@@ -539,7 +540,7 @@ mod tests {
                     b"\r".to_vec(),
                     [&b"\n\r\n"[..], body].concat(),
                 ],
-                "three-way: base | \\r | \\n\\r\\n+body"
+                "three-way: base | \\r | \\n\\r\\n+body",
             ),
             // Four-way split: base | \r | \n | \r\n + body
             (
@@ -549,7 +550,7 @@ mod tests {
                     b"\n".to_vec(),
                     [&b"\r\n"[..], body].concat(),
                 ],
-                "four-way: base | \\r | \\n | \\r\\n+body"
+                "four-way: base | \\r | \\n | \\r\\n+body",
             ),
             // Five-way split: base | \r | \n | \r | \n + body
             (
@@ -560,7 +561,7 @@ mod tests {
                     b"\r".to_vec(),
                     [&b"\n"[..], body].concat(),
                 ],
-                "five-way: base | \\r | \\n | \\r | \\n+body"
+                "five-way: base | \\r | \\n | \\r | \\n+body",
             ),
             // Six-way split: completely separate
             (
@@ -572,7 +573,7 @@ mod tests {
                     b"\n".to_vec(),
                     body.to_vec(),
                 ],
-                "six-way: all separate"
+                "six-way: all separate",
             ),
         ];
 

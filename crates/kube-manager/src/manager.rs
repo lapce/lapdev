@@ -15,9 +15,9 @@ use k8s_openapi::{
 use kube::{api::ListParams, config::AuthInfo};
 use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
-    KubeContainerInfo, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort, KubeServiceWithYaml,
-    KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus, PaginationCursor,
-    PaginationParams, DEFAULT_KUBE_CLUSTER_TUNNEL_URL, DEFAULT_KUBE_CLUSTER_URL,
+    KubeContainerInfo, KubeContainerPort, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort,
+    KubeServiceWithYaml, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus,
+    PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_TUNNEL_URL, DEFAULT_KUBE_CLUSTER_URL,
     KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_TUNNEL_URL_ENV_VAR,
     KUBE_CLUSTER_URL_ENV_VAR,
 };
@@ -3218,6 +3218,22 @@ impl KubeManager {
                     anyhow!("Container '{}' has no image specified", container.name)
                 })?;
 
+                // Extract container ports
+                let ports = container
+                    .ports
+                    .as_ref()
+                    .map(|ports| {
+                        ports
+                            .iter()
+                            .map(|port| KubeContainerPort {
+                                name: port.name.clone(),
+                                container_port: port.container_port,
+                                protocol: port.protocol.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 Ok(KubeContainerInfo {
                     name: container.name.clone(),
                     original_image: image.clone(),
@@ -3228,6 +3244,7 @@ impl KubeManager {
                     memory_limit,
                     env_vars: vec![],
                     original_env_vars: vec![],
+                    ports,
                 })
             })
             .collect()

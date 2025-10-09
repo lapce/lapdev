@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 use crate::tunnel::TunnelRegistry;
 
-
 /// KubeClusterServer is the central server where
 /// KubeManager and KubeCli connects to
 #[derive(Clone)]

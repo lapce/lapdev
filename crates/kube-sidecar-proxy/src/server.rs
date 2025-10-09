@@ -11,7 +11,7 @@ use anyhow::anyhow;
 use futures::StreamExt;
 use kube::Client;
 use lapdev_common::kube::{SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR};
-use lapdev_kube_rpc::{SidecarProxyManagerRpcClient, SidecarProxyRpc, http_parser};
+use lapdev_kube_rpc::{http_parser, SidecarProxyManagerRpcClient, SidecarProxyRpc};
 use lapdev_rpc::spawn_twoway;
 use std::{io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
@@ -317,7 +317,6 @@ async fn handle_connection(
     }
 }
 
-
 /// Handle HTTP proxying with OpenTelemetry header parsing and intelligent routing
 async fn handle_http_proxy(
     mut inbound_stream: TcpStream,
@@ -325,7 +324,12 @@ async fn handle_http_proxy(
     mut initial_data: Vec<u8>,
 ) -> io::Result<()> {
     // Try to parse the HTTP request, reading more data if needed
-    let (http_request, _body_start) = match http_parser::parse_complete_http_request(&mut inbound_stream, &mut initial_data).await {
+    let (http_request, _body_start) = match http_parser::parse_complete_http_request(
+        &mut inbound_stream,
+        &mut initial_data,
+    )
+    .await
+    {
         Ok(parsed) => parsed,
         Err(e) => {
             warn!(

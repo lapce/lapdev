@@ -8,7 +8,10 @@ use futures::{
     stream::{SplitSink, SplitStream},
     Sink, Stream, StreamExt,
 };
-use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpStream};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+};
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream};
 use tokio_util::io::{CopyToBytes, SinkWriter, StreamReader};
 

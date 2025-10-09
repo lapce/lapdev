@@ -34,8 +34,16 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(KubeCluster::Status).string())
                     .col(ColumnDef::new(KubeCluster::Region).string())
                     .col(ColumnDef::new(KubeCluster::LastReportedAt).timestamp_with_time_zone())
-                    .col(ColumnDef::new(KubeCluster::CanDeployPersonal).boolean().not_null())
-                    .col(ColumnDef::new(KubeCluster::CanDeployShared).boolean().not_null())
+                    .col(
+                        ColumnDef::new(KubeCluster::CanDeployPersonal)
+                            .boolean()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(KubeCluster::CanDeployShared)
+                            .boolean()
+                            .not_null(),
+                    )
                     .to_owned(),
             )
             .await?;

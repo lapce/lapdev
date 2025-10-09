@@ -4,6 +4,10 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
+    devbox::{
+        DevboxPortMappingOverride, DevboxStartWorkloadInterceptResponse,
+        DevboxWorkloadInterceptListResponse, DevboxWorkloadInterceptSummary,
+    },
     kube::{
         KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeEnvironment,
         KubeEnvironmentService, KubeEnvironmentWorkload,
@@ -117,6 +121,32 @@ async fn get_environment_preview_urls(
         .await??)
 }
 
+async fn get_environment_intercepts(
+    environment_id: Uuid,
+) -> Result<Vec<DevboxWorkloadInterceptSummary>> {
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+    let response = client.devbox_intercept_list(environment_id).await??;
+    Ok(response.intercepts)
+}
+
+async fn start_workload_intercept(
+    workload_id: Uuid,
+    port_mappings: Vec<DevboxPortMappingOverride>,
+    start_intercept_modal_open: RwSignal<bool>,
+    update_counter: RwSignal<usize>,
+) -> Result<(), ErrorResponse> {
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .devbox_intercept_start(workload_id, port_mappings)
+        .await??;
+
+    start_intercept_modal_open.set(false);
+    update_counter.update(|c| *c += 1);
+
+    Ok(())
+}
+
 async fn delete_environment(
     org: Signal<Option<Organization>>,
     environment_id: Uuid,
@@ -199,6 +229,19 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         let result = get_environment_detail(org, environment_id).await.ok();
         if let Some(env) = result.as_ref() {
             config.current_page.set(env.name.clone());
+            config.header_links.update(|header_links| {
+                if let Some((name, link)) = header_links.first_mut() {
+                    let (t, l) = if env.base_environment_id.is_some() {
+                        ("Branch", "branch")
+                    } else if env.is_shared {
+                        ("Shared", "shared")
+                    } else {
+                        ("Personal", "personal")
+                    };
+                    *name = format!("{t} Environments");
+                    *link = format!("/kubernetes/environments/{l}");
+                }
+            });
         }
         is_loading.set(false);
         result
@@ -233,10 +276,20 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
+    let intercepts_result = LocalResource::new(move || {
+        update_counter.track();
+        async move {
+            get_environment_intercepts(environment_id)
+                .await
+                .unwrap_or_else(|_| vec![])
+        }
+    });
+
     let environment_info = Signal::derive(move || environment_result.get().flatten());
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
     let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
     let all_preview_urls = Signal::derive(move || preview_urls_result.get().unwrap_or_default());
+    let all_intercepts = Signal::derive(move || intercepts_result.get().unwrap_or_default());
 
     // Filter workloads based on search query
     let filtered_workloads = Signal::derive(move || {
@@ -341,6 +394,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     all_workloads
                     all_services
                     all_preview_urls
+                    all_intercepts
                     update_counter
                 />
             </Show>
@@ -642,6 +696,7 @@ pub fn EnvironmentResourcesTabs(
     all_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
     all_services: Signal<Vec<KubeEnvironmentService>>,
     all_preview_urls: Signal<Vec<lapdev_common::kube::KubeEnvironmentPreviewUrl>>,
+    all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
@@ -674,6 +729,7 @@ pub fn EnvironmentResourcesTabs(
                     search_query
                     debounced_search
                     all_workloads
+                    all_intercepts
                     update_counter
                 />
             </TabsContent>
@@ -705,6 +761,7 @@ pub fn EnvironmentWorkloadsContent(
     search_query: RwSignal<String>,
     debounced_search: RwSignal<String>,
     all_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
+    all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
@@ -730,6 +787,7 @@ pub fn EnvironmentWorkloadsContent(
                                 <TableHead>Namespace</TableHead>
                                 <TableHead>Kind</TableHead>
                                 <TableHead>Containers</TableHead>
+                                <TableHead>Intercepts</TableHead>
                                 <TableHead>Created</TableHead>
                                 <TableHead>Actions</TableHead>
                             </TableRow>
@@ -739,7 +797,7 @@ pub fn EnvironmentWorkloadsContent(
                                 each=move || filtered_workloads.get()
                                 key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
                                 children=move |workload| {
-                                    view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() update_counter /> }
+                                    view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts update_counter /> }
                                 }
                             />
                         </TableBody>
@@ -798,53 +856,147 @@ pub fn EnvironmentWorkloadsContent(
 pub fn EnvironmentWorkloadItem(
     environment_id: Uuid,
     workload: KubeEnvironmentWorkload,
+    all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
+    let workload_id = workload.id;
+    let workload_name = workload.name.clone();
+    let start_intercept_modal_open = RwSignal::new(false);
+
+    // Find intercepts for this workload
+    let workload_intercepts = Signal::derive(move || {
+        all_intercepts
+            .get()
+            .into_iter()
+            .filter(|intercept| intercept.workload_id == workload_id)
+            .collect::<Vec<_>>()
+    });
+
+    let start_intercept_action = Action::new_local(
+        move |(port_mappings,): &(Vec<DevboxPortMappingOverride>,)| {
+            let port_mappings = port_mappings.clone();
+            async move {
+                start_workload_intercept(
+                    workload_id,
+                    port_mappings,
+                    start_intercept_modal_open,
+                    update_counter,
+                )
+                .await
+            }
+        },
+    );
+
     view! {
-        <TableRow>
-            <TableCell>
-                <a href=format!("/kubernetes/environments/{}/workloads/{}", environment_id, workload.id)>
-                    <Button variant=ButtonVariant::Link class="p-0">
-                        <span class="font-medium">{workload.name}</span>
-                    </Button>
-                </a>
-            </TableCell>
-            <TableCell>
-                <Badge variant=BadgeVariant::Secondary>
-                    {workload.namespace}
-                </Badge>
-            </TableCell>
-            <TableCell>
-                <Badge variant=BadgeVariant::Outline>
-                    {workload.kind.to_string()}
-                </Badge>
-            </TableCell>
-            <TableCell>
-                <div class="text-sm flex flex-col gap-2">
-                    {
-                        let containers = workload.containers.clone();
-                        containers.iter().map(|container| {
+        <>
+            <TableRow>
+                <TableCell>
+                    <a href=format!("/kubernetes/environments/{}/workloads/{}", environment_id, workload.id)>
+                        <Button variant=ButtonVariant::Link class="p-0">
+                            <span class="font-medium">{workload.name}</span>
+                        </Button>
+                    </a>
+                </TableCell>
+                <TableCell>
+                    <Badge variant=BadgeVariant::Secondary>
+                        {workload.namespace}
+                    </Badge>
+                </TableCell>
+                <TableCell>
+                    <Badge variant=BadgeVariant::Outline>
+                        {workload.kind.to_string()}
+                    </Badge>
+                </TableCell>
+                <TableCell>
+                    <div class="text-sm flex flex-col gap-2">
+                        {
+                            let containers = workload.containers.clone();
+                            containers.iter().map(|container| {
+                                view! {
+                                    <ContainerDisplay
+                                        container=container.clone()
+                                    />
+                                }
+                            }).collect::<Vec<_>>()
+                        }
+                        {if workload.containers.clone().is_empty() {
+                            view! { <span class="text-muted-foreground">"No containers"</span> }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </div>
+                </TableCell>
+                <TableCell>
+                    {move || {
+                        let intercepts = workload_intercepts.get();
+                        if intercepts.is_empty() {
                             view! {
-                                <ContainerDisplay
-                                    container=container.clone()
-                                />
-                            }
-                        }).collect::<Vec<_>>()
-                    }
-                    {if workload.containers.clone().is_empty() {
-                        view! { <span class="text-muted-foreground">"No containers"</span> }.into_any()
-                    } else {
-                        ().into_any()
+                                <Button
+                                    variant=ButtonVariant::Outline
+                                    size=ButtonSize::Sm
+                                    on:click=move |_| start_intercept_modal_open.set(true)
+                                >
+                                    <lucide_leptos::Cable />
+                                    "Start Intercept"
+                                </Button>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <div class="flex flex-col gap-2">
+                                    {intercepts.into_iter().map(|intercept| {
+                                        let port_list = intercept.port_mappings
+                                            .iter()
+                                            .map(|pm| format!("{}→{}", pm.local_port, pm.workload_port))
+                                            .collect::<Vec<_>>()
+                                            .join(", ");
+
+                                        view! {
+                                            <div class="flex flex-col gap-1 p-2 bg-blue-50 dark:bg-blue-950/20 rounded border border-blue-200 dark:border-blue-900">
+                                                <div class="flex items-center gap-2">
+                                                    <lucide_leptos::Monitor attr:class="h-3 w-3 text-blue-700 dark:text-blue-400" />
+                                                    <span class="font-medium text-sm text-blue-900 dark:text-blue-200">
+                                                        {intercept.device_name.clone()}
+                                                    </span>
+                                                    {if intercept.restored_at.is_some() {
+                                                        view! {
+                                                            <Badge variant=BadgeVariant::Secondary class="text-xs">
+                                                                "Restored"
+                                                            </Badge>
+                                                        }.into_any()
+                                                    } else {
+                                                        view! {
+                                                            <Badge variant=BadgeVariant::Secondary class="text-xs bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                                                                "Active"
+                                                            </Badge>
+                                                        }.into_any()
+                                                    }}
+                                                </div>
+                                                <div class="text-xs text-blue-800 dark:text-blue-300 font-mono">
+                                                    {port_list}
+                                                </div>
+                                            </div>
+                                        }
+                                    }).collect::<Vec<_>>()}
+                                </div>
+                            }.into_any()
+                        }
                     }}
-                </div>
-            </TableCell>
-            <TableCell>
-                <DatetimeModal time=workload.created_at />
-            </TableCell>
-            <TableCell>
-                // Actions removed - workload deletion is no longer available
-            </TableCell>
-        </TableRow>
+                </TableCell>
+                <TableCell>
+                    <DatetimeModal time=workload.created_at />
+                </TableCell>
+                <TableCell>
+                    // Actions removed - workload deletion is no longer available
+                </TableCell>
+            </TableRow>
+
+            // Start Intercept Modal
+            <StartInterceptModal
+                open=start_intercept_modal_open
+                workload_name=workload_name
+                start_intercept_action
+            />
+        </>
     }
 }
 
@@ -1064,6 +1216,207 @@ pub fn CreateBranchEnvironmentModal(
                     <P class="text-sm text-muted-foreground">
                         "A new environment will be created based on this environment's configuration."
                     </P>
+                </div>
+            </div>
+        </Modal>
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PortMappingRow {
+    id: usize,
+    workload_port: RwSignal<String>,
+    local_port: RwSignal<String>,
+}
+
+#[component]
+pub fn StartInterceptModal(
+    open: RwSignal<bool>,
+    workload_name: String,
+    start_intercept_action: Action<(Vec<DevboxPortMappingOverride>,), Result<(), ErrorResponse>>,
+) -> impl IntoView {
+    let port_mappings = RwSignal::new(vec![PortMappingRow {
+        id: 0,
+        workload_port: RwSignal::new(String::new()),
+        local_port: RwSignal::new(String::new()),
+    }]);
+    let next_id = RwSignal::new(1usize);
+
+    // Reset form when modal opens/closes
+    // Effect::new(move |_| {
+    //     if !open.get() {
+    //         port_mappings.set(vec![PortMappingRow {
+    //             id: 0,
+    //             workload_port: RwSignal::new(String::new()),
+    //             local_port: RwSignal::new(String::new()),
+    //         }]);
+    //         next_id.set(1);
+    //     }
+    // });
+
+    let add_port_mapping = move |_| {
+        let id = next_id.get();
+        next_id.set(id + 1);
+        port_mappings.update(|mappings| {
+            mappings.push(PortMappingRow {
+                id,
+                workload_port: RwSignal::new(String::new()),
+                local_port: RwSignal::new(String::new()),
+            });
+        });
+    };
+
+    let remove_port_mapping = move |id: usize| {
+        port_mappings.update(|mappings| {
+            mappings.retain(|m| m.id != id);
+        });
+    };
+
+    // Custom action wrapper that validates and transforms the port mappings
+    let wrapped_action = Action::new_local(move |_| async move {
+        let mappings = port_mappings.get();
+        let mut port_overrides = Vec::new();
+
+        for mapping in mappings {
+            let workload_port_str = mapping.workload_port.get().trim().to_string();
+            let local_port_str = mapping.local_port.get().trim().to_string();
+
+            if workload_port_str.is_empty() {
+                return Err(ErrorResponse {
+                    error: "Workload port is required for all port mappings".to_string(),
+                });
+            }
+
+            let workload_port: u16 = workload_port_str.parse().map_err(|_| ErrorResponse {
+                error: format!("Invalid workload port: {}", workload_port_str),
+            })?;
+
+            let local_port: Option<u16> = if local_port_str.is_empty() {
+                None
+            } else {
+                Some(local_port_str.parse().map_err(|_| ErrorResponse {
+                    error: format!("Invalid local port: {}", local_port_str),
+                })?)
+            };
+
+            port_overrides.push(DevboxPortMappingOverride {
+                workload_port,
+                local_port,
+            });
+        }
+
+        if port_overrides.is_empty() {
+            return Err(ErrorResponse {
+                error: "At least one port mapping is required".to_string(),
+            });
+        }
+
+        start_intercept_action.dispatch((port_overrides,));
+        Ok(())
+    });
+
+    view! {
+        <Modal
+            open=open
+            action=wrapped_action
+            title="Start Workload Intercept"
+            action_text="Start Intercept"
+            action_progress_text="Starting..."
+        >
+            <div class="flex flex-col gap-4">
+                <P class="text-sm text-muted-foreground">
+                    {format!("Configure port mappings to intercept traffic for workload: {}", workload_name)}
+                </P>
+
+                <div class="flex flex-col gap-3">
+                    <div class="flex items-center justify-between">
+                        <Label>"Port Mappings"</Label>
+                        <Button
+                            variant=ButtonVariant::Outline
+                            size=ButtonSize::Sm
+                            on:click=add_port_mapping
+                        >
+                            <lucide_leptos::Plus attr:class="h-4 w-4" />
+                            "Add Port"
+                        </Button>
+                    </div>
+
+                    <For
+                        each=move || port_mappings.get()
+                        key=|mapping| mapping.id
+                        children=move |mapping: PortMappingRow| {
+                            let mapping_id = mapping.id;
+                            let can_remove = Signal::derive(move || port_mappings.get().len() > 1);
+
+                            view! {
+                                <div class="flex gap-2 items-end">
+                                    <div class="flex-1">
+                                        <Label for_=format!("workload-port-{}", mapping_id)>
+                                            "Workload Port"
+                                            <span class="text-destructive ml-1">*</span>
+                                        </Label>
+                                        <Input
+                                            attr:id=format!("workload-port-{}", mapping_id)
+                                            attr:r#type="number"
+                                            attr:min="1"
+                                            attr:max="65535"
+                                            prop:value=move || mapping.workload_port.get()
+                                            on:input=move |ev| {
+                                                mapping.workload_port.set(event_target_value(&ev));
+                                            }
+                                            attr:placeholder="e.g. 8080"
+                                        />
+                                    </div>
+                                    <div class="flex-1">
+                                        <Label for_=format!("local-port-{}", mapping_id)>
+                                            "Local Port (optional)"
+                                        </Label>
+                                        <Input
+                                            attr:id=format!("local-port-{}", mapping_id)
+                                            attr:r#type="number"
+                                            attr:min="1"
+                                            attr:max="65535"
+                                            prop:value=move || mapping.local_port.get()
+                                            on:input=move |ev| {
+                                                mapping.local_port.set(event_target_value(&ev));
+                                            }
+                                            attr:placeholder="Auto-assign if empty"
+                                        />
+                                    </div>
+                                    {move || {
+                                        if can_remove.get() {
+                                            view! {
+                                                <Button
+                                                    variant=ButtonVariant::Outline
+                                                    size=ButtonSize::Sm
+                                                    on:click=move |_| remove_port_mapping(mapping_id)
+                                                    class="mb-0"
+                                                >
+                                                    <lucide_leptos::Trash2 attr:class="h-4 w-4" />
+                                                </Button>
+                                            }.into_any()
+                                        } else {
+                                            view! { <div class="w-9"></div> }.into_any()
+                                        }
+                                    }}
+                                </div>
+                            }
+                        }
+                    />
+                </div>
+
+                <div class="text-xs text-muted-foreground bg-muted/30 p-3 rounded">
+                    <div class="flex gap-2 mb-2">
+                        <lucide_leptos::Info attr:class="h-4 w-4 shrink-0 mt-0.5" />
+                        <div class="flex flex-col gap-1">
+                            <span class="font-medium">"How it works:"</span>
+                            <ul class="list-disc list-inside space-y-1">
+                                <li>"Workload Port: The port on the Kubernetes workload to intercept"</li>
+                                <li>"Local Port: The port on your local machine (auto-assigned if not specified)"</li>
+                                <li>"Traffic to the workload will be redirected to your local devbox session"</li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
             </div>
         </Modal>

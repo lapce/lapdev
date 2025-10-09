@@ -8,11 +8,12 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub session_id: Uuid,
+    pub user_id: Uuid,
     pub environment_id: Uuid,
     pub workload_id: Uuid,
     pub port_mappings: Json,
     pub created_at: DateTimeWithTimeZone,
-    pub stopped_at: Option<DateTimeWithTimeZone>,
+    pub restored_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -25,6 +26,14 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     Session,
+    #[sea_orm(
+        belongs_to = "super::user::Entity",
+        from = "Column::UserId",
+        to = "super::user::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    User,
     #[sea_orm(
         belongs_to = "super::kube_environment::Entity",
         from = "Column::EnvironmentId",
@@ -52,6 +61,12 @@ impl Related<super::kube_devbox_session::Entity> for Entity {
 impl Related<super::kube_environment::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Environment.def()
+    }
+}
+
+impl Related<super::user::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::User.def()
     }
 }
 

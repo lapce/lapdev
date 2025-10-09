@@ -53,48 +53,55 @@ impl PreviewUrlResolver {
 
     /// Parse subdomain format: service-port-hash.app.lap.dev
     pub fn parse_preview_url(subdomain: &str) -> Result<PreviewUrlInfo, PreviewUrlError> {
-        // Expected format: "webapp-8080-abc123" 
+        // Expected format: "webapp-8080-abc123"
         let parts: Vec<&str> = subdomain.split('-').collect();
         if parts.len() < 3 {
             return Err(PreviewUrlError::InvalidFormat);
         }
-        
-        let service_name = parts[0..parts.len()-2].join("-"); // Handle multi-part service names
-        let port: u16 = parts[parts.len()-2].parse()
+
+        let service_name = parts[0..parts.len() - 2].join("-"); // Handle multi-part service names
+        let port: u16 = parts[parts.len() - 2]
+            .parse()
             .map_err(|_| PreviewUrlError::InvalidPort)?;
-        let env_hash = parts[parts.len()-1];
-        
+        let env_hash = parts[parts.len() - 1];
+
         Ok(PreviewUrlInfo {
             service_name,
             port,
             environment_hash: env_hash.to_string(),
         })
     }
-    
+
     /// Resolve preview URL to target using existing database entities
-    pub async fn resolve_preview_url(&self, info: PreviewUrlInfo) -> Result<PreviewUrlTarget, PreviewUrlError> {
+    pub async fn resolve_preview_url(
+        &self,
+        info: PreviewUrlInfo,
+    ) -> Result<PreviewUrlTarget, PreviewUrlError> {
         // 1. Find environment by hash (using name field as hash for now)
-        let environment = self.db.find_environment_by_hash(&info.environment_hash).await?
+        let environment = self
+            .db
+            .find_environment_by_hash(&info.environment_hash)
+            .await?
             .ok_or(PreviewUrlError::EnvironmentNotFound)?;
-            
+
         // 2. Find matching service in kube_environment_service table
-        let service = self.db.find_environment_service(
-            environment.id,
-            &info.service_name
-        ).await?
+        let service = self
+            .db
+            .find_environment_service(environment.id, &info.service_name)
+            .await?
             .ok_or(PreviewUrlError::ServiceNotFound)?;
-        
+
         // 3. Find preview URL configuration in kube_environment_preview_url table
-        let preview_url = self.db.find_preview_url_by_service_port(
-            environment.id,
-            service.id,
-            info.port as i32
-        ).await?
+        let preview_url = self
+            .db
+            .find_preview_url_by_service_port(environment.id, service.id, info.port as i32)
+            .await?
             .ok_or(PreviewUrlError::PreviewUrlNotConfigured)?;
-        
+
         // 4. Validate access level and permissions (basic validation)
-        self.validate_access_level(&preview_url.access_level).await?;
-        
+        self.validate_access_level(&preview_url.access_level)
+            .await?;
+
         Ok(PreviewUrlTarget {
             cluster_id: environment.cluster_id,
             namespace: environment.namespace,
@@ -106,17 +113,22 @@ impl PreviewUrlResolver {
             preview_url_id: preview_url.id,
         })
     }
-    
+
     async fn validate_access_level(&self, access_level: &str) -> Result<(), PreviewUrlError> {
         match access_level {
             "public" | "shared" | "personal" => Ok(()),
             _ => Err(PreviewUrlError::AccessDenied),
         }
     }
-    
+
     /// Update last accessed timestamp for the preview URL
-    pub async fn update_preview_url_access(&self, preview_url_id: Uuid) -> Result<(), PreviewUrlError> {
-        self.db.update_preview_url_access(preview_url_id).await
+    pub async fn update_preview_url_access(
+        &self,
+        preview_url_id: Uuid,
+    ) -> Result<(), PreviewUrlError> {
+        self.db
+            .update_preview_url_access(preview_url_id)
+            .await
             .map_err(PreviewUrlError::SeaOrm)
     }
 }

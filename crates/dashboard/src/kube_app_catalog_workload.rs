@@ -4,9 +4,7 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{
-        KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo,
-    },
+    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo},
 };
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -195,7 +193,7 @@ pub fn WorkloadDetail(catalog_id: Uuid, workload_id: Uuid) -> impl IntoView {
                                 update_workload_containers(org, workload_id, containers, update_counter).await
                             }
                         });
-                        
+
                         let config = ContainerEditorConfig {
                             enable_resource_limits: true,
                             show_customization_badge: false,
@@ -344,5 +342,3 @@ pub fn WorkloadInfoCard(
         }}
     }
 }
-
-

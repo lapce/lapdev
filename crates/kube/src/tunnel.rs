@@ -9,10 +9,22 @@ pub type ServerTunnelMessageSender = mpsc::UnboundedSender<ServerTunnelMessage>;
 
 #[derive(Debug)]
 pub enum TunnelResponse {
-    ConnectionOpened { tunnel_id: String, local_addr: String },
-    ConnectionFailed { tunnel_id: String, error: String },
-    Data { tunnel_id: String, payload: Vec<u8> },
-    ConnectionClosed { tunnel_id: String, bytes_transferred: u64 },
+    ConnectionOpened {
+        tunnel_id: String,
+        local_addr: String,
+    },
+    ConnectionFailed {
+        tunnel_id: String,
+        error: String,
+    },
+    Data {
+        tunnel_id: String,
+        payload: Vec<u8>,
+    },
+    ConnectionClosed {
+        tunnel_id: String,
+        bytes_transferred: u64,
+    },
 }
 
 pub type TunnelResponseSender = oneshot::Sender<TunnelResponse>;
@@ -130,7 +142,7 @@ impl TunnelRegistry {
 
         // Create response channel
         let (response_tx, response_rx) = oneshot::channel();
-        
+
         // Register the response channel
         {
             let mut pending = self.pending_responses.write().await;
@@ -166,29 +178,45 @@ impl TunnelRegistry {
     /// Handle incoming tunnel message from KubeManager
     pub async fn handle_client_message(&self, message: ClientTunnelMessage) {
         match message {
-            ClientTunnelMessage::ConnectionOpened { tunnel_id, local_addr } => {
+            ClientTunnelMessage::ConnectionOpened {
+                tunnel_id,
+                local_addr,
+            } => {
                 if let Some(sender) = self.pending_responses.write().await.remove(&tunnel_id) {
-                    let _ = sender.send(TunnelResponse::ConnectionOpened { tunnel_id, local_addr });
+                    let _ = sender.send(TunnelResponse::ConnectionOpened {
+                        tunnel_id,
+                        local_addr,
+                    });
                 }
             }
-            ClientTunnelMessage::ConnectionFailed { tunnel_id, error, .. } => {
+            ClientTunnelMessage::ConnectionFailed {
+                tunnel_id, error, ..
+            } => {
                 if let Some(sender) = self.pending_responses.write().await.remove(&tunnel_id) {
                     let _ = sender.send(TunnelResponse::ConnectionFailed { tunnel_id, error });
                 }
             }
-            ClientTunnelMessage::Data { tunnel_id, payload, .. } => {
+            ClientTunnelMessage::Data {
+                tunnel_id, payload, ..
+            } => {
                 // Send data to the appropriate data channel
                 let data_channels = self.tunnel_data_channels.read().await;
                 if let Some(data_sender) = data_channels.get(&tunnel_id) {
                     let _ = data_sender.send(payload);
                 }
             }
-            ClientTunnelMessage::ConnectionClosed { tunnel_id, bytes_transferred } => {
+            ClientTunnelMessage::ConnectionClosed {
+                tunnel_id,
+                bytes_transferred,
+            } => {
                 // Clean up data channel
                 self.tunnel_data_channels.write().await.remove(&tunnel_id);
                 // Notify if there's a pending response
                 if let Some(sender) = self.pending_responses.write().await.remove(&tunnel_id) {
-                    let _ = sender.send(TunnelResponse::ConnectionClosed { tunnel_id, bytes_transferred });
+                    let _ = sender.send(TunnelResponse::ConnectionClosed {
+                        tunnel_id,
+                        bytes_transferred,
+                    });
                 }
             }
             _ => {

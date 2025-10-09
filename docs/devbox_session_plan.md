@@ -19,7 +19,6 @@ Out-of-scope for this revision: tunnel framing/data-plane protocol details (see 
 |-------|------|-------|
 | `id` | UUID PK | Generated at creation |
 | `user_id` | UUID FK `users` | Session owner |
-| `oauth_connection_id` | UUID FK | Source identity used during login |
 | `session_token_hash` | TEXT | SHA-256 hash of PASETO token |
 | `token_prefix` | TEXT | First 12 characters of token for support tooling |
 | `device_name` | TEXT | Friendly label displayed in UI |
@@ -31,7 +30,7 @@ Out-of-scope for this revision: tunnel framing/data-plane protocol details (see 
 
 Constraints & indexes:
 - Unique partial index on `(user_id)` where `revoked_at IS NULL` ensures one active session per user.
-- Secondary indexes on `oauth_connection_id`, `active_environment_id`, `expires_at`, and `session_token_hash` for lookups.
+- Secondary indexes on `active_environment_id`, `expires_at`, and `session_token_hash` for lookups.
 
 ### kube_devbox_workload_intercept
 

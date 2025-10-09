@@ -1,9 +1,18 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use futures::StreamExt;
-use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest};
+use lapdev_devbox_rpc::{
+    DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest, WorkloadInterceptInfo,
+};
 use lapdev_rpc::spawn_twoway;
+use std::{collections::HashMap, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
+use tokio::{
+    net::TcpListener,
+    signal,
+    sync::{mpsc, oneshot, Mutex},
+    task::JoinHandle,
+};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
@@ -59,12 +68,16 @@ pub async fn execute(api_url: &str) -> Result<()> {
         tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
     let (server_chan, client_chan, _abort_handle) = spawn_twoway(transport);
 
+    let intercept_manager = Arc::new(InterceptManager::new());
+    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<ShutdownSignal>();
+
     // Create RPC client (for calling server methods)
     let rpc_client =
         DevboxSessionRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
     // Create RPC server (for server to call us)
-    let client_rpc_server = DevboxClientRpcServer::new();
+    let client_rpc_server =
+        DevboxClientRpcServer::new(intercept_manager.clone(), shutdown_tx.clone());
 
     // Spawn the RPC server task
     let server_task = tokio::spawn(async move {
@@ -79,43 +92,140 @@ pub async fn execute(api_url: &str) -> Result<()> {
     });
 
     // Call whoami to get session info
-    match rpc_client
+    let session_info = match rpc_client
         .whoami(tarpc::context::current())
         .await
         .context("RPC call failed")?
     {
-        Ok(session_info) => {
+        Ok(info) => {
             println!(
                 "{} Connected as {} ({})",
                 "✓".green(),
-                session_info.email.bright_white().bold(),
-                session_info.device_name.cyan()
+                info.email.bright_white().bold(),
+                info.device_name.cyan()
             );
             println!(
                 "  Session expires: {}",
-                session_info
-                    .expires_at
+                info.expires_at
                     .format("%Y-%m-%d %H:%M:%S UTC")
                     .to_string()
                     .dimmed()
             );
+            info
         }
         Err(e) => {
             eprintln!("{} Failed to get session info: {}", "✗".red(), e);
             return Err(anyhow::anyhow!("Authentication failed: {}", e));
         }
-    }
+    };
 
-    // TODO: Get active environment
-    // TODO: List current intercepts and replay them
-    // TODO: Handle Ctrl+C for graceful shutdown
-    // TODO: Add reconnection logic
+    // Attempt to rehydrate active environment and intercepts
+    let active_environment = match rpc_client
+        .get_active_environment(tarpc::context::current())
+        .await
+        .context("RPC call failed")?
+    {
+        Ok(Some(env)) => {
+            println!(
+                "  Active environment: {} / {}",
+                env.cluster_name.bright_white(),
+                env.namespace.cyan()
+            );
+            Some(env)
+        }
+        Ok(None) => {
+            println!("{} No active environment selected", "ℹ".blue());
+            None
+        }
+        Err(err) => {
+            eprintln!(
+                "{} Failed to fetch active environment: {}",
+                "⚠".yellow(),
+                err
+            );
+            None
+        }
+    };
+
+    if let Some(env) = active_environment.clone() {
+        match rpc_client
+            .list_workload_intercepts(tarpc::context::current(), env.environment_id)
+            .await
+            .context("RPC call failed")?
+        {
+            Ok(intercepts) => {
+                for intercept in intercepts {
+                    if intercept.device_name != session_info.device_name {
+                        continue;
+                    }
+
+                    let request = StartInterceptRequest {
+                        intercept_id: intercept.intercept_id,
+                        workload_id: intercept.workload_id,
+                        workload_name: intercept.workload_name.clone(),
+                        namespace: intercept.namespace.clone(),
+                        port_mappings: intercept.port_mappings.clone(),
+                    };
+
+                    match intercept_manager.start(request).await {
+                        Ok(port_count) => {
+                            println!(
+                                "  {} Rehydrated intercept for {}/{} ({} port(s))",
+                                "↻".green(),
+                                intercept.namespace.bright_white(),
+                                intercept.workload_name.cyan(),
+                                port_count
+                            );
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "{} Failed to rehydrate intercept {}: {}",
+                                "✗".red(),
+                                intercept.intercept_id,
+                                err
+                            );
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("{} Failed to list intercepts: {}", "⚠".yellow(), err);
+            }
+        }
+    }
 
     println!("{}", "\n👂 Listening for intercept requests...".cyan());
     println!("{}", "Press Ctrl+C to disconnect".dimmed());
 
-    // Wait for server task
-    server_task.await.context("Server task failed")?;
+    let mut server_task = server_task;
+
+    tokio::select! {
+        res = &mut server_task => {
+            res.context("Devbox RPC server task failed")?;
+        }
+        _ = signal::ctrl_c() => {
+            println!("\n{}", "Received Ctrl+C, disconnecting...".yellow());
+        }
+        maybe_signal = shutdown_rx.recv() => {
+            if let Some(signal) = maybe_signal {
+                match signal {
+                    ShutdownSignal::Displaced(device) => {
+                        println!(
+                            "\n{} Session displaced by new login from: {}",
+                            "⚠".yellow(),
+                            device.bright_white()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    intercept_manager.stop_all().await;
+
+    if !server_task.is_finished() {
+        server_task.abort();
+    }
 
     Ok(())
 }
@@ -124,12 +234,19 @@ pub async fn execute(api_url: &str) -> Result<()> {
 /// This handles incoming calls from the server
 #[derive(Clone)]
 struct DevboxClientRpcServer {
-    // TODO: Add intercept manager state
+    manager: Arc<InterceptManager>,
+    shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
 }
 
 impl DevboxClientRpcServer {
-    fn new() -> Self {
-        Self {}
+    fn new(
+        manager: Arc<InterceptManager>,
+        shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
+    ) -> Self {
+        Self {
+            manager,
+            shutdown_tx,
+        }
     }
 }
 
@@ -156,13 +273,21 @@ impl DevboxClientRpc for DevboxClientRpcServer {
             );
         }
 
-        // TODO: Implement actual port forwarding
-        // For now, just acknowledge receipt
+        let mapping_count = intercept.port_mappings.len();
+
         tracing::info!(
-            "Received start_intercept request for {}/{} with {} port mappings",
-            intercept.namespace,
-            intercept.workload_name,
-            intercept.port_mappings.len()
+            "Applying intercept {} with {} port mappings",
+            intercept.intercept_id,
+            mapping_count
+        );
+
+        let manager = self.manager;
+        let port_count = manager.start(intercept).await?;
+
+        println!(
+            "  {} Intercept listeners active on {} port(s)",
+            "✓".green(),
+            port_count
         );
 
         Ok(())
@@ -174,27 +299,200 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         intercept_id: Uuid,
     ) -> Result<(), String> {
         println!("{} Stopping intercept: {}", "✗".yellow(), intercept_id);
-
-        // TODO: Implement actual cleanup
-        tracing::info!("Received stop_intercept request for {}", intercept_id);
-
-        Ok(())
+        let manager = self.manager;
+        manager.stop(intercept_id).await
     }
 
     async fn session_displaced(self, _context: tarpc::context::Context, new_device_name: String) {
-        println!(
-            "\n{} Session displaced by new login from: {}",
-            "⚠".yellow(),
-            new_device_name.bright_white()
-        );
-        println!("{}", "Disconnecting...".dimmed());
+        let manager = self.manager;
+        let shutdown_tx = self.shutdown_tx;
 
-        // TODO: Gracefully shutdown
+        manager.stop_all().await;
+        let _ = shutdown_tx.send(ShutdownSignal::Displaced(new_device_name.clone()));
+
         tracing::warn!("Session displaced by: {}", new_device_name);
     }
 
     async fn ping(self, _context: tarpc::context::Context) -> Result<(), String> {
         tracing::trace!("Received ping");
         Ok(())
+    }
+}
+
+enum ShutdownSignal {
+    Displaced(String),
+}
+
+#[derive(Default)]
+struct InterceptManager {
+    intercepts: Mutex<HashMap<Uuid, InterceptHandle>>,
+}
+
+impl InterceptManager {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    async fn start(&self, intercept: StartInterceptRequest) -> Result<usize, String> {
+        let previous = {
+            let mut intercepts = self.intercepts.lock().await;
+            intercepts.remove(&intercept.intercept_id)
+        };
+
+        if let Some(handle) = previous {
+            handle.shutdown().await;
+        }
+
+        let mut listeners = Vec::new();
+        for mapping in &intercept.port_mappings {
+            match ListenerHandle::new(
+                intercept.intercept_id,
+                &intercept.workload_name,
+                &intercept.namespace,
+                mapping,
+            )
+            .await
+            {
+                Ok(listener) => listeners.push(listener),
+                Err(err) => {
+                    for listener in listeners {
+                        listener.shutdown().await;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        let listener_count = listeners.len();
+
+        let mut intercepts = self.intercepts.lock().await;
+        intercepts.insert(
+            intercept.intercept_id,
+            InterceptHandle {
+                intercept,
+                listeners,
+            },
+        );
+
+        Ok(listener_count)
+    }
+
+    async fn stop(&self, intercept_id: Uuid) -> Result<(), String> {
+        let handle = {
+            let mut intercepts = self.intercepts.lock().await;
+            intercepts.remove(&intercept_id)
+        };
+
+        if let Some(handle) = handle {
+            handle.shutdown().await;
+        }
+
+        Ok(())
+    }
+
+    async fn stop_all(&self) {
+        let handles = {
+            let mut intercepts = self.intercepts.lock().await;
+            intercepts
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>()
+        };
+
+        for handle in handles {
+            handle.shutdown().await;
+        }
+    }
+}
+
+struct InterceptHandle {
+    intercept: StartInterceptRequest,
+    listeners: Vec<ListenerHandle>,
+}
+
+impl InterceptHandle {
+    async fn shutdown(self) {
+        for listener in self.listeners {
+            listener.shutdown().await;
+        }
+    }
+}
+
+struct ListenerHandle {
+    local_port: u16,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
+}
+
+impl ListenerHandle {
+    async fn new(
+        intercept_id: Uuid,
+        workload_name: &str,
+        namespace: &str,
+        mapping: &lapdev_devbox_rpc::PortMapping,
+    ) -> Result<Self, String> {
+        let local_port = mapping.local_port;
+        let workload_port = mapping.workload_port;
+
+        let listener = TcpListener::bind(("127.0.0.1", local_port))
+            .await
+            .map_err(|err| format!("Failed to bind local port {}: {}", local_port, err))?;
+
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+
+        let workload_name = workload_name.to_string();
+        let namespace = namespace.to_string();
+
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => {
+                        tracing::debug!(intercept_id = %intercept_id, port = local_port, "Shutting down intercept listener");
+                        break;
+                    }
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            Ok((stream, addr)) => {
+                                tracing::info!(
+                                    intercept_id = %intercept_id,
+                                    local_port,
+                                    workload_port,
+                                    client = %addr,
+                                    "Accepted connection for {}/{}",
+                                    namespace,
+                                    workload_name
+                                );
+                                drop(stream);
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    intercept_id = %intercept_id,
+                                    port = local_port,
+                                    error = %err,
+                                    "Intercept listener accept failed"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            local_port,
+            shutdown: Some(shutdown_tx),
+            task,
+        })
+    }
+
+    async fn shutdown(mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+
+        if let Err(err) = self.task.await {
+            tracing::debug!(port = self.local_port, error = %err, "Listener task exited with error");
+        }
     }
 }

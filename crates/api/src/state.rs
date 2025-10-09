@@ -373,7 +373,6 @@ impl CoreState {
         }
         Ok((user, project))
     }
-
 }
 
 async fn load_certs(db: &DbApi) -> Result<HashMap<String, Arc<CertifiedKey>>> {
@@ -390,4 +389,3 @@ async fn load_certs(db: &DbApi) -> Result<HashMap<String, Arc<CertifiedKey>>> {
     }
     Ok(final_certs)
 }
-

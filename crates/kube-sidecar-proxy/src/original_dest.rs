@@ -40,7 +40,7 @@ pub fn get_original_destination(stream: &TcpStream) -> io::Result<SocketAddr> {
     // Convert from network byte order
     let port = u16::from_be(addr.sin_port);
     let ip_addr = u32::from_be(addr.sin_addr.s_addr);
-    
+
     let ipv4 = Ipv4Addr::from(ip_addr);
     let socket_addr = SocketAddr::new(IpAddr::V4(ipv4), port);
 

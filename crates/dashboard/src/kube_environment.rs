@@ -2,11 +2,11 @@ use anyhow::{anyhow, Result};
 use chrono::DateTime;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
+use lapdev_common::devbox::DevboxSessionSummary;
 use lapdev_common::kube::{KubeEnvironment, PagePaginationParams, PaginatedInfo, PaginatedResult};
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
 
-use crate::app::AppConfig;
 use crate::{
     component::{
         badge::{Badge, BadgeVariant},
@@ -17,7 +17,6 @@ use crate::{
         },
         pagination::PagePagination,
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
-        tabs::{Tabs, TabsContent, TabsList, TabsTrigger},
         typography::{H3, H4, P},
     },
     modal::DatetimeModal,
@@ -27,18 +26,56 @@ use crate::{
 #[component]
 pub fn KubeEnvironment() -> impl IntoView {
     let update_counter = RwSignal::new_local(0);
+    let location = use_location();
+
+    // Derive environment type from the route
+    let environment_type = Signal::derive(move || {
+        let pathname = location.pathname.get();
+        if pathname.ends_with("/shared") {
+            EnvironmentType::Shared
+        } else if pathname.ends_with("/branch") {
+            EnvironmentType::Branch
+        } else {
+            // Default to Personal for /kubernetes/environments and /kubernetes/environments/personal
+            EnvironmentType::Personal
+        }
+    });
+
+    let title = move || match environment_type.get() {
+        EnvironmentType::Personal => "Personal Environments",
+        EnvironmentType::Shared => "Shared Environments",
+        EnvironmentType::Branch => "Branch Environments",
+    };
+
+    let description = move || match environment_type.get() {
+        EnvironmentType::Personal => {
+            "View and manage your personal Kubernetes development environments."
+        }
+        EnvironmentType::Shared => {
+            "View and manage shared Kubernetes development environments accessible to your team."
+        }
+        EnvironmentType::Branch => {
+            "View and manage branch-based Kubernetes development environments."
+        }
+    };
+
+    // Fetch active devbox session
+    let active_session =
+        LocalResource::new(move || async move { get_active_devbox_session().await.ok().flatten() });
 
     view! {
         <div class="flex flex-col gap-6">
             <div class="flex flex-col gap-2 items-start">
-                <H3>Kubernetes Environments</H3>
-                <P>View and manage your Kubernetes development environments created from app catalogs.</P>
+                <H3>{title}</H3>
+                <P>{description}</P>
                 <a href="https://docs.lap.dev/">
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
                 </a>
             </div>
 
-            <KubeEnvironmentList update_counter />
+            <DevboxSessionBanner active_session />
+
+            <KubeEnvironmentList update_counter environment_type />
         </div>
     }
 }
@@ -57,6 +94,17 @@ async fn all_kube_environments(
         .await??)
 }
 
+async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+    let response = client.devbox_session_list_sessions().await??;
+
+    // Find the active session (not revoked)
+    Ok(response
+        .sessions
+        .into_iter()
+        .find(|s| s.revoked_at.is_none()))
+}
+
 #[derive(Clone, PartialEq)]
 pub enum EnvironmentType {
     Personal,
@@ -65,16 +113,16 @@ pub enum EnvironmentType {
 }
 
 #[component]
-pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> impl IntoView {
+pub fn KubeEnvironmentList(
+    update_counter: RwSignal<usize, LocalStorage>,
+    environment_type: Signal<EnvironmentType>,
+) -> impl IntoView {
     let org = get_current_org();
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     let current_page = RwSignal::new(1usize);
     let page_size = RwSignal::new(20usize);
     let is_loading = RwSignal::new(false);
-
-    let app_config = use_context::<AppConfig>().unwrap();
-    let active_tab = app_config.environment_type;
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -109,9 +157,9 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
     let environments_result = LocalResource::new(move || {
         let search = debounced_search.get();
         let page = current_page.get();
-        let tab = active_tab.get();
-        let is_shared = tab == EnvironmentType::Shared;
-        let is_branch = tab == EnvironmentType::Branch;
+        let env_type = environment_type.get();
+        let is_shared = env_type == EnvironmentType::Shared;
+        let is_branch = env_type == EnvironmentType::Branch;
         let search_param = if search.trim().is_empty() {
             None
         } else {
@@ -161,8 +209,8 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
     });
 
     Effect::new(move |_| {
-        active_tab.track();
-        current_page.set(1); // Reset to first page when tab changes
+        environment_type.track();
+        current_page.set(1); // Reset to first page when environment type changes
         environments_result.refetch();
     });
 
@@ -187,73 +235,17 @@ pub fn KubeEnvironmentList(update_counter: RwSignal<usize, LocalStorage>) -> imp
     let total_pages_signal = Signal::derive(move || pagination_info.with(|i| i.total_pages));
 
     view! {
-        <Tabs default_value=active_tab>
-            <TabsList class="grid w-full grid-cols-3 mb-6">
-                <TabsTrigger
-                    value=EnvironmentType::Personal
-                >
-                    "Personal Environments"
-                </TabsTrigger>
-                <TabsTrigger
-                    value=EnvironmentType::Shared
-                >
-                    "Shared Environments"
-                </TabsTrigger>
-                <TabsTrigger
-                    value=EnvironmentType::Branch
-                >
-                    "Branch Environments"
-                </TabsTrigger>
-            </TabsList>
-
-            <TabsContent
-                value=EnvironmentType::Personal
-            >
-                <EnvironmentContent
-                    search_query
-                    debounced_search
-                    environment_list
-                    pagination_info
-                    current_page_signal
-                    total_pages_signal
-                    current_page
-                    is_loading
-                    page_size
-                />
-            </TabsContent>
-
-            <TabsContent
-                value=EnvironmentType::Shared
-            >
-                <EnvironmentContent
-                    search_query
-                    debounced_search
-                    environment_list
-                    pagination_info
-                    current_page_signal
-                    total_pages_signal
-                    current_page
-                    is_loading
-                    page_size
-                />
-            </TabsContent>
-
-            <TabsContent
-                value=EnvironmentType::Branch
-            >
-                <EnvironmentContent
-                    search_query
-                    debounced_search
-                    environment_list
-                    pagination_info
-                    current_page_signal
-                    total_pages_signal
-                    current_page
-                    is_loading
-                    page_size
-                />
-            </TabsContent>
-        </Tabs>
+        <EnvironmentContent
+            search_query
+            debounced_search
+            environment_list
+            pagination_info
+            current_page_signal
+            total_pages_signal
+            current_page
+            is_loading
+            page_size
+        />
     }
 }
 
@@ -523,5 +515,165 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                 </DropdownMenu>
             </TableCell>
         </TableRow>
+    }
+}
+
+#[component]
+pub fn DevboxSessionBanner(
+    active_session: LocalResource<Option<DevboxSessionSummary>>,
+) -> impl IntoView {
+    let is_expanded = RwSignal::new(false);
+
+    view! {
+        <Suspense fallback=move || view! { <div></div> }>
+            {move || {
+                active_session
+                    .get()
+                    .map(|session_opt| {
+                        if let Some(session) = session_opt {
+                            // Active session exists
+                            view! {
+                                <div class="rounded-lg border bg-muted/50 p-4">
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex items-center gap-3">
+                                            <div class="rounded-full bg-primary/10 p-2">
+                                                <lucide_leptos::Activity attr:class="h-5 w-5 text-primary" />
+                                            </div>
+                                            <div class="flex flex-col gap-1">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="font-semibold">Devbox Connected</span>
+                                                    <Badge variant=BadgeVariant::Secondary>
+                                                        <lucide_leptos::Monitor attr:class="h-3 w-3" />
+                                                        {session.device_name.clone()}
+                                                    </Badge>
+                                                </div>
+                                                <span class="text-sm text-muted-foreground">
+                                                    {format!("Last active: {}", humanize_datetime(&session.last_used_at))}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <a href="/devbox/sessions">
+                                            <Button variant=ButtonVariant::Outline size=crate::component::button::ButtonSize::Sm>
+                                                <lucide_leptos::Settings attr:class="h-4 w-4" />
+                                                "Manage Sessions"
+                                            </Button>
+                                        </a>
+                                    </div>
+                                </div>
+                            }
+                                .into_any()
+                        } else {
+                            // No active session - expandable panel
+                            view! {
+                                <div class="rounded-lg border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900">
+                                    <div class="p-4">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div
+                                                class="flex items-start gap-3 flex-1 cursor-pointer"
+                                                on:click=move |_| {
+                                                    is_expanded.update(|v| *v = !*v);
+                                                }
+                                            >
+                                                <div class="rounded-full bg-amber-100 dark:bg-amber-900/30 p-2 mt-0.5">
+                                                    <lucide_leptos::Info attr:class="h-5 w-5 text-amber-700 dark:text-amber-500" />
+                                                </div>
+                                                <div class="flex-1">
+                                                    <h4 class="font-semibold text-amber-900 dark:text-amber-200 mb-1">
+                                                        "You Can Connect Your Local Development Machine"
+                                                    </h4>
+                                                    <Show when=move || !is_expanded.get() fallback=|| view! {
+                                                        <p class="text-sm text-amber-800 dark:text-amber-300">
+                                                            "To intercept workloads and develop locally, you can connect your machine using the Lapdev CLI."
+                                                        </p>
+                                                    }>
+                                                        <p class="text-sm text-amber-800 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-200">
+                                                            "Click to view setup instructions"
+                                                        </p>
+                                                    </Show>
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant=ButtonVariant::Ghost
+                                                size=crate::component::button::ButtonSize::Sm
+                                                on:click=move |_| is_expanded.update(|v| *v = !*v)
+                                                class="text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 shrink-0"
+                                            >
+                                                <Show when=move || is_expanded.get() fallback=|| view! {
+                                                    <lucide_leptos::ChevronDown attr:class="h-4 w-4" />
+                                                }>
+                                                    <lucide_leptos::ChevronUp attr:class="h-4 w-4" />
+                                                </Show>
+                                            </Button>
+                                        </div>
+
+                                        <Show when=move || is_expanded.get()>
+                                            <div class="mt-3 ml-14 flex flex-col gap-3">
+                                                <div class="flex flex-col gap-2 text-sm">
+                                                    <div class="flex items-start gap-2">
+                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
+                                                            "1."
+                                                        </span>
+                                                        <div class="flex-1">
+                                                            <span class="text-amber-800 dark:text-amber-300">
+                                                                "Install the CLI: "
+                                                            </span>
+                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
+                                                                "curl -fsSL https://get.lap.dev | sh"
+                                                            </code>
+                                                        </div>
+                                                    </div>
+                                                    <div class="flex items-start gap-2">
+                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
+                                                            "2."
+                                                        </span>
+                                                        <div class="flex-1">
+                                                            <span class="text-amber-800 dark:text-amber-300">
+                                                                "Connect: "
+                                                            </span>
+                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
+                                                                "lapdev connect"
+                                                            </code>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="flex gap-2">
+                                                    <a href="https://docs.lap.dev/devbox/getting-started" target="_blank" rel="noopener noreferrer">
+                                                        <Button variant=ButtonVariant::Outline size=crate::component::button::ButtonSize::Sm class="text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30">
+                                                            <lucide_leptos::BookOpen attr:class="h-4 w-4" />
+                                                            "View Documentation"
+                                                            <lucide_leptos::ExternalLink attr:class="h-3 w-3" />
+                                                        </Button>
+                                                    </a>
+                                                </div>
+                                            </div>
+                                        </Show>
+                                    </div>
+                                </div>
+                            }
+                                .into_any()
+                        }
+                    })
+            }}
+        </Suspense>
+    }
+}
+
+fn humanize_datetime(dt: &chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(*dt);
+
+    if duration.num_seconds() < 60 {
+        "just now".to_string()
+    } else if duration.num_minutes() < 60 {
+        let mins = duration.num_minutes();
+        format!("{} minute{} ago", mins, if mins == 1 { "" } else { "s" })
+    } else if duration.num_hours() < 24 {
+        let hours = duration.num_hours();
+        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
+    } else if duration.num_days() < 30 {
+        let days = duration.num_days();
+        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+    } else {
+        dt.format("%Y-%m-%d %H:%M UTC").to_string()
     }
 }

@@ -20,11 +20,7 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(
-                        ColumnDef::new(KubeDevboxSession::UserId)
-                            .uuid()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(KubeDevboxSession::UserId).uuid().not_null())
                     .col(
                         ColumnDef::new(KubeDevboxSession::SessionTokenHash)
                             .string()
@@ -40,10 +36,7 @@ impl MigrationTrait for Migration {
                             .string()
                             .not_null(),
                     )
-                    .col(
-                        ColumnDef::new(KubeDevboxSession::ActiveEnvironmentId)
-                            .uuid(),
-                    )
+                    .col(ColumnDef::new(KubeDevboxSession::ActiveEnvironmentId).uuid())
                     .col(
                         ColumnDef::new(KubeDevboxSession::CreatedAt)
                             .timestamp_with_time_zone()
@@ -61,10 +54,7 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(Expr::current_timestamp()),
                     )
-                    .col(
-                        ColumnDef::new(KubeDevboxSession::RevokedAt)
-                            .timestamp_with_time_zone(),
-                    )
+                    .col(ColumnDef::new(KubeDevboxSession::RevokedAt).timestamp_with_time_zone())
                     .foreign_key(
                         ForeignKey::create()
                             .from(KubeDevboxSession::Table, KubeDevboxSession::UserId)

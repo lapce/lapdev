@@ -8,7 +8,10 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use lapdev_common::{kube::KUBE_CLUSTER_TOKEN_HEADER, token::HashedToken};
 use lapdev_kube::server::KubeClusterServer;
-use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient, ClientTunnelFrame, ClientTunnelMessage, ServerTunnelFrame, ServerTunnelMessage};
+use lapdev_kube_rpc::{
+    ClientTunnelFrame, ClientTunnelMessage, KubeClusterRpc, KubeManagerRpcClient,
+    ServerTunnelFrame, ServerTunnelMessage,
+};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use secrecy::ExposeSecret;
 use tarpc::{
@@ -138,16 +141,22 @@ fn handle_data_plane_websocket(
 
 async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, cluster_id: Uuid) {
     tracing::info!("Data plane tunnel established for cluster: {}", cluster_id);
-    
+
     let (ws_sender, mut ws_receiver) = socket.split();
-    
+
     // Create channels for communication
-    let (outgoing_tx, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<ServerTunnelMessage>();
-    let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<ClientTunnelMessage>();
-    
+    let (outgoing_tx, mut outgoing_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ServerTunnelMessage>();
+    let (response_tx, mut response_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ClientTunnelMessage>();
+
     // Register the sender with the tunnel registry
-    state.kube_controller.tunnel_registry.register_tunnel_sender(cluster_id, outgoing_tx).await;
-    
+    state
+        .kube_controller
+        .tunnel_registry
+        .register_tunnel_sender(cluster_id, outgoing_tx)
+        .await;
+
     // Task to handle outgoing messages (both external messages and responses)
     let outgoing_task = {
         tokio::spawn(async move {
@@ -161,7 +170,7 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
                                 timestamp: chrono::Utc::now(),
                                 message_id: Uuid::new_v4(),
                             };
-                            
+
                             match frame.serialize() {
                                 Ok(data) => {
                                     if let Err(e) = ws_sender.send(axum::extract::ws::Message::Binary(data.into())).await {
@@ -184,7 +193,7 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
                                 timestamp: chrono::Utc::now(),
                                 message_id: Uuid::new_v4(),
                             };
-                            
+
                             match frame.serialize() {
                                 Ok(data) => {
                                     if let Err(e) = ws_sender.send(axum::extract::ws::Message::Binary(data.into())).await {
@@ -204,7 +213,7 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
             tracing::debug!("Outgoing message task ended for cluster: {}", cluster_id);
         })
     };
-    
+
     // Handle incoming tunnel messages from KubeManager
     let incoming_task = {
         tokio::spawn(async move {
@@ -215,30 +224,59 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
                         match ClientTunnelFrame::deserialize(&data) {
                             Ok(frame) => {
                                 tracing::debug!("Received client message: {:?}", frame.message);
-                                
+
                                 // Handle client messages from KubeManager
                                 match frame.message {
-                                    ClientTunnelMessage::ConnectionOpened { tunnel_id, local_addr } => {
-                                        tracing::info!("Data plane: Connection opened for tunnel {} at {}", 
-                                                     tunnel_id, local_addr);
+                                    ClientTunnelMessage::ConnectionOpened {
+                                        tunnel_id,
+                                        local_addr,
+                                    } => {
+                                        tracing::info!(
+                                            "Data plane: Connection opened for tunnel {} at {}",
+                                            tunnel_id,
+                                            local_addr
+                                        );
                                     }
-                                    ClientTunnelMessage::ConnectionFailed { tunnel_id, error, error_code } => {
+                                    ClientTunnelMessage::ConnectionFailed {
+                                        tunnel_id,
+                                        error,
+                                        error_code,
+                                    } => {
                                         tracing::warn!("Data plane: Connection failed for tunnel {} - {} ({:?})", 
                                                      tunnel_id, error, error_code);
                                     }
-                                    ClientTunnelMessage::ConnectionClosed { tunnel_id, bytes_transferred } => {
+                                    ClientTunnelMessage::ConnectionClosed {
+                                        tunnel_id,
+                                        bytes_transferred,
+                                    } => {
                                         tracing::info!("Data plane: Connection closed for tunnel {}, {} bytes transferred", 
                                                      tunnel_id, bytes_transferred);
                                     }
-                                    ClientTunnelMessage::Data { tunnel_id, payload, sequence_num: _ } => {
-                                        tracing::debug!("Data plane: Received {} bytes from tunnel {}", 
-                                                      payload.len(), tunnel_id);
+                                    ClientTunnelMessage::Data {
+                                        tunnel_id,
+                                        payload,
+                                        sequence_num: _,
+                                    } => {
+                                        tracing::debug!(
+                                            "Data plane: Received {} bytes from tunnel {}",
+                                            payload.len(),
+                                            tunnel_id
+                                        );
                                         // Forward data from KubeManager to client
                                     }
                                     ClientTunnelMessage::Pong { timestamp } => {
-                                        tracing::debug!("Data plane: Received pong with timestamp {}", timestamp);
+                                        tracing::debug!(
+                                            "Data plane: Received pong with timestamp {}",
+                                            timestamp
+                                        );
                                     }
-                                    ClientTunnelMessage::TunnelStats { active_connections, total_connections, bytes_sent, bytes_received, connection_errors } => {
+                                    ClientTunnelMessage::TunnelStats {
+                                        active_connections,
+                                        total_connections,
+                                        bytes_sent,
+                                        bytes_received,
+                                        connection_errors,
+                                    } => {
                                         tracing::debug!("Data plane: Tunnel stats - active: {}, total: {}, sent: {}, received: {}, errors: {}", 
                                                       active_connections, total_connections, bytes_sent, bytes_received, connection_errors);
                                     }
@@ -247,7 +285,11 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
                                                      tunnel_id, reason);
                                         // Handle connection close request from KubeManager
                                     }
-                                    ClientTunnelMessage::Authenticate { cluster_id, auth_token, tunnel_capabilities } => {
+                                    ClientTunnelMessage::Authenticate {
+                                        cluster_id,
+                                        auth_token,
+                                        tunnel_capabilities,
+                                    } => {
                                         tracing::info!("Data plane: Authentication request from cluster {} with capabilities: {:?}", 
                                                      cluster_id, tunnel_capabilities);
                                         // Handle authentication
@@ -272,10 +314,13 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
                     }
                 }
             }
-            tracing::debug!("Incoming message handling ended for cluster: {}", cluster_id);
+            tracing::debug!(
+                "Incoming message handling ended for cluster: {}",
+                cluster_id
+            );
         })
     };
-    
+
     // Wait for either task to complete
     tokio::select! {
         _ = incoming_task => {
@@ -285,8 +330,12 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
             tracing::debug!("Outgoing message handling ended for cluster: {}", cluster_id);
         }
     }
-    
+
     // Clean up the tunnel registry
-    state.kube_controller.tunnel_registry.remove_tunnel(cluster_id).await;
+    state
+        .kube_controller
+        .tunnel_registry
+        .remove_tunnel(cluster_id)
+        .await;
     tracing::info!("Data plane tunnel closed for cluster: {}", cluster_id);
 }

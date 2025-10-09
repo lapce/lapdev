@@ -1,9 +1,16 @@
-use lapdev_common::kube::{
-    CreateKubeClusterResponse, CreateKubeEnvironmentPreviewUrlRequest, KubeAppCatalogWorkload,
-    KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeContainerInfo,
-    KubeEnvironmentPreviewUrl, KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace,
-    KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
-    PaginatedResult, PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
+use lapdev_common::{
+    devbox::{
+        DevboxEnvironmentSelection, DevboxPortMappingOverride, DevboxSessionListResponse,
+        DevboxSessionWhoAmI, DevboxStartWorkloadInterceptResponse,
+        DevboxWorkloadInterceptListResponse,
+    },
+    kube::{
+        CreateKubeClusterResponse, CreateKubeEnvironmentPreviewUrlRequest, KubeAppCatalogWorkload,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeContainerInfo,
+        KubeEnvironmentPreviewUrl, KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace,
+        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
+        PaginatedResult, PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
+    },
 };
 use uuid::Uuid;
 
@@ -14,6 +21,34 @@ pub use lapdev_common::kube::KubeAppCatalog as AppCatalog;
 
 #[lapdev_hrpc::service]
 pub trait HrpcService {
+    async fn devbox_session_list_sessions(&self) -> Result<DevboxSessionListResponse, HrpcError>;
+
+    async fn devbox_session_revoke_session(&self, session_id: Uuid) -> Result<(), HrpcError>;
+
+    async fn devbox_session_get_active_environment(
+        &self,
+    ) -> Result<Option<DevboxEnvironmentSelection>, HrpcError>;
+
+    async fn devbox_session_set_active_environment(
+        &self,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError>;
+
+    async fn devbox_session_whoami(&self) -> Result<DevboxSessionWhoAmI, HrpcError>;
+
+    async fn devbox_intercept_list(
+        &self,
+        environment_id: Uuid,
+    ) -> Result<DevboxWorkloadInterceptListResponse, HrpcError>;
+
+    async fn devbox_intercept_start(
+        &self,
+        workload_id: Uuid,
+        port_mappings: Vec<DevboxPortMappingOverride>,
+    ) -> Result<DevboxStartWorkloadInterceptResponse, HrpcError>;
+
+    async fn devbox_intercept_stop(&self, intercept_id: Uuid) -> Result<(), HrpcError>;
+
     async fn all_kube_clusters(&self, org_id: Uuid) -> Result<Vec<KubeCluster>, HrpcError>;
 
     async fn create_kube_cluster(

@@ -1,5 +1,13 @@
+use axum_extra::headers;
+use chrono::{DateTime, Utc};
 use lapdev_api_hrpc::HrpcService;
 use lapdev_common::{
+    devbox::{
+        DevboxEnvironmentSelection, DevboxPortMapping, DevboxPortMappingOverride,
+        DevboxSessionListResponse, DevboxSessionSummary, DevboxSessionWhoAmI,
+        DevboxStartWorkloadInterceptResponse, DevboxWorkloadInterceptListResponse,
+        DevboxWorkloadInterceptSummary,
+    },
     hrpc::HrpcError,
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
@@ -9,12 +17,362 @@ use lapdev_common::{
     },
     UserRole,
 };
+use lapdev_devbox_rpc::{PortMapping as RpcPortMapping, StartInterceptRequest};
 use lapdev_rpc::error::ApiError;
+use pasetors::claims::Claims;
+use sea_orm::DbErr;
+use tarpc::context;
 use uuid::Uuid;
 
 use crate::state::CoreState;
 
 impl HrpcService for CoreState {
+    async fn devbox_session_list_sessions(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<DevboxSessionListResponse, HrpcError> {
+        let user = self.hrpc_authenticate_user(headers).await?;
+        let sessions = self
+            .db
+            .list_devbox_sessions(user.id)
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        let sessions = sessions
+            .into_iter()
+            .map(|session| DevboxSessionSummary {
+                id: session.id,
+                device_name: session.device_name,
+                token_prefix: session.token_prefix,
+                active_environment_id: session.active_environment_id,
+                created_at: session.created_at.with_timezone(&Utc),
+                expires_at: session.expires_at.with_timezone(&Utc),
+                last_used_at: session.last_used_at.with_timezone(&Utc),
+                revoked_at: session.revoked_at.map(|ts| ts.with_timezone(&Utc)),
+            })
+            .collect();
+
+        Ok(DevboxSessionListResponse { sessions })
+    }
+
+    async fn devbox_session_revoke_session(
+        &self,
+        headers: &axum::http::HeaderMap,
+        session_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.hrpc_authenticate_user(headers).await?;
+        let session = self
+            .db
+            .get_devbox_session_including_revoked(session_id)
+            .await
+            .map_err(hrpc_from_anyhow)?
+            .ok_or_else(|| hrpc_error("Session not found"))?;
+
+        if session.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
+
+        if session.revoked_at.is_some() {
+            return Ok(());
+        }
+
+        self.db
+            .revoke_devbox_session(session_id)
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        self.db
+            .stop_active_intercepts_for_session(session_id)
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        let session_notification = {
+            let sessions = self.active_devbox_sessions.read().await;
+            sessions.get(&user.id).and_then(|handle| {
+                if handle.session_id == session_id {
+                    Some(handle.rpc_client.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(client) = session_notification {
+            self.active_devbox_sessions.write().await.remove(&user.id);
+            tokio::spawn(async move {
+                let _ = client
+                    .session_displaced(
+                        context::current(),
+                        "Session revoked by dashboard".to_string(),
+                    )
+                    .await;
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn devbox_session_get_active_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<Option<DevboxEnvironmentSelection>, HrpcError> {
+        let ctx = self.hrpc_resolve_active_devbox_session(headers).await?;
+
+        let Some(environment_id) = ctx.session.active_environment_id else {
+            return Ok(None);
+        };
+
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?;
+
+        let Some(environment) = environment else {
+            return Ok(None);
+        };
+
+        let cluster = self
+            .db
+            .get_kube_cluster(environment.cluster_id)
+            .await
+            .map_err(hrpc_from_anyhow)?
+            .ok_or_else(|| hrpc_error("Cluster not found"))?;
+
+        Ok(Some(DevboxEnvironmentSelection {
+            environment_id,
+            cluster_name: cluster.name,
+            namespace: environment.namespace,
+        }))
+    }
+
+    async fn devbox_session_set_active_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let ctx = self.hrpc_resolve_active_devbox_session(headers).await?;
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        self.ensure_environment_access(&ctx.user, &environment)
+            .await?;
+
+        self.db
+            .update_devbox_session_active_environment(ctx.session.id, Some(environment_id))
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        Ok(())
+    }
+
+    async fn devbox_session_whoami(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<DevboxSessionWhoAmI, HrpcError> {
+        let ctx = self.hrpc_resolve_active_devbox_session(headers).await?;
+
+        Ok(DevboxSessionWhoAmI {
+            user_id: ctx.user.id,
+            email: ctx.user.email.clone(),
+            device_name: ctx.session.device_name,
+            authenticated_at: ctx.authenticated_at,
+            expires_at: ctx.expires_at,
+        })
+    }
+
+    async fn devbox_intercept_list(
+        &self,
+        headers: &axum::http::HeaderMap,
+        environment_id: Uuid,
+    ) -> Result<DevboxWorkloadInterceptListResponse, HrpcError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        let user = self
+            .authorize(headers, environment.organization_id, None)
+            .await
+            .map_err(hrpc_from_api_error)?;
+
+        self.ensure_environment_access(&user, &environment).await?;
+
+        let intercepts = self
+            .db
+            .list_workload_intercepts_for_environment(environment_id)
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        let mut results = Vec::with_capacity(intercepts.len());
+        for intercept in intercepts {
+            let workload = self
+                .db
+                .get_environment_workload(intercept.workload_id)
+                .await
+                .map_err(hrpc_from_anyhow)?
+                .ok_or_else(|| hrpc_error("Workload not found"))?;
+
+            let device_name = self
+                .db
+                .get_devbox_session_including_revoked(intercept.session_id)
+                .await
+                .map_err(hrpc_from_anyhow)?
+                .map(|session| session.device_name)
+                .unwrap_or_else(|| "unknown device".to_string());
+
+            let port_mappings: Vec<DevboxPortMapping> =
+                serde_json::from_value(intercept.port_mappings.clone())
+                    .map_err(hrpc_from_anyhow)?;
+
+            results.push(DevboxWorkloadInterceptSummary {
+                intercept_id: intercept.id,
+                session_id: intercept.session_id,
+                workload_id: workload.id,
+                workload_name: workload.name,
+                namespace: workload.namespace,
+                port_mappings,
+                device_name,
+                created_at: intercept.created_at.with_timezone(&Utc),
+                restored_at: intercept.restored_at.map(|dt| dt.with_timezone(&Utc)),
+            });
+        }
+
+        Ok(DevboxWorkloadInterceptListResponse {
+            intercepts: results,
+        })
+    }
+
+    async fn devbox_intercept_start(
+        &self,
+        headers: &axum::http::HeaderMap,
+        workload_id: Uuid,
+        port_mappings: Vec<DevboxPortMappingOverride>,
+    ) -> Result<DevboxStartWorkloadInterceptResponse, HrpcError> {
+        let ctx = self.hrpc_resolve_active_devbox_session(headers).await?;
+
+        let workload = self
+            .db
+            .get_environment_workload(workload_id)
+            .await
+            .map_err(hrpc_from_anyhow)?
+            .ok_or_else(|| hrpc_error("Workload not found"))?;
+
+        let environment = self
+            .db
+            .get_kube_environment(workload.environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        self.ensure_environment_access(&ctx.user, &environment)
+            .await?;
+
+        let mappings = port_mappings
+            .into_iter()
+            .map(|override_mapping| DevboxPortMapping {
+                workload_port: override_mapping.workload_port,
+                local_port: override_mapping
+                    .local_port
+                    .unwrap_or(override_mapping.workload_port),
+                protocol: "TCP".to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        let intercept = self
+            .db
+            .create_workload_intercept(
+                ctx.user.id,
+                ctx.session.id,
+                environment.id,
+                workload_id,
+                serde_json::to_value(&mappings).map_err(hrpc_from_anyhow)?,
+            )
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        let rpc_client = {
+            let sessions = self.active_devbox_sessions.read().await;
+            sessions.get(&ctx.user.id).and_then(|handle| {
+                if handle.session_id == ctx.session.id {
+                    Some(handle.rpc_client.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(client) = rpc_client {
+            let request = StartInterceptRequest {
+                intercept_id: intercept.id,
+                workload_id,
+                workload_name: workload.name.clone(),
+                namespace: workload.namespace.clone(),
+                port_mappings: mappings.iter().map(devbox_port_mapping_to_rpc).collect(),
+            };
+
+            tokio::spawn(async move {
+                if let Err(err) = client.start_intercept(context::current(), request).await {
+                    tracing::error!(?err, "Failed to notify CLI to start intercept");
+                }
+            });
+        }
+
+        Ok(DevboxStartWorkloadInterceptResponse {
+            intercept_id: intercept.id,
+        })
+    }
+
+    async fn devbox_intercept_stop(
+        &self,
+        headers: &axum::http::HeaderMap,
+        intercept_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.hrpc_authenticate_user(headers).await?;
+
+        let intercept = self
+            .db
+            .get_workload_intercept(intercept_id)
+            .await
+            .map_err(hrpc_from_anyhow)?
+            .ok_or_else(|| hrpc_error("Intercept not found"))?;
+
+        if intercept.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
+
+        self.db
+            .stop_workload_intercept(intercept_id)
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        let rpc_client = {
+            let sessions = self.active_devbox_sessions.read().await;
+            sessions
+                .get(&user.id)
+                .map(|handle| handle.rpc_client.clone())
+        };
+
+        if let Some(client) = rpc_client {
+            tokio::spawn(async move {
+                if let Err(err) = client
+                    .stop_intercept(context::current(), intercept_id)
+                    .await
+                {
+                    tracing::error!(?err, "Failed to notify CLI to stop intercept");
+                }
+            });
+        }
+
+        Ok(())
+    }
+
     async fn all_kube_clusters(
         &self,
         headers: &axum::http::HeaderMap,
@@ -603,4 +961,135 @@ impl HrpcService for CoreState {
             .await
             .map_err(HrpcError::from)
     }
+}
+
+struct ActiveDevboxSessionContext {
+    user: lapdev_db_entities::user::Model,
+    session: lapdev_db_entities::kube_devbox_session::Model,
+    authenticated_at: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+impl CoreState {
+    async fn hrpc_authenticate_user(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<lapdev_db_entities::user::Model, HrpcError> {
+        self.authenticate_raw(headers)
+            .await
+            .map_err(hrpc_from_api_error)
+    }
+
+    async fn hrpc_resolve_active_devbox_session(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<ActiveDevboxSessionContext, HrpcError> {
+        if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
+            let value = value
+                .to_str()
+                .map_err(|_| hrpc_error("Invalid Authorization header"))?;
+
+            if let Some(token) = value.strip_prefix("Bearer ") {
+                let bearer = headers::Authorization::bearer(token)
+                    .map_err(|_| hrpc_error("Invalid bearer token"))?;
+                let ctx = self
+                    .authenticate_bearer(&bearer)
+                    .await
+                    .map_err(hrpc_from_api_error)?;
+
+                let session = self
+                    .db
+                    .get_devbox_session_by_token_hash(token)
+                    .await
+                    .map_err(hrpc_from_anyhow)?
+                    .ok_or_else(|| hrpc_error("Active session not found"))?;
+
+                self.db
+                    .update_devbox_session_last_used(session.id)
+                    .await
+                    .map_err(hrpc_from_anyhow)?;
+
+                return Ok(ActiveDevboxSessionContext {
+                    user: ctx.user,
+                    session,
+                    authenticated_at: parse_claim_datetime(&ctx.token_claims, "iat"),
+                    expires_at: parse_claim_datetime(&ctx.token_claims, "exp"),
+                });
+            }
+        }
+
+        let user = self.hrpc_authenticate_user(headers).await?;
+        let session = self
+            .db
+            .get_active_devbox_session(user.id)
+            .await
+            .map_err(hrpc_from_anyhow)?
+            .ok_or_else(|| hrpc_error("No active devbox session"))?;
+
+        self.db
+            .update_devbox_session_last_used(session.id)
+            .await
+            .map_err(hrpc_from_anyhow)?;
+
+        Ok(ActiveDevboxSessionContext {
+            authenticated_at: Some(session.created_at.with_timezone(&Utc)),
+            expires_at: Some(session.expires_at.with_timezone(&Utc)),
+            user,
+            session,
+        })
+    }
+
+    async fn ensure_environment_access(
+        &self,
+        user: &lapdev_db_entities::user::Model,
+        environment: &lapdev_db_entities::kube_environment::Model,
+    ) -> Result<(), HrpcError> {
+        if environment.user_id == user.id {
+            return Ok(());
+        }
+
+        if environment.is_shared {
+            self.db
+                .get_organization_member(user.id, environment.organization_id)
+                .await
+                .map(|_| ())
+                .map_err(|_| hrpc_error("Unauthorized"))
+        } else {
+            Err(hrpc_error("Unauthorized"))
+        }
+    }
+}
+
+fn devbox_port_mapping_to_rpc(mapping: &DevboxPortMapping) -> RpcPortMapping {
+    RpcPortMapping {
+        workload_port: mapping.workload_port,
+        local_port: mapping.local_port,
+        protocol: mapping.protocol.clone(),
+    }
+}
+
+fn hrpc_error<E: ToString>(err: E) -> HrpcError {
+    HrpcError {
+        error: err.to_string(),
+    }
+}
+
+fn hrpc_from_anyhow<E: ToString>(err: E) -> HrpcError {
+    hrpc_error(err)
+}
+
+fn hrpc_from_api_error(err: ApiError) -> HrpcError {
+    hrpc_error(err)
+}
+
+fn hrpc_from_db_err(err: DbErr) -> HrpcError {
+    hrpc_error(err)
+}
+
+fn parse_claim_datetime(claims: &Claims, key: &str) -> Option<DateTime<Utc>> {
+    claims
+        .get_claim(key)
+        .and_then(|value| serde_json::from_value::<String>(value.clone()).ok())
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+        .map(|dt| dt.with_timezone(&Utc))
 }

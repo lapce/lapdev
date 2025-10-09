@@ -8,7 +8,9 @@ pub trait DevboxSessionRpc {
     async fn whoami() -> Result<DevboxSessionInfo, String>;
     async fn get_active_environment() -> Result<Option<DevboxEnvironmentInfo>, String>;
     async fn set_active_environment(environment_id: Uuid) -> Result<(), String>;
-    async fn list_workload_intercepts(environment_id: Uuid) -> Result<Vec<WorkloadInterceptInfo>, String>;
+    async fn list_workload_intercepts(
+        environment_id: Uuid,
+    ) -> Result<Vec<WorkloadInterceptInfo>, String>;
 }
 
 // Devbox client RPC - CLI to Server

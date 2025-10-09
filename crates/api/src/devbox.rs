@@ -9,8 +9,8 @@ use axum::{
 use axum_extra::{headers, TypedHeader};
 use futures::StreamExt;
 use lapdev_devbox_rpc::{
-    DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionRpc, DevboxSessionInfo,
-    PortMapping, PortMappingOverride, StartInterceptRequest,
+    DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionInfo, DevboxSessionRpc, PortMapping,
+    PortMappingOverride, StartInterceptRequest,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use serde::{Deserialize, Serialize};
@@ -84,8 +84,7 @@ pub async fn devbox_rpc_websocket(
     let token = &auth_header[7..]; // Skip "Bearer "
 
     // Authenticate using the same method as regular devbox requests
-    let bearer = headers::Authorization::bearer(token)
-        .map_err(|_| ApiError::Unauthenticated)?;
+    let bearer = headers::Authorization::bearer(token).map_err(|_| ApiError::Unauthenticated)?;
     let ctx = state.authenticate_bearer(&bearer).await?;
 
     tracing::info!(
@@ -113,9 +112,11 @@ pub async fn devbox_rpc_websocket(
         );
 
         // Notify old session that it's being displaced
-        let _ = old_handle.notify_tx.send(crate::state::DevboxSessionNotification::Displaced {
-            new_device_name: ctx.device_name.clone(),
-        });
+        let _ = old_handle
+            .notify_tx
+            .send(crate::state::DevboxSessionNotification::Displaced {
+                new_device_name: ctx.device_name.clone(),
+            });
     }
 
     // Create or update devbox session
@@ -158,7 +159,15 @@ fn handle_devbox_rpc_upgrade(
     websocket
         .on_failed_upgrade(|e| tracing::error!("devbox RPC websocket upgrade failed {e:?}"))
         .on_upgrade(move |socket| async move {
-            handle_devbox_rpc(socket, state, session_id, user_id, organization_id, device_name).await;
+            handle_devbox_rpc(
+                socket,
+                state,
+                session_id,
+                user_id,
+                organization_id,
+                device_name,
+            )
+            .await;
         })
 }
 
@@ -286,10 +295,7 @@ impl DevboxSessionRpcServer {
 }
 
 impl DevboxSessionRpc for DevboxSessionRpcServer {
-    async fn whoami(
-        self,
-        _context: tarpc::context::Context,
-    ) -> Result<DevboxSessionInfo, String> {
+    async fn whoami(self, _context: tarpc::context::Context) -> Result<DevboxSessionInfo, String> {
         tracing::info!("whoami called for session {}", self.session_id);
 
         // Fetch user info
@@ -325,7 +331,10 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         self,
         _context: tarpc::context::Context,
     ) -> Result<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>, String> {
-        tracing::info!("get_active_environment called for session {}", self.session_id);
+        tracing::info!(
+            "get_active_environment called for session {}",
+            self.session_id
+        );
 
         // Fetch session to get active environment
         let session = self
@@ -337,12 +346,26 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             .ok_or_else(|| "Session not found".to_string())?;
 
         if let Some(env_id) = session.active_environment_id {
-            // TODO: Fetch actual environment details from kube_environment table
-            // For now, just return basic info
+            let environment = self
+                .state
+                .db
+                .get_kube_environment(env_id)
+                .await
+                .map_err(|e| format!("Failed to fetch environment: {}", e))?
+                .ok_or_else(|| "Environment not found".to_string())?;
+
+            let cluster = self
+                .state
+                .db
+                .get_kube_cluster(environment.cluster_id)
+                .await
+                .map_err(|e| format!("Failed to fetch cluster: {}", e))?
+                .ok_or_else(|| "Cluster not found".to_string())?;
+
             Ok(Some(lapdev_devbox_rpc::DevboxEnvironmentInfo {
                 environment_id: env_id,
-                cluster_name: "default".to_string(), // TODO: fetch from DB
-                namespace: "default".to_string(), // TODO: fetch from DB
+                cluster_name: cluster.name,
+                namespace: environment.namespace,
             }))
         } else {
             Ok(None)
@@ -513,6 +536,7 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .state
             .db
             .create_workload_intercept(
+                self.user_id,
                 session.id,
                 environment.id,
                 workload_id,

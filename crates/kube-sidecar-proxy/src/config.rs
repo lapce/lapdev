@@ -8,25 +8,25 @@ use uuid::Uuid;
 pub struct ProxyConfig {
     /// Address to listen on for incoming requests
     pub listen_addr: SocketAddr,
-    
+
     /// Default target address for proxying requests
     pub default_target: SocketAddr,
-    
+
     /// Kubernetes namespace to operate in
     pub namespace: Option<String>,
-    
+
     /// Pod name for self-identification
     pub pod_name: Option<String>,
-    
+
     /// Lapdev environment ID this proxy belongs to
     pub environment_id: Option<Uuid>,
-    
+
     /// Route configurations
     pub routes: Vec<RouteConfig>,
-    
+
     /// Health check configuration
     pub health_check: HealthCheckConfig,
-    
+
     /// Metrics configuration
     pub metrics: MetricsConfig,
 }
@@ -36,19 +36,19 @@ pub struct ProxyConfig {
 pub struct RouteConfig {
     /// Path matcher (supports wildcards)
     pub path: String,
-    
+
     /// Target service to route to
     pub target: RouteTarget,
-    
+
     /// Optional headers to add/modify
     pub headers: HashMap<String, String>,
-    
+
     /// Timeout for this route in milliseconds
     pub timeout_ms: Option<u64>,
-    
+
     /// Whether this route requires authentication
     pub requires_auth: bool,
-    
+
     /// Access level for this route
     pub access_level: AccessLevel,
 }
@@ -58,14 +58,14 @@ pub struct RouteConfig {
 pub enum RouteTarget {
     /// Direct address
     Address(SocketAddr),
-    
+
     /// Kubernetes service
     Service {
         name: String,
         namespace: Option<String>,
         port: u16,
     },
-    
+
     /// Load balance across multiple targets
     LoadBalance(Vec<RouteTarget>),
 }
@@ -86,13 +86,13 @@ pub enum AccessLevel {
 pub struct HealthCheckConfig {
     /// Health check endpoint path
     pub path: String,
-    
+
     /// Interval between health checks in seconds
     pub interval_seconds: u64,
-    
+
     /// Timeout for health checks in milliseconds
     pub timeout_ms: u64,
-    
+
     /// Number of consecutive failures before marking unhealthy
     pub failure_threshold: u32,
 }
@@ -102,10 +102,10 @@ pub struct HealthCheckConfig {
 pub struct MetricsConfig {
     /// Whether to enable metrics collection
     pub enabled: bool,
-    
+
     /// Metrics endpoint path
     pub path: String,
-    
+
     /// Port to serve metrics on (if different from main port)
     pub port: Option<u16>,
 }
@@ -152,22 +152,22 @@ pub struct ProxyAnnotations;
 impl ProxyAnnotations {
     /// Annotation for specifying target service
     pub const TARGET_SERVICE: &'static str = "lapdev.io/proxy-target-service";
-    
+
     /// Annotation for specifying target port
     pub const TARGET_PORT: &'static str = "lapdev.io/proxy-target-port";
-    
+
     /// Annotation for routing rules (JSON)
     pub const ROUTING_RULES: &'static str = "lapdev.io/proxy-routing-rules";
-    
+
     /// Annotation for access level
     pub const ACCESS_LEVEL: &'static str = "lapdev.io/proxy-access-level";
-    
+
     /// Annotation for enabling/disabling authentication
     pub const REQUIRE_AUTH: &'static str = "lapdev.io/proxy-require-auth";
-    
+
     /// Annotation for custom headers (JSON)
     pub const CUSTOM_HEADERS: &'static str = "lapdev.io/proxy-custom-headers";
-    
+
     /// Annotation for timeout in milliseconds
     pub const TIMEOUT_MS: &'static str = "lapdev.io/proxy-timeout-ms";
 }

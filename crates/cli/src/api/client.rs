@@ -94,12 +94,14 @@ impl LapdevClient {
             anyhow::bail!(
                 "Request failed with status {}: {}",
                 status,
-                if text.is_empty() { "No error message" } else { &text }
+                if text.is_empty() {
+                    "No error message"
+                } else {
+                    &text
+                }
             );
         }
 
-        resp.json()
-            .await
-            .context("Failed to parse whoami response")
+        resp.json().await.context("Failed to parse whoami response")
     }
 }

@@ -14,6 +14,7 @@ use crate::{
 pub struct NavExpanded {
     pub orgnization: RwSignal<bool>,
     pub account: RwSignal<bool>,
+    pub dev_environments: RwSignal<bool>,
 }
 
 #[component]
@@ -123,6 +124,7 @@ pub fn TopNav() -> impl IntoView {
 
 #[component]
 pub fn SideNavMain() -> impl IntoView {
+    let nav_expanded: NavExpanded = expect_context();
     view! {
         <ul class="space-y-2">
             <li>
@@ -138,6 +140,47 @@ pub fn SideNavMain() -> impl IntoView {
             <li>
                 <a href="/kubernetes/clusters" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                     <span class="ml-3">K8s Clusters</span>
+                </a>
+            </li>
+            <li>
+                <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group"
+                    on:click=move |_| nav_expanded.dev_environments.update(|expanded| *expanded = !*expanded)
+                >
+                    <span class="ml-3">Dev Environments</span>
+                    <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 6 10"
+                        class:hidden=move || nav_expanded.dev_environments.get()
+                    >
+                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 9 4-4-4-4"/>
+                    </svg>
+                    <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6"
+                        class:hidden=move || !nav_expanded.dev_environments.get()
+                    >
+                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
+                    </svg>
+                </a>
+            </li>
+
+            <li
+                class:hidden=move || !nav_expanded.dev_environments.get()
+            >
+                <a href="/kubernetes/environments/personal" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
+                    <span class="ml-8">Personal</span>
+                </a>
+            </li>
+
+            <li
+                class:hidden=move || !nav_expanded.dev_environments.get()
+            >
+                <a href="/kubernetes/environments/shared" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
+                    <span class="ml-8">Shared</span>
+                </a>
+            </li>
+
+            <li
+                class:hidden=move || !nav_expanded.dev_environments.get()
+            >
+                <a href="/kubernetes/environments/branch" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
+                    <span class="ml-8">Branch</span>
                 </a>
             </li>
         </ul>

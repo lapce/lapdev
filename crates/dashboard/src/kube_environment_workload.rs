@@ -117,6 +117,17 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
             if let Some((env, workload)) = result.as_ref() {
                 config.current_page.set(workload.name.clone());
                 config.header_links.update(|header_links| {
+                    if let Some((name, link)) = header_links.first_mut() {
+                        let (t, l) = if env.base_environment_id.is_some() {
+                            ("Branch", "branch")
+                        } else if env.is_shared {
+                            ("Shared", "shared")
+                        } else {
+                            ("Personal", "personal")
+                        };
+                        *name = format!("{t} Environments");
+                        *link = format!("/kubernetes/environments/{l}");
+                    }
                     header_links.push((
                         env.name.clone(),
                         format!("/kubernetes/environments/{environment_id}"),

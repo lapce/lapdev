@@ -2183,31 +2183,47 @@ impl DbApi {
         let txn = self.conn.begin().await?;
 
         // Check if an active intercept already exists for this workload
-        let existing = kube_devbox_workload_intercept::Entity::find()
+        let existing_active = kube_devbox_workload_intercept::Entity::find()
             .filter(kube_devbox_workload_intercept::Column::UserId.eq(user_id))
             .filter(kube_devbox_workload_intercept::Column::WorkloadId.eq(workload_id))
             .filter(kube_devbox_workload_intercept::Column::StoppedAt.is_null())
             .one(&txn)
             .await?;
 
-        let intercept = if let Some(model) = existing {
+        let intercept = if let Some(model) = existing_active {
             let mut active = kube_devbox_workload_intercept::ActiveModel::from(model);
             active.environment_id = ActiveValue::Set(environment_id);
             active.port_mappings = ActiveValue::Set(port_mappings.clone().into());
             active.stopped_at = ActiveValue::Set(None);
             active.update(&txn).await?
         } else {
-            kube_devbox_workload_intercept::ActiveModel {
-                id: ActiveValue::Set(Uuid::new_v4()),
-                user_id: ActiveValue::Set(user_id),
-                environment_id: ActiveValue::Set(environment_id),
-                workload_id: ActiveValue::Set(workload_id),
-                port_mappings: ActiveValue::Set(port_mappings.into()),
-                created_at: ActiveValue::Set(Utc::now().into()),
-                stopped_at: ActiveValue::Set(None),
+            let existing_stopped = kube_devbox_workload_intercept::Entity::find()
+                .filter(kube_devbox_workload_intercept::Column::UserId.eq(user_id))
+                .filter(kube_devbox_workload_intercept::Column::WorkloadId.eq(workload_id))
+                .filter(kube_devbox_workload_intercept::Column::StoppedAt.is_not_null())
+                .order_by_desc(kube_devbox_workload_intercept::Column::StoppedAt)
+                .one(&txn)
+                .await?;
+
+            if let Some(model) = existing_stopped {
+                let mut active = kube_devbox_workload_intercept::ActiveModel::from(model);
+                active.environment_id = ActiveValue::Set(environment_id);
+                active.port_mappings = ActiveValue::Set(port_mappings.clone().into());
+                active.stopped_at = ActiveValue::Set(None);
+                active.update(&txn).await?
+            } else {
+                kube_devbox_workload_intercept::ActiveModel {
+                    id: ActiveValue::Set(Uuid::new_v4()),
+                    user_id: ActiveValue::Set(user_id),
+                    environment_id: ActiveValue::Set(environment_id),
+                    workload_id: ActiveValue::Set(workload_id),
+                    port_mappings: ActiveValue::Set(port_mappings.into()),
+                    created_at: ActiveValue::Set(Utc::now().into()),
+                    stopped_at: ActiveValue::Set(None),
+                }
+                .insert(&txn)
+                .await?
             }
-            .insert(&txn)
-            .await?
         };
 
         txn.commit().await?;

@@ -4,7 +4,10 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    devbox::{DevboxPortMappingOverride, DevboxSessionSummary, DevboxWorkloadInterceptSummary},
+    devbox::{
+        DevboxPortMapping, DevboxPortMappingOverride, DevboxSessionSummary,
+        DevboxWorkloadInterceptSummary,
+    },
     kube::{
         KubeClusterInfo, KubeContainerInfo, KubeEnvironment, KubeEnvironmentService,
         KubeEnvironmentWorkload,
@@ -129,7 +132,6 @@ async fn get_environment_intercepts(
 async fn start_workload_intercept(
     workload_id: Uuid,
     port_mappings: Vec<DevboxPortMappingOverride>,
-    start_intercept_modal_open: RwSignal<bool>,
     update_counter: RwSignal<usize>,
 ) -> Result<(), ErrorResponse> {
     let client = HrpcServiceClient::new("/api/rpc".to_string());
@@ -138,7 +140,19 @@ async fn start_workload_intercept(
         .devbox_intercept_start(workload_id, port_mappings)
         .await??;
 
-    start_intercept_modal_open.set(false);
+    update_counter.update(|c| *c += 1);
+
+    Ok(())
+}
+
+async fn stop_workload_intercept(
+    intercept_id: Uuid,
+    update_counter: RwSignal<usize>,
+) -> Result<(), ErrorResponse> {
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client.devbox_intercept_stop(intercept_id).await??;
+
     update_counter.update(|c| *c += 1);
 
     Ok(())
@@ -188,6 +202,47 @@ async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
         .sessions
         .into_iter()
         .find(|s| s.revoked_at.is_none()))
+}
+
+fn build_port_overrides_from_containers(
+    containers: &[KubeContainerInfo],
+    previous_mappings: Option<&[DevboxPortMapping]>,
+) -> Result<Vec<DevboxPortMappingOverride>, ErrorResponse> {
+    use std::convert::TryFrom;
+
+    let mut overrides = Vec::new();
+    let mut has_ports = false;
+
+    for container in containers {
+        for port in &container.ports {
+            has_ports = true;
+            let workload_port = u16::try_from(port.container_port).map_err(|_| ErrorResponse {
+                error: format!("Unsupported workload port: {}", port.container_port),
+            })?;
+
+            let local_port = previous_mappings
+                .and_then(|existing| {
+                    existing
+                        .iter()
+                        .find(|mapping| mapping.workload_port == workload_port)
+                })
+                .map(|mapping| mapping.local_port)
+                .unwrap_or(workload_port);
+
+            overrides.push(DevboxPortMappingOverride {
+                workload_port,
+                local_port: Some(local_port),
+            });
+        }
+    }
+
+    if !has_ports {
+        return Err(ErrorResponse {
+            error: "No ports available to intercept".to_string(),
+        });
+    }
+
+    Ok(overrides)
 }
 
 fn humanize_datetime(dt: &chrono::DateTime<chrono::Utc>) -> String {
@@ -486,13 +541,30 @@ pub fn EnvironmentInfoCard(
                     _ => BadgeVariant::Outline,
                 };
 
+                let (type_label, type_description) = if is_branch {
+                    ("Branch", "Based on a shared environment")
+                } else if is_shared {
+                    ("Shared", "Accessible by all organization members")
+                } else {
+                    ("Personal", "Private to you")
+                };
+
                 view! {
                     <Card class="p-6">
                         <div class="flex flex-col gap-6">
                             // Header with actions
                             <div class="flex items-start justify-between">
                                 <div class="flex flex-col gap-2">
-                                    <H3>{env_name}</H3>
+                                    <div class="flex items-center gap-2">
+                                        {if is_branch {
+                                            view! { <lucide_leptos::GitBranch attr:class="h-5 w-5 text-muted-foreground" /> }.into_any()
+                                        } else if is_shared {
+                                            view! { <lucide_leptos::Users attr:class="h-5 w-5 text-muted-foreground" /> }.into_any()
+                                        } else {
+                                            view! { <lucide_leptos::User attr:class="h-5 w-5 text-muted-foreground" /> }.into_any()
+                                        }}
+                                        <H3 class="m-0">{env_name}</H3>
+                                    </div>
                                     <div class="flex items-center gap-2">
                                         <Badge variant=BadgeVariant::Secondary>
                                             {env_namespace}
@@ -549,7 +621,7 @@ pub fn EnvironmentInfoCard(
                                     view! {
                                         <div class="flex items-center gap-2 text-muted-foreground font-medium">
                                             <div class="[&>svg]:size-4 [&>svg]:shrink-0">
-                                                <lucide_leptos::GitBranch />
+                                                <lucide_leptos::Layers />
                                             </div>
                                             <span>Base Environment</span>
                                         </div>
@@ -575,20 +647,30 @@ pub fn EnvironmentInfoCard(
 
                                 <div class="flex items-center gap-2 text-muted-foreground font-medium">
                                     <div class="[&>svg]:size-4 [&>svg]:shrink-0">
-                                        <lucide_leptos::Users />
+                                        {if is_branch {
+                                            view! { <lucide_leptos::GitBranch /> }.into_any()
+                                        } else if is_shared {
+                                            view! { <lucide_leptos::Users /> }.into_any()
+                                        } else {
+                                            view! { <lucide_leptos::User /> }.into_any()
+                                        }}
                                     </div>
                                     <span>Type</span>
                                 </div>
-                                <div>
-                                    <Badge variant=BadgeVariant::Secondary>
+                                <div class="flex gap-1 items-center">
+                                    <Badge variant=BadgeVariant::Secondary class="flex items-center gap-2 text-sm">
                                         {if is_branch {
-                                            "Branch - Based on another environment"
+                                            view! { <lucide_leptos::GitBranch attr:class="h-3 w-3" /> }.into_any()
                                         } else if is_shared {
-                                            "Shared - Accessible by all organization members"
+                                            view! { <lucide_leptos::Users attr:class="h-3 w-3" /> }.into_any()
                                         } else {
-                                            "Personal - Private to you"
+                                            view! { <lucide_leptos::User attr:class="h-3 w-3" /> }.into_any()
                                         }}
+                                        <span>{type_label}</span>
                                     </Badge>
+                                    <span class="text-sm text-muted-foreground">
+                                        {type_description}
+                                    </span>
                                 </div>
 
                                 <div class="flex items-center gap-2 text-muted-foreground font-medium">
@@ -902,16 +984,57 @@ pub fn EnvironmentWorkloadItem(
     let workload_id = workload.id;
     let workload_name = workload.name.clone();
     let workload_containers = workload.containers.clone();
-    let start_intercept_modal_open = RwSignal::new(false);
 
     // Find intercepts for this workload
     let workload_intercepts = Signal::derive(move || {
         all_intercepts
             .get()
             .into_iter()
-            .filter(|intercept| intercept.workload_id == workload_id)
+            .filter(|intercept| {
+                intercept.workload_id == workload_id && intercept.restored_at.is_none()
+            })
             .collect::<Vec<_>>()
     });
+    let start_error = RwSignal::new(None::<String>);
+
+    let start_action = {
+        let all_intercepts = all_intercepts;
+        let containers_for_start = workload_containers.clone();
+        Action::new_local(move |_| {
+            let all_intercepts = all_intercepts;
+            let containers_for_start = containers_for_start.clone();
+            async move {
+                start_error.set(None);
+
+                let previous_ports = all_intercepts
+                    .get_untracked()
+                    .into_iter()
+                    .filter(|summary| summary.workload_id == workload_id)
+                    .max_by(|a, b| a.created_at.cmp(&b.created_at))
+                    .map(|summary| summary.port_mappings);
+
+                let port_overrides = match build_port_overrides_from_containers(
+                    &containers_for_start,
+                    previous_ports.as_ref().map(|v| v.as_slice()),
+                ) {
+                    Ok(overrides) => overrides,
+                    Err(err) => {
+                        start_error.set(Some(err.error.clone()));
+                        return Err(err);
+                    }
+                };
+
+                match start_workload_intercept(workload_id, port_overrides, update_counter).await {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        start_error.set(Some(err.error.clone()));
+                        Err(err)
+                    }
+                }
+            }
+        })
+    };
+    let start_pending = start_action.pending();
 
     view! {
         <>
@@ -959,71 +1082,37 @@ pub fn EnvironmentWorkloadItem(
 
                         if intercepts.is_empty() {
                             view! {
-                                <Button
-                                    variant=ButtonVariant::Outline
-                                    size=ButtonSize::Sm
-                                    on:click=move |_| start_intercept_modal_open.set(true)
-                                >
-                                    <lucide_leptos::Cable />
-                                    "Start Intercept"
-                                </Button>
+                                <div class="flex flex-col gap-2">
+                                    <Button
+                                        variant=ButtonVariant::Outline
+                                        size=ButtonSize::Sm
+                                        class="self-start w-auto"
+                                        on:click=move |_| { start_action.dispatch(()); }
+                                        disabled=Signal::derive(move || start_pending.get())
+                                    >
+                                        <lucide_leptos::Cable />
+                                        {move || if start_pending.get() { "Starting..." } else { "Start Intercept" }}
+                                    </Button>
+                                    <Show when=move || start_error.get().is_some()>
+                                        <P class="text-xs text-destructive">
+                                            {move || start_error.get().unwrap_or_default()}
+                                        </P>
+                                    </Show>
+                                </div>
                             }.into_any()
                         } else {
                             view! {
                                 <div class="flex flex-col gap-2">
                                     {intercepts.into_iter().map(|intercept| {
-                                        let port_list = intercept.port_mappings
-                                            .iter()
-                                            .map(|pm| format!("{}→{}", pm.local_port, pm.workload_port))
-                                            .collect::<Vec<_>>()
-                                            .join(", ");
-
-                                        let is_stopped = intercept.restored_at.is_some();
-                                        let (bg_class, border_class, status_badge) = if is_stopped {
-                                            // Stopped: gray/muted
-                                            (
-                                                "bg-gray-50 dark:bg-gray-950/20",
-                                                "border-gray-200 dark:border-gray-900",
-                                                view! {
-                                                    <Badge variant=BadgeVariant::Secondary class="text-xs">
-                                                        "Stopped"
-                                                    </Badge>
-                                                }.into_any()
-                                            )
-                                        } else if has_active_session {
-                                            // Active: green
-                                            (
-                                                "bg-green-50 dark:bg-green-950/20",
-                                                "border-green-200 dark:border-green-900",
-                                                view! {
-                                                    <Badge variant=BadgeVariant::Secondary class="text-xs bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
-                                                        "Active"
-                                                    </Badge>
-                                                }.into_any()
-                                            )
-                                        } else {
-                                            // Configured but inactive: amber/warning
-                                            (
-                                                "bg-amber-50 dark:bg-amber-950/20",
-                                                "border-amber-200 dark:border-amber-900",
-                                                view! {
-                                                    <Badge variant=BadgeVariant::Secondary class="text-xs bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-                                                        "No Session"
-                                                    </Badge>
-                                                }.into_any()
-                                            )
-                                        };
-
                                         view! {
-                                            <div class=format!("flex flex-col gap-1 p-2 rounded border {} {}", bg_class, border_class)>
-                                                <div class="flex items-center gap-2">
-                                                    <lucide_leptos::Cable attr:class="h-3 w-3" />
-                                                    {status_badge}
-                                                </div>
-                                                <div class="text-xs font-mono">
-                                                    {port_list}
-                                                </div>
-                                            </div>
+                                            <WorkloadInterceptCard
+                                                intercept=intercept
+                                                has_active_session=has_active_session
+                                                update_counter
+                                                containers=workload_containers.clone()
+                                                workload_id
+                                                workload_name=workload_name.clone()
+                                            />
                                         }
                                     }).collect::<Vec<_>>()}
                                 </div>
@@ -1038,16 +1127,141 @@ pub fn EnvironmentWorkloadItem(
                     // Actions removed - workload deletion is no longer available
                 </TableCell>
             </TableRow>
+        </>
+    }
+}
 
-            // Start Intercept Modal
-            <StartInterceptModal
-                open=start_intercept_modal_open
+#[component]
+fn WorkloadInterceptCard(
+    intercept: DevboxWorkloadInterceptSummary,
+    has_active_session: bool,
+    update_counter: RwSignal<usize>,
+    containers: Vec<KubeContainerInfo>,
+    workload_id: Uuid,
+    workload_name: String,
+) -> impl IntoView {
+    let intercept_id = intercept.intercept_id;
+    let device_name = intercept.device_name.clone();
+    let restored_at = intercept.restored_at;
+    let port_mappings = intercept.port_mappings.clone();
+
+    let is_stopped = restored_at.is_some();
+
+    let (bg_class, border_class, badge_class, status_text) = if is_stopped {
+        (
+            "bg-gray-50 dark:bg-gray-950/20",
+            "border-gray-200 dark:border-gray-900",
+            "text-xs",
+            "Stopped",
+        )
+    } else if has_active_session {
+        (
+            "bg-green-50 dark:bg-green-950/20",
+            "border-green-200 dark:border-green-900",
+            "text-xs bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+            "Active",
+        )
+    } else {
+        (
+            "bg-amber-50 dark:bg-amber-950/20",
+            "border-amber-200 dark:border-amber-900",
+            "text-xs bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+            "No Session",
+        )
+    };
+
+    let error_message = RwSignal::new(None::<String>);
+    let edit_modal_open = RwSignal::new(false);
+    let stop_action = Action::new_local({
+        let error_message = error_message;
+        move |_| {
+            let error_message = error_message;
+            async move {
+                let result = stop_workload_intercept(intercept_id, update_counter).await;
+                if let Err(err) = &result {
+                    error_message.set(Some(err.error.clone()));
+                } else {
+                    error_message.set(None);
+                }
+                result
+            }
+        }
+    });
+    let stop_pending = stop_action.pending();
+
+    let port_mappings_for_modal = port_mappings.clone();
+
+    view! {
+        <div class=format!("flex flex-col gap-3 p-3 rounded border {} {}", bg_class, border_class)>
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <div class="flex items-center gap-2">
+                    <lucide_leptos::Cable attr:class="h-3 w-3" />
+                    <Badge variant=BadgeVariant::Secondary class=badge_class>
+                        {status_text}
+                    </Badge>
+                    <Badge variant=BadgeVariant::Outline class="text-xs gap-1">
+                        <lucide_leptos::Monitor attr:class="h-3 w-3" />
+                        {device_name.clone()}
+                    </Badge>
+                </div>
+                {if !is_stopped {
+                    view! {
+                        <div class="flex items-center gap-2">
+                            <Button
+                                variant=ButtonVariant::Outline
+                                size=ButtonSize::Sm
+                                class="h-7 px-2 text-xs gap-1"
+                                on:click=move |_| edit_modal_open.set(true)
+                            >
+                                <lucide_leptos::SlidersHorizontal attr:class="h-3 w-3" />
+                                "Edit Ports"
+                            </Button>
+                            <Button
+                                variant=ButtonVariant::Destructive
+                                size=ButtonSize::Sm
+                                class="h-7 px-2 text-xs gap-1"
+                                on:click=move |_| { stop_action.dispatch(()); }
+                                disabled=Signal::derive(move || stop_pending.get())
+                            >
+                                <lucide_leptos::X attr:class="h-3 w-3" />
+                                {move || if stop_pending.get() { "Stopping..." } else { "Stop" }}
+                            </Button>
+                        </div>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
+            </div>
+            <div class="flex flex-col gap-1">
+                <span class="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Ports
+                </span>
+                <div class="text-xs font-mono flex flex-col gap-1">
+                    {port_mappings
+                        .iter()
+                        .map(|pm| {
+                            let mapping = format!("{}→{}", pm.local_port, pm.workload_port);
+                            view! { <span>{mapping}</span> }
+                        })
+                        .collect::<Vec<_>>()
+                        .into_any()}
+                </div>
+            </div>
+            <Show when=move || error_message.get().is_some()>
+                <P class="text-xs text-destructive">
+                    {move || error_message.get().unwrap_or_default()}
+                </P>
+            </Show>
+            <EditInterceptModal
+                open=edit_modal_open
+                intercept_id
                 workload_id
-                workload_name=workload_name
-                containers=workload_containers
+                workload_name=workload_name.clone()
+                containers=containers.clone()
+                existing_mappings=port_mappings_for_modal
                 update_counter
             />
-        </>
+        </div>
     }
 }
 
@@ -1284,15 +1498,18 @@ struct AvailablePort {
 #[derive(Debug, Clone)]
 struct PortMapping {
     port: i32,
+    default_local_port: String,
     local_port: RwSignal<String>,
 }
 
 #[component]
-pub fn StartInterceptModal(
+pub fn EditInterceptModal(
     open: RwSignal<bool>,
+    intercept_id: Uuid,
     workload_id: Uuid,
     workload_name: String,
     containers: Vec<KubeContainerInfo>,
+    existing_mappings: Vec<DevboxPortMapping>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     // Extract all available ports from containers
@@ -1308,74 +1525,120 @@ pub fn StartInterceptModal(
         })
         .collect();
 
-    // Create port mappings (all ports will be intercepted by default)
-    let port_mappings: Vec<PortMapping> = available_ports
-        .iter()
-        .map(|ap| PortMapping {
-            port: ap.port,
-            local_port: RwSignal::new(String::new()),
-        })
-        .collect();
-    let port_mappings_stored = StoredValue::new(port_mappings);
+    use std::convert::TryFrom;
 
-    // Reset form when modal opens/closes
+    let mapping_lookup: std::collections::HashMap<u16, u16> = existing_mappings
+        .into_iter()
+        .map(|mapping| (mapping.workload_port, mapping.local_port))
+        .collect();
+
+    let mut port_mappings_vec = Vec::new();
+    for ap in &available_ports {
+        let default_local_port = u16::try_from(ap.port)
+            .ok()
+            .map(|workload_port| {
+                mapping_lookup
+                    .get(&workload_port)
+                    .copied()
+                    .unwrap_or(workload_port)
+                    .to_string()
+            })
+            .unwrap_or_default();
+
+        port_mappings_vec.push(PortMapping {
+            port: ap.port,
+            default_local_port: default_local_port.clone(),
+            local_port: RwSignal::new(default_local_port),
+        });
+    }
+    let port_mappings_stored = StoredValue::new(port_mappings_vec);
+
+    // Reset form when modal closes
     Effect::new(move |_| {
         if !open.get() {
             for mapping in &port_mappings_stored.get_value() {
-                mapping.local_port.set(String::new());
+                mapping.local_port.set(mapping.default_local_port.clone());
             }
         }
     });
 
-    // Action that validates and calls start_workload_intercept directly
-    let start_action = Action::new_local(move |_| async move {
+    let error_message = RwSignal::new(None::<String>);
+    let update_action = Action::new_local(move |_| async move {
+        error_message.set(None);
+
         let mut port_overrides = Vec::new();
-
-        // All ports are intercepted by default
         for mapping in &port_mappings_stored.get_value() {
-            let local_port_str = mapping.local_port.get().trim().to_string();
+            let workload_port = match u16::try_from(mapping.port) {
+                Ok(value) => value,
+                Err(_) => {
+                    let err = ErrorResponse {
+                        error: format!("Unsupported workload port: {}", mapping.port),
+                    };
+                    error_message.set(Some(err.error.clone()));
+                    return Err(err);
+                }
+            };
 
-            // If not customized, use the same port as the workload port
-            let local_port: Option<u16> = if local_port_str.is_empty() {
-                Some(mapping.port as u16)
+            let local_port_str = mapping.local_port.get().trim().to_string();
+            let local_port = if local_port_str.is_empty() {
+                Some(workload_port)
             } else {
-                Some(local_port_str.parse().map_err(|_| ErrorResponse {
-                    error: format!("Invalid local port: {}", local_port_str),
-                })?)
+                match local_port_str.parse::<u16>() {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        let err = ErrorResponse {
+                            error: format!("Invalid local port: {}", local_port_str),
+                        };
+                        error_message.set(Some(err.error.clone()));
+                        return Err(err);
+                    }
+                }
             };
 
             port_overrides.push(DevboxPortMappingOverride {
-                workload_port: mapping.port as u16,
+                workload_port,
                 local_port,
             });
         }
 
         if port_overrides.is_empty() {
-            return Err(ErrorResponse {
+            let err = ErrorResponse {
                 error: "No ports available to intercept".to_string(),
-            });
+            };
+            error_message.set(Some(err.error.clone()));
+            return Err(err);
         }
 
-        start_workload_intercept(
-            workload_id,
-            port_overrides,
-            open,
-            update_counter,
-        )
-        .await
-    });
+        if let Err(err) = stop_workload_intercept(intercept_id, update_counter).await {
+            error_message.set(Some(err.error.clone()));
+            return Err(err);
+        }
 
+        match start_workload_intercept(workload_id, port_overrides, update_counter).await {
+            Ok(_) => {
+                open.set(false);
+                Ok(())
+            }
+            Err(err) => {
+                error_message.set(Some(err.error.clone()));
+                Err(err)
+            }
+        }
+    });
     view! {
         <Modal
             open=open
-            action=start_action
-            title="Start Workload Intercept"
-            action_text="Start Intercept"
-            action_progress_text="Starting..."
+            action=update_action
+            title="Edit Intercept Ports"
+            action_text="Save Changes"
+            action_progress_text="Saving..."
         >
             <div class="flex flex-col gap-4">
                 <P class="text-sm text-muted-foreground">
-                    {format!("All exposed ports will be intercepted for workload: {}", workload_name)}
+                    {format!(
+                        "Adjust local port overrides for workload: {}. Changes will restart the intercept.",
+                        workload_name
+                    )}
                 </P>
 
                 {if available_ports.is_empty() {
@@ -1398,7 +1661,7 @@ pub fn StartInterceptModal(
                     view! {
                         <div class="flex flex-col gap-3">
                             <div class="flex items-center justify-between">
-                                <Label>"Ports to Intercept"</Label>
+                                <Label>"Port mappings"</Label>
                                 <Badge variant=BadgeVariant::Secondary class="text-xs">
                                     {format!("{} port{}", available_ports.len(), if available_ports.len() == 1 { "" } else { "s" })}
                                 </Badge>
@@ -1450,18 +1713,22 @@ pub fn StartInterceptModal(
                             <div class="flex gap-2">
                                 <lucide_leptos::Info attr:class="h-4 w-4 shrink-0 mt-0.5" />
                                 <div class="flex flex-col gap-1">
-                                    <span class="font-medium">"How it works:"</span>
+                                    <span class="font-medium">"Tips"</span>
                                     <ul class="list-disc list-inside space-y-1">
-                                        <li>"All workload ports listed above will be intercepted"</li>
-                                        <li>"By default, local ports match workload ports (e.g., 8080→8080)"</li>
-                                        <li>"Optionally customize the local port if you need a different mapping"</li>
-                                        <li>"Traffic to these ports will be redirected to your local devbox session"</li>
+                                        <li>"Leave a field blank to use the workload port as the local port"</li>
+                                        <li>"Updates are applied by restarting the intercept with the new configuration"</li>
                                     </ul>
                                 </div>
                             </div>
                         </div>
                     }.into_any()
                 }}
+
+                <Show when=move || error_message.get().is_some()>
+                    <P class="text-xs text-destructive">
+                        {move || error_message.get().unwrap_or_default()}
+                    </P>
+                </Show>
             </div>
         </Modal>
     }

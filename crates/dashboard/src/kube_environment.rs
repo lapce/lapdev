@@ -384,6 +384,9 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
         environment.cluster_id, environment.namespace
     );
 
+    let is_branch = environment.base_environment_id.is_some();
+    let is_shared = environment.is_shared;
+
     view! {
         <TableRow>
             <TableCell>
@@ -413,13 +416,30 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
             <TableCell>
                 <div class="flex flex-col gap-1">
                     <Badge variant=BadgeVariant::Secondary>
-                        {if environment.base_environment_id.is_some() {
-                            "Branch"
-                        } else if environment.is_shared {
-                            "Shared"
-                        } else {
-                            "Personal"
-                        }}
+                        <span class="inline-flex items-center gap-2">
+                            {if is_branch {
+                                view! {
+                                    <>
+                                        <lucide_leptos::GitBranch attr:class="h-3 w-3" />
+                                        <span>"Branch"</span>
+                                    </>
+                                }.into_any()
+                            } else if is_shared {
+                                view! {
+                                    <>
+                                        <lucide_leptos::Users attr:class="h-3 w-3" />
+                                        <span>"Shared"</span>
+                                    </>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <>
+                                        <lucide_leptos::User attr:class="h-3 w-3" />
+                                        <span>"Personal"</span>
+                                    </>
+                                }.into_any()
+                            }}
+                        </span>
                     </Badge>
                     {if let (Some(base_name), Some(base_env_id)) = (environment.base_environment_name.clone(), environment.base_environment_id) {
                         view! {

@@ -216,6 +216,8 @@ pub fn EnvironmentWorkloadInfoCard(
                 let environment_id = environment.id;
                 let environment_cluster_id = environment.cluster_id;
                 let environment_cluster_name = environment.cluster_name.clone();
+                let is_branch = environment.base_environment_id.is_some();
+                let is_shared = environment.is_shared;
 
                 view! {
                     <Card class="p-6">
@@ -241,7 +243,14 @@ pub fn EnvironmentWorkloadInfoCard(
                                     </div>
                                     <span>Environment</span>
                                 </div>
-                                <div>
+                                <div class="flex items-center gap-2">
+                                    {if is_branch {
+                                        view! { <lucide_leptos::GitBranch attr:class="h-4 w-4 text-muted-foreground" /> }.into_any()
+                                    } else if is_shared {
+                                        view! { <lucide_leptos::Users attr:class="h-4 w-4 text-muted-foreground" /> }.into_any()
+                                    } else {
+                                        view! { <lucide_leptos::User attr:class="h-4 w-4 text-muted-foreground" /> }.into_any()
+                                    }}
                                     <a href=format!("/kubernetes/environments/{}", environment_id) class="text-foreground hover:underline">
                                         {environment_name.clone()}
                                     </a>

@@ -11,6 +11,7 @@ pub trait DevboxSessionRpc {
     async fn list_workload_intercepts(
         environment_id: Uuid,
     ) -> Result<Vec<WorkloadInterceptInfo>, String>;
+    async fn update_device_name(device_name: String) -> Result<(), String>;
 }
 
 // Devbox client RPC - CLI to Server

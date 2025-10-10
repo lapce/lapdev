@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use futures::StreamExt;
-use lapdev_devbox_rpc::{
-    DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest, WorkloadInterceptInfo,
-};
+use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest};
 use lapdev_rpc::spawn_twoway;
 use std::{collections::HashMap, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};

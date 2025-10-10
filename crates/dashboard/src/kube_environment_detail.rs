@@ -1141,7 +1141,6 @@ fn WorkloadInterceptCard(
     workload_name: String,
 ) -> impl IntoView {
     let intercept_id = intercept.intercept_id;
-    let device_name = intercept.device_name.clone();
     let restored_at = intercept.restored_at;
     let port_mappings = intercept.port_mappings.clone();
 
@@ -1198,10 +1197,6 @@ fn WorkloadInterceptCard(
                     <lucide_leptos::Cable attr:class="h-3 w-3" />
                     <Badge variant=BadgeVariant::Secondary class=badge_class>
                         {status_text}
-                    </Badge>
-                    <Badge variant=BadgeVariant::Outline class="text-xs gap-1">
-                        <lucide_leptos::Monitor attr:class="h-3 w-3" />
-                        {device_name.clone()}
                     </Badge>
                 </div>
                 {if !is_stopped {

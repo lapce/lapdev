@@ -225,7 +225,6 @@ impl HrpcService for CoreState {
                 workload_name: workload.name,
                 namespace: workload.namespace,
                 port_mappings,
-                device_name: String::new(), // Device name no longer tracked
                 created_at: intercept.created_at.with_timezone(&Utc),
                 restored_at: intercept.stopped_at.map(|dt| dt.with_timezone(&Utc)),
             });
@@ -258,8 +257,7 @@ impl HrpcService for CoreState {
             .map_err(hrpc_from_db_err)?
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
-        self.ensure_environment_access(&user, &environment)
-            .await?;
+        self.ensure_environment_access(&user, &environment).await?;
 
         let mappings = port_mappings
             .into_iter()

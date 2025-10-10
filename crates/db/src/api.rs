@@ -2112,6 +2112,23 @@ impl DbApi {
         Ok(())
     }
 
+    /// Update the device name for a devbox session
+    pub async fn update_devbox_session_device_name(
+        &self,
+        session_id: Uuid,
+        device_name: String,
+    ) -> Result<()> {
+        lapdev_db_entities::kube_devbox_session::ActiveModel {
+            id: ActiveValue::Set(session_id),
+            device_name: ActiveValue::Set(device_name.into()),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+
+        Ok(())
+    }
+
     /// Update the active environment for a devbox session
     pub async fn update_devbox_session_active_environment(
         &self,

@@ -56,7 +56,6 @@ pub struct DevboxWorkloadInterceptSummary {
     pub workload_name: String,
     pub namespace: String,
     pub port_mappings: Vec<DevboxPortMapping>,
-    pub device_name: String,
     pub created_at: DateTime<Utc>,
     pub restored_at: Option<DateTime<Utc>>,
 }

@@ -1,7 +1,14 @@
 use anyhow::Result;
-use axum::{body::Body, http::{Response, StatusCode}, response::IntoResponse};
+use axum::{
+    body::Body,
+    http::{Response, StatusCode},
+    response::IntoResponse,
+};
 use std::{io, sync::Arc};
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 

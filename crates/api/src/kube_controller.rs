@@ -7,9 +7,8 @@ use lapdev_common::{
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
         KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeClusterStatus,
-        KubeContainerImage, KubeEnvironment, KubeNamespaceInfo, KubeWorkload,
-        KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedInfo, PaginatedResult,
-        PaginationParams,
+        KubeContainerImage, KubeEnvironment, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
+        KubeWorkloadList, PagePaginationParams, PaginatedInfo, PaginatedResult, PaginationParams,
     },
     token::PlainToken,
     utils::rand_string,

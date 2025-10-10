@@ -381,6 +381,35 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         }
     }
 
+    async fn update_device_name(
+        self,
+        _context: tarpc::context::Context,
+        device_name: String,
+    ) -> Result<(), String> {
+        tracing::info!("update_device_name called for session {}", self.session_id);
+
+        self.state
+            .db
+            .update_devbox_session_device_name(self.session_id, device_name.clone())
+            .await
+            .map_err(|e| format!("Failed to update device name: {}", e))?;
+
+        {
+            let mut sessions = self.state.active_devbox_sessions.write().await;
+            if let Some(handle) = sessions.get_mut(&self.user_id) {
+                handle.device_name = device_name.clone();
+            }
+        }
+
+        tracing::info!(
+            "Updated device name for session {} to {}",
+            self.session_id,
+            device_name
+        );
+
+        Ok(())
+    }
+
     async fn set_active_environment(
         self,
         _context: tarpc::context::Context,
@@ -412,6 +441,15 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             self.session_id,
             environment_id
         );
+
+        // Fetch session to determine device context
+        let session = self
+            .state
+            .db
+            .get_devbox_session(self.session_id)
+            .await
+            .map_err(|e| format!("Failed to fetch session: {}", e))?
+            .ok_or_else(|| "Session not found".to_string())?;
 
         // Get active intercepts for this environment
         let intercepts = self
@@ -445,7 +483,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
                 namespace: workload.namespace,
                 port_mappings,
                 created_at: intercept.created_at.with_timezone(&chrono::Utc),
-                device_name: String::new(), // Intercepts are no longer tied to specific sessions/devices
+                device_name: session.device_name.clone(),
             });
         }
 

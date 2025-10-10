@@ -1,14 +1,7 @@
 use anyhow::Result;
-use axum::{
-    body::Body,
-    http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri},
-    response::IntoResponse,
-};
+use axum::{body::Body, http::{Response, StatusCode}, response::IntoResponse};
 use std::{io, sync::Arc};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -72,9 +65,6 @@ impl PreviewUrlProxy {
 
         match http_parser::parse_complete_http_request(&mut stream, &mut buffer).await {
             Ok((parsed_request, headers_len)) => {
-                let method = Method::from_bytes(parsed_request.method.as_bytes())
-                    .map_err(|_| ProxyError::Internal("Invalid HTTP method".to_string()))?;
-
                 debug!(
                     "Parsed request: {} {}",
                     parsed_request.method, parsed_request.path

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Result};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use lapdev_common::kube::KUBE_CLUSTER_TOKEN_HEADER;
 use lapdev_kube_rpc::{
     ClientTunnelFrame, ClientTunnelMessage, ServerTunnelFrame, ServerTunnelMessage,

@@ -1,5 +1,5 @@
 use lapdev_common::kube::{
-    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespace, KubeNamespaceInfo, KubeServiceWithYaml,
+    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespaceInfo, KubeServiceWithYaml,
     KubeWorkloadDetails, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };
 use serde::{Deserialize, Serialize};

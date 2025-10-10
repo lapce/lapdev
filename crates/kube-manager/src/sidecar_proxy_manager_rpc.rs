@@ -6,20 +6,20 @@ use crate::sidecar_proxy_manager::SidecarProxyManager;
 #[derive(Clone)]
 pub struct SidecarProxyManagerRpcServer {
     manager: SidecarProxyManager,
-    rpc_client: SidecarProxyRpcClient,
+    _rpc_client: SidecarProxyRpcClient,
 }
 
 impl SidecarProxyManagerRpcServer {
     pub(crate) fn new(manager: SidecarProxyManager, rpc_client: SidecarProxyRpcClient) -> Self {
         Self {
             manager,
-            rpc_client,
+            _rpc_client: rpc_client,
         }
     }
 }
 
 impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
-    async fn heartbeat(self, context: ::tarpc::context::Context) -> Result<(), String> {
+    async fn heartbeat(self, _context: ::tarpc::context::Context) -> Result<(), String> {
         todo!()
     }
 
@@ -38,10 +38,10 @@ impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
 
     async fn report_routing_metrics(
         self,
-        context: ::tarpc::context::Context,
-        request_count: u64,
-        byte_count: u64,
-        active_connections: u32,
+        _context: ::tarpc::context::Context,
+        _request_count: u64,
+        _byte_count: u64,
+        _active_connections: u32,
     ) -> Result<(), String> {
         todo!()
     }

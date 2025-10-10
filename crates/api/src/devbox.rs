@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{ws::WebSocket, Path, State, WebSocketUpgrade},
+    extract::{ws::WebSocket, State, WebSocketUpgrade},
     http::HeaderMap,
     response::Response,
     Json,
@@ -10,10 +10,10 @@ use axum_extra::{headers, TypedHeader};
 use futures::StreamExt;
 use lapdev_devbox_rpc::{
     DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionInfo, DevboxSessionRpc, PortMapping,
-    PortMappingOverride, StartInterceptRequest,
+    StartInterceptRequest,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tarpc::{
     server::{BaseChannel, Channel},
     tokio_util::codec::LengthDelimitedCodec,
@@ -457,7 +457,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 pub struct DevboxInterceptRpcImpl {
     state: Arc<CoreState>,
     user_id: Uuid,
-    organization_id: Uuid,
+    _organization_id: Uuid,
 }
 
 impl DevboxInterceptRpcImpl {
@@ -465,7 +465,7 @@ impl DevboxInterceptRpcImpl {
         Self {
             state,
             user_id,
-            organization_id,
+            _organization_id: organization_id,
         }
     }
 }

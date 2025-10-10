@@ -57,7 +57,7 @@ impl TunnelRegistry {
         }
     }
 
-    pub async fn update_heartbeat(&self, cluster_id: Uuid) -> Result<(), String> {
+    pub async fn update_heartbeat(&self, _cluster_id: Uuid) -> Result<(), String> {
         Ok(())
     }
 

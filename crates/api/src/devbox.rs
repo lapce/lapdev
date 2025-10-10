@@ -252,8 +252,17 @@ async fn handle_devbox_rpc(
     state.active_devbox_sessions.write().await.remove(&user_id);
     notification_task.abort();
 
+    // Mark session as revoked in database
+    if let Err(e) = state.db.revoke_devbox_session(session_id).await {
+        tracing::error!(
+            "Failed to revoke session {} on disconnect: {}",
+            session_id,
+            e
+        );
+    }
+
     tracing::info!(
-        "DevboxSessionRpc server stopped for session {} user {} device {}",
+        "DevboxSessionRpc server stopped for session {} user {} device {} (session revoked)",
         session_id,
         user_id,
         device_name
@@ -412,19 +421,9 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             .await
             .map_err(|e| format!("Failed to fetch intercepts: {}", e))?;
 
-        // Get session info for each intercept to get device names
+        // Build response from intercepts
         let mut result = Vec::new();
         for intercept in intercepts {
-            // Get session to get device name
-            let session = self
-                .state
-                .db
-                .get_devbox_session(intercept.session_id)
-                .await
-                .map_err(|e| format!("Failed to fetch session: {}", e))?;
-
-            let device_name = session.map(|s| s.device_name).unwrap_or_default();
-
             // Get workload info
             let workload = self
                 .state
@@ -446,7 +445,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
                 namespace: workload.namespace,
                 port_mappings,
                 created_at: intercept.created_at.with_timezone(&chrono::Utc),
-                device_name,
+                device_name: String::new(), // Intercepts are no longer tied to specific sessions/devices
             });
         }
 
@@ -507,17 +506,6 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             return Err("Unauthorized: You don't have access to this environment".to_string());
         }
 
-        // Get user's active session
-        let session = self
-            .state
-            .db
-            .get_active_devbox_session(self.user_id)
-            .await
-            .map_err(|e| format!("Failed to fetch session: {}", e))?
-            .ok_or_else(|| {
-                "No active devbox session. Please run 'lapdev devbox connect' first.".to_string()
-            })?;
-
         // Convert port mapping overrides to actual port mappings
         let mut actual_port_mappings = Vec::new();
         for override_mapping in &port_mappings {
@@ -537,7 +525,6 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .db
             .create_workload_intercept(
                 self.user_id,
-                session.id,
                 environment.id,
                 workload_id,
                 serde_json::to_value(&actual_port_mappings)
@@ -610,16 +597,8 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .map_err(|e| format!("Failed to fetch intercept: {}", e))?
             .ok_or_else(|| "Intercept not found".to_string())?;
 
-        // Get session to verify it belongs to this user
-        let session = self
-            .state
-            .db
-            .get_devbox_session(intercept.session_id)
-            .await
-            .map_err(|e| format!("Failed to fetch session: {}", e))?
-            .ok_or_else(|| "Session not found".to_string())?;
-
-        if session.user_id != self.user_id {
+        // Verify intercept belongs to this user
+        if intercept.user_id != self.user_id {
             return Err("Unauthorized: This intercept doesn't belong to you".to_string());
         }
 

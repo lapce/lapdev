@@ -31,7 +31,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
     let ws_url = api_url
         .replace("https://", "wss://")
         .replace("http://", "ws://");
-    let ws_url = format!("{}/kube/devbox/rpc", ws_url);
+    let ws_url = format!("{}/api/v1/kube/devbox/rpc", ws_url);
 
     tracing::info!("Connecting to: {}", ws_url);
 

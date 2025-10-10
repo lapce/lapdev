@@ -4,13 +4,10 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    devbox::{
-        DevboxPortMappingOverride, DevboxStartWorkloadInterceptResponse,
-        DevboxWorkloadInterceptListResponse, DevboxWorkloadInterceptSummary,
-    },
+    devbox::{DevboxPortMappingOverride, DevboxSessionSummary, DevboxWorkloadInterceptSummary},
     kube::{
-        KubeClusterInfo, KubeClusterStatus, KubeContainerInfo, KubeEnvironment,
-        KubeEnvironmentService, KubeEnvironmentWorkload,
+        KubeClusterInfo, KubeContainerInfo, KubeEnvironment, KubeEnvironmentService,
+        KubeEnvironmentWorkload,
     },
 };
 use leptos::prelude::*;
@@ -182,6 +179,37 @@ async fn create_branch_environment(
     Ok(env)
 }
 
+async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+    let response = client.devbox_session_list_sessions().await??;
+
+    // Find the active session (not revoked)
+    Ok(response
+        .sessions
+        .into_iter()
+        .find(|s| s.revoked_at.is_none()))
+}
+
+fn humanize_datetime(dt: &chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(*dt);
+
+    if duration.num_seconds() < 60 {
+        "just now".to_string()
+    } else if duration.num_minutes() < 60 {
+        let mins = duration.num_minutes();
+        format!("{} minute{} ago", mins, if mins == 1 { "" } else { "s" })
+    } else if duration.num_hours() < 24 {
+        let hours = duration.num_hours();
+        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
+    } else if duration.num_days() < 30 {
+        let days = duration.num_days();
+        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+    } else {
+        dt.format("%Y-%m-%d %H:%M UTC").to_string()
+    }
+}
+
 #[component]
 pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let org = get_current_org();
@@ -285,6 +313,10 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
+    // Fetch active devbox session
+    let active_session =
+        LocalResource::new(move || async move { get_active_devbox_session().await.ok().flatten() });
+
     let environment_info = Signal::derive(move || environment_result.get().flatten());
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
     let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
@@ -384,6 +416,9 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                 />
             </Show>
 
+            // Devbox Session Banner
+            <DevboxSessionBanner active_session />
+
             // Environment Resources (Workloads & Services)
             <Show when=move || environment_info.get().is_some()>
                 <EnvironmentResourcesTabs
@@ -395,6 +430,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     all_services
                     all_preview_urls
                     all_intercepts
+                    active_session
                     update_counter
                 />
             </Show>
@@ -697,6 +733,7 @@ pub fn EnvironmentResourcesTabs(
     all_services: Signal<Vec<KubeEnvironmentService>>,
     all_preview_urls: Signal<Vec<lapdev_common::kube::KubeEnvironmentPreviewUrl>>,
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
+    active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
@@ -730,6 +767,7 @@ pub fn EnvironmentResourcesTabs(
                     debounced_search
                     all_workloads
                     all_intercepts
+                    active_session
                     update_counter
                 />
             </TabsContent>
@@ -762,6 +800,7 @@ pub fn EnvironmentWorkloadsContent(
     debounced_search: RwSignal<String>,
     all_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
+    active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     view! {
@@ -797,7 +836,7 @@ pub fn EnvironmentWorkloadsContent(
                                 each=move || filtered_workloads.get()
                                 key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
                                 children=move |workload| {
-                                    view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts update_counter /> }
+                                    view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts active_session update_counter /> }
                                 }
                             />
                         </TableBody>
@@ -857,6 +896,7 @@ pub fn EnvironmentWorkloadItem(
     environment_id: Uuid,
     workload: KubeEnvironmentWorkload,
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
+    active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     let workload_id = workload.id;
@@ -872,21 +912,6 @@ pub fn EnvironmentWorkloadItem(
             .filter(|intercept| intercept.workload_id == workload_id)
             .collect::<Vec<_>>()
     });
-
-    let start_intercept_action = Action::new_local(
-        move |(port_mappings,): &(Vec<DevboxPortMappingOverride>,)| {
-            let port_mappings = port_mappings.clone();
-            async move {
-                start_workload_intercept(
-                    workload_id,
-                    port_mappings,
-                    start_intercept_modal_open,
-                    update_counter,
-                )
-                .await
-            }
-        },
-    );
 
     view! {
         <>
@@ -930,6 +955,8 @@ pub fn EnvironmentWorkloadItem(
                 <TableCell>
                     {move || {
                         let intercepts = workload_intercepts.get();
+                        let has_active_session = active_session.get().flatten().is_some();
+
                         if intercepts.is_empty() {
                             view! {
                                 <Button
@@ -951,28 +978,49 @@ pub fn EnvironmentWorkloadItem(
                                             .collect::<Vec<_>>()
                                             .join(", ");
 
+                                        let is_stopped = intercept.restored_at.is_some();
+                                        let (bg_class, border_class, status_badge) = if is_stopped {
+                                            // Stopped: gray/muted
+                                            (
+                                                "bg-gray-50 dark:bg-gray-950/20",
+                                                "border-gray-200 dark:border-gray-900",
+                                                view! {
+                                                    <Badge variant=BadgeVariant::Secondary class="text-xs">
+                                                        "Stopped"
+                                                    </Badge>
+                                                }.into_any()
+                                            )
+                                        } else if has_active_session {
+                                            // Active: green
+                                            (
+                                                "bg-green-50 dark:bg-green-950/20",
+                                                "border-green-200 dark:border-green-900",
+                                                view! {
+                                                    <Badge variant=BadgeVariant::Secondary class="text-xs bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                                                        "Active"
+                                                    </Badge>
+                                                }.into_any()
+                                            )
+                                        } else {
+                                            // Configured but inactive: amber/warning
+                                            (
+                                                "bg-amber-50 dark:bg-amber-950/20",
+                                                "border-amber-200 dark:border-amber-900",
+                                                view! {
+                                                    <Badge variant=BadgeVariant::Secondary class="text-xs bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                                                        "No Session"
+                                                    </Badge>
+                                                }.into_any()
+                                            )
+                                        };
+
                                         view! {
-                                            <div class="flex flex-col gap-1 p-2 bg-blue-50 dark:bg-blue-950/20 rounded border border-blue-200 dark:border-blue-900">
+                                            <div class=format!("flex flex-col gap-1 p-2 rounded border {} {}", bg_class, border_class)>
                                                 <div class="flex items-center gap-2">
-                                                    <lucide_leptos::Monitor attr:class="h-3 w-3 text-blue-700 dark:text-blue-400" />
-                                                    <span class="font-medium text-sm text-blue-900 dark:text-blue-200">
-                                                        {intercept.device_name.clone()}
-                                                    </span>
-                                                    {if intercept.restored_at.is_some() {
-                                                        view! {
-                                                            <Badge variant=BadgeVariant::Secondary class="text-xs">
-                                                                "Restored"
-                                                            </Badge>
-                                                        }.into_any()
-                                                    } else {
-                                                        view! {
-                                                            <Badge variant=BadgeVariant::Secondary class="text-xs bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
-                                                                "Active"
-                                                            </Badge>
-                                                        }.into_any()
-                                                    }}
+                                                    <lucide_leptos::Cable attr:class="h-3 w-3" />
+                                                    {status_badge}
                                                 </div>
-                                                <div class="text-xs text-blue-800 dark:text-blue-300 font-mono">
+                                                <div class="text-xs font-mono">
                                                     {port_list}
                                                 </div>
                                             </div>
@@ -994,9 +1042,10 @@ pub fn EnvironmentWorkloadItem(
             // Start Intercept Modal
             <StartInterceptModal
                 open=start_intercept_modal_open
+                workload_id
                 workload_name=workload_name
                 containers=workload_containers
-                start_intercept_action
+                update_counter
             />
         </>
     }
@@ -1241,9 +1290,10 @@ struct PortMapping {
 #[component]
 pub fn StartInterceptModal(
     open: RwSignal<bool>,
+    workload_id: Uuid,
     workload_name: String,
     containers: Vec<KubeContainerInfo>,
-    start_intercept_action: Action<(Vec<DevboxPortMappingOverride>,), Result<(), ErrorResponse>>,
+    update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     // Extract all available ports from containers
     let available_ports: Vec<AvailablePort> = containers
@@ -1277,8 +1327,8 @@ pub fn StartInterceptModal(
         }
     });
 
-    // Custom action wrapper that validates and transforms the port mappings
-    let wrapped_action = Action::new_local(move |_| async move {
+    // Action that validates and calls start_workload_intercept directly
+    let start_action = Action::new_local(move |_| async move {
         let mut port_overrides = Vec::new();
 
         // All ports are intercepted by default
@@ -1306,14 +1356,19 @@ pub fn StartInterceptModal(
             });
         }
 
-        start_intercept_action.dispatch((port_overrides,));
-        Ok(())
+        start_workload_intercept(
+            workload_id,
+            port_overrides,
+            open,
+            update_counter,
+        )
+        .await
     });
 
     view! {
         <Modal
             open=open
-            action=wrapped_action
+            action=start_action
             title="Start Workload Intercept"
             action_text="Start Intercept"
             action_progress_text="Starting..."
@@ -1409,5 +1464,145 @@ pub fn StartInterceptModal(
                 }}
             </div>
         </Modal>
+    }
+}
+
+#[component]
+pub fn DevboxSessionBanner(
+    active_session: LocalResource<Option<DevboxSessionSummary>>,
+) -> impl IntoView {
+    let is_expanded = RwSignal::new(false);
+
+    view! {
+        <Suspense fallback=move || view! { <div></div> }>
+            {move || {
+                active_session
+                    .get()
+                    .map(|session_opt| {
+                        if let Some(session) = session_opt {
+                            // Active session exists
+                            view! {
+                                <div class="rounded-lg border bg-muted/50 p-4">
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex items-center gap-3">
+                                            <div class="rounded-full bg-primary/10 p-2">
+                                                <lucide_leptos::Activity attr:class="h-5 w-5 text-primary" />
+                                            </div>
+                                            <div class="flex flex-col gap-1">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="font-semibold">Devbox Connected</span>
+                                                    <Badge variant=BadgeVariant::Secondary>
+                                                        <lucide_leptos::Monitor attr:class="h-3 w-3" />
+                                                        {session.device_name.clone()}
+                                                    </Badge>
+                                                </div>
+                                                <span class="text-sm text-muted-foreground">
+                                                    {format!("Last active: {}", humanize_datetime(&session.last_used_at))}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <a href="/devbox/sessions">
+                                            <Button variant=ButtonVariant::Outline size=ButtonSize::Sm>
+                                                <lucide_leptos::Settings attr:class="h-4 w-4" />
+                                                "Manage Sessions"
+                                            </Button>
+                                        </a>
+                                    </div>
+                                </div>
+                            }
+                                .into_any()
+                        } else {
+                            // No active session - expandable panel
+                            view! {
+                                <div class="rounded-lg border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900">
+                                    <div class="p-4">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div
+                                                class="flex items-start gap-3 flex-1 cursor-pointer"
+                                                on:click=move |_| {
+                                                    is_expanded.update(|v| *v = !*v);
+                                                }
+                                            >
+                                                <div class="rounded-full bg-amber-100 dark:bg-amber-900/30 p-2 mt-0.5">
+                                                    <lucide_leptos::Info attr:class="h-5 w-5 text-amber-700 dark:text-amber-500" />
+                                                </div>
+                                                <div class="flex-1">
+                                                    <h4 class="font-semibold text-amber-900 dark:text-amber-200 mb-1">
+                                                        "You Can Connect Your Local Development Machine"
+                                                    </h4>
+                                                    <Show when=move || !is_expanded.get() fallback=|| view! {
+                                                        <p class="text-sm text-amber-800 dark:text-amber-300">
+                                                            "To intercept workloads and develop locally, you can connect your machine using the Lapdev CLI."
+                                                        </p>
+                                                    }>
+                                                        <p class="text-sm text-amber-800 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-200">
+                                                            "Click to view setup instructions"
+                                                        </p>
+                                                    </Show>
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant=ButtonVariant::Ghost
+                                                size=ButtonSize::Sm
+                                                on:click=move |_| is_expanded.update(|v| *v = !*v)
+                                                class="text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 shrink-0"
+                                            >
+                                                <Show when=move || is_expanded.get() fallback=|| view! {
+                                                    <lucide_leptos::ChevronDown attr:class="h-4 w-4" />
+                                                }>
+                                                    <lucide_leptos::ChevronUp attr:class="h-4 w-4" />
+                                                </Show>
+                                            </Button>
+                                        </div>
+
+                                        <Show when=move || is_expanded.get()>
+                                            <div class="mt-3 ml-14 flex flex-col gap-3">
+                                                <div class="flex flex-col gap-2 text-sm">
+                                                    <div class="flex items-start gap-2">
+                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
+                                                            "1."
+                                                        </span>
+                                                        <div class="flex-1">
+                                                            <span class="text-amber-800 dark:text-amber-300">
+                                                                "Install the CLI: "
+                                                            </span>
+                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
+                                                                "curl -fsSL https://get.lap.dev | sh"
+                                                            </code>
+                                                        </div>
+                                                    </div>
+                                                    <div class="flex items-start gap-2">
+                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
+                                                            "2."
+                                                        </span>
+                                                        <div class="flex-1">
+                                                            <span class="text-amber-800 dark:text-amber-300">
+                                                                "Connect: "
+                                                            </span>
+                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
+                                                                "lapdev connect"
+                                                            </code>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="flex gap-2">
+                                                    <a href="https://docs.lap.dev/devbox/getting-started" target="_blank" rel="noopener noreferrer">
+                                                        <Button variant=ButtonVariant::Outline size=ButtonSize::Sm class="text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30">
+                                                            <lucide_leptos::BookOpen attr:class="h-4 w-4" />
+                                                            "View Documentation"
+                                                            <lucide_leptos::ExternalLink attr:class="h-3 w-3" />
+                                                        </Button>
+                                                    </a>
+                                                </div>
+                                            </div>
+                                        </Show>
+                                    </div>
+                                </div>
+                            }
+                                .into_any()
+                        }
+                    })
+            }}
+        </Suspense>
     }
 }

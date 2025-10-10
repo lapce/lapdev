@@ -7,25 +7,16 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    pub session_id: Uuid,
     pub user_id: Uuid,
     pub environment_id: Uuid,
     pub workload_id: Uuid,
     pub port_mappings: Json,
     pub created_at: DateTimeWithTimeZone,
-    pub restored_at: Option<DateTimeWithTimeZone>,
+    pub stopped_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(
-        belongs_to = "super::kube_devbox_session::Entity",
-        from = "Column::SessionId",
-        to = "super::kube_devbox_session::Column::Id",
-        on_update = "NoAction",
-        on_delete = "NoAction"
-    )]
-    Session,
     #[sea_orm(
         belongs_to = "super::user::Entity",
         from = "Column::UserId",
@@ -50,12 +41,6 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     Workload,
-}
-
-impl Related<super::kube_devbox_session::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Session.def()
-    }
 }
 
 impl Related<super::kube_environment::Entity> for Entity {

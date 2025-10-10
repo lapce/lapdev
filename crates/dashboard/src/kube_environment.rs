@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use chrono::DateTime;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
-use lapdev_common::devbox::DevboxSessionSummary;
 use lapdev_common::kube::{KubeEnvironment, PagePaginationParams, PaginatedInfo, PaginatedResult};
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
@@ -59,10 +58,6 @@ pub fn KubeEnvironment() -> impl IntoView {
         }
     };
 
-    // Fetch active devbox session
-    let active_session =
-        LocalResource::new(move || async move { get_active_devbox_session().await.ok().flatten() });
-
     view! {
         <div class="flex flex-col gap-6">
             <div class="flex flex-col gap-2 items-start">
@@ -72,8 +67,6 @@ pub fn KubeEnvironment() -> impl IntoView {
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
                 </a>
             </div>
-
-            <DevboxSessionBanner active_session />
 
             <KubeEnvironmentList update_counter environment_type />
         </div>
@@ -92,17 +85,6 @@ async fn all_kube_environments(
     Ok(client
         .all_kube_environments(org.id, search, is_shared, is_branch, pagination)
         .await??)
-}
-
-async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
-    let client = HrpcServiceClient::new("/api/rpc".to_string());
-    let response = client.devbox_session_list_sessions().await??;
-
-    // Find the active session (not revoked)
-    Ok(response
-        .sessions
-        .into_iter()
-        .find(|s| s.revoked_at.is_none()))
 }
 
 #[derive(Clone, PartialEq)]
@@ -515,165 +497,5 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                 </DropdownMenu>
             </TableCell>
         </TableRow>
-    }
-}
-
-#[component]
-pub fn DevboxSessionBanner(
-    active_session: LocalResource<Option<DevboxSessionSummary>>,
-) -> impl IntoView {
-    let is_expanded = RwSignal::new(false);
-
-    view! {
-        <Suspense fallback=move || view! { <div></div> }>
-            {move || {
-                active_session
-                    .get()
-                    .map(|session_opt| {
-                        if let Some(session) = session_opt {
-                            // Active session exists
-                            view! {
-                                <div class="rounded-lg border bg-muted/50 p-4">
-                                    <div class="flex items-center justify-between">
-                                        <div class="flex items-center gap-3">
-                                            <div class="rounded-full bg-primary/10 p-2">
-                                                <lucide_leptos::Activity attr:class="h-5 w-5 text-primary" />
-                                            </div>
-                                            <div class="flex flex-col gap-1">
-                                                <div class="flex items-center gap-2">
-                                                    <span class="font-semibold">Devbox Connected</span>
-                                                    <Badge variant=BadgeVariant::Secondary>
-                                                        <lucide_leptos::Monitor attr:class="h-3 w-3" />
-                                                        {session.device_name.clone()}
-                                                    </Badge>
-                                                </div>
-                                                <span class="text-sm text-muted-foreground">
-                                                    {format!("Last active: {}", humanize_datetime(&session.last_used_at))}
-                                                </span>
-                                            </div>
-                                        </div>
-                                        <a href="/devbox/sessions">
-                                            <Button variant=ButtonVariant::Outline size=crate::component::button::ButtonSize::Sm>
-                                                <lucide_leptos::Settings attr:class="h-4 w-4" />
-                                                "Manage Sessions"
-                                            </Button>
-                                        </a>
-                                    </div>
-                                </div>
-                            }
-                                .into_any()
-                        } else {
-                            // No active session - expandable panel
-                            view! {
-                                <div class="rounded-lg border bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900">
-                                    <div class="p-4">
-                                        <div class="flex items-start justify-between gap-3">
-                                            <div
-                                                class="flex items-start gap-3 flex-1 cursor-pointer"
-                                                on:click=move |_| {
-                                                    is_expanded.update(|v| *v = !*v);
-                                                }
-                                            >
-                                                <div class="rounded-full bg-amber-100 dark:bg-amber-900/30 p-2 mt-0.5">
-                                                    <lucide_leptos::Info attr:class="h-5 w-5 text-amber-700 dark:text-amber-500" />
-                                                </div>
-                                                <div class="flex-1">
-                                                    <h4 class="font-semibold text-amber-900 dark:text-amber-200 mb-1">
-                                                        "You Can Connect Your Local Development Machine"
-                                                    </h4>
-                                                    <Show when=move || !is_expanded.get() fallback=|| view! {
-                                                        <p class="text-sm text-amber-800 dark:text-amber-300">
-                                                            "To intercept workloads and develop locally, you can connect your machine using the Lapdev CLI."
-                                                        </p>
-                                                    }>
-                                                        <p class="text-sm text-amber-800 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-200">
-                                                            "Click to view setup instructions"
-                                                        </p>
-                                                    </Show>
-                                                </div>
-                                            </div>
-                                            <Button
-                                                variant=ButtonVariant::Ghost
-                                                size=crate::component::button::ButtonSize::Sm
-                                                on:click=move |_| is_expanded.update(|v| *v = !*v)
-                                                class="text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 shrink-0"
-                                            >
-                                                <Show when=move || is_expanded.get() fallback=|| view! {
-                                                    <lucide_leptos::ChevronDown attr:class="h-4 w-4" />
-                                                }>
-                                                    <lucide_leptos::ChevronUp attr:class="h-4 w-4" />
-                                                </Show>
-                                            </Button>
-                                        </div>
-
-                                        <Show when=move || is_expanded.get()>
-                                            <div class="mt-3 ml-14 flex flex-col gap-3">
-                                                <div class="flex flex-col gap-2 text-sm">
-                                                    <div class="flex items-start gap-2">
-                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
-                                                            "1."
-                                                        </span>
-                                                        <div class="flex-1">
-                                                            <span class="text-amber-800 dark:text-amber-300">
-                                                                "Install the CLI: "
-                                                            </span>
-                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
-                                                                "curl -fsSL https://get.lap.dev | sh"
-                                                            </code>
-                                                        </div>
-                                                    </div>
-                                                    <div class="flex items-start gap-2">
-                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
-                                                            "2."
-                                                        </span>
-                                                        <div class="flex-1">
-                                                            <span class="text-amber-800 dark:text-amber-300">
-                                                                "Connect: "
-                                                            </span>
-                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
-                                                                "lapdev connect"
-                                                            </code>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <div class="flex gap-2">
-                                                    <a href="https://docs.lap.dev/devbox/getting-started" target="_blank" rel="noopener noreferrer">
-                                                        <Button variant=ButtonVariant::Outline size=crate::component::button::ButtonSize::Sm class="text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30">
-                                                            <lucide_leptos::BookOpen attr:class="h-4 w-4" />
-                                                            "View Documentation"
-                                                            <lucide_leptos::ExternalLink attr:class="h-3 w-3" />
-                                                        </Button>
-                                                    </a>
-                                                </div>
-                                            </div>
-                                        </Show>
-                                    </div>
-                                </div>
-                            }
-                                .into_any()
-                        }
-                    })
-            }}
-        </Suspense>
-    }
-}
-
-fn humanize_datetime(dt: &chrono::DateTime<chrono::Utc>) -> String {
-    let now = chrono::Utc::now();
-    let duration = now.signed_duration_since(*dt);
-
-    if duration.num_seconds() < 60 {
-        "just now".to_string()
-    } else if duration.num_minutes() < 60 {
-        let mins = duration.num_minutes();
-        format!("{} minute{} ago", mins, if mins == 1 { "" } else { "s" })
-    } else if duration.num_hours() < 24 {
-        let hours = duration.num_hours();
-        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-    } else if duration.num_days() < 30 {
-        let days = duration.num_days();
-        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-    } else {
-        dt.format("%Y-%m-%d %H:%M UTC").to_string()
     }
 }

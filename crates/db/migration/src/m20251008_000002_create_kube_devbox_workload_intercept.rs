@@ -3,7 +3,6 @@ use sea_orm_migration::prelude::*;
 use crate::m20231106_100019_create_user_table::User;
 use crate::m20250809_000001_create_kube_environment::KubeEnvironment;
 use crate::m20250809_000002_create_kube_environment_workload::KubeEnvironmentWorkload;
-use crate::m20251008_000001_create_kube_devbox_session::KubeDevboxSession;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -21,11 +20,6 @@ impl MigrationTrait for Migration {
                             .uuid()
                             .not_null()
                             .primary_key(),
-                    )
-                    .col(
-                        ColumnDef::new(KubeDevboxWorkloadIntercept::SessionId)
-                            .uuid()
-                            .not_null(),
                     )
                     .col(
                         ColumnDef::new(KubeDevboxWorkloadIntercept::UserId)
@@ -54,16 +48,8 @@ impl MigrationTrait for Migration {
                             .default(Expr::current_timestamp()),
                     )
                     .col(
-                        ColumnDef::new(KubeDevboxWorkloadIntercept::RestoredAt)
+                        ColumnDef::new(KubeDevboxWorkloadIntercept::StoppedAt)
                             .timestamp_with_time_zone(),
-                    )
-                    .foreign_key(
-                        ForeignKey::create()
-                            .from(
-                                KubeDevboxWorkloadIntercept::Table,
-                                KubeDevboxWorkloadIntercept::SessionId,
-                            )
-                            .to(KubeDevboxSession::Table, KubeDevboxSession::Id),
                     )
                     .foreign_key(
                         ForeignKey::create()
@@ -89,17 +75,6 @@ impl MigrationTrait for Migration {
                             )
                             .to(KubeEnvironmentWorkload::Table, KubeEnvironmentWorkload::Id),
                     )
-                    .to_owned(),
-            )
-            .await?;
-
-        // Create index for session lookups (to find all intercepts for a session)
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_workload_intercept_session_idx")
-                    .table(KubeDevboxWorkloadIntercept::Table)
-                    .col(KubeDevboxWorkloadIntercept::SessionId)
                     .to_owned(),
             )
             .await?;
@@ -144,19 +119,7 @@ impl MigrationTrait for Migration {
                 Index::create()
                     .name("kube_devbox_workload_intercept_active_idx")
                     .table(KubeDevboxWorkloadIntercept::Table)
-                    .col(KubeDevboxWorkloadIntercept::RestoredAt)
-                    .to_owned(),
-            )
-            .await?;
-
-        // Create composite index for finding active intercepts by session
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_workload_intercept_session_active_idx")
-                    .table(KubeDevboxWorkloadIntercept::Table)
-                    .col(KubeDevboxWorkloadIntercept::SessionId)
-                    .col(KubeDevboxWorkloadIntercept::RestoredAt)
+                    .col(KubeDevboxWorkloadIntercept::StoppedAt)
                     .to_owned(),
             )
             .await?;
@@ -167,7 +130,7 @@ impl MigrationTrait for Migration {
             .execute_unprepared(
                 "CREATE UNIQUE INDEX kube_devbox_workload_intercept_user_workload_unique_idx
                  ON kube_devbox_workload_intercept (user_id, workload_id)
-                 WHERE restored_at IS NULL",
+                 WHERE stopped_at IS NULL",
             )
             .await?;
 
@@ -200,11 +163,10 @@ impl MigrationTrait for Migration {
 pub enum KubeDevboxWorkloadIntercept {
     Table,
     Id,
-    SessionId,
     UserId,
     EnvironmentId,
     WorkloadId,
     PortMappings,
     CreatedAt,
-    RestoredAt,
+    StoppedAt,
 }

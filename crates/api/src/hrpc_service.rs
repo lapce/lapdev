@@ -81,11 +81,6 @@ impl HrpcService for CoreState {
             .await
             .map_err(hrpc_from_anyhow)?;
 
-        self.db
-            .stop_active_intercepts_for_session(session_id)
-            .await
-            .map_err(hrpc_from_anyhow)?;
-
         let session_notification = {
             let sessions = self.active_devbox_sessions.read().await;
             sessions.get(&user.id).and_then(|handle| {
@@ -219,28 +214,20 @@ impl HrpcService for CoreState {
                 .map_err(hrpc_from_anyhow)?
                 .ok_or_else(|| hrpc_error("Workload not found"))?;
 
-            let device_name = self
-                .db
-                .get_devbox_session_including_revoked(intercept.session_id)
-                .await
-                .map_err(hrpc_from_anyhow)?
-                .map(|session| session.device_name)
-                .unwrap_or_else(|| "unknown device".to_string());
-
             let port_mappings: Vec<DevboxPortMapping> =
                 serde_json::from_value(intercept.port_mappings.clone())
                     .map_err(hrpc_from_anyhow)?;
 
             results.push(DevboxWorkloadInterceptSummary {
                 intercept_id: intercept.id,
-                session_id: intercept.session_id,
+                session_id: Uuid::nil(), // Intercepts are no longer tied to sessions
                 workload_id: workload.id,
                 workload_name: workload.name,
                 namespace: workload.namespace,
                 port_mappings,
-                device_name,
+                device_name: String::new(), // Device name no longer tracked
                 created_at: intercept.created_at.with_timezone(&Utc),
-                restored_at: intercept.restored_at.map(|dt| dt.with_timezone(&Utc)),
+                restored_at: intercept.stopped_at.map(|dt| dt.with_timezone(&Utc)),
             });
         }
 
@@ -255,7 +242,7 @@ impl HrpcService for CoreState {
         workload_id: Uuid,
         port_mappings: Vec<DevboxPortMappingOverride>,
     ) -> Result<DevboxStartWorkloadInterceptResponse, HrpcError> {
-        let ctx = self.hrpc_resolve_active_devbox_session(headers).await?;
+        let user = self.hrpc_authenticate_user(headers).await?;
 
         let workload = self
             .db
@@ -271,7 +258,7 @@ impl HrpcService for CoreState {
             .map_err(hrpc_from_db_err)?
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
-        self.ensure_environment_access(&ctx.user, &environment)
+        self.ensure_environment_access(&user, &environment)
             .await?;
 
         let mappings = port_mappings
@@ -288,8 +275,7 @@ impl HrpcService for CoreState {
         let intercept = self
             .db
             .create_workload_intercept(
-                ctx.user.id,
-                ctx.session.id,
+                user.id,
                 environment.id,
                 workload_id,
                 serde_json::to_value(&mappings).map_err(hrpc_from_anyhow)?,
@@ -297,15 +283,12 @@ impl HrpcService for CoreState {
             .await
             .map_err(hrpc_from_anyhow)?;
 
+        // Try to notify CLI if there's an active session (optional)
         let rpc_client = {
             let sessions = self.active_devbox_sessions.read().await;
-            sessions.get(&ctx.user.id).and_then(|handle| {
-                if handle.session_id == ctx.session.id {
-                    Some(handle.rpc_client.clone())
-                } else {
-                    None
-                }
-            })
+            sessions
+                .get(&user.id)
+                .map(|handle| handle.rpc_client.clone())
         };
 
         if let Some(client) = rpc_client {

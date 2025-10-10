@@ -36,8 +36,6 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     ActiveEnvironment,
-    #[sea_orm(has_many = "super::kube_devbox_workload_intercept::Entity")]
-    KubeDevboxWorkloadIntercept,
 }
 
 impl Related<super::user::Entity> for Entity {
@@ -49,12 +47,6 @@ impl Related<super::user::Entity> for Entity {
 impl Related<super::kube_environment::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::ActiveEnvironment.def()
-    }
-}
-
-impl Related<super::kube_devbox_workload_intercept::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::KubeDevboxWorkloadIntercept.def()
     }
 }
 

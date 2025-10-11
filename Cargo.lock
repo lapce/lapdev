@@ -3516,6 +3516,7 @@ dependencies = [
  "tarpc",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-tungstenite 0.27.0",
  "tokio-util",
  "tower",
  "tower-http",

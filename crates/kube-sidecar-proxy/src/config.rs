@@ -68,6 +68,15 @@ pub enum RouteTarget {
 
     /// Load balance across multiple targets
     LoadBalance(Vec<RouteTarget>),
+
+    /// Devbox tunnel for service interception
+    /// Routes traffic to a developer's local machine via WebSocket tunnel
+    DevboxTunnel {
+        intercept_id: Uuid,
+        session_id: Uuid,
+        target_port: u16,
+        auth_token: String, // short-lived token for tunnel authentication
+    },
 }
 
 /// Access level for routes (matching Lapdev's preview URL access levels)

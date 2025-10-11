@@ -32,6 +32,9 @@ tarpc.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 
+# WebSocket
+tokio-tungstenite.workspace = true
+
 # Serialization
 serde.workspace = true
 serde_json.workspace = true

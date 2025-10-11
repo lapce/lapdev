@@ -45,4 +45,33 @@ impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
     ) -> Result<(), String> {
         todo!()
     }
+
+    async fn request_devbox_tunnel(
+        self,
+        _context: ::tarpc::context::Context,
+        intercept_id: Uuid,
+        source_addr: String,
+        target_port: u16,
+    ) -> Result<lapdev_kube_rpc::DevboxTunnelInfo, String> {
+        // TODO: Full implementation:
+        // 1. Validate the intercept_id exists and is active
+        // 2. Generate a unique tunnel_id
+        // 3. Call API to register the tunnel (so API knows to expect sidecar WebSocket)
+        // 4. Return WebSocket URL + auth token for sidecar to connect directly to API
+        // 5. API will broker data between sidecar WebSocket ↔ devbox WebSocket
+        //
+        // New architecture (hybrid control/data plane):
+        //   Control: Sidecar → Kube-Manager (RPC) → API (setup)
+        //   Data:    Sidecar → API (WebSocket) → Devbox (direct streaming)
+
+        tracing::info!(
+            "Requesting devbox tunnel for intercept_id={}, source_addr={}, target_port={}",
+            intercept_id,
+            source_addr,
+            target_port
+        );
+
+        // For now, return a placeholder with the expected structure
+        Err("request_devbox_tunnel not yet fully implemented - need to integrate with TunnelRegistry in API".to_string())
+    }
 }

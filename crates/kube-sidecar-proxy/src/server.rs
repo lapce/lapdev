@@ -31,6 +31,8 @@ pub struct SidecarProxyServer {
     listen_addr: SocketAddr,
     discovery: Arc<ServiceDiscovery>,
     config: Arc<RwLock<ProxyConfig>>,
+    /// RPC client to kube-manager (None until connection established)
+    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 }
 
 impl SidecarProxyServer {
@@ -97,6 +99,7 @@ impl SidecarProxyServer {
             listen_addr,
             discovery,
             config,
+            rpc_client: Arc::new(RwLock::new(None)),
         };
 
         Ok(server)
@@ -142,16 +145,19 @@ impl SidecarProxyServer {
 
         // Handle connections
         let config_for_server = Arc::clone(&self.config);
+        let rpc_client_for_server = Arc::clone(&self.rpc_client);
         let server = async move {
             loop {
                 match listener.accept().await {
                     Ok((inbound_stream, client_addr)) => {
                         debug!("Accepted connection from {}", client_addr);
                         let config = Arc::clone(&config_for_server);
+                        let rpc_client = Arc::clone(&rpc_client_for_server);
 
                         tokio::spawn(async move {
                             if let Err(e) =
-                                handle_connection(inbound_stream, client_addr, config).await
+                                handle_connection(inbound_stream, client_addr, config, rpc_client)
+                                    .await
                             {
                                 error!("Error handling connection from {}: {}", client_addr, e);
                             }
@@ -230,7 +236,14 @@ impl SidecarProxyServer {
             SidecarProxyManagerRpcClient::new(tarpc::client::Config::default(), client_chan)
                 .spawn();
 
-        let rpc_server = SidecarProxyRpcServer::new(self.workload_id, rpc_client);
+        // Store RPC client for use by connection handlers
+        {
+            let mut client_lock = self.rpc_client.write().await;
+            *client_lock = Some(rpc_client.clone());
+        }
+
+        let rpc_server =
+            SidecarProxyRpcServer::new(self.workload_id, rpc_client, Arc::clone(&self.config));
         let rpc_server_clone = rpc_server.clone();
         let rpc_server_task = tokio::spawn(async move {
             BaseChannel::with_defaults(server_chan)
@@ -246,6 +259,13 @@ impl SidecarProxyServer {
         info!("RPC client connected to kube manager");
 
         let _ = rpc_server_task.await;
+
+        // Clear RPC client when connection ends
+        {
+            let mut client_lock = self.rpc_client.write().await;
+            *client_lock = None;
+        }
+
         Ok(())
     }
 
@@ -271,7 +291,8 @@ impl SidecarProxyServer {
 async fn handle_connection(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
-    _config: Arc<RwLock<ProxyConfig>>,
+    config: Arc<RwLock<ProxyConfig>>,
+    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
     // Extract the original destination from the iptables-redirected connection
     let original_dest = match get_original_destination(&inbound_stream) {
@@ -286,6 +307,23 @@ async fn handle_connection(
     };
 
     debug!("Original destination: {} -> {}", client_addr, original_dest);
+
+    // Check if there's a DevboxTunnel route for this destination
+    if let Some(devbox_route) = check_devbox_tunnel_route(&config, original_dest.port()).await {
+        info!(
+            "Devbox intercept detected for port {}: intercept_id={}, routing to devbox",
+            original_dest.port(),
+            devbox_route.intercept_id
+        );
+        return handle_devbox_tunnel(
+            inbound_stream,
+            client_addr,
+            original_dest,
+            devbox_route,
+            rpc_client,
+        )
+        .await;
+    }
 
     // Convert to local address (same port, localhost)
     let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
@@ -413,3 +451,221 @@ async fn handle_tcp_proxy(
 
     Ok(())
 }
+
+/// DevboxTunnel route information
+#[derive(Debug, Clone)]
+struct DevboxRouteInfo {
+    intercept_id: Uuid,
+    session_id: Uuid,
+    target_port: u16,
+    auth_token: String,
+}
+
+/// Check if there's a DevboxTunnel route for the given port
+async fn check_devbox_tunnel_route(
+    config: &Arc<RwLock<ProxyConfig>>,
+    port: u16,
+) -> Option<DevboxRouteInfo> {
+    use crate::config::RouteTarget;
+
+    let config = config.read().await;
+
+    // Check all routes for DevboxTunnel targeting this port
+    for route in &config.routes {
+        if let RouteTarget::DevboxTunnel {
+            intercept_id,
+            session_id,
+            target_port,
+            auth_token,
+        } = &route.target
+        {
+            // Match if the original destination port corresponds to this intercept
+            // In a real implementation, you might also check the path pattern
+            if *target_port == port {
+                return Some(DevboxRouteInfo {
+                    intercept_id: *intercept_id,
+                    session_id: *session_id,
+                    target_port: *target_port,
+                    auth_token: auth_token.clone(),
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// Handle a connection that should be routed through a devbox tunnel
+///
+/// Architecture: Hybrid control/data plane
+///   Control: Sidecar → Kube-Manager (RPC) → API (setup tunnel)
+///   Data:    Sidecar → API (WebSocket) ↔ Devbox (direct streaming)
+async fn handle_devbox_tunnel(
+    mut inbound_stream: TcpStream,
+    client_addr: SocketAddr,
+    original_dest: SocketAddr,
+    devbox_route: DevboxRouteInfo,
+    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+) -> io::Result<()> {
+    info!(
+        "Routing {} -> {} through devbox tunnel (intercept_id={}, session_id={})",
+        client_addr, original_dest, devbox_route.intercept_id, devbox_route.session_id
+    );
+
+    // Get RPC client
+    let client = {
+        let lock = rpc_client.read().await;
+        lock.clone()
+    };
+
+    let client = match client {
+        Some(c) => c,
+        None => {
+            error!("RPC client not available - cannot establish devbox tunnel");
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "RPC client not connected to kube-manager",
+            ));
+        }
+    };
+
+    // Step 1: Call RPC to get tunnel info (control plane)
+    info!("Requesting tunnel setup from kube-manager for intercept_id={}", devbox_route.intercept_id);
+    let tunnel_info = client
+        .request_devbox_tunnel(
+            tarpc::context::current(),
+            devbox_route.intercept_id,
+            client_addr.to_string(),
+            devbox_route.target_port,
+        )
+        .await
+        .map_err(|e| {
+            error!("Failed to request devbox tunnel: {}", e);
+            io::Error::new(io::ErrorKind::Other, format!("RPC error: {}", e))
+        })?
+        .map_err(|e| {
+            error!("Kube-manager rejected tunnel request: {}", e);
+            io::Error::new(io::ErrorKind::PermissionDenied, e)
+        })?;
+
+    info!(
+        "Tunnel setup successful: tunnel_id={}, connecting to {}",
+        tunnel_info.tunnel_id, tunnel_info.websocket_url
+    );
+
+    // Step 2: Establish WebSocket to API (data plane)
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    let (ws_stream, _) = connect_async(&tunnel_info.websocket_url)
+        .await
+        .map_err(|e| {
+            error!("Failed to connect to WebSocket at {}: {}", tunnel_info.websocket_url, e);
+            io::Error::new(io::ErrorKind::ConnectionRefused, e)
+        })?;
+
+    info!("WebSocket connected to API");
+
+    // Step 3: Send authentication handshake
+    let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    let auth_msg = serde_json::json!({
+        "auth_token": tunnel_info.auth_token,
+        "tunnel_id": tunnel_info.tunnel_id,
+    });
+
+    ws_write
+        .send(Message::Text(auth_msg.to_string()))
+        .await
+        .map_err(|e| {
+            error!("Failed to send auth handshake: {}", e);
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+    info!("Authentication handshake sent");
+
+    // Step 4: Bidirectional streaming
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // TCP → WebSocket
+    let tcp_to_ws = async {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            match inbound_stream.read(&mut buf).await {
+                Ok(0) => {
+                    debug!("TCP connection closed (EOF)");
+                    // Send close message
+                    let _ = ws_write.send(Message::Close(None)).await;
+                    break Ok::<_, io::Error>(());
+                }
+                Ok(n) => {
+                    debug!("Read {} bytes from TCP, sending to WebSocket", n);
+                    ws_write
+                        .send(Message::Binary(buf[..n].to_vec()))
+                        .await
+                        .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
+                }
+                Err(e) => {
+                    warn!("Error reading from TCP: {}", e);
+                    let _ = ws_write.send(Message::Close(None)).await;
+                    break Err(e);
+                }
+            }
+        }
+    };
+
+    // WebSocket → TCP
+    let ws_to_tcp = async {
+        while let Some(msg) = ws_read.next().await {
+            match msg {
+                Ok(Message::Binary(data)) => {
+                    debug!("Received {} bytes from WebSocket, writing to TCP", data.len());
+                    inbound_stream
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| {
+                            warn!("Error writing to TCP: {}", e);
+                            e
+                        })?;
+                }
+                Ok(Message::Close(_)) => {
+                    debug!("WebSocket closed");
+                    break;
+                }
+                Ok(Message::Text(text)) => {
+                    // Could be control messages from API
+                    debug!("Received text message from WebSocket: {}", text);
+                }
+                Ok(_) => {
+                    // Ignore ping/pong/etc
+                }
+                Err(e) => {
+                    warn!("WebSocket error: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok::<_, io::Error>(())
+    };
+
+    // Run both directions concurrently
+    let result = tokio::try_join!(tcp_to_ws, ws_to_tcp);
+
+    match result {
+        Ok(_) => {
+            info!(
+                "Devbox tunnel completed successfully for intercept_id={}",
+                devbox_route.intercept_id
+            );
+            Ok(())
+        }
+        Err(e) => {
+            error!(
+                "Devbox tunnel error for intercept_id={}: {}",
+                devbox_route.intercept_id, e
+            );
+            Err(e)
+        }
+    }
+}
+

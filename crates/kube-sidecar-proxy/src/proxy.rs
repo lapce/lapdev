@@ -84,7 +84,29 @@ impl ProxyHandler {
         // Find matching route
         let route = self.find_matching_route(path).await?;
 
-        // Resolve target address
+        // Check if this is a DevboxTunnel route - handle differently
+        if let RouteTarget::DevboxTunnel {
+            intercept_id,
+            session_id,
+            target_port,
+            auth_token,
+        } = &route.target
+        {
+            return self
+                .proxy_request_via_devbox_tunnel(
+                    method,
+                    uri,
+                    headers,
+                    body,
+                    *intercept_id,
+                    *session_id,
+                    *target_port,
+                    auth_token.clone(),
+                )
+                .await;
+        }
+
+        // Resolve target address (for normal routes)
         let target_addr = self.resolve_target(&route.target).await?;
 
         // Check authorization if required
@@ -125,6 +147,36 @@ impl ProxyHandler {
             .map_err(|e| SidecarProxyError::Generic(anyhow::anyhow!("HTTP client error: {}", e)))?;
 
         Ok(response.into_response())
+    }
+
+    /// Proxy a request via devbox tunnel for service interception
+    async fn proxy_request_via_devbox_tunnel(
+        &self,
+        _method: Method,
+        _uri: Uri,
+        _headers: HeaderMap,
+        _body: Body,
+        intercept_id: uuid::Uuid,
+        session_id: uuid::Uuid,
+        target_port: u16,
+        _auth_token: String,
+    ) -> Result<Response> {
+        // TODO: Full implementation requires:
+        // 1. Access to SidecarProxyManagerRpcClient to request tunnel
+        // 2. Bidirectional streaming between incoming request and tunnel data channel
+        // 3. Proper framing using ServerTunnelMessage protocol
+        // 4. Error handling and cleanup on connection close
+
+        info!(
+            "Devbox tunnel proxy requested: intercept_id={}, session_id={}, target_port={}",
+            intercept_id, session_id, target_port
+        );
+
+        // For now, return error indicating feature is not yet fully implemented
+        Err(SidecarProxyError::Generic(anyhow::anyhow!(
+            "Devbox tunnel proxying not yet fully implemented. \
+             This requires RPC client access and WebSocket tunnel streaming."
+        )))
     }
 
     async fn find_matching_route(&self, path: &str) -> Result<RouteConfig> {
@@ -201,12 +253,19 @@ impl ProxyHandler {
                                 }
                             }
                         }
-                        _ => continue, // Skip nested LoadBalance to avoid recursion
+                        _ => continue, // Skip nested LoadBalance and DevboxTunnel to avoid recursion
                     }
                 }
                 Err(SidecarProxyError::ServiceDiscovery(
                     "No healthy targets available".to_string(),
                 ))
+            }
+            RouteTarget::DevboxTunnel { .. } => {
+                // DevboxTunnel routing is handled separately via tunnel establishment
+                // This shouldn't be called for DevboxTunnel targets
+                Err(SidecarProxyError::Generic(anyhow::anyhow!(
+                    "DevboxTunnel routing requires tunnel establishment, not direct resolution"
+                )))
             }
         }
     }

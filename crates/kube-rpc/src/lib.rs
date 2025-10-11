@@ -401,9 +401,52 @@ pub trait SidecarProxyManagerRpc {
         byte_count: u64,
         active_connections: u32,
     ) -> Result<(), String>;
+
+    /// Request a devbox tunnel connection for service interception
+    /// Returns tunnel info for establishing direct WebSocket connection to API
+    async fn request_devbox_tunnel(
+        intercept_id: Uuid,
+        source_addr: String,
+        target_port: u16,
+    ) -> Result<DevboxTunnelInfo, String>;
+}
+
+/// Information returned when requesting a devbox tunnel
+/// Sidecar uses this to establish direct WebSocket connection to API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevboxTunnelInfo {
+    /// Unique tunnel identifier
+    pub tunnel_id: String,
+    /// WebSocket URL to connect to (e.g., "wss://api.lapdev.io/kube/devbox/tunnel/{tunnel_id}")
+    pub websocket_url: String,
+    /// Authentication token for the tunnel
+    pub auth_token: String,
+    /// Session ID for tracking
+    pub session_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevboxRouteConfig {
+    pub intercept_id: Uuid,
+    pub session_id: Uuid,
+    pub target_port: u16,
+    pub auth_token: String,
+    /// Path pattern for this route (e.g., "/*" for all traffic)
+    pub path_pattern: String,
 }
 
 #[tarpc::service]
 pub trait SidecarProxyRpc {
     async fn heartbeat() -> Result<(), String>;
+
+    /// Add a DevboxTunnel route for service interception
+    /// Returns true if route was added successfully
+    async fn add_devbox_route(route: DevboxRouteConfig) -> Result<bool, String>;
+
+    /// Remove a DevboxTunnel route by intercept_id
+    /// Returns true if route was found and removed
+    async fn remove_devbox_route(intercept_id: Uuid) -> Result<bool, String>;
+
+    /// List all active DevboxTunnel routes
+    async fn list_devbox_routes() -> Result<Vec<DevboxRouteConfig>, String>;
 }

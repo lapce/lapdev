@@ -33,6 +33,7 @@ use crate::{
     github::GithubClient,
     kube_controller::KubeController,
     session::OAUTH_STATE_COOKIE,
+    tunnel_broker::TunnelBroker,
 };
 
 pub const TOKEN_COOKIE_NAME: &str = "token";
@@ -88,6 +89,8 @@ pub struct CoreState {
     pub static_dir: Arc<Option<include_dir::Dir<'static>>>,
     // Kubernetes controller
     pub kube_controller: KubeController,
+    // Tunnel broker for devbox ↔ sidecar streams
+    pub tunnel_broker: Arc<TunnelBroker>,
     // Pending CLI authentication tokens (session_id -> token)
     pub pending_cli_auth: Arc<RwLock<HashMap<Uuid, PendingCliAuth>>>,
     // Active devbox sessions (user_id -> DevboxSessionHandle)
@@ -137,6 +140,7 @@ impl CoreState {
             hyper_client: Arc::new(hyper_client),
             static_dir: Arc::new(static_dir),
             kube_controller: KubeController::new(db),
+            tunnel_broker: Arc::new(TunnelBroker::new()),
             pending_cli_auth: Arc::new(RwLock::new(HashMap::new())),
             active_devbox_sessions: Arc::new(RwLock::new(HashMap::new())),
         };

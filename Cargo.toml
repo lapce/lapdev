@@ -152,6 +152,7 @@ lapdev-kube-sidecar-proxy = { path = "./crates/kube-sidecar-proxy" }
 lapdev-devbox-rpc = { path = "./crates/devbox-rpc" }
 lapdev-hrpc = { path = "./crates/hrpc" }
 lapdev-hrpc-proc-macro = { path = "./crates/hrpc-proc-macro" }
+tunnel = { path = "./crates/tunnel" }
 
 [package.metadata.deb]
 depends = "$auto, passwd"

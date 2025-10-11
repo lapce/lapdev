@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use bytes::Bytes;
-use serde_json;
 use futures::{SinkExt, StreamExt};
+use serde_json;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -76,14 +76,7 @@ where
                     protocol,
                     target,
                 }) => {
-                    handle_open(
-                        &send_tx,
-                        &connections,
-                        tunnel_id,
-                        protocol,
-                        target,
-                    )
-                    .await;
+                    handle_open(&send_tx, &connections, tunnel_id, protocol, target).await;
                 }
                 Ok(WireMessage::Data { tunnel_id, payload }) => {
                     handle_data(&connections, tunnel_id, payload).await;
@@ -184,11 +177,7 @@ async fn handle_open(
     }
 }
 
-async fn handle_data(
-    connections: &Connections,
-    tunnel_id: String,
-    payload: Vec<u8>,
-) {
+async fn handle_data(connections: &Connections, tunnel_id: String, payload: Vec<u8>) {
     let write_tx = {
         let map = connections.lock().await;
         map.get(&tunnel_id).map(|conn| conn.write_tx.clone())
@@ -299,10 +288,7 @@ fn spawn_conn_reader(
     });
 }
 
-async fn remove_connection(
-    connections: &Connections,
-    tunnel_id: &str,
-) -> Option<ServerConnection> {
+async fn remove_connection(connections: &Connections, tunnel_id: &str) -> Option<ServerConnection> {
     let mut map = connections.lock().await;
     map.remove(tunnel_id)
 }

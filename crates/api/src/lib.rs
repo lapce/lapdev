@@ -18,6 +18,7 @@ pub mod router;
 pub mod server;
 pub mod session;
 pub mod state;
+pub mod tunnel_broker;
 pub mod websocket;
 pub mod websocket_transport;
 pub mod workspace;

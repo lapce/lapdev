@@ -3,16 +3,18 @@ use colored::Colorize;
 use futures::StreamExt;
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest};
 use lapdev_rpc::spawn_twoway;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     net::TcpListener,
     signal,
     sync::{mpsc, oneshot, Mutex},
     task::JoinHandle,
+    time::sleep,
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
+use tunnel::{run_tunnel_server, TunnelError, WebSocketTransport as TunnelWebSocketTransport};
 use uuid::Uuid;
 
 use crate::{auth, devbox::websocket_transport::WebSocketTransport};
@@ -117,6 +119,11 @@ pub async fn execute(api_url: &str) -> Result<()> {
         }
     };
 
+    intercept_manager
+        .ensure_tunnel(api_url, &token, session_info.session_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start devbox tunnel: {}", e))?;
+
     // Attempt to rehydrate active environment and intercepts
     let active_environment = match rpc_client
         .get_active_environment(tarpc::context::current())
@@ -220,6 +227,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
     }
 
     intercept_manager.stop_all().await;
+    intercept_manager.shutdown_tunnel().await;
 
     if !server_task.is_finished() {
         server_task.abort();
@@ -321,14 +329,17 @@ enum ShutdownSignal {
     Displaced(String),
 }
 
-#[derive(Default)]
 struct InterceptManager {
     intercepts: Mutex<HashMap<Uuid, InterceptHandle>>,
+    tunnel: DevboxTunnelManager,
 }
 
 impl InterceptManager {
     fn new() -> Self {
-        Self::default()
+        Self {
+            intercepts: Mutex::new(HashMap::new()),
+            tunnel: DevboxTunnelManager::default(),
+        }
     }
 
     async fn start(&self, intercept: StartInterceptRequest) -> Result<usize, String> {
@@ -401,10 +412,72 @@ impl InterceptManager {
             handle.shutdown().await;
         }
     }
+
+    async fn ensure_tunnel(
+        &self,
+        api_url: &str,
+        token: &str,
+        session_id: Uuid,
+    ) -> Result<(), String> {
+        self.tunnel.ensure_running(api_url, token, session_id).await
+    }
+
+    async fn shutdown_tunnel(&self) {
+        self.tunnel.shutdown().await;
+    }
+}
+
+#[derive(Default)]
+struct DevboxTunnelManager {
+    state: Mutex<Option<TunnelTask>>,
+}
+
+struct TunnelTask {
+    shutdown: oneshot::Sender<()>,
+    handle: JoinHandle<()>,
+}
+
+impl DevboxTunnelManager {
+    async fn ensure_running(
+        &self,
+        api_url: &str,
+        token: &str,
+        session_id: Uuid,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if state.is_some() {
+            return Ok(());
+        }
+
+        let api_url = api_url.trim_end_matches('/').to_string();
+        let token = token.to_string();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let handle = tokio::spawn(run_tunnel_loop(api_url, token, session_id, shutdown_rx));
+        *state = Some(TunnelTask {
+            shutdown: shutdown_tx,
+            handle,
+        });
+
+        Ok(())
+    }
+
+    async fn shutdown(&self) {
+        let task = {
+            let mut state = self.state.lock().await;
+            state.take()
+        };
+
+        if let Some(task) = task {
+            let _ = task.shutdown.send(());
+            if let Err(err) = task.handle.await {
+                tracing::warn!("Devbox tunnel task exited with error: {}", err);
+            }
+        }
+    }
 }
 
 struct InterceptHandle {
-    intercept: StartInterceptRequest,
     listeners: Vec<ListenerHandle>,
 }
 
@@ -493,4 +566,83 @@ impl ListenerHandle {
             tracing::debug!(port = self.local_port, error = %err, "Listener task exited with error");
         }
     }
+}
+
+async fn run_tunnel_loop(
+    api_url: String,
+    token: String,
+    session_id: Uuid,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) {
+    let ws_base = api_url
+        .replace("https://", "wss://")
+        .replace("http://", "ws://");
+    let ws_url = format!(
+        "{}/api/v1/kube/devbox/tunnel/{}",
+        ws_base.trim_end_matches('/'),
+        session_id
+    );
+
+    let mut backoff = Duration::from_secs(1);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown_rx => {
+                tracing::info!(%session_id, "Devbox tunnel shutdown signal received");
+                break;
+            }
+            result = connect_and_run_tunnel(&ws_url, &token) => {
+                match result {
+                    Ok(()) => {
+                        tracing::info!(%session_id, "Devbox tunnel closed gracefully");
+                        backoff = Duration::from_secs(1);
+                    }
+                    Err(err) => {
+                        tracing::warn!(%session_id, "Devbox tunnel disconnected: {}", err);
+                        backoff = (backoff.saturating_mul(2)).min(Duration::from_secs(30));
+                    }
+                }
+
+                tokio::select! {
+                    _ = &mut shutdown_rx => {
+                        tracing::info!(%session_id, "Devbox tunnel shutdown signal received");
+                        break;
+                    }
+                    _ = sleep(backoff) => {}
+                }
+            }
+        }
+    }
+}
+
+async fn connect_and_run_tunnel(ws_url: &str, token: &str) -> Result<(), TunnelError> {
+    let mut request = ws_url
+        .into_client_request()
+        .map_err(tunnel_transport_error)?;
+
+    let header = format!("Bearer {}", token)
+        .parse()
+        .map_err(tunnel_transport_error)?;
+    request
+        .headers_mut()
+        .insert(http::header::AUTHORIZATION, header);
+
+    let (stream, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(tunnel_transport_error)?;
+
+    tracing::info!("Devbox tunnel connected: {}", ws_url);
+
+    let transport = TunnelWebSocketTransport::new(stream);
+    run_tunnel_server(transport).await
+}
+
+fn tunnel_transport_error<E>(err: E) -> TunnelError
+where
+    E: std::fmt::Display,
+{
+    TunnelError::Transport(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        err.to_string(),
+    ))
 }

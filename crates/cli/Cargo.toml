@@ -28,6 +28,7 @@ tarpc.workspace = true
 lapdev-devbox-rpc.workspace = true
 lapdev-rpc.workspace = true
 futures.workspace = true
+tunnel.workspace = true
 
 # CLI-specific dependencies
 keyring = { version = "3.6.1", features = ["apple-native", "windows-native", "linux-native"] }
@@ -37,3 +38,4 @@ hostname = "0.4.0"
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1.5"
+http = "1.1"

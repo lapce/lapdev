@@ -16,9 +16,7 @@ impl From<TunnelError> for io::Error {
     fn from(value: TunnelError) -> Self {
         match value {
             TunnelError::Transport(err) => err,
-            TunnelError::Serialization(err) => {
-                io::Error::new(io::ErrorKind::InvalidData, err)
-            }
+            TunnelError::Serialization(err) => io::Error::new(io::ErrorKind::InvalidData, err),
             TunnelError::ConnectionClosed => {
                 io::Error::new(io::ErrorKind::BrokenPipe, "connection closed")
             }

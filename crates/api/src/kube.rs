@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{ws::WebSocket, State, WebSocketUpgrade},
+    extract::{ws::WebSocket, Path, State, WebSocketUpgrade},
     http::HeaderMap,
     response::Response,
 };
@@ -315,4 +315,21 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
     // Clean up the tunnel registry
     tunnel_registry.remove_tunnel(cluster_id).await;
     tracing::info!("Data plane tunnel closed for cluster: {}", cluster_id);
+}
+
+pub async fn sidecar_tunnel_websocket(
+    Path(session_id): Path<Uuid>,
+    websocket: WebSocketUpgrade,
+    State(state): State<Arc<CoreState>>,
+) -> Result<Response, ApiError> {
+    tracing::debug!(
+        "Handling sidecar tunnel WebSocket for session {}",
+        session_id
+    );
+
+    let broker = state.tunnel_broker.clone();
+
+    Ok(websocket.on_upgrade(move |socket| async move {
+        broker.register_sidecar(session_id, socket).await;
+    }))
 }

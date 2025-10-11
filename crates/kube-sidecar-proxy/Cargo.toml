@@ -53,6 +53,7 @@ lapdev-common.workspace = true
 lapdev-hrpc.workspace = true
 lapdev-kube-rpc.workspace = true
 lapdev-rpc.workspace = true
+tunnel.workspace = true
 
 # Utilities
 uuid.workspace = true

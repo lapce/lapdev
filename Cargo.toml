@@ -64,7 +64,7 @@ members = [
   "crates/guest-agent",
   "crates/hrpc",
   "crates/hrpc-proc-macro",
-  "crates/devbox-rpc",
+  "crates/devbox-rpc", "crates/tunnel",
 ]
 
 [workspace.dependencies]
@@ -123,7 +123,7 @@ tarpc = { version = "0.36.0", features = ["full"] }
 rustls-webpki = "0.102.2"
 rustls-pemfile = "2.1.0"
 tokio-rustls = "0.25.0"
-tokio-util = "0.7.10"
+tokio-util = { version = "0.7.10", features = ["codec", "io"] }
 tokio = { version = "1.36.0", features = ["full"] }
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlx-postgres"] }
 sea-orm = { version = "1.1.14", features = [ "sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }

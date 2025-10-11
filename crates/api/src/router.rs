@@ -20,7 +20,7 @@ use lapdev_rpc::error::ApiError;
 
 use crate::{
     account, admin, cli_auth,
-    devbox::{devbox_rpc_websocket, devbox_whoami},
+    devbox::{devbox_rpc_websocket, devbox_tunnel_websocket, devbox_whoami},
     kube::{kube_cluster_rpc_websocket, kube_data_plane_websocket},
     machine_type, organization, project,
     session::{logout, new_session, session_authorize},
@@ -75,6 +75,7 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
         .route("/kube/cluster/rpc", any(kube_cluster_rpc_websocket))
         .route("/kube/cluster/tunnel", any(kube_data_plane_websocket))
         .route("/kube/devbox/rpc", any(devbox_rpc_websocket))
+        .route("/kube/devbox/tunnel", any(devbox_tunnel_websocket))
         .route("/organizations", post(organization::create_organization))
         .route(
             "/organizations/{org_id}",

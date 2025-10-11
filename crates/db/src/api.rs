@@ -1182,7 +1182,9 @@ impl DbApi {
     // Environment operations
     pub async fn check_environment_has_branches(&self, environment_id: Uuid) -> Result<bool> {
         let has_branches = lapdev_db_entities::kube_environment::Entity::find()
-            .filter(lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.eq(environment_id))
+            .filter(
+                lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.eq(environment_id),
+            )
             .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
             .one(&self.conn)
             .await?

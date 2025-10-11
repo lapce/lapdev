@@ -2041,7 +2041,10 @@ impl KubeManager {
                                 });
 
                                 // Deduplicate based on target_port and protocol
-                                let port_key = (target_port, port.protocol.clone().unwrap_or_else(|| "TCP".to_string()));
+                                let port_key = (
+                                    target_port,
+                                    port.protocol.clone().unwrap_or_else(|| "TCP".to_string()),
+                                );
 
                                 if seen_ports.insert(port_key) {
                                     ports.push(KubeServicePort {

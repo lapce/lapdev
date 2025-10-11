@@ -1,0 +1,20 @@
+[package]
+name = "tunnel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+tokio.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tokio-util.workspace = true
+tokio-tungstenite.workspace = true

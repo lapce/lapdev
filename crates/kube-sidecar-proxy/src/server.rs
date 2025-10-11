@@ -530,7 +530,10 @@ async fn handle_devbox_tunnel(
     };
 
     // Step 1: Call RPC to get tunnel info (control plane)
-    info!("Requesting tunnel setup from kube-manager for intercept_id={}", devbox_route.intercept_id);
+    info!(
+        "Requesting tunnel setup from kube-manager for intercept_id={}",
+        devbox_route.intercept_id
+    );
     let tunnel_info = client
         .request_devbox_tunnel(
             tarpc::context::current(),
@@ -559,7 +562,10 @@ async fn handle_devbox_tunnel(
     let (ws_stream, _) = connect_async(&tunnel_info.websocket_url)
         .await
         .map_err(|e| {
-            error!("Failed to connect to WebSocket at {}: {}", tunnel_info.websocket_url, e);
+            error!(
+                "Failed to connect to WebSocket at {}: {}",
+                tunnel_info.websocket_url, e
+            );
             io::Error::new(io::ErrorKind::ConnectionRefused, e)
         })?;
 
@@ -619,14 +625,14 @@ async fn handle_devbox_tunnel(
         while let Some(msg) = ws_read.next().await {
             match msg {
                 Ok(Message::Binary(data)) => {
-                    debug!("Received {} bytes from WebSocket, writing to TCP", data.len());
-                    inbound_stream
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| {
-                            warn!("Error writing to TCP: {}", e);
-                            e
-                        })?;
+                    debug!(
+                        "Received {} bytes from WebSocket, writing to TCP",
+                        data.len()
+                    );
+                    inbound_stream.write_all(&data).await.map_err(|e| {
+                        warn!("Error writing to TCP: {}", e);
+                        e
+                    })?;
                 }
                 Ok(Message::Close(_)) => {
                     debug!("WebSocket closed");
@@ -668,4 +674,3 @@ async fn handle_devbox_tunnel(
         }
     }
 }
-

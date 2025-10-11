@@ -143,17 +143,14 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
     tracing::info!("Data plane tunnel established for cluster: {}", cluster_id);
 
     let (ws_sender, mut ws_receiver) = socket.split();
+    let tunnel_registry = state.kube_controller.tunnel_registry.clone();
 
     // Create channels for communication
     let (outgoing_tx, mut outgoing_rx) =
         tokio::sync::mpsc::unbounded_channel::<ServerTunnelMessage>();
-    let (response_tx, mut response_rx) =
-        tokio::sync::mpsc::unbounded_channel::<ClientTunnelMessage>();
 
     // Register the sender with the tunnel registry
-    state
-        .kube_controller
-        .tunnel_registry
+    tunnel_registry
         .register_tunnel_sender(cluster_id, outgoing_tx)
         .await;
 
@@ -162,51 +159,31 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
         tokio::spawn(async move {
             let mut ws_sender = ws_sender;
             loop {
-                tokio::select! {
-                    msg = outgoing_rx.recv() => {
-                        if let Some(message) = msg {
-                            let frame = ServerTunnelFrame {
-                                message,
-                                timestamp: chrono::Utc::now(),
-                                message_id: Uuid::new_v4(),
-                            };
+                match outgoing_rx.recv().await {
+                    Some(message) => {
+                        let frame = ServerTunnelFrame {
+                            message,
+                            timestamp: chrono::Utc::now(),
+                            message_id: Uuid::new_v4(),
+                        };
 
-                            match frame.serialize() {
-                                Ok(data) => {
-                                    if let Err(e) = ws_sender.send(axum::extract::ws::Message::Binary(data.into())).await {
-                                        tracing::error!("Failed to send server message: {}", e);
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to serialize server message: {}", e);
+                        match frame.serialize() {
+                            Ok(data) => {
+                                if let Err(e) = ws_sender
+                                    .send(axum::extract::ws::Message::Binary(data.into()))
+                                    .await
+                                {
+                                    tracing::error!("Failed to send server message: {}", e);
+                                    break;
                                 }
                             }
-                        } else {
-                            break; // Channel closed
+                            Err(e) => {
+                                tracing::error!("Failed to serialize server message: {}", e);
+                            }
                         }
                     }
-                    msg = response_rx.recv() => {
-                        if let Some(message) = msg {
-                            let frame = ClientTunnelFrame {
-                                message,
-                                timestamp: chrono::Utc::now(),
-                                message_id: Uuid::new_v4(),
-                            };
-
-                            match frame.serialize() {
-                                Ok(data) => {
-                                    if let Err(e) = ws_sender.send(axum::extract::ws::Message::Binary(data.into())).await {
-                                        tracing::error!("Failed to send client response: {}", e);
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to serialize client response: {}", e);
-                                }
-                            }
-                        }
-                        // Response channel empty, continue with loop
+                    None => {
+                        break; // Channel closed
                     }
                 }
             }
@@ -216,6 +193,7 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
 
     // Handle incoming tunnel messages from KubeManager
     let incoming_task = {
+        let tunnel_registry = tunnel_registry.clone();
         tokio::spawn(async move {
             while let Some(msg) = ws_receiver.next().await {
                 match msg {
@@ -224,9 +202,12 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
                         match ClientTunnelFrame::deserialize(&data) {
                             Ok(frame) => {
                                 tracing::debug!("Received client message: {:?}", frame.message);
+                                let message = frame.message;
+                                let message_for_logs = message.clone();
+                                tunnel_registry.handle_client_message(message).await;
 
                                 // Handle client messages from KubeManager
-                                match frame.message {
+                                match message_for_logs {
                                     ClientTunnelMessage::ConnectionOpened {
                                         tunnel_id,
                                         local_addr,
@@ -287,7 +268,7 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
                                     }
                                     ClientTunnelMessage::Authenticate {
                                         cluster_id,
-                                        auth_token,
+                                        auth_token: _auth_token,
                                         tunnel_capabilities,
                                     } => {
                                         tracing::info!("Data plane: Authentication request from cluster {} with capabilities: {:?}", 
@@ -332,10 +313,6 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
     }
 
     // Clean up the tunnel registry
-    state
-        .kube_controller
-        .tunnel_registry
-        .remove_tunnel(cluster_id)
-        .await;
+    tunnel_registry.remove_tunnel(cluster_id).await;
     tracing::info!("Data plane tunnel closed for cluster: {}", cluster_id);
 }

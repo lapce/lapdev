@@ -390,10 +390,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     } else {
                         "personal"
                     };
-                    nav(
-                        &format!("/kubernetes/environments/{t}"),
-                        Default::default(),
-                    );
+                    nav(&format!("/kubernetes/environments/{t}"), Default::default());
                     Ok(())
                 }
                 Err(e) => Err(e),

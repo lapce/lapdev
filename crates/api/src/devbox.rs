@@ -1,16 +1,23 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use axum::{
-    extract::{ws::WebSocket, State, WebSocketUpgrade},
+    extract::{
+        ws::{Message, WebSocket},
+        State, WebSocketUpgrade,
+    },
     http::HeaderMap,
     response::Response,
     Json,
 };
 use axum_extra::{headers, TypedHeader};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use lapdev_devbox_rpc::{
     DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionInfo, DevboxSessionRpc, PortMapping,
     StartInterceptRequest,
+};
+use lapdev_kube_rpc::{
+    ClientTunnelFrame, ClientTunnelMessage, ServerTunnelFrame, ServerTunnelMessage,
+    TunnelErrorCode,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use serde::Serialize;
@@ -18,9 +25,11 @@ use tarpc::{
     server::{BaseChannel, Channel},
     tokio_util::codec::LengthDelimitedCodec,
 };
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{state::CoreState, websocket_transport::WebSocketTransport};
+use lapdev_kube::tunnel::TunnelRegistry;
 
 #[derive(Debug, Serialize)]
 pub struct WhoamiResponse {
@@ -267,6 +276,310 @@ async fn handle_devbox_rpc(
         user_id,
         device_name
     );
+}
+
+/// WebSocket endpoint for devbox data plane connections
+pub async fn devbox_tunnel_websocket(
+    websocket: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(state): State<Arc<CoreState>>,
+) -> Result<Response, ApiError> {
+    tracing::debug!("Handling devbox tunnel WebSocket connection");
+
+    let auth_header = headers
+        .get("Authorization")
+        .ok_or(ApiError::Unauthenticated)?
+        .to_str()
+        .map_err(|_| ApiError::Unauthenticated)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(ApiError::Unauthenticated);
+    }
+
+    let token = &auth_header[7..];
+
+    let session = state
+        .db
+        .get_devbox_session_by_token_hash(token)
+        .await
+        .map_err(|e| ApiError::InternalError(format!("Failed to load devbox session: {}", e)))?
+        .ok_or(ApiError::Unauthenticated)?;
+
+    state
+        .db
+        .update_devbox_session_last_used(session.id)
+        .await
+        .map_err(|e| ApiError::InternalError(format!("Failed to update session usage: {}", e)))?;
+
+    let ctx = DevboxTunnelContext {
+        session_id: session.id,
+        user_id: session.user_id,
+        device_name: session.device_name.clone(),
+    };
+
+    tracing::info!(
+        "Devbox tunnel WebSocket authenticated for user {} session {} ({})",
+        ctx.user_id,
+        ctx.session_id,
+        ctx.device_name
+    );
+
+    Ok(websocket.on_upgrade(move |socket| async move {
+        handle_devbox_tunnel(socket, state, ctx).await;
+    }))
+}
+
+struct DevboxTunnelContext {
+    session_id: Uuid,
+    user_id: Uuid,
+    device_name: String,
+}
+
+async fn handle_devbox_tunnel(
+    socket: WebSocket,
+    state: Arc<CoreState>,
+    ctx: DevboxTunnelContext,
+) {
+    let tunnel_registry = state.kube_controller.tunnel_registry.clone();
+    let DevboxTunnelContext {
+        session_id,
+        user_id,
+        device_name,
+    } = ctx;
+
+    let (ws_sender, mut ws_receiver) = socket.split();
+    let (devbox_tx, mut devbox_rx) = mpsc::unbounded_channel::<ClientTunnelMessage>();
+
+    tracing::info!(
+        "Devbox data plane connected: user={}, session={}, device={}",
+        user_id,
+        session_id,
+        device_name
+    );
+
+    let send_task = {
+        let mut ws_sender = ws_sender;
+        async move {
+            while let Some(message) = devbox_rx.recv().await {
+                let frame = ClientTunnelFrame {
+                    message,
+                    timestamp: chrono::Utc::now(),
+                    message_id: Uuid::new_v4(),
+                };
+
+                match frame.serialize() {
+                    Ok(data) => {
+                        if let Err(e) = ws_sender
+                            .send(Message::Binary(data.into()))
+                            .await
+                        {
+                            tracing::error!(
+                                "Failed to send tunnel message to devbox (session {}): {}",
+                                session_id,
+                                e
+                            );
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to serialize client tunnel frame: {}", e);
+                    }
+                }
+            }
+
+            tracing::debug!(
+                "Devbox data plane send loop finished for session {}",
+                session_id
+            );
+        }
+    };
+
+    let recv_task = {
+        let tunnel_registry = tunnel_registry.clone();
+        let devbox_tx = devbox_tx.clone();
+        async move {
+            let mut active_tunnels = HashSet::new();
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(Message::Binary(data)) => match ServerTunnelFrame::deserialize(&data) {
+                        Ok(frame) => {
+                            handle_devbox_server_message(
+                                &tunnel_registry,
+                                &devbox_tx,
+                                &mut active_tunnels,
+                                frame.message,
+                                session_id,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to deserialize server tunnel frame for session {}: {}",
+                                session_id,
+                                e
+                            );
+                        }
+                    },
+                    Ok(Message::Close(_)) => {
+                        tracing::info!(
+                            "Devbox tunnel WebSocket closed for session {}",
+                            session_id
+                        );
+                        break;
+                    }
+                    Ok(Message::Text(text)) => {
+                        tracing::debug!(
+                            "Ignoring text message on devbox tunnel (session {}): {}",
+                            session_id,
+                            text
+                        );
+                    }
+                    Ok(_) => { /* ignore */ }
+                    Err(e) => {
+                        tracing::error!(
+                            "Devbox tunnel WebSocket error (session {}): {}",
+                            session_id,
+                            e
+                        );
+                        break;
+                    }
+                }
+            }
+
+            tracing::debug!(
+                "Devbox data plane receive loop finished for session {}",
+                session_id
+            );
+
+            for tunnel_id in active_tunnels {
+                tunnel_registry.remove_devbox_channel(&tunnel_id).await;
+            }
+        }
+    };
+
+    tokio::pin!(send_task);
+    tokio::pin!(recv_task);
+
+    tokio::select! {
+        _ = &mut recv_task => {},
+        _ = &mut send_task => {},
+    }
+
+    tracing::info!(
+        "Devbox data plane disconnected: user={}, session={}",
+        user_id,
+        session_id
+    );
+}
+
+async fn handle_devbox_server_message(
+    tunnel_registry: &Arc<TunnelRegistry>,
+    devbox_tx: &mpsc::UnboundedSender<ClientTunnelMessage>,
+    active_tunnels: &mut HashSet<String>,
+    message: ServerTunnelMessage,
+    session_id: Uuid,
+) {
+    match message {
+        ServerTunnelMessage::OpenConnection {
+            tunnel_id,
+            target_host,
+            target_port,
+            protocol_hint,
+        } => {
+            if !active_tunnels.contains(&tunnel_id) {
+                tunnel_registry
+                    .register_devbox_channel(tunnel_id.clone(), devbox_tx.clone())
+                    .await;
+                active_tunnels.insert(tunnel_id.clone());
+            }
+
+            if let Err(e) = tunnel_registry
+                .send_tunnel_message_for_tunnel(
+                    &tunnel_id,
+                    ServerTunnelMessage::OpenConnection {
+                        tunnel_id: tunnel_id.clone(),
+                        target_host,
+                        target_port,
+                        protocol_hint,
+                    },
+                )
+                .await
+            {
+                tracing::error!(
+                    "Failed to forward open connection for tunnel {} (session {}): {}",
+                    tunnel_id,
+                    session_id,
+                    e
+                );
+                active_tunnels.remove(&tunnel_id);
+                tunnel_registry.remove_devbox_channel(&tunnel_id).await;
+                let _ = devbox_tx.send(ClientTunnelMessage::ConnectionFailed {
+                    tunnel_id,
+                    error: format!("Failed to forward open connection: {}", e),
+                    error_code: TunnelErrorCode::InternalError,
+                });
+            }
+        }
+        ServerTunnelMessage::Data {
+            tunnel_id,
+            payload,
+            sequence_num,
+        } => {
+            if let Err(e) = tunnel_registry
+                .send_tunnel_message_for_tunnel(
+                    &tunnel_id,
+                    ServerTunnelMessage::Data {
+                        tunnel_id: tunnel_id.clone(),
+                        payload,
+                        sequence_num,
+                    },
+                )
+                .await
+            {
+                tracing::error!(
+                    "Failed to forward data for tunnel {} (session {}): {}",
+                    tunnel_id,
+                    session_id,
+                    e
+                );
+                let _ = devbox_tx.send(ClientTunnelMessage::ConnectionClosed {
+                    tunnel_id,
+                    bytes_transferred: 0,
+                });
+            }
+        }
+        ServerTunnelMessage::CloseConnection { tunnel_id, reason } => {
+            if let Err(e) = tunnel_registry
+                .send_tunnel_message_for_tunnel(
+                    &tunnel_id,
+                    ServerTunnelMessage::CloseConnection {
+                        tunnel_id: tunnel_id.clone(),
+                        reason: reason.clone(),
+                    },
+                )
+                .await
+            {
+                tracing::error!(
+                    "Failed to forward close for tunnel {} (session {}): {}",
+                    tunnel_id,
+                    session_id,
+                    e
+                );
+            }
+
+            active_tunnels.remove(&tunnel_id);
+            tunnel_registry.remove_devbox_channel(&tunnel_id).await;
+        }
+        ServerTunnelMessage::Ping { timestamp } => {
+            let _ = devbox_tx.send(ClientTunnelMessage::Pong { timestamp });
+        }
+        ServerTunnelMessage::AuthenticationResult { .. } => {
+            tracing::debug!(
+                "Received AuthenticationResult from devbox, ignoring (session {})",
+                session_id
+            );
+        }
+    }
 }
 
 /// RPC server implementation for DevboxSessionRpc

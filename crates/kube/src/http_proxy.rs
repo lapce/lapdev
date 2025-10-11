@@ -293,6 +293,9 @@ impl PreviewUrlProxy {
         debug!("Target: {}:{}", target_host, target.service_port);
 
         // Create data channel to receive data from the tunnel
+        self.tunnel_registry
+            .associate_tunnel_with_cluster(tunnel_id.clone(), target.cluster_id)
+            .await;
         let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         self.tunnel_registry
             .register_data_channel(tunnel_id.clone(), data_tx)

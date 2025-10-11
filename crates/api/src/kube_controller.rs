@@ -1079,6 +1079,7 @@ impl KubeController {
             &namespace,
             &name,
             created_env.id,
+            Some(created_env.auth_token.clone()),
             workloads_with_resources,
         )
         .await?;
@@ -1362,6 +1363,7 @@ impl KubeController {
         namespace: &str,
         environment_name: &str,
         environment_id: Uuid,
+        environment_auth_token: Option<String>,
         workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
     ) -> Result<(), ApiError> {
         tracing::info!(
@@ -1390,11 +1392,16 @@ impl KubeController {
         environment_labels.insert("lapdev.managed-by".to_string(), "lapdev".to_string());
 
         // Deploy all workloads and resources in a single call
+        let auth_token = environment_auth_token.ok_or_else(|| {
+            ApiError::InvalidRequest("Environment auth token is required".to_string())
+        })?;
+
         match target_server
             .rpc_client
             .deploy_workload_yaml(
                 tarpc::context::current(),
                 environment_id,
+                auth_token,
                 namespace.to_string(),
                 workloads_with_resources,
                 environment_labels.clone(),
@@ -1741,6 +1748,7 @@ impl KubeController {
                     updated_workload.id,
                     base_workload_name.clone(),
                     branch_environment_id,
+                    environment.auth_token.clone(),
                     updated_workload.namespace.clone(),
                     workload_kind,
                     updated_workload.containers,
@@ -1781,6 +1789,7 @@ impl KubeController {
                 .update_workload_containers(
                     tarpc::context::current(),
                     environment.id,
+                    environment.auth_token.clone(),
                     updated_workload.id,
                     updated_workload.name.clone(),
                     updated_workload.namespace.clone(),

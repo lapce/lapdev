@@ -27,6 +27,10 @@ struct Args {
     #[arg(long, env = "LAPDEV_ENVIRONMENT_ID")]
     environment_id: Option<String>,
 
+    /// Lapdev environment auth token
+    #[arg(long, env = "LAPDEV_ENVIRONMENT_AUTH_TOKEN")]
+    environment_auth_token: Option<String>,
+
     /// Log level
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -53,12 +57,23 @@ async fn main() -> Result<()> {
     info!("Namespace: {:?}", args.namespace);
     info!("Pod name: {:?}", args.pod_name);
 
+    // Validate that environment ID and auth token are present
+    let environment_id = args.environment_id.ok_or_else(|| {
+        anyhow::anyhow!("LAPDEV_ENVIRONMENT_ID environment variable is required")
+    })?;
+    let environment_auth_token = args.environment_auth_token.ok_or_else(|| {
+        anyhow::anyhow!("LAPDEV_ENVIRONMENT_AUTH_TOKEN environment variable is required")
+    })?;
+
+    info!("Environment ID: {}", environment_id);
+
     let server = SidecarProxyServer::new(
         args.listen_addr.parse()?,
         args.target_addr.parse()?,
         args.namespace,
         args.pod_name,
-        args.environment_id,
+        environment_id,
+        environment_auth_token,
     )
     .await?;
 

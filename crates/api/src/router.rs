@@ -20,8 +20,8 @@ use lapdev_rpc::error::ApiError;
 
 use crate::{
     account, admin, cli_auth,
-    devbox::{devbox_rpc_websocket, devbox_tunnel_websocket, devbox_whoami},
-    kube::{kube_cluster_rpc_websocket, kube_data_plane_websocket, sidecar_tunnel_websocket},
+    devbox::{devbox_client_tunnel_websocket, devbox_intercept_tunnel_websocket, devbox_rpc_websocket, devbox_whoami},
+    kube::{devbox_proxy_tunnel_websocket, kube_cluster_rpc_websocket, kube_data_plane_websocket, sidecar_tunnel_websocket},
     machine_type, organization, project,
     session::{logout, new_session, session_authorize},
     state::CoreState,
@@ -76,12 +76,20 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
         .route("/kube/cluster/tunnel", any(kube_data_plane_websocket))
         .route("/kube/devbox/rpc", any(devbox_rpc_websocket))
         .route(
-            "/kube/devbox/tunnel/:session_id",
-            any(devbox_tunnel_websocket),
+            "/kube/devbox/tunnel/intercept/:session_id",
+            any(devbox_intercept_tunnel_websocket),
         )
         .route(
-            "/kube/sidecar/tunnel/:session_id",
+            "/kube/devbox/tunnel/proxy/:session_id",
+            any(devbox_client_tunnel_websocket),
+        )
+        .route(
+            "/kube/sidecar/tunnel/:environment_id/:session_id",
             any(sidecar_tunnel_websocket),
+        )
+        .route(
+            "/kube/devbox-proxy/tunnel/:environment_id",
+            any(devbox_proxy_tunnel_websocket),
         )
         .route("/organizations", post(organization::create_organization))
         .route(

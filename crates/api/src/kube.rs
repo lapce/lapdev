@@ -318,18 +318,109 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
 }
 
 pub async fn sidecar_tunnel_websocket(
-    Path(session_id): Path<Uuid>,
+    Path((environment_id, session_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
     websocket: WebSocketUpgrade,
     State(state): State<Arc<CoreState>>,
 ) -> Result<Response, ApiError> {
     tracing::debug!(
-        "Handling sidecar tunnel WebSocket for session {}",
+        "Handling sidecar tunnel WebSocket for environment {} session {}",
+        environment_id,
         session_id
+    );
+
+    // Get the environment auth token from headers
+    const KUBE_ENVIRONMENT_TOKEN_HEADER: &str = "X-Lapdev-Environment-Token";
+    let auth_token = headers
+        .get(KUBE_ENVIRONMENT_TOKEN_HEADER)
+        .ok_or(ApiError::Unauthenticated)?
+        .to_str()
+        .map_err(|_| ApiError::Unauthenticated)?;
+
+    // Get the environment and validate auth token
+    let environment = state
+        .db
+        .get_kube_environment(environment_id)
+        .await?
+        .ok_or(ApiError::Unauthenticated)?;
+
+    // Validate the auth token matches
+    if auth_token != environment.auth_token {
+        return Err(ApiError::Unauthenticated);
+    }
+
+    tracing::debug!(
+        "Sidecar authenticated for environment {} using auth token",
+        environment.id
     );
 
     let broker = state.tunnel_broker.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
         broker.register_sidecar(session_id, socket).await;
+    }))
+}
+
+pub async fn devbox_proxy_tunnel_websocket(
+    Path(environment_id): Path<Uuid>,
+    headers: HeaderMap,
+    websocket: WebSocketUpgrade,
+    State(state): State<Arc<CoreState>>,
+) -> Result<Response, ApiError> {
+    tracing::debug!(
+        "Handling devbox proxy tunnel WebSocket for environment {}",
+        environment_id
+    );
+
+    // Get the environment auth token from headers
+    const KUBE_ENVIRONMENT_TOKEN_HEADER: &str = "X-Lapdev-Environment-Token";
+    let auth_token = headers
+        .get(KUBE_ENVIRONMENT_TOKEN_HEADER)
+        .ok_or(ApiError::Unauthenticated)?
+        .to_str()
+        .map_err(|_| ApiError::Unauthenticated)?;
+
+    // Get the environment and validate auth token
+    let environment = state
+        .db
+        .get_kube_environment(environment_id)
+        .await?
+        .ok_or(ApiError::Unauthenticated)?;
+
+    // Validate the auth token matches
+    if auth_token != environment.auth_token {
+        return Err(ApiError::Unauthenticated);
+    }
+
+    tracing::info!(
+        "Devbox proxy authenticated for environment {} using auth token",
+        environment.id
+    );
+
+    // TODO: Store the devbox-proxy WebSocket connection for this environment
+    // This will be used to forward connections from devboxes to in-cluster services
+    // For now, just keep the connection alive
+    Ok(websocket.on_upgrade(move |socket| async move {
+        tracing::info!("Devbox proxy WebSocket connection established for environment {}", environment_id);
+
+        // Keep the connection alive by reading messages
+        use futures::StreamExt;
+        let (mut _sender, mut receiver) = socket.split();
+
+        while let Some(msg) = receiver.next().await {
+            match msg {
+                Ok(axum::extract::ws::Message::Close(_)) => {
+                    tracing::info!("Devbox proxy closed connection for environment {}", environment_id);
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("Devbox proxy WebSocket error for environment {}: {}", environment_id, e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        tracing::info!("Devbox proxy WebSocket connection closed for environment {}", environment_id);
     }))
 }

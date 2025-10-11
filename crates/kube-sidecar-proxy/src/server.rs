@@ -49,7 +49,8 @@ impl SidecarProxyServer {
         default_target: SocketAddr,
         namespace: Option<String>,
         pod_name: Option<String>,
-        environment_id: Option<String>,
+        environment_id: String,
+        environment_auth_token: String,
     ) -> Result<Self> {
         let sidecar_proxy_manager_addr = std::env::var(SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR)
             .map_err(|_| {
@@ -69,10 +70,10 @@ impl SidecarProxyServer {
             ))
         })?;
 
-        // Parse environment ID if provided
-        let env_id = environment_id
-            .as_ref()
-            .and_then(|id| Uuid::parse_str(id).ok());
+        // Parse environment ID - now required
+        let env_id = Uuid::parse_str(&environment_id).map_err(|e| {
+            anyhow!("Failed to parse environment_id as UUID: {}", e)
+        })?;
 
         // Create initial configuration
         let config = ProxyConfig {
@@ -80,7 +81,8 @@ impl SidecarProxyServer {
             default_target,
             namespace: namespace.clone(),
             pod_name: pod_name.clone(),
-            environment_id: env_id,
+            environment_id: Some(env_id),
+            environment_auth_token: Some(environment_auth_token),
             ..Default::default()
         };
 

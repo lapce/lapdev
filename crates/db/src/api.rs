@@ -43,6 +43,7 @@ struct KubeEnvironmentWithRelated {
     pub env_user_id: Uuid,
     pub env_deleted_at: Option<DateTimeWithTimeZone>,
     pub env_base_environment_id: Option<Uuid>,
+    pub env_auth_token: String,
 
     // App catalog fields
     pub catalog_name: Option<String>,
@@ -1311,6 +1312,10 @@ impl DbApi {
                 lapdev_db_entities::kube_environment::Column::BaseEnvironmentId,
                 "env_base_environment_id",
             )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::AuthToken,
+                "env_auth_token",
+            )
             // Join and select app catalog columns
             .join(
                 JoinType::LeftJoin,
@@ -1367,6 +1372,7 @@ impl DbApi {
                     status: related.env_status,
                     is_shared: related.env_is_shared,
                     base_environment_id: related.env_base_environment_id,
+                    auth_token: related.env_auth_token,
                 };
 
                 let catalog =
@@ -1692,6 +1698,9 @@ impl DbApi {
         let environment_id = Uuid::new_v4();
         let created_at = Utc::now().into();
 
+        // Generate auth token for the environment
+        let auth_token = lapdev_common::utils::rand_string(32);
+
         // Create the environment
         let environment = lapdev_db_entities::kube_environment::ActiveModel {
             id: ActiveValue::Set(environment_id),
@@ -1706,6 +1715,7 @@ impl DbApi {
             status: ActiveValue::Set(status),
             is_shared: ActiveValue::Set(is_shared),
             base_environment_id: ActiveValue::Set(base_environment_id),
+            auth_token: ActiveValue::Set(auth_token),
         }
         .insert(&txn)
         .await?;

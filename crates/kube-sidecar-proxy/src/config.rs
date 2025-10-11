@@ -21,6 +21,9 @@ pub struct ProxyConfig {
     /// Lapdev environment ID this proxy belongs to
     pub environment_id: Option<Uuid>,
 
+    /// Lapdev environment auth token
+    pub environment_auth_token: Option<String>,
+
     /// Route configurations
     pub routes: Vec<RouteConfig>,
 
@@ -127,6 +130,7 @@ impl Default for ProxyConfig {
             namespace: None,
             pod_name: None,
             environment_id: None,
+            environment_auth_token: None,
             routes: Vec::new(),
             health_check: HealthCheckConfig::default(),
             metrics: MetricsConfig::default(),

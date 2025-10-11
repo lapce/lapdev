@@ -350,6 +350,7 @@ pub trait KubeManagerRpc {
 
     async fn deploy_workload_yaml(
         environment_id: uuid::Uuid,
+        environment_auth_token: String,
         namespace: String,
         workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
@@ -361,6 +362,7 @@ pub trait KubeManagerRpc {
 
     async fn update_workload_containers(
         environment_id: Uuid,
+        environment_auth_token: String,
         workload_id: Uuid,
         name: String,
         namespace: String,
@@ -373,6 +375,7 @@ pub trait KubeManagerRpc {
         base_workload_id: uuid::Uuid,
         base_workload_name: String,
         branch_environment_id: uuid::Uuid,
+        branch_environment_auth_token: String,
         namespace: String,
         kind: KubeWorkloadKind,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,

@@ -18,6 +18,7 @@ pub struct Model {
     pub status: Option<String>,
     pub is_shared: bool,
     pub base_environment_id: Option<Uuid>,
+    pub auth_token: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

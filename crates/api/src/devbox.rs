@@ -269,8 +269,8 @@ async fn handle_devbox_rpc(
     );
 }
 
-/// WebSocket endpoint for devbox data plane connections
-pub async fn devbox_tunnel_websocket(
+/// WebSocket endpoint for devbox intercept tunnels (server side - receives connections from in-cluster services)
+pub async fn devbox_intercept_tunnel_websocket(
     Path(requested_session_id): Path<Uuid>,
     websocket: WebSocketUpgrade,
     headers: HeaderMap,
@@ -324,6 +324,81 @@ pub async fn devbox_tunnel_websocket(
 
     Ok(websocket.on_upgrade(move |socket| async move {
         broker.register_devbox(session_id, socket).await;
+    }))
+}
+
+/// WebSocket endpoint for devbox client tunnels (client side - connects to in-cluster services via devbox-proxy)
+pub async fn devbox_client_tunnel_websocket(
+    Path(requested_session_id): Path<Uuid>,
+    websocket: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(state): State<Arc<CoreState>>,
+) -> Result<Response, ApiError> {
+    tracing::debug!("Handling devbox client tunnel WebSocket connection");
+
+    let auth_header = headers
+        .get("Authorization")
+        .ok_or(ApiError::Unauthenticated)?
+        .to_str()
+        .map_err(|_| ApiError::Unauthenticated)?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(ApiError::Unauthenticated);
+    }
+
+    let token = &auth_header[7..];
+
+    let session = state
+        .db
+        .get_devbox_session_by_token_hash(token)
+        .await
+        .map_err(|e| ApiError::InternalError(format!("Failed to load devbox session: {}", e)))?
+        .ok_or(ApiError::Unauthenticated)?;
+
+    if session.id != requested_session_id {
+        tracing::warn!(
+            "Devbox session ID mismatch: token session {} vs path {}",
+            session.id,
+            requested_session_id
+        );
+        return Err(ApiError::Unauthenticated);
+    }
+
+    state
+        .db
+        .update_devbox_session_last_used(session.id)
+        .await
+        .map_err(|e| ApiError::InternalError(format!("Failed to update session usage: {}", e)))?;
+
+    tracing::info!(
+        "Devbox client tunnel WebSocket authenticated for user {} session {} ({})",
+        session.user_id,
+        session.id,
+        session.device_name
+    );
+
+    // TODO: Get the environment_id from the session and pair this with the devbox-proxy
+    // For now, just keep the connection alive
+    Ok(websocket.on_upgrade(move |socket| async move {
+        tracing::info!("Devbox client tunnel established for session {}", session.id);
+
+        let (mut _sender, mut receiver) = socket.split();
+
+        while let Some(msg) = receiver.next().await {
+            match msg {
+                Ok(axum::extract::ws::Message::Close(_)) => {
+                    tracing::info!("Devbox client tunnel closed for session {}", session.id);
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("Devbox client tunnel error for session {}: {}", session.id, e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        tracing::info!("Devbox client tunnel connection closed for session {}", session.id);
     }))
 }
 

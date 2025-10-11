@@ -1,0 +1,33 @@
+[package]
+name = "lapdev-kube-devbox-proxy"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "lapdev-kube-devbox-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio.workspace = true
+
+# Async runtime utilities
+futures-util.workspace = true
+
+# WebSocket
+tokio-tungstenite.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Logging and tracing
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Utilities
+uuid.workspace = true
+http = "1.0"
+
+# CLI
+clap = { workspace = true, features = ["derive", "env"] }

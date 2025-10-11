@@ -178,6 +178,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         self,
         _context: ::tarpc::context::Context,
         environment_id: uuid::Uuid,
+        environment_auth_token: String,
         namespace: String,
         workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
@@ -186,6 +187,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
             .manager
             .apply_workloads_with_resources(
                 Some(environment_id),
+                environment_auth_token,
                 namespace.clone(),
                 workloads_with_resources,
                 labels,
@@ -277,6 +279,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         self,
         _context: ::tarpc::context::Context,
         environment_id: Uuid,
+        environment_auth_token: String,
         workload_id: uuid::Uuid,
         name: String,
         namespace: String,
@@ -295,6 +298,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
             .manager
             .update_workload_containers_atomic(
                 environment_id,
+                environment_auth_token,
                 workload_id,
                 name.clone(),
                 namespace.clone(),
@@ -330,6 +334,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         base_workload_id: uuid::Uuid,
         base_workload_name: String,
         branch_environment_id: uuid::Uuid,
+        branch_environment_auth_token: String,
         namespace: String,
         kind: lapdev_common::kube::KubeWorkloadKind,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
@@ -346,6 +351,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                 base_workload_id,
                 base_workload_name.clone(),
                 branch_environment_id,
+                branch_environment_auth_token,
                 namespace.clone(),
                 kind,
                 containers,

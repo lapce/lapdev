@@ -685,6 +685,21 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
+        // If it's a shared environment, check for depending branch environments
+        if environment.is_shared {
+            let has_branches = self
+                .db
+                .check_environment_has_branches(environment_id)
+                .await
+                .map_err(ApiError::from)?;
+
+            if has_branches {
+                return Err(ApiError::InvalidRequest(
+                    "Cannot delete shared environment: it has active branch environments. Please delete them first.".to_string()
+                ));
+            }
+        }
+
         // TODO: Clean up Kubernetes resources from the cluster
         // Get cluster server to perform cleanup if needed
         if let Some(_cluster_server) = self
@@ -1019,6 +1034,7 @@ impl KubeController {
                     namespace: namespace.clone(),
                     kind: workload.kind,
                     containers,
+                    ports: workload.ports,
                 }
             })
             .collect();
@@ -1168,6 +1184,7 @@ impl KubeController {
                         namespace: base_environment.namespace.clone(),
                         kind,
                         containers,
+                        ports: workload.ports,
                     }
                 })
             })
@@ -1670,6 +1687,9 @@ impl KubeController {
             let containers: Vec<lapdev_common::kube::KubeContainerInfo> =
                 serde_json::from_value(updated_db_model.containers.clone()).unwrap_or_default();
 
+            let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                serde_json::from_value(updated_db_model.ports.clone()).unwrap_or_default();
+
             lapdev_common::kube::KubeEnvironmentWorkload {
                 id: updated_db_model.id,
                 created_at: updated_db_model.created_at,
@@ -1678,6 +1698,7 @@ impl KubeController {
                 namespace: updated_db_model.namespace.clone(),
                 kind: updated_db_model.kind.clone(),
                 containers,
+                ports,
             }
         };
 

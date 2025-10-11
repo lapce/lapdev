@@ -86,7 +86,7 @@ pub fn set_context() {
     let nav_expanded = NavExpanded {
         orgnization: RwSignal::new(pathname.starts_with("/organization")),
         account: RwSignal::new(pathname.starts_with("/account")),
-        dev_environments: RwSignal::new(pathname.starts_with("/kubernetes/environments")),
+        k8s_environments: RwSignal::new(pathname.starts_with("/kubernetes/environments")),
     };
     provide_context(nav_expanded);
 

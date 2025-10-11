@@ -14,6 +14,7 @@ pub struct Model {
     pub namespace: String,
     pub kind: String,
     pub containers: Json,
+    pub ports: Json,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

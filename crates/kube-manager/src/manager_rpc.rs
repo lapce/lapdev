@@ -210,18 +210,45 @@ impl KubeManagerRpc for KubeManagerRpcServer {
     ) -> Result<Vec<lapdev_common::kube::KubeWorkloadDetails>, String> {
         let mut details = Vec::new();
 
+        // Fetch all services once before the loop
+        let all_services = if !workloads.is_empty() {
+            let first_namespace = &workloads[0].namespace;
+            let service_api: kube::Api<k8s_openapi::api::core::v1::Service> =
+                kube::Api::namespaced((*self.manager.kube_client).clone(), first_namespace);
+
+            match service_api.list(&Default::default()).await {
+                Ok(service_list) => service_list.items,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to list services in namespace {}: {}",
+                        first_namespace,
+                        e
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
         for workload in workloads {
             match self
                 .manager
-                .get_workload_resource_details(&workload.name, &workload.namespace, &workload.kind)
+                .get_workload_resource_details(
+                    &workload.name,
+                    &workload.namespace,
+                    &workload.kind,
+                    &all_services,
+                )
                 .await
             {
-                Ok(containers) => {
+                Ok((containers, ports)) => {
                     details.push(lapdev_common::kube::KubeWorkloadDetails {
                         name: workload.name,
                         namespace: workload.namespace,
                         kind: workload.kind,
                         containers,
+                        ports,
                     });
                 }
                 Err(e) => {

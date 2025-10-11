@@ -1112,6 +1112,8 @@ impl DbApi {
             .filter_map(|w| {
                 // Deserialize containers from JSON, skip if invalid
                 let containers = serde_json::from_value(w.containers.clone()).ok()?;
+                let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                    serde_json::from_value(w.ports.clone()).unwrap_or_default();
 
                 Some(KubeAppCatalogWorkload {
                     id: w.id,
@@ -1122,6 +1124,7 @@ impl DbApi {
                         .parse()
                         .unwrap_or(lapdev_common::kube::KubeWorkloadKind::Deployment),
                     containers,
+                    ports,
                 })
             })
             .collect())
@@ -1177,6 +1180,15 @@ impl DbApi {
     }
 
     // Environment operations
+    pub async fn check_environment_has_branches(&self, environment_id: Uuid) -> Result<bool> {
+        let has_branches = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.eq(environment_id))
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?
+            .is_some();
+        Ok(has_branches)
+    }
     pub async fn get_all_kube_environments_paginated(
         &self,
         org_id: Uuid,
@@ -1505,6 +1517,7 @@ impl DbApi {
                 namespace: ActiveValue::Set(workload.namespace.clone()),
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(serde_json::json!([])),
+                ports: ActiveValue::Set(serde_json::json!([])),
             }
             .insert(txn)
             .await?;
@@ -1525,6 +1538,10 @@ impl DbApi {
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
 
+            let ports_json = serde_json::to_value(&workload.ports)
+                .map(Json::from)
+                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
             lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
                 id: ActiveValue::Set(Uuid::new_v4()),
                 created_at: ActiveValue::Set(created_at),
@@ -1534,6 +1551,7 @@ impl DbApi {
                 namespace: ActiveValue::Set(workload.namespace),
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
+                ports: ActiveValue::Set(ports_json),
             }
             .insert(txn)
             .await?;
@@ -1563,6 +1581,13 @@ impl DbApi {
                     vec![]
                 };
 
+            let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                if let Ok(ports) = serde_json::from_value(workload.ports.clone()) {
+                    ports
+                } else {
+                    vec![]
+                };
+
             result.push(KubeEnvironmentWorkload {
                 id: workload.id,
                 created_at: workload.created_at,
@@ -1571,6 +1596,7 @@ impl DbApi {
                 namespace: workload.namespace,
                 kind: workload.kind,
                 containers,
+                ports,
             });
         }
         Ok(result)
@@ -1594,6 +1620,13 @@ impl DbApi {
                     vec![]
                 };
 
+            let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                if let Ok(ports) = serde_json::from_value(workload.ports.clone()) {
+                    ports
+                } else {
+                    vec![]
+                };
+
             Ok(Some(KubeEnvironmentWorkload {
                 id: workload.id,
                 created_at: workload.created_at,
@@ -1602,6 +1635,7 @@ impl DbApi {
                 namespace: workload.namespace,
                 kind: workload.kind,
                 containers,
+                ports,
             }))
         } else {
             Ok(None)
@@ -1681,6 +1715,11 @@ impl DbApi {
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
 
+            // Serialize ports
+            let ports_json = serde_json::to_value(&workload.ports)
+                .map(Json::from)
+                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
             lapdev_db_entities::kube_environment_workload::ActiveModel {
                 id: ActiveValue::Set(Uuid::new_v4()),
                 created_at: ActiveValue::Set(created_at),
@@ -1690,6 +1729,7 @@ impl DbApi {
                 namespace: ActiveValue::Set(namespace.clone()),
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
+                ports: ActiveValue::Set(ports_json),
             }
             .insert(&txn)
             .await?;

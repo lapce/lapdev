@@ -42,7 +42,7 @@ const SCOPE: &[&str] = &["https://www.googleapis.com/auth/cloud-platform"];
 
 #[derive(Clone)]
 pub struct KubeManager {
-    kube_client: Arc<kube::Client>,
+    pub(crate) kube_client: Arc<kube::Client>,
     // rpc_client: KubeClusterRpcClient,
     proxy_manager: Arc<SidecarProxyManager>,
     tunnel_manager: TunnelManager,
@@ -2017,6 +2017,51 @@ impl KubeManager {
         Ok(matching_service_names)
     }
 
+    fn get_ports_from_matching_services(
+        &self,
+        workload_labels: &std::collections::BTreeMap<String, String>,
+        all_services: &[Service],
+    ) -> Result<Vec<KubeServicePort>> {
+        let mut ports = Vec::new();
+        let mut seen_ports = std::collections::HashSet::new();
+
+        for service in all_services {
+            if let Some(selector) = &service.spec.as_ref().and_then(|s| s.selector.as_ref()) {
+                let matches = selector
+                    .iter()
+                    .all(|(key, value)| workload_labels.get(key).map_or(false, |v| v == value));
+
+                if matches && !selector.is_empty() {
+                    if let Some(spec) = &service.spec {
+                        if let Some(service_ports) = &spec.ports {
+                            for port in service_ports {
+                                let target_port = port.target_port.as_ref().and_then(|tp| match tp {
+                                    k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i) => Some(*i),
+                                    _ => None,
+                                });
+
+                                // Deduplicate based on target_port and protocol
+                                let port_key = (target_port, port.protocol.clone().unwrap_or_else(|| "TCP".to_string()));
+
+                                if seen_ports.insert(port_key) {
+                                    ports.push(KubeServicePort {
+                                        name: port.name.clone(),
+                                        port: port.port,
+                                        target_port,
+                                        protocol: port.protocol.clone(),
+                                        node_port: port.node_port,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(ports)
+    }
+
     fn extract_configmap_references(workload_spec: &serde_json::Value) -> Vec<String> {
         let mut configmap_names = std::collections::HashSet::new();
 
@@ -3105,7 +3150,8 @@ impl KubeManager {
         name: &str,
         namespace: &str,
         kind: &KubeWorkloadKind,
-    ) -> Result<Vec<KubeContainerInfo>> {
+        all_services: &[Service],
+    ) -> Result<(Vec<KubeContainerInfo>, Vec<KubeServicePort>)> {
         let client = &self.kube_client;
 
         match kind {
@@ -3113,9 +3159,21 @@ impl KubeManager {
                 let api: kube::Api<Deployment> =
                     kube::Api::namespaced((**client).clone(), namespace);
                 if let Ok(deployment) = api.get(name).await {
+                    let workload_labels = deployment
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.template.metadata.as_ref())
+                        .and_then(|m| m.labels.as_ref())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let ports =
+                        self.get_ports_from_matching_services(&workload_labels, all_services)?;
+
                     if let Some(spec) = &deployment.spec {
                         if let Some(pod_spec) = &spec.template.spec {
-                            return self.extract_pod_resource_info(pod_spec);
+                            let containers = self.extract_pod_resource_info(pod_spec)?;
+                            return Ok((containers, ports));
                         }
                     }
                 }
@@ -3124,9 +3182,21 @@ impl KubeManager {
                 let api: kube::Api<StatefulSet> =
                     kube::Api::namespaced((**client).clone(), namespace);
                 if let Ok(statefulset) = api.get(name).await {
+                    let workload_labels = statefulset
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.template.metadata.as_ref())
+                        .and_then(|m| m.labels.as_ref())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let ports =
+                        self.get_ports_from_matching_services(&workload_labels, all_services)?;
+
                     if let Some(spec) = &statefulset.spec {
                         if let Some(pod_spec) = &spec.template.spec {
-                            return self.extract_pod_resource_info(pod_spec);
+                            let containers = self.extract_pod_resource_info(pod_spec)?;
+                            return Ok((containers, ports));
                         }
                     }
                 }
@@ -3135,9 +3205,21 @@ impl KubeManager {
                 let api: kube::Api<DaemonSet> =
                     kube::Api::namespaced((**client).clone(), namespace);
                 if let Ok(daemonset) = api.get(name).await {
+                    let workload_labels = daemonset
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.template.metadata.as_ref())
+                        .and_then(|m| m.labels.as_ref())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let ports =
+                        self.get_ports_from_matching_services(&workload_labels, all_services)?;
+
                     if let Some(spec) = &daemonset.spec {
                         if let Some(pod_spec) = &spec.template.spec {
-                            return self.extract_pod_resource_info(pod_spec);
+                            let containers = self.extract_pod_resource_info(pod_spec)?;
+                            return Ok((containers, ports));
                         }
                     }
                 }
@@ -3145,17 +3227,35 @@ impl KubeManager {
             KubeWorkloadKind::Pod => {
                 let api: kube::Api<Pod> = kube::Api::namespaced((**client).clone(), namespace);
                 if let Ok(pod) = api.get(name).await {
+                    let workload_labels = pod.metadata.labels.as_ref().cloned().unwrap_or_default();
+
+                    let ports =
+                        self.get_ports_from_matching_services(&workload_labels, all_services)?;
+
                     if let Some(spec) = &pod.spec {
-                        return self.extract_pod_resource_info(spec);
+                        let containers = self.extract_pod_resource_info(spec)?;
+                        return Ok((containers, ports));
                     }
                 }
             }
             KubeWorkloadKind::Job => {
                 let api: kube::Api<Job> = kube::Api::namespaced((**client).clone(), namespace);
                 if let Ok(job) = api.get(name).await {
+                    let workload_labels = job
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.template.metadata.as_ref())
+                        .and_then(|m| m.labels.as_ref())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let ports =
+                        self.get_ports_from_matching_services(&workload_labels, all_services)?;
+
                     if let Some(spec) = &job.spec {
                         if let Some(pod_spec) = &spec.template.spec {
-                            return self.extract_pod_resource_info(pod_spec);
+                            let containers = self.extract_pod_resource_info(pod_spec)?;
+                            return Ok((containers, ports));
                         }
                     }
                 }
@@ -3163,10 +3263,23 @@ impl KubeManager {
             KubeWorkloadKind::CronJob => {
                 let api: kube::Api<CronJob> = kube::Api::namespaced((**client).clone(), namespace);
                 if let Ok(cronjob) = api.get(name).await {
+                    let workload_labels = cronjob
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.job_template.spec.as_ref())
+                        .and_then(|js| js.template.metadata.as_ref())
+                        .and_then(|m| m.labels.as_ref())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let ports =
+                        self.get_ports_from_matching_services(&workload_labels, all_services)?;
+
                     if let Some(spec) = &cronjob.spec {
                         if let Some(job_template) = &spec.job_template.spec {
                             if let Some(pod_spec) = &job_template.template.spec {
-                                return self.extract_pod_resource_info(pod_spec);
+                                let containers = self.extract_pod_resource_info(pod_spec)?;
+                                return Ok((containers, ports));
                             }
                         }
                     }
@@ -3175,7 +3288,7 @@ impl KubeManager {
             _ => {}
         }
 
-        Ok(Vec::new())
+        Ok((Vec::new(), Vec::new()))
     }
 
     fn extract_pod_resource_info(
@@ -3296,6 +3409,7 @@ impl KubeManager {
             namespace: namespace.clone(),
             kind,
             containers,
+            ports: Vec::new(), // Ports will be fetched from services during YAML retrieval
         };
 
         // Step 2: Get the current workload YAML with all its resources
@@ -3377,6 +3491,7 @@ impl KubeManager {
             namespace: namespace.clone(),
             kind,
             containers: containers.clone(), // Use the customized containers for the branch
+            ports: Vec::new(), // Ports will be fetched from services during YAML retrieval
         };
 
         // Step 2: Get the base workload YAML with all its resources

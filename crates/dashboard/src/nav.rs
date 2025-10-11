@@ -14,7 +14,7 @@ use crate::{
 pub struct NavExpanded {
     pub orgnization: RwSignal<bool>,
     pub account: RwSignal<bool>,
-    pub dev_environments: RwSignal<bool>,
+    pub k8s_environments: RwSignal<bool>,
 }
 
 #[component]
@@ -144,16 +144,16 @@ pub fn SideNavMain() -> impl IntoView {
             </li>
             <li>
                 <a href="#" class="flex items-center justify-between p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group"
-                    on:click=move |_| nav_expanded.dev_environments.update(|expanded| *expanded = !*expanded)
+                    on:click=move |_| nav_expanded.k8s_environments.update(|expanded| *expanded = !*expanded)
                 >
                     <span class="ml-3">Dev Environments</span>
                     <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 6 10"
-                        class:hidden=move || nav_expanded.dev_environments.get()
+                        class:hidden=move || nav_expanded.k8s_environments.get()
                     >
                         <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 9 4-4-4-4"/>
                     </svg>
                     <svg class="w-3 h-3"  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6"
-                        class:hidden=move || !nav_expanded.dev_environments.get()
+                        class:hidden=move || !nav_expanded.k8s_environments.get()
                     >
                         <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
                     </svg>
@@ -161,7 +161,7 @@ pub fn SideNavMain() -> impl IntoView {
             </li>
 
             <li
-                class:hidden=move || !nav_expanded.dev_environments.get()
+                class:hidden=move || !nav_expanded.k8s_environments.get()
             >
                 <a href="/kubernetes/environments/personal" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                     <span class="ml-8">Personal</span>
@@ -169,7 +169,7 @@ pub fn SideNavMain() -> impl IntoView {
             </li>
 
             <li
-                class:hidden=move || !nav_expanded.dev_environments.get()
+                class:hidden=move || !nav_expanded.k8s_environments.get()
             >
                 <a href="/kubernetes/environments/shared" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                     <span class="ml-8">Shared</span>
@@ -177,7 +177,7 @@ pub fn SideNavMain() -> impl IntoView {
             </li>
 
             <li
-                class:hidden=move || !nav_expanded.dev_environments.get()
+                class:hidden=move || !nav_expanded.k8s_environments.get()
             >
                 <a href="/kubernetes/environments/branch" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg transition duration-75 hover:bg-gray-100 group">
                     <span class="ml-8">Branch</span>

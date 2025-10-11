@@ -53,6 +53,11 @@ impl MigrationTrait for Migration {
                             .json()
                             .not_null(),
                     )
+                    .col(
+                        ColumnDef::new(KubeAppCatalogWorkload::Ports)
+                            .json()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(
@@ -109,4 +114,5 @@ pub enum KubeAppCatalogWorkload {
     Namespace,
     Kind,
     Containers,
+    Ports,
 }

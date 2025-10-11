@@ -204,65 +204,44 @@ async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
         .find(|s| s.revoked_at.is_none()))
 }
 
-fn build_port_overrides_from_containers(
-    containers: &[KubeContainerInfo],
+fn build_port_overrides_from_workload_ports(
+    ports: &[lapdev_common::kube::KubeServicePort],
     previous_mappings: Option<&[DevboxPortMapping]>,
 ) -> Result<Vec<DevboxPortMappingOverride>, ErrorResponse> {
     use std::convert::TryFrom;
 
     let mut overrides = Vec::new();
-    let mut has_ports = false;
 
-    for container in containers {
-        for port in &container.ports {
-            has_ports = true;
-            let workload_port = u16::try_from(port.container_port).map_err(|_| ErrorResponse {
-                error: format!("Unsupported workload port: {}", port.container_port),
-            })?;
-
-            let local_port = previous_mappings
-                .and_then(|existing| {
-                    existing
-                        .iter()
-                        .find(|mapping| mapping.workload_port == workload_port)
-                })
-                .map(|mapping| mapping.local_port)
-                .unwrap_or(workload_port);
-
-            overrides.push(DevboxPortMappingOverride {
-                workload_port,
-                local_port: Some(local_port),
-            });
-        }
-    }
-
-    if !has_ports {
+    if ports.is_empty() {
         return Err(ErrorResponse {
             error: "No ports available to intercept".to_string(),
         });
     }
 
-    Ok(overrides)
-}
+    for port in ports {
+        // Use target_port (the actual container port) for intercept, fall back to service port if not specified
+        let target_port = port.target_port.unwrap_or(port.port);
 
-fn humanize_datetime(dt: &chrono::DateTime<chrono::Utc>) -> String {
-    let now = chrono::Utc::now();
-    let duration = now.signed_duration_since(*dt);
+        let workload_port = u16::try_from(target_port).map_err(|_| ErrorResponse {
+            error: format!("Unsupported workload port: {}", target_port),
+        })?;
 
-    if duration.num_seconds() < 60 {
-        "just now".to_string()
-    } else if duration.num_minutes() < 60 {
-        let mins = duration.num_minutes();
-        format!("{} minute{} ago", mins, if mins == 1 { "" } else { "s" })
-    } else if duration.num_hours() < 24 {
-        let hours = duration.num_hours();
-        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-    } else if duration.num_days() < 30 {
-        let days = duration.num_days();
-        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-    } else {
-        dt.format("%Y-%m-%d %H:%M UTC").to_string()
+        let local_port = previous_mappings
+            .and_then(|existing| {
+                existing
+                    .iter()
+                    .find(|mapping| mapping.workload_port == workload_port)
+            })
+            .map(|mapping| mapping.local_port)
+            .unwrap_or(workload_port);
+
+        overrides.push(DevboxPortMappingOverride {
+            workload_port,
+            local_port: Some(local_port),
+        });
     }
+
+    Ok(overrides)
 }
 
 #[component]
@@ -412,7 +391,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                         "personal"
                     };
                     nav(
-                        &format!("/kubernetes/environments?type={t}"),
+                        &format!("/kubernetes/environments/{t}"),
                         Default::default(),
                     );
                     Ok(())
@@ -984,6 +963,7 @@ pub fn EnvironmentWorkloadItem(
     let workload_id = workload.id;
     let workload_name = workload.name.clone();
     let workload_containers = workload.containers.clone();
+    let workload_ports = workload.ports.clone();
 
     // Find intercepts for this workload
     let workload_intercepts = Signal::derive(move || {
@@ -999,10 +979,10 @@ pub fn EnvironmentWorkloadItem(
 
     let start_action = {
         let all_intercepts = all_intercepts;
-        let containers_for_start = workload_containers.clone();
+        let ports_for_start = workload_ports.clone();
         Action::new_local(move |_| {
             let all_intercepts = all_intercepts;
-            let containers_for_start = containers_for_start.clone();
+            let ports_for_start = ports_for_start.clone();
             async move {
                 start_error.set(None);
 
@@ -1013,8 +993,8 @@ pub fn EnvironmentWorkloadItem(
                     .max_by(|a, b| a.created_at.cmp(&b.created_at))
                     .map(|summary| summary.port_mappings);
 
-                let port_overrides = match build_port_overrides_from_containers(
-                    &containers_for_start,
+                let port_overrides = match build_port_overrides_from_workload_ports(
+                    &ports_for_start,
                     previous_ports.as_ref().map(|v| v.as_slice()),
                 ) {
                     Ok(overrides) => overrides,
@@ -1109,7 +1089,7 @@ pub fn EnvironmentWorkloadItem(
                                                 intercept=intercept
                                                 has_active_session=has_active_session
                                                 update_counter
-                                                containers=workload_containers.clone()
+                                                workload_ports=workload_ports.clone()
                                                 workload_id
                                                 workload_name=workload_name.clone()
                                             />
@@ -1136,7 +1116,7 @@ fn WorkloadInterceptCard(
     intercept: DevboxWorkloadInterceptSummary,
     has_active_session: bool,
     update_counter: RwSignal<usize>,
-    containers: Vec<KubeContainerInfo>,
+    workload_ports: Vec<lapdev_common::kube::KubeServicePort>,
     workload_id: Uuid,
     workload_name: String,
 ) -> impl IntoView {
@@ -1235,7 +1215,7 @@ fn WorkloadInterceptCard(
                     {port_mappings
                         .iter()
                         .map(|pm| {
-                            let mapping = format!("{}→{}", pm.local_port, pm.workload_port);
+                            let mapping = format!("{} → {}", pm.workload_port, pm.local_port);
                             view! { <span>{mapping}</span> }
                         })
                         .collect::<Vec<_>>()
@@ -1252,7 +1232,7 @@ fn WorkloadInterceptCard(
                 intercept_id
                 workload_id
                 workload_name=workload_name.clone()
-                containers=containers.clone()
+                workload_ports=workload_ports.clone()
                 existing_mappings=port_mappings_for_modal
                 update_counter
             />
@@ -1503,20 +1483,19 @@ pub fn EditInterceptModal(
     intercept_id: Uuid,
     workload_id: Uuid,
     workload_name: String,
-    containers: Vec<KubeContainerInfo>,
+    workload_ports: Vec<lapdev_common::kube::KubeServicePort>,
     existing_mappings: Vec<DevboxPortMapping>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
-    // Extract all available ports from containers
-    let available_ports: Vec<AvailablePort> = containers
+    // Extract all available ports from workload service ports
+    // Use target_port (the actual container port) for intercept, fall back to service port if not specified
+    let available_ports: Vec<AvailablePort> = workload_ports
         .iter()
-        .flat_map(|container| {
-            container.ports.iter().map(|port| AvailablePort {
-                container_name: container.name.clone(),
-                port: port.container_port,
-                port_name: port.name.clone(),
-                protocol: port.protocol.clone(),
-            })
+        .map(|port| AvailablePort {
+            container_name: String::new(), // Service ports don't have container names
+            port: port.target_port.unwrap_or(port.port),
+            port_name: port.name.clone(),
+            protocol: port.protocol.clone(),
         })
         .collect();
 
@@ -1680,9 +1659,6 @@ pub fn EditInterceptModal(
                                                 <Badge variant=BadgeVariant::Outline class="text-xs">
                                                     {protocol_display}
                                                 </Badge>
-                                                <span class="text-xs text-muted-foreground">
-                                                    {format!("({})", port.container_name)}
-                                                </span>
                                             </div>
                                             <div class="w-40">
                                                 <Input
@@ -1748,7 +1724,7 @@ pub fn DevboxSessionBanner(
                                     <div class="flex items-center justify-between">
                                         <div class="flex items-center gap-3">
                                             <div class="rounded-full bg-primary/10 p-2">
-                                                <lucide_leptos::Activity attr:class="h-5 w-5 text-primary" />
+                                                <lucide_leptos::Plug attr:class="h-5 w-5 text-primary" />
                                             </div>
                                             <div class="flex flex-col gap-1">
                                                 <div class="flex items-center gap-2">
@@ -1758,9 +1734,10 @@ pub fn DevboxSessionBanner(
                                                         {session.device_name.clone()}
                                                     </Badge>
                                                 </div>
-                                                <span class="text-sm text-muted-foreground">
-                                                    {format!("Last active: {}", humanize_datetime(&session.last_used_at))}
-                                                </span>
+                                                <div class="text-sm text-muted-foreground flex items-center gap-1">
+                                                    <span>"Last active: "</span>
+                                                    <DatetimeModal time=session.last_used_at.fixed_offset() />
+                                                </div>
                                             </div>
                                         </div>
                                         <a href="/devbox/sessions">

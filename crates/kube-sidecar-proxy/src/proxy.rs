@@ -1,6 +1,5 @@
 use crate::{
     config::{AccessLevel, ProxyConfig, RouteConfig, RouteTarget},
-    discovery::ServiceDiscovery,
     error::{Result, SidecarProxyError},
 };
 use axum::{
@@ -16,7 +15,7 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::sync::RwLock;
+use tokio::{net::lookup_host, sync::RwLock};
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{debug, error, info, Span};
@@ -24,19 +23,14 @@ use tracing::{debug, error, info, Span};
 /// HTTP proxy handler that routes requests based on configuration
 pub struct ProxyHandler {
     client: Client<HttpConnector, Body>,
-    discovery: Arc<ServiceDiscovery>,
     config: Arc<RwLock<ProxyConfig>>,
 }
 
 impl ProxyHandler {
-    pub fn new(discovery: Arc<ServiceDiscovery>, config: Arc<RwLock<ProxyConfig>>) -> Self {
+    pub fn new(config: Arc<RwLock<ProxyConfig>>) -> Self {
         let client = Client::builder(TokioExecutor::new()).build_http::<Body>();
 
-        Self {
-            client,
-            discovery,
-            config,
-        }
+        Self { client, config }
     }
 
     /// Create the router with all proxy routes and middleware
@@ -119,7 +113,7 @@ impl ProxyHandler {
         let target_uri = self.build_target_uri(&target_addr, &uri, &route)?;
 
         // Prepare headers
-        let mut proxy_headers = self.prepare_headers(&headers, &route)?;
+        let proxy_headers = self.prepare_headers(&headers, &route)?;
 
         // Create the proxied request
         let mut proxy_req = Request::builder().method(&method).uri(target_uri);
@@ -220,54 +214,65 @@ impl ProxyHandler {
                 namespace,
                 port,
             } => {
-                let endpoints = self
-                    .discovery
-                    .resolve_service_target(name, namespace.as_deref(), *port)
-                    .await?;
-
-                // Simple round-robin selection (could be enhanced with proper load balancing)
-                endpoints
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| SidecarProxyError::TargetNotFound {
-                        service_name: name.clone(),
-                    })
+                self.resolve_service_target(name, namespace.as_deref(), *port)
+                    .await
             }
             RouteTarget::LoadBalance(targets) => {
-                // Simple implementation - pick first available target that's directly an address
                 for target in targets {
-                    match target {
-                        RouteTarget::Address(addr) => return Ok(*addr),
+                    let attempt = match target {
+                        RouteTarget::Address(addr) => Ok(*addr),
                         RouteTarget::Service {
                             name,
                             namespace,
                             port,
                         } => {
-                            if let Ok(endpoints) = self
-                                .discovery
-                                .resolve_service_target(name, namespace.as_deref(), *port)
+                            self.resolve_service_target(name, namespace.as_deref(), *port)
                                 .await
-                            {
-                                if let Some(addr) = endpoints.first() {
-                                    return Ok(*addr);
-                                }
-                            }
                         }
-                        _ => continue, // Skip nested LoadBalance and DevboxTunnel to avoid recursion
+                        RouteTarget::LoadBalance(_) | RouteTarget::DevboxTunnel { .. } => continue,
+                    };
+
+                    if let Ok(addr) = attempt {
+                        return Ok(addr);
                     }
                 }
+
                 Err(SidecarProxyError::ServiceDiscovery(
                     "No healthy targets available".to_string(),
                 ))
             }
-            RouteTarget::DevboxTunnel { .. } => {
-                // DevboxTunnel routing is handled separately via tunnel establishment
-                // This shouldn't be called for DevboxTunnel targets
-                Err(SidecarProxyError::Generic(anyhow::anyhow!(
-                    "DevboxTunnel routing requires tunnel establishment, not direct resolution"
-                )))
-            }
+            RouteTarget::DevboxTunnel { .. } => Err(SidecarProxyError::Generic(anyhow::anyhow!(
+                "DevboxTunnel routing requires tunnel establishment, not direct resolution"
+            ))),
         }
+    }
+
+    async fn resolve_service_target(
+        &self,
+        name: &str,
+        namespace: Option<&str>,
+        port: u16,
+    ) -> Result<SocketAddr> {
+        let ns = match namespace {
+            Some(ns) => ns.to_string(),
+            None => {
+                let cfg = self.config.read().await;
+                cfg.namespace
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string())
+            }
+        };
+
+        let host = format!("{}.{}.svc.cluster.local", name, ns);
+        let mut addrs = lookup_host((host.as_str(), port)).await.map_err(|e| {
+            SidecarProxyError::ServiceDiscovery(format!("DNS lookup failed for {}: {}", host, e))
+        })?;
+
+        addrs
+            .next()
+            .ok_or_else(|| SidecarProxyError::TargetNotFound {
+                service_name: name.to_string(),
+            })
     }
 
     async fn check_authorization(

@@ -1,5 +1,7 @@
 use anyhow::Result;
-use lapdev_kube_rpc::{DevboxRouteConfig, SidecarProxyManagerRpcClient, SidecarProxyRpc};
+use lapdev_kube_rpc::{
+    DevboxRouteConfig, ProxyRouteConfig, SidecarProxyManagerRpcClient, SidecarProxyRpc,
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -10,6 +12,8 @@ use crate::config::{AccessLevel, ProxyConfig, RouteConfig, RouteTarget};
 #[derive(Clone)]
 pub(crate) struct SidecarProxyRpcServer {
     workload_id: Uuid,
+    environment_id: Uuid,
+    namespace: String,
     rpc_client: SidecarProxyManagerRpcClient,
     config: Arc<RwLock<ProxyConfig>>,
 }
@@ -17,11 +21,15 @@ pub(crate) struct SidecarProxyRpcServer {
 impl SidecarProxyRpcServer {
     pub(crate) fn new(
         workload_id: Uuid,
+        environment_id: Uuid,
+        namespace: String,
         rpc_client: SidecarProxyManagerRpcClient,
         config: Arc<RwLock<ProxyConfig>>,
     ) -> Self {
         Self {
             workload_id,
+            environment_id,
+            namespace,
             rpc_client,
             config,
         }
@@ -30,7 +38,12 @@ impl SidecarProxyRpcServer {
     pub(crate) async fn register_sidecar_proxy(&self) -> Result<()> {
         let _ = self
             .rpc_client
-            .register_sidecar_proxy(tarpc::context::current(), self.workload_id)
+            .register_sidecar_proxy(
+                tarpc::context::current(),
+                self.workload_id,
+                self.environment_id,
+                self.namespace.clone(),
+            )
             .await?;
         Ok(())
     }
@@ -42,6 +55,41 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         // - Report health status
         // - Update last_seen timestamp
         // - Return metrics
+        Ok(())
+    }
+
+    async fn set_service_routes(
+        self,
+        _context: ::tarpc::context::Context,
+        routes: Vec<ProxyRouteConfig>,
+    ) -> Result<(), String> {
+        let mut config = self.config.write().await;
+
+        // Retain existing DevboxTunnel routes, remove all other service routes
+        config
+            .routes
+            .retain(|route| matches!(route.target, RouteTarget::DevboxTunnel { .. }));
+
+        for route in routes {
+            config.routes.push(RouteConfig {
+                path: route.path.clone(),
+                target: RouteTarget::Service {
+                    name: route.service_name.clone(),
+                    namespace: Some(route.namespace.clone()),
+                    port: route.port,
+                },
+                headers: std::collections::HashMap::new(),
+                timeout_ms: None,
+                requires_auth: true,
+                access_level: AccessLevel::Personal,
+            });
+        }
+
+        info!(
+            "Updated service routes; total routes: {}",
+            config.routes.len()
+        );
+
         Ok(())
     }
 

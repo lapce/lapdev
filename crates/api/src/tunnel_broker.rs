@@ -230,7 +230,10 @@ impl TunnelBroker {
             match kind {
                 InterceptEndpointKind::Devbox => {
                     if entry.devbox.is_some() {
-                        warn!("Duplicate devbox endpoint for session {} - cleaning up old connection", session_id);
+                        warn!(
+                            "Duplicate devbox endpoint for session {} - cleaning up old connection",
+                            session_id
+                        );
                         // Remove the old stale connection and replace with new one
                         entry.devbox = None;
                     }
@@ -287,13 +290,19 @@ impl TunnelBroker {
             match kind {
                 InterceptEndpointKind::Devbox => {
                     if entry.devbox.is_some() {
-                        info!("Cleaning up waiting devbox endpoint for session {}", session_id);
+                        info!(
+                            "Cleaning up waiting devbox endpoint for session {}",
+                            session_id
+                        );
                         entry.devbox = None;
                     }
                 }
                 InterceptEndpointKind::Sidecar => {
                     if entry.sidecar.is_some() {
-                        info!("Cleaning up waiting sidecar endpoint for session {}", session_id);
+                        info!(
+                            "Cleaning up waiting sidecar endpoint for session {}",
+                            session_id
+                        );
                         entry.sidecar = None;
                     }
                 }

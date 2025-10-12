@@ -406,7 +406,11 @@ pub trait KubeManagerRpc {
 
 #[tarpc::service]
 pub trait SidecarProxyManagerRpc {
-    async fn register_sidecar_proxy(workload_id: Uuid) -> Result<(), String>;
+    async fn register_sidecar_proxy(
+        workload_id: Uuid,
+        environment_id: Uuid,
+        namespace: String,
+    ) -> Result<(), String>;
 
     async fn heartbeat() -> Result<(), String>;
 
@@ -449,9 +453,20 @@ pub struct DevboxRouteConfig {
     pub path_pattern: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyRouteConfig {
+    pub path: String,
+    pub service_name: String,
+    pub namespace: String,
+    pub port: u16,
+}
+
 #[tarpc::service]
 pub trait SidecarProxyRpc {
     async fn heartbeat() -> Result<(), String>;
+
+    /// Replace the service routes with the provided configuration
+    async fn set_service_routes(routes: Vec<ProxyRouteConfig>) -> Result<(), String>;
 
     /// Add a DevboxTunnel route for service interception
     /// Returns true if route was added successfully

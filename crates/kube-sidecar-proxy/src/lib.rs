@@ -1,5 +1,4 @@
 pub mod config;
-pub mod discovery;
 pub mod error;
 pub mod original_dest;
 pub mod otel_routing;

@@ -57,7 +57,10 @@ impl ServiceBridge {
         let mut tasks = Vec::new();
         for endpoint in endpoints {
             let addr = SocketAddr::new(endpoint.synthetic_ip, endpoint.port);
-            match self.spawn_listener(addr, endpoint.clone(), Arc::clone(&tunnel_client)).await {
+            match self
+                .spawn_listener(addr, endpoint.clone(), Arc::clone(&tunnel_client))
+                .await
+            {
                 Ok(task) => tasks.push(task),
                 Err(e) => {
                     error!("Failed to start listener on {}: {}", addr, e);

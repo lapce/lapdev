@@ -1,7 +1,6 @@
 use crate::{
     config::ProxyConfig,
-    discovery::ServiceDiscovery,
-    error::{Result, SidecarProxyError},
+    error::Result,
     original_dest::get_original_destination,
     otel_routing::{determine_routing_target, extract_routing_context},
     protocol_detector::{detect_protocol, ProtocolType},
@@ -10,7 +9,6 @@ use crate::{
 use anyhow::anyhow;
 use futures::StreamExt;
 use http::header::AUTHORIZATION;
-use kube::Client;
 use lapdev_common::kube::{SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR};
 use lapdev_kube_rpc::{http_parser, SidecarProxyManagerRpcClient, SidecarProxyRpc};
 use lapdev_rpc::spawn_twoway;
@@ -20,7 +18,7 @@ use lapdev_tunnel::{
 use std::{collections::HashMap, io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
-    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
+    io::copy_bidirectional,
     net::{TcpListener, TcpStream},
     sync::{Mutex, RwLock},
 };
@@ -33,9 +31,10 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct SidecarProxyServer {
     workload_id: Uuid,
+    environment_id: Uuid,
+    namespace: Option<String>,
     sidecar_proxy_manager_addr: String,
     listen_addr: SocketAddr,
-    discovery: Arc<ServiceDiscovery>,
     config: Arc<RwLock<ProxyConfig>>,
     /// RPC client to kube-manager (None until connection established)
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
@@ -59,16 +58,22 @@ impl SidecarProxyServer {
                 ))
             })?;
 
-        let workload_id = std::env::var(SIDECAR_PROXY_WORKLOAD_ENV_VAR).map_err(|_| {
-            anyhow!(format!(
-                "can't find {SIDECAR_PROXY_WORKLOAD_ENV_VAR} env var"
-            ))
-        })?;
-        let workload_id = Uuid::from_str(&workload_id).map_err(|_| {
-            anyhow!(format!(
-                "{SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR} isn't a valid uuid"
-            ))
-        })?;
+        let workload_id = match std::env::var(SIDECAR_PROXY_WORKLOAD_ENV_VAR) {
+            Ok(value) => Uuid::from_str(&value).map_err(|_| {
+                anyhow!(format!(
+                    "{SIDECAR_PROXY_WORKLOAD_ENV_VAR} isn't a valid uuid"
+                ))
+            })?,
+            Err(_) => {
+                warn!(
+                    "{} not set, defaulting workload identifier to environment id",
+                    SIDECAR_PROXY_WORKLOAD_ENV_VAR
+                );
+                Uuid::parse_str(&environment_id).map_err(|e| {
+                    anyhow!(format!("Failed to parse environment_id as UUID: {}", e))
+                })?
+            }
+        };
 
         // Parse environment ID - now required
         let env_id = Uuid::parse_str(&environment_id)
@@ -85,27 +90,14 @@ impl SidecarProxyServer {
             ..Default::default()
         };
 
-        // Initialize Kubernetes client
-        let client = Client::try_default()
-            .await
-            .map_err(|e| SidecarProxyError::Kubernetes(e))?;
-
-        // Create service discovery
-        let discovery = Arc::new(ServiceDiscovery::new(
-            client,
-            namespace.clone(),
-            pod_name.clone(),
-            Some(env_id),
-            config.clone(),
-        ));
-
         let config = Arc::new(RwLock::new(config));
 
         let server = Self {
             workload_id,
+            environment_id: env_id,
+            namespace: namespace.clone(),
             sidecar_proxy_manager_addr,
             listen_addr,
-            discovery,
             config,
             rpc_client: Arc::new(RwLock::new(None)),
             devbox_tunnel_manager: Arc::new(DevboxTunnelManager::new()),
@@ -126,27 +118,6 @@ impl SidecarProxyServer {
                 server.connect_rpc().await;
             });
         }
-
-        // Start service discovery in the background
-        let discovery_clone = Arc::clone(&self.discovery);
-        let discovery_task = tokio::spawn(async move {
-            if let Err(e) = discovery_clone.start_watching().await {
-                error!("Service discovery error: {}", e);
-            }
-        });
-
-        // Start configuration updates handler
-        let config_clone = Arc::clone(&self.config);
-        let mut config_rx = self.discovery.subscribe();
-        let config_task = tokio::spawn(async move {
-            while let Ok(new_config) = config_rx.recv().await {
-                info!("Received configuration update");
-                {
-                    let mut config = config_clone.write().await;
-                    *config = new_config;
-                }
-            }
-        });
 
         // Create TCP listener for iptables-redirected connections
         let listener = TcpListener::bind(&self.listen_addr).await?;
@@ -188,21 +159,14 @@ impl SidecarProxyServer {
         };
 
         // Wait for either the server to complete or tasks to fail
+        tokio::pin!(server);
+
         tokio::select! {
-            _ = server => {
+            _ = &mut server => {
                 info!("Server shut down gracefully");
             }
-            result = discovery_task => {
-                match result {
-                    Ok(_) => info!("Service discovery task completed"),
-                    Err(e) => error!("Service discovery task error: {}", e),
-                }
-            }
-            result = config_task => {
-                match result {
-                    Ok(_) => info!("Configuration task completed"),
-                    Err(e) => error!("Configuration task error: {}", e),
-                }
+            _ = shutdown_signal => {
+                info!("Shutdown signal received");
             }
         }
 
@@ -258,8 +222,17 @@ impl SidecarProxyServer {
             *client_lock = Some(rpc_client.clone());
         }
 
-        let rpc_server =
-            SidecarProxyRpcServer::new(self.workload_id, rpc_client, Arc::clone(&self.config));
+        let namespace = self
+            .namespace
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let rpc_server = SidecarProxyRpcServer::new(
+            self.workload_id,
+            self.environment_id,
+            namespace,
+            rpc_client,
+            Arc::clone(&self.config),
+        );
         let rpc_server_clone = rpc_server.clone();
         let rpc_server_task = tokio::spawn(async move {
             BaseChannel::with_defaults(server_chan)
@@ -295,11 +268,6 @@ impl SidecarProxyServer {
     /// Get the current configuration
     pub async fn get_config(&self) -> ProxyConfig {
         self.config.read().await.clone()
-    }
-
-    /// Get the service discovery instance
-    pub fn discovery(&self) -> &Arc<ServiceDiscovery> {
-        &self.discovery
     }
 }
 
@@ -476,7 +444,6 @@ struct DevboxRouteInfo {
     intercept_id: Uuid,
     session_id: Uuid,
     target_port: u16,
-    auth_token: String,
 }
 
 /// Check if there's a DevboxTunnel route for the given port
@@ -494,7 +461,7 @@ async fn check_devbox_tunnel_route(
             intercept_id,
             session_id,
             target_port,
-            auth_token,
+            auth_token: _,
         } = &route.target
         {
             // Match if the original destination port corresponds to this intercept
@@ -504,7 +471,6 @@ async fn check_devbox_tunnel_route(
                     intercept_id: *intercept_id,
                     session_id: *session_id,
                     target_port: *target_port,
-                    auth_token: auth_token.clone(),
                 });
             }
         }

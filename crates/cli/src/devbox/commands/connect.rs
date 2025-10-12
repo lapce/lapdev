@@ -33,15 +33,17 @@ pub async fn execute(api_url: &str) -> Result<()> {
         Ok(token) => token,
         Err(_) => {
             // No token found, run login flow
-            println!("{}", "No authentication token found. Starting login...".yellow());
+            println!(
+                "{}",
+                "No authentication token found. Starting login...".yellow()
+            );
             println!();
 
             // Run login
             super::login::execute(api_url, None).await?;
 
             // Retrieve the newly stored token
-            auth::get_token(api_url)
-                .context("Failed to load authentication token after login")?
+            auth::get_token(api_url).context("Failed to load authentication token after login")?
         }
     };
 
@@ -82,7 +84,11 @@ pub async fn execute(api_url: &str) -> Result<()> {
         is_first_connection = false;
 
         // Wait before reconnecting
-        println!("{} Reconnecting in {} seconds...", "🔄".cyan(), backoff.as_secs());
+        println!(
+            "{} Reconnecting in {} seconds...",
+            "🔄".cyan(),
+            backoff.as_secs()
+        );
         tokio::select! {
             _ = signal::ctrl_c() => {
                 println!("\n{}", "Received Ctrl+C, disconnecting...".yellow());
@@ -155,7 +161,8 @@ async fn connect_and_run_rpc(
 
     // Create channels for this connection
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<ShutdownSignal>();
-    let (env_change_tx, mut env_change_rx) = mpsc::unbounded_channel::<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>();
+    let (env_change_tx, mut env_change_rx) =
+        mpsc::unbounded_channel::<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>();
 
     // Create RPC client (for calling server methods)
     let rpc_client =

@@ -590,7 +590,10 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
                 .await
             {
                 Ok(_) => {
-                    tracing::info!("Successfully notified client of environment change to {}", env_info.namespace);
+                    tracing::info!(
+                        "Successfully notified client of environment change to {}",
+                        env_info.namespace
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("Failed to notify client of environment change: {}", e);

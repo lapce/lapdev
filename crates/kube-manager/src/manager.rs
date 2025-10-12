@@ -103,7 +103,7 @@ impl KubeManager {
             e
         })?;
 
-        let proxy_manager = Arc::new(SidecarProxyManager::new().await?);
+        let proxy_manager = Arc::new(SidecarProxyManager::new(kube_client.clone()).await?);
         let devbox_proxy_manager = Arc::new(DevboxProxyManager::new().await?);
 
         let token = std::env::var(KUBE_CLUSTER_TOKEN_ENV_VAR)
@@ -3659,6 +3659,18 @@ impl KubeManager {
             base_workload_name,
             base_workload_id
         );
+
+        if let Err(err) = self
+            .proxy_manager
+            .set_service_routes_if_registered(branch_environment_id)
+            .await
+        {
+            tracing::warn!(
+                "Failed to update sidecar service routes for branch environment {}: {}",
+                branch_environment_id,
+                err
+            );
+        }
         Ok(())
     }
 

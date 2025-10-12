@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::Level::INFO
     };
 
-    use tracing_subscriber::{fmt, EnvFilter, prelude::*};
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     // Filter out tarpc internal tracing
     let filter = EnvFilter::from_default_env()
@@ -71,11 +71,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(
-            fmt::layer()
-                .with_target(false)
-                .without_time()
-        )
+        .with(fmt::layer().with_target(false).without_time())
         .init();
 
     // Handle commands

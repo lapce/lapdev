@@ -6,14 +6,14 @@ use crate::sidecar_proxy_manager::SidecarProxyManager;
 #[derive(Clone)]
 pub struct SidecarProxyManagerRpcServer {
     manager: SidecarProxyManager,
-    _rpc_client: SidecarProxyRpcClient,
+    pub(crate) rpc_client: SidecarProxyRpcClient,
 }
 
 impl SidecarProxyManagerRpcServer {
     pub(crate) fn new(manager: SidecarProxyManager, rpc_client: SidecarProxyRpcClient) -> Self {
         Self {
             manager,
-            _rpc_client: rpc_client,
+            rpc_client,
         }
     }
 }
@@ -27,12 +27,23 @@ impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
         self,
         _context: ::tarpc::context::Context,
         workload_id: Uuid,
+        environment_id: Uuid,
+        namespace: String,
     ) -> Result<(), String> {
+        self.manager.sidecar_proxies.write().await.insert(
+            environment_id,
+            crate::sidecar_proxy_manager::SidecarProxyRegistration {
+                workload_id,
+                namespace: namespace.clone(),
+                rpc_client: self.rpc_client.clone(),
+            },
+        );
+
         self.manager
-            .sidecar_proxies
-            .write()
+            .set_service_routes_if_registered(environment_id)
             .await
-            .insert(workload_id, self.clone());
+            .map_err(|e| e.to_string())?;
+
         Ok(())
     }
 

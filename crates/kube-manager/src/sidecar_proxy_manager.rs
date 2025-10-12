@@ -1,7 +1,9 @@
 use anyhow::Result;
 use futures::StreamExt;
+use k8s_openapi::api::core::v1::Service;
+use kube::{api::ListParams, Api, Client as KubeClient};
 use lapdev_common::kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR};
-use lapdev_kube_rpc::{SidecarProxyManagerRpc, SidecarProxyRpcClient};
+use lapdev_kube_rpc::{ProxyRouteConfig, SidecarProxyManagerRpc, SidecarProxyRpcClient};
 use lapdev_rpc::spawn_twoway;
 use std::{collections::HashMap, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
@@ -11,29 +13,21 @@ use uuid::Uuid;
 
 use crate::sidecar_proxy_manager_rpc::SidecarProxyManagerRpcServer;
 
-#[derive(Debug, Clone)]
-pub struct SidecarProxyInfo {
-    pub pod_name: String,
-    pub namespace: String,
-    pub environment_id: Option<String>,
-    pub last_heartbeat: std::time::Instant,
-    pub metrics: SidecarProxyMetrics,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SidecarProxyMetrics {
-    pub request_count: u64,
-    pub byte_count: u64,
-    pub active_connections: u32,
+#[derive(Clone)]
+pub struct SidecarProxyManager {
+    kube_client: KubeClient,
+    pub(crate) sidecar_proxies: Arc<RwLock<HashMap<Uuid, SidecarProxyRegistration>>>,
 }
 
 #[derive(Clone)]
-pub struct SidecarProxyManager {
-    pub(crate) sidecar_proxies: Arc<RwLock<HashMap<Uuid, SidecarProxyManagerRpcServer>>>,
+pub(crate) struct SidecarProxyRegistration {
+    pub workload_id: Uuid,
+    pub namespace: String,
+    pub rpc_client: SidecarProxyRpcClient,
 }
 
 impl SidecarProxyManager {
-    pub(crate) async fn new() -> Result<Self> {
+    pub(crate) async fn new(kube_client: KubeClient) -> Result<Self> {
         // Parse the URL to extract the port
         let port = std::env::var(SIDECAR_PROXY_MANAGER_PORT_ENV_VAR)
             .ok()
@@ -50,6 +44,7 @@ impl SidecarProxyManager {
         info!("TCP server listening on: {}", bind_addr);
 
         let m = Self {
+            kube_client,
             sidecar_proxies: Arc::new(RwLock::new(HashMap::new())),
         };
 
@@ -82,5 +77,59 @@ impl SidecarProxyManager {
         }
 
         Ok(m)
+    }
+
+    pub async fn set_service_routes_if_registered(&self, environment_id: Uuid) -> Result<()> {
+        let registration = {
+            let map = self.sidecar_proxies.read().await;
+            map.get(&environment_id).cloned()
+        };
+
+        let Some(registration) = registration else {
+            return Ok(());
+        };
+
+        let services_api: Api<Service> =
+            Api::namespaced(self.kube_client.clone(), &registration.namespace);
+
+        let label_selector = format!("lapdev.io/branch-environment-id={}", environment_id);
+        let services = services_api
+            .list(&ListParams::default().labels(&label_selector))
+            .await?
+            .items;
+
+        let mut routes = Vec::new();
+        for svc in services {
+            let svc_name = svc.metadata.name.unwrap_or_default();
+            if svc_name.is_empty() {
+                continue;
+            }
+
+            if let Some(spec) = svc.spec {
+                if let Some(ports) = spec.ports {
+                    for port in ports {
+                        let Ok(port_number) = u16::try_from(port.port) else {
+                            continue;
+                        };
+                        routes.push(ProxyRouteConfig {
+                            path: format!("/{}/*", svc_name),
+                            service_name: svc_name.clone(),
+                            namespace: registration.namespace.clone(),
+                            port: port_number,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = registration
+            .rpc_client
+            .set_service_routes(tarpc::context::current(), routes)
+            .await
+        {
+            return Err(anyhow::anyhow!("Failed to push service routes: {}", e));
+        }
+
+        Ok(())
     }
 }

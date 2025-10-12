@@ -68,7 +68,8 @@ async fn main() -> Result<()> {
     let env_id = Uuid::parse_str(&environment_id)
         .map_err(|e| anyhow!("Failed to parse environment_id as UUID: {}", e))?;
 
-    let server = DevboxProxyServer::new(args.api_url, env_id, environment_auth_token).await?;
+    let api_url = args.api_url.clone();
+    let server = DevboxProxyServer::new(api_url.clone(), env_id, environment_auth_token).await?;
 
     info!("Devbox proxy server initialized successfully");
 
@@ -78,7 +79,7 @@ async fn main() -> Result<()> {
         let kube_manager_addr = format!("{}:{}", args.kube_manager_host, args.kube_manager_port);
         info!("Connecting to kube-manager at {}", kube_manager_addr);
 
-        let branch_config = branch_config::BranchConfig::new(args.api_url.clone());
+        let branch_config = branch_config::BranchConfig::new(api_url);
         let rpc_server = rpc_server::DevboxProxyRpcServer::new(branch_config);
 
         // Spawn RPC connection in background

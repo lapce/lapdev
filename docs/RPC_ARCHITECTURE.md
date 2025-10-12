@@ -38,7 +38,12 @@ flowchart LR
     KM <-->|"TCP + tarpc<br/>DevboxProxyManagerRpc & DevboxProxyRpc"| DevboxProxy
     Sidecar <-->|"WebSocket tunnels<br/>Preview & intercept data"| Tunnel
     DevboxProxy <-->|"WebSocket tunnels<br/>Branch env traffic"| Tunnel
+    linkStyle 2 stroke:#2ca58d,stroke-width:3px
+    linkStyle 7 stroke:#2ca58d,stroke-width:3px
+    linkStyle 8 stroke:#2ca58d,stroke-width:3px
 ```
+
+Green edges represent high-throughput data-plane tunnels, while the remaining links are tarpc/HRPC control-plane calls.
 
 ## Link details
 

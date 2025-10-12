@@ -7,21 +7,21 @@ Lapdev combines tarpc-based transports with HTTP RPC (HRPC) endpoints to coordin
 ```mermaid
 flowchart LR
     subgraph Clients
-        CLI["Devbox CLI"]
-        Dashboard["Dashboard / Browser"]
+        CLI(["Devbox CLI"])
+        Dashboard(["Dashboard / Browser"])
     end
 
     subgraph API["Lapdev API (CoreState)"]
-        APIHttp["HTTP router & HRPC endpoints"]
-        DevboxRPC["Devbox RPC server"]
-        KubeCtl["Kube controller"]
-        Tunnel["Tunnel broker"]
+        APIHttp(["HTTP router & HRPC endpoints"])
+        DevboxRPC(["Devbox RPC server"])
+        KubeCtl(["Kube controller"])
+        Tunnel(["Tunnel broker"])
     end
 
     subgraph Kubernetes["Kubernetes Agents"]
-        KM["lapdev-kube-manager"]
-        Sidecar["kube-sidecar-proxy"]
-        DevboxProxy["kube-devbox-proxy"]
+        KM(["lapdev-kube-manager"])
+        Sidecar(["kube-sidecar-proxy"])
+        DevboxProxy(["kube-devbox-proxy"])
     end
 
     Dashboard -- "HTTPS (HRPC)<br/>HrpcService" --> APIHttp

@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 pub mod commands;
+pub mod dns;
 mod websocket_transport;
 
 const DEFAULT_LAPDEV_URL: &str = "https://app.lap.dev";

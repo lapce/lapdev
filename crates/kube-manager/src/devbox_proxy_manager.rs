@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::devbox_proxy_manager_rpc::DevboxProxyManagerRpcServer;
 
 pub const DEFAULT_DEVBOX_PROXY_MANAGER_PORT: u16 = 7771;
-pub const DEVBOX_PROXY_MANAGER_PORT_ENV_VAR: &str = "DEVBOX_PROXY_MANAGER_PORT";
+pub const DEVBOX_PROXY_MANAGER_PORT_ENV_VAR: &str = "LAPDEV_DEVBOX_PROXY_MANAGER_PORT";
 
 #[derive(Debug, Clone)]
 pub struct DevboxProxyInfo {

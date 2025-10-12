@@ -11,6 +11,7 @@ pub trait DevboxSessionRpc {
     async fn list_workload_intercepts(
         environment_id: Uuid,
     ) -> Result<Vec<WorkloadInterceptInfo>, String>;
+    async fn list_services(environment_id: Uuid) -> Result<Vec<ServiceInfo>, String>;
     async fn update_device_name(device_name: String) -> Result<(), String>;
 }
 
@@ -21,6 +22,7 @@ pub trait DevboxClientRpc {
     async fn start_intercept(intercept: StartInterceptRequest) -> Result<(), String>;
     async fn stop_intercept(intercept_id: Uuid) -> Result<(), String>;
     async fn session_displaced(new_device_name: String);
+    async fn environment_changed(environment: Option<DevboxEnvironmentInfo>);
     async fn ping() -> Result<(), String>;
 }
 
@@ -89,4 +91,19 @@ pub struct StartInterceptRequest {
     pub workload_name: String,
     pub namespace: String,
     pub port_mappings: Vec<PortMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceInfo {
+    pub name: String,
+    pub namespace: String,
+    pub ports: Vec<ServicePort>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServicePort {
+    pub name: Option<String>,
+    pub port: u16,
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
 }

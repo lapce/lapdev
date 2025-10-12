@@ -95,7 +95,7 @@ impl SidecarProxyServer {
             client,
             namespace.clone(),
             pod_name.clone(),
-            env_id,
+            Some(env_id),
             config.clone(),
         ));
 
@@ -531,7 +531,7 @@ impl DevboxTunnelManager {
         auth_token: &str,
         target_host: &str,
         target_port: u16,
-    ) -> Result<TunnelTcpStream, TunnelError> {
+    ) -> std::result::Result<TunnelTcpStream, TunnelError> {
         let client = self
             .ensure_client(session_id, websocket_url, auth_token)
             .await?;
@@ -559,7 +559,7 @@ impl DevboxTunnelManager {
         session_id: Uuid,
         websocket_url: &str,
         auth_token: &str,
-    ) -> Result<Arc<TunnelClient>, TunnelError> {
+    ) -> std::result::Result<Arc<TunnelClient>, TunnelError> {
         if let Some(existing) = self.clients.lock().await.get(&session_id) {
             return Ok(existing.clone());
         }
@@ -580,7 +580,7 @@ impl DevboxTunnelManager {
         &self,
         websocket_url: &str,
         auth_token: &str,
-    ) -> Result<TunnelClient, TunnelError> {
+    ) -> std::result::Result<TunnelClient, TunnelError> {
         let mut request = websocket_url
             .into_client_request()
             .map_err(tunnel_transport_error)?;

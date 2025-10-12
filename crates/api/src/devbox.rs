@@ -551,6 +551,41 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             .await
             .map_err(|e| format!("Failed to update active environment: {}", e))?;
 
+        // Fetch environment details to notify client
+        let environment = self
+            .state
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch environment: {}", e))?
+            .ok_or_else(|| "Environment not found".to_string())?;
+
+        let cluster = self
+            .state
+            .db
+            .get_kube_cluster(environment.cluster_id)
+            .await
+            .map_err(|e| format!("Failed to fetch cluster: {}", e))?
+            .ok_or_else(|| "Cluster not found".to_string())?;
+
+        // Notify client about the environment change
+        let env_info = lapdev_devbox_rpc::DevboxEnvironmentInfo {
+            environment_id: environment.id,
+            cluster_name: cluster.name,
+            namespace: environment.namespace,
+        };
+
+        // Fire and forget - don't wait for client response
+        let client_rpc = self.client_rpc.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client_rpc
+                .environment_changed(tarpc::context::current(), Some(env_info))
+                .await
+            {
+                tracing::warn!("Failed to notify client of environment change: {}", e);
+            }
+        });
+
         Ok(())
     }
 
@@ -602,6 +637,62 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
                 port_mappings,
                 created_at: intercept.created_at.with_timezone(&chrono::Utc),
                 device_name: session.device_name.clone(),
+            });
+        }
+
+        Ok(result)
+    }
+
+    async fn list_services(
+        self,
+        _context: tarpc::context::Context,
+        environment_id: Uuid,
+    ) -> Result<Vec<lapdev_devbox_rpc::ServiceInfo>, String> {
+        tracing::info!(
+            "list_services called for session {} environment {}",
+            self.session_id,
+            environment_id
+        );
+
+        // Get environment and verify user has access
+        let environment = self
+            .state
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch environment: {}", e))?
+            .ok_or_else(|| "Environment not found".to_string())?;
+
+        // Verify user has access to this environment
+        if environment.user_id != self.user_id {
+            return Err("Unauthorized: You don't have access to this environment".to_string());
+        }
+
+        // Get all services for the environment
+        let services = self
+            .state
+            .db
+            .get_environment_services(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch services: {}", e))?;
+
+        let mut result = Vec::new();
+        for service in services {
+            // Convert KubeServicePort to ServicePort
+            let ports: Vec<lapdev_devbox_rpc::ServicePort> = service
+                .ports
+                .iter()
+                .map(|p| lapdev_devbox_rpc::ServicePort {
+                    name: p.name.clone(),
+                    port: p.port as u16,
+                    protocol: p.protocol.clone().unwrap_or_else(|| "TCP".to_string()),
+                })
+                .collect();
+
+            result.push(lapdev_devbox_rpc::ServiceInfo {
+                name: service.name,
+                namespace: service.namespace,
+                ports,
             });
         }
 

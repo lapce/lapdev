@@ -448,7 +448,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
             </Show>
 
             // Devbox Session Banner
-            <DevboxSessionBanner active_session />
+            <DevboxSessionBanner active_session environment_id update_counter />
 
             // Environment Resources (Workloads & Services)
             <Show when=move || environment_info.get().is_some()>
@@ -1705,8 +1705,29 @@ pub fn EditInterceptModal(
 #[component]
 pub fn DevboxSessionBanner(
     active_session: LocalResource<Option<DevboxSessionSummary>>,
+    environment_id: Uuid,
+    update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     let is_expanded = RwSignal::new(false);
+
+    // Action to set this environment as active
+    let set_active_action = Action::new_local(move |_| async move {
+        let client = HrpcServiceClient::new("/api/rpc".to_string());
+        match client
+            .devbox_session_set_active_environment(environment_id)
+            .await
+        {
+            Ok(Ok(())) => {
+                update_counter.update(|c| *c += 1);
+                Ok(())
+            }
+            Ok(Err(e)) => Err(ErrorResponse { error: e }),
+            Err(e) => Err(ErrorResponse {
+                error: e.to_string(),
+            }),
+        }
+    });
+    let set_active_pending = set_active_action.pending();
 
     view! {
         <Suspense fallback=move || view! { <div></div> }>
@@ -1716,6 +1737,8 @@ pub fn DevboxSessionBanner(
                     .map(|session_opt| {
                         if let Some(session) = session_opt {
                             // Active session exists
+                            let is_active = session.active_environment_id == Some(environment_id);
+
                             view! {
                                 <div class="rounded-lg border bg-muted/50 p-4">
                                     <div class="flex items-center justify-between">
@@ -1730,6 +1753,16 @@ pub fn DevboxSessionBanner(
                                                         <lucide_leptos::Monitor attr:class="h-3 w-3" />
                                                         {session.device_name.clone()}
                                                     </Badge>
+                                                    {if is_active {
+                                                        view! {
+                                                            <Badge variant=BadgeVariant::Secondary class="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                                                                <lucide_leptos::Check attr:class="h-3 w-3" />
+                                                                "Active Environment"
+                                                            </Badge>
+                                                        }.into_any()
+                                                    } else {
+                                                        ().into_any()
+                                                    }}
                                                 </div>
                                                 <div class="text-sm text-muted-foreground flex items-center gap-1">
                                                     <span>"Last active: "</span>
@@ -1737,12 +1770,29 @@ pub fn DevboxSessionBanner(
                                                 </div>
                                             </div>
                                         </div>
-                                        <a href="/devbox/sessions">
-                                            <Button variant=ButtonVariant::Outline size=ButtonSize::Sm>
-                                                <lucide_leptos::Settings attr:class="h-4 w-4" />
-                                                "Manage Sessions"
-                                            </Button>
-                                        </a>
+                                        <div class="flex items-center gap-2">
+                                            {if !is_active {
+                                                view! {
+                                                    <Button
+                                                        variant=ButtonVariant::Outline
+                                                        size=ButtonSize::Sm
+                                                        on:click=move |_| { set_active_action.dispatch(()); }
+                                                        disabled=Signal::derive(move || set_active_pending.get())
+                                                    >
+                                                        <lucide_leptos::Check attr:class="h-4 w-4" />
+                                                        {move || if set_active_pending.get() { "Setting..." } else { "Set as Active" }}
+                                                    </Button>
+                                                }.into_any()
+                                            } else {
+                                                ().into_any()
+                                            }}
+                                            <a href="/devbox/sessions">
+                                                <Button variant=ButtonVariant::Outline size=ButtonSize::Sm>
+                                                    <lucide_leptos::Settings attr:class="h-4 w-4" />
+                                                    "Manage Sessions"
+                                                </Button>
+                                            </a>
+                                        </div>
                                     </div>
                                 </div>
                             }

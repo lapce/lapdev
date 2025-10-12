@@ -4,13 +4,13 @@ use futures::StreamExt;
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest};
 use lapdev_rpc::spawn_twoway;
 use lapdev_tunnel::{
-    run_tunnel_server, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
+    run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     signal,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, Mutex, RwLock},
     task::JoinHandle,
     time::sleep,
 };
@@ -18,7 +18,13 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
 
-use crate::{auth, devbox::websocket_transport::WebSocketTransport};
+use crate::{
+    auth,
+    devbox::{
+        dns::{HostsManager, ServiceBridge, ServiceEndpoint, SyntheticIpAllocator},
+        websocket_transport::WebSocketTransport,
+    },
+};
 
 /// Execute the devbox connect command
 pub async fn execute(api_url: &str) -> Result<()> {
@@ -69,15 +75,18 @@ pub async fn execute(api_url: &str) -> Result<()> {
         tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
     let (server_chan, client_chan, _abort_handle) = spawn_twoway(transport);
 
-    let tunnel_manager = DevboxTunnelManager::default();
+    let tunnel_manager = Arc::new(DevboxTunnelManager::new());
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<ShutdownSignal>();
+    let (env_change_tx, mut env_change_rx) =
+        mpsc::unbounded_channel::<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>();
 
     // Create RPC client (for calling server methods)
     let rpc_client =
         DevboxSessionRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
     // Create RPC server (for server to call us)
-    let client_rpc_server = DevboxClientRpcServer::new(shutdown_tx.clone());
+    let client_rpc_server =
+        DevboxClientRpcServer::new(shutdown_tx.clone(), env_change_tx.clone());
 
     // Spawn the RPC server task
     let server_task = tokio::spawn(async move {
@@ -127,6 +136,9 @@ pub async fn execute(api_url: &str) -> Result<()> {
         .ensure_client(api_url, &token, session_info.session_id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start client tunnel: {}", e))?;
+
+    // Check hosts file permissions early and warn user
+    tunnel_manager.check_and_warn_permissions();
 
     // Attempt to rehydrate active environment and intercepts
     let active_environment = match rpc_client
@@ -181,6 +193,18 @@ pub async fn execute(api_url: &str) -> Result<()> {
                 eprintln!("{} Failed to list intercepts: {}", "⚠".yellow(), err);
             }
         }
+
+        // Set up DNS for the active environment
+        if let Err(e) = tunnel_manager
+            .setup_dns_for_environment(env.environment_id, &rpc_client)
+            .await
+        {
+            eprintln!(
+                "{} Failed to set up DNS: {}",
+                "⚠".yellow(),
+                e
+            );
+        }
     }
 
     println!("{}", "\n👂 Listening for intercept requests...".cyan());
@@ -208,8 +232,22 @@ pub async fn execute(api_url: &str) -> Result<()> {
                 }
             }
         }
+        Some(env) = env_change_rx.recv() => {
+            match env {
+                Some(env_info) => {
+                    if let Err(e) = tunnel_manager.setup_dns_for_environment(env_info.environment_id, &rpc_client).await {
+                        eprintln!("{} Failed to refresh DNS: {}", "⚠".yellow(), e);
+                    }
+                }
+                None => {
+                    println!("{} Clearing DNS entries...", "🔧".cyan());
+                    tunnel_manager.cleanup_dns().await;
+                }
+            }
+        }
     }
 
+    tunnel_manager.cleanup_dns().await;
     tunnel_manager.shutdown().await;
 
     if !server_task.is_finished() {
@@ -224,11 +262,18 @@ pub async fn execute(api_url: &str) -> Result<()> {
 #[derive(Clone)]
 struct DevboxClientRpcServer {
     shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
+    env_change_tx: mpsc::UnboundedSender<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>,
 }
 
 impl DevboxClientRpcServer {
-    fn new(shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>) -> Self {
-        Self { shutdown_tx }
+    fn new(
+        shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
+        env_change_tx: mpsc::UnboundedSender<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>,
+    ) -> Self {
+        Self {
+            shutdown_tx,
+            env_change_tx,
+        }
     }
 }
 
@@ -267,6 +312,33 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         tracing::warn!("Session displaced by: {}", new_device_name);
     }
 
+    async fn environment_changed(
+        self,
+        _context: tarpc::context::Context,
+        environment: Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>,
+    ) {
+        let env_change_tx = self.env_change_tx;
+
+        if let Some(ref env) = environment {
+            println!(
+                "\n{} Environment changed to: {} / {}",
+                "🔄".cyan(),
+                env.cluster_name.bright_white(),
+                env.namespace.cyan()
+            );
+            tracing::info!(
+                "Active environment changed to: {} ({})",
+                env.environment_id,
+                env.namespace
+            );
+        } else {
+            println!("\n{} Active environment cleared", "🔄".cyan());
+            tracing::info!("Active environment cleared");
+        }
+
+        let _ = env_change_tx.send(environment);
+    }
+
     async fn ping(self, _context: tarpc::context::Context) -> Result<(), String> {
         tracing::trace!("Received ping");
         Ok(())
@@ -277,10 +349,162 @@ enum ShutdownSignal {
     Displaced(String),
 }
 
-#[derive(Default)]
 struct DevboxTunnelManager {
     intercept_task: Mutex<Option<TunnelTask>>,
     client_task: Mutex<Option<TunnelTask>>,
+    /// Shared tunnel client for DNS service bridge
+    tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
+    /// Service bridge for DNS resolution
+    service_bridge: Arc<ServiceBridge>,
+    /// Hosts file manager
+    hosts_manager: Arc<HostsManager>,
+    /// IP allocator
+    ip_allocator: Arc<Mutex<SyntheticIpAllocator>>,
+}
+
+impl DevboxTunnelManager {
+    fn new() -> Self {
+        Self {
+            intercept_task: Mutex::new(None),
+            client_task: Mutex::new(None),
+            tunnel_client: Arc::new(RwLock::new(None)),
+            service_bridge: Arc::new(ServiceBridge::new()),
+            hosts_manager: Arc::new(HostsManager::new()),
+            ip_allocator: Arc::new(Mutex::new(SyntheticIpAllocator::new())),
+        }
+    }
+
+    /// Get the tunnel client for making connections
+    async fn get_tunnel_client(&self) -> Option<Arc<TunnelClient>> {
+        self.tunnel_client.read().await.clone()
+    }
+
+    /// Check hosts file permissions and warn user if insufficient
+    fn check_and_warn_permissions(&self) {
+        if !self.hosts_manager.check_permissions() {
+            eprintln!();
+            eprintln!("{} {}", "⚠".yellow(), "Insufficient permissions to modify hosts file".yellow().bold());
+            eprintln!("  Service DNS resolution will not work without write access to the hosts file.");
+            eprintln!();
+            if cfg!(unix) {
+                eprintln!("  To fix this, run the command with sudo:");
+                eprintln!("    {}", "sudo -E lapdev devbox connect".bright_white());
+            } else if cfg!(windows) {
+                eprintln!("  To fix this, run the command as Administrator:");
+                eprintln!("    Right-click the terminal and select 'Run as Administrator'");
+            }
+            eprintln!();
+            eprintln!("  Alternatively, you can manually add entries to the hosts file when prompted.");
+            eprintln!();
+        }
+    }
+
+    /// Set up DNS for an environment by fetching services and configuring hosts/bridge
+    async fn setup_dns_for_environment(
+        &self,
+        env_id: Uuid,
+        rpc_client: &DevboxSessionRpcClient,
+    ) -> Result<()> {
+        // Wait for tunnel client to be available
+        let tunnel_client = loop {
+            if let Some(client) = self.get_tunnel_client().await {
+                break client;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        println!("{} Setting up DNS for services...", "🔧".cyan());
+
+        // Check hosts file permissions upfront
+        if !self.hosts_manager.check_permissions() {
+            eprintln!(
+                "{} No write permission for hosts file",
+                "⚠".yellow()
+            );
+            eprintln!(
+                "  DNS will not work until you grant permissions or manually update the hosts file."
+            );
+            if cfg!(unix) {
+                eprintln!("  Try running with: sudo -E lapdev devbox connect");
+            } else if cfg!(windows) {
+                eprintln!("  Try running as Administrator");
+            }
+            eprintln!();
+        }
+
+        // Fetch services for the environment
+        let services = match rpc_client
+            .list_services(tarpc::context::current(), env_id)
+            .await
+            .context("RPC call failed")?
+        {
+            Ok(services) => services,
+            Err(e) => {
+                eprintln!(
+                    "{} Failed to fetch services: {}",
+                    "⚠".yellow(),
+                    e
+                );
+                return Ok(());
+            }
+        };
+
+        if services.is_empty() {
+            println!("{} No services found in environment", "ℹ".blue());
+            return Ok(());
+        }
+
+        // Allocate synthetic IPs and create endpoints
+        let mut endpoints = Vec::new();
+        let mut allocator = self.ip_allocator.lock().await;
+
+        for service in &services {
+            for port in &service.ports {
+                if let Some(ip) = allocator.allocate(&service.name, &service.namespace, port.port) {
+                    endpoints.push(ServiceEndpoint::new(service, port.port, port.protocol.clone(), ip));
+                }
+            }
+        }
+        drop(allocator);
+
+        println!("  {} service endpoint(s) allocated", endpoints.len());
+
+        // Update hosts file
+        match self.hosts_manager.write_entries(&endpoints) {
+            Ok(()) => {
+                println!("{} Hosts file updated", "✓".green());
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} Failed to update hosts file: {}",
+                    "⚠".yellow(),
+                    e
+                );
+                self.hosts_manager.print_manual_instructions(&endpoints);
+                // Still continue to start the service bridge - user might update manually
+            }
+        }
+
+        // Start service bridge
+        self.service_bridge.stop().await; // Stop old listeners first
+        self.service_bridge.set_tunnel_client(tunnel_client).await;
+        if let Err(e) = self.service_bridge.start(endpoints).await {
+            eprintln!("{} Failed to start service bridge: {}", "⚠".yellow(), e);
+        } else {
+            println!("{} Service bridge started", "✓".green());
+        }
+
+        Ok(())
+    }
+
+    /// Cleanup DNS entries
+    async fn cleanup_dns(&self) {
+        if let Err(e) = self.hosts_manager.remove_entries() {
+            tracing::warn!("Failed to clean up hosts file: {}", e);
+        }
+        self.service_bridge.stop().await;
+        self.ip_allocator.lock().await.clear();
+    }
 }
 
 struct TunnelTask {
@@ -325,6 +549,7 @@ impl DevboxTunnelManager {
             api_url.trim_end_matches('/').to_string(),
             token.to_string(),
             session_id,
+            None, // Intercept tunnel doesn't need to share client
         );
         *guard = Some(task);
         Ok(())
@@ -346,6 +571,7 @@ impl DevboxTunnelManager {
             api_url.trim_end_matches('/').to_string(),
             token.to_string(),
             session_id,
+            Some(Arc::clone(&self.tunnel_client)), // Share client tunnel for DNS
         );
         *guard = Some(task);
         Ok(())
@@ -389,6 +615,7 @@ fn spawn_tunnel_task(
     api_url: String,
     token: String,
     session_id: Uuid,
+    tunnel_client_slot: Option<Arc<RwLock<Option<Arc<TunnelClient>>>>>,
 ) -> TunnelTask {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = tokio::spawn(run_tunnel_loop(
@@ -397,6 +624,7 @@ fn spawn_tunnel_task(
         token,
         session_id,
         shutdown_rx,
+        tunnel_client_slot,
     ));
 
     TunnelTask {
@@ -412,6 +640,7 @@ async fn run_tunnel_loop(
     token: String,
     session_id: Uuid,
     mut shutdown_rx: oneshot::Receiver<()>,
+    tunnel_client_slot: Option<Arc<RwLock<Option<Arc<TunnelClient>>>>>,
 ) {
     let ws_base = api_url
         .replace("https://", "wss://")
@@ -431,7 +660,7 @@ async fn run_tunnel_loop(
                 tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel shutdown signal received");
                 break;
             }
-            result = connect_and_run_tunnel(&ws_url, &token) => {
+            result = connect_and_run_tunnel(&ws_url, &token, tunnel_client_slot.as_ref()) => {
                 match result {
                     Ok(()) => {
                         tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel closed gracefully");
@@ -455,7 +684,11 @@ async fn run_tunnel_loop(
     }
 }
 
-async fn connect_and_run_tunnel(ws_url: &str, token: &str) -> Result<(), TunnelError> {
+async fn connect_and_run_tunnel(
+    ws_url: &str,
+    token: &str,
+    tunnel_client_slot: Option<&Arc<RwLock<Option<Arc<TunnelClient>>>>>,
+) -> Result<(), TunnelError> {
     let mut request = ws_url
         .into_client_request()
         .map_err(tunnel_transport_error)?;
@@ -474,7 +707,21 @@ async fn connect_and_run_tunnel(ws_url: &str, token: &str) -> Result<(), TunnelE
     tracing::info!("Devbox tunnel connected: {}", ws_url);
 
     let transport = TunnelWebSocketTransport::new(stream);
-    run_tunnel_server(transport).await
+
+    // If this tunnel should expose a client, create it and store it
+    if let Some(slot) = tunnel_client_slot {
+        let client = Arc::new(TunnelClient::connect(transport));
+        *slot.write().await = Some(Arc::clone(&client));
+        tracing::info!("Tunnel client exposed for DNS service bridge");
+
+        // Keep the client alive until we're asked to shut down
+        // The client's internal tasks will handle the actual tunneling
+        tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
+        Ok(())
+    } else {
+        // Regular tunnel server mode (for intercept tunnel)
+        run_tunnel_server(transport).await
+    }
 }
 
 fn tunnel_transport_error<E>(err: E) -> TunnelError

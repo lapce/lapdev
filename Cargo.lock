@@ -3172,6 +3172,7 @@ dependencies = [
  "lapdev-proxy-http",
  "lapdev-proxy-ssh",
  "lapdev-rpc",
+ "lapdev-tunnel",
  "oauth2",
  "pasetors",
  "regex",

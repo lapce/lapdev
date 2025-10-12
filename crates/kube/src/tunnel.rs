@@ -46,7 +46,6 @@ pub struct TunnelRegistry {
     // Active tunnel data channels for streaming HTTP responses
     tunnel_data_channels: Arc<RwLock<HashMap<String, TunnelDataSender>>>, // tunnel_id -> data sender
     tunnel_clusters: Arc<RwLock<HashMap<String, Uuid>>>,                  // tunnel_id -> cluster_id
-    devbox_channels: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<ClientTunnelMessage>>>>, // tunnel_id -> devbox message sender
 }
 
 impl TunnelRegistry {
@@ -57,7 +56,6 @@ impl TunnelRegistry {
             pending_responses: Arc::new(RwLock::new(HashMap::new())),
             tunnel_data_channels: Arc::new(RwLock::new(HashMap::new())),
             tunnel_clusters: Arc::new(RwLock::new(HashMap::new())),
-            devbox_channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -197,24 +195,6 @@ impl TunnelRegistry {
         );
     }
 
-    /// Register a devbox channel for forwarding tunnel messages
-    pub async fn register_devbox_channel(
-        &self,
-        tunnel_id: String,
-        sender: mpsc::UnboundedSender<ClientTunnelMessage>,
-    ) {
-        let mut channels = self.devbox_channels.write().await;
-        channels.insert(tunnel_id.clone(), sender);
-        tracing::debug!("Registered devbox channel for tunnel {}", tunnel_id);
-    }
-
-    /// Remove devbox channel for a tunnel (if present)
-    pub async fn remove_devbox_channel(&self, tunnel_id: &str) {
-        let mut channels = self.devbox_channels.write().await;
-        channels.remove(tunnel_id);
-        tracing::debug!("Removed devbox channel for tunnel {}", tunnel_id);
-    }
-
     /// Send a tunnel message and wait for the response
     pub async fn send_tunnel_message_with_response(
         &self,
@@ -314,8 +294,6 @@ impl TunnelRegistry {
                 tracing::debug!("Received unhandled client tunnel message: {:?}", message);
             }
         }
-
-        self.forward_to_devbox(message).await;
     }
 
     /// Register a data channel for receiving streaming data
@@ -338,44 +316,9 @@ impl TunnelRegistry {
         }
 
         {
-            let mut devbox_channels = self.devbox_channels.write().await;
-            devbox_channels.remove(tunnel_id);
-        }
-
-        {
             let mut clusters = self.tunnel_clusters.write().await;
             clusters.remove(tunnel_id);
         }
         tracing::debug!("Cleaned up tunnel resources for: {}", tunnel_id);
-    }
-
-    async fn forward_to_devbox(&self, message: ClientTunnelMessage) {
-        if let Some(tunnel_id) = Self::tunnel_id_from_message(&message) {
-            let sender = {
-                let channels = self.devbox_channels.read().await;
-                channels.get(&tunnel_id).cloned()
-            };
-
-            if let Some(sender) = sender {
-                if sender.send(message).is_err() {
-                    tracing::debug!(
-                        "Devbox channel for tunnel {} is closed; removing registration",
-                        tunnel_id
-                    );
-                    self.remove_devbox_channel(&tunnel_id).await;
-                }
-            }
-        }
-    }
-
-    fn tunnel_id_from_message(message: &ClientTunnelMessage) -> Option<String> {
-        match message {
-            ClientTunnelMessage::ConnectionOpened { tunnel_id, .. }
-            | ClientTunnelMessage::ConnectionFailed { tunnel_id, .. }
-            | ClientTunnelMessage::ConnectionClosed { tunnel_id, .. }
-            | ClientTunnelMessage::Data { tunnel_id, .. }
-            | ClientTunnelMessage::CloseConnection { tunnel_id, .. } => Some(tunnel_id.clone()),
-            _ => None,
-        }
     }
 }

@@ -48,6 +48,9 @@ flowchart LR
     class APIHttp,DevboxRPC,KubeCtl api
     class KM,Sidecar,DevboxProxy kube
     class Tunnel tunnelNode
+    style Clients fill:transparent,stroke:#94a3b8,stroke-width:1px
+    style API fill:transparent,stroke:#38bdf8,stroke-width:1px
+    style Kubernetes fill:transparent,stroke:#4ade80,stroke-width:1px
 ```
 
 Green edges represent high-throughput data-plane tunnels; dashed gray edges denote tarpc/HRPC control-plane calls.

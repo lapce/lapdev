@@ -32,12 +32,25 @@ flowchart LR
     KM <-->|"TCP + tarpc<br/>DevboxProxyManagerRpc & DevboxProxyRpc"| DevboxProxy
     Sidecar <-->|"WebSocket tunnels<br/>Preview & intercept data"| Tunnel
     DevboxProxy <-->|"WebSocket tunnels<br/>Branch env traffic"| Tunnel
+    linkStyle 0 stroke:#64748b,stroke-width:2px,stroke-dasharray:6 3
+    linkStyle 1 stroke:#64748b,stroke-width:2px,stroke-dasharray:6 3
     linkStyle 2 stroke:#2ca58d,stroke-width:3px
+    linkStyle 3 stroke:#64748b,stroke-width:2px,stroke-dasharray:6 3
+    linkStyle 4 stroke:#64748b,stroke-width:2px,stroke-dasharray:6 3
+    linkStyle 5 stroke:#64748b,stroke-width:2px,stroke-dasharray:6 3
     linkStyle 6 stroke:#2ca58d,stroke-width:3px
     linkStyle 7 stroke:#2ca58d,stroke-width:3px
+    classDef client fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#78350f;
+    classDef api fill:#e0f2fe,stroke:#0ea5e9,stroke-width:2px,color:#0f172a;
+    classDef kube fill:#dcfce7,stroke:#22c55e,stroke-width:2px,color:#14532d;
+    classDef tunnelNode fill:#fef9c3,stroke:#facc15,stroke-width:2px,color:#713f12;
+    class CLI,Dashboard client
+    class APIHttp,DevboxRPC,KubeCtl api
+    class KM,Sidecar,DevboxProxy kube
+    class Tunnel tunnelNode
 ```
 
-Green edges represent high-throughput data-plane tunnels, while the remaining links are tarpc/HRPC control-plane calls.
+Green edges represent high-throughput data-plane tunnels; dashed gray edges denote tarpc/HRPC control-plane calls.
 
 ## Link details
 
@@ -54,7 +67,7 @@ Green edges represent high-throughput data-plane tunnels, while the remaining li
 
 ## Notes
 
-- The conductor, tunnel broker, and kube controller all run inside the Lapdev API process, but they expose distinct RPC surfaces to external agents.
+- The tunnel broker, Devbox RPC server, and kube controller all run inside the Lapdev API process, but they expose distinct RPC surfaces to external agents.
 - All tarpc links use the shared `spawn_twoway` helper to provide simultaneous client and server channels over a single transport.
 - HRPC endpoints are consumed both by the dashboard and by service-to-service calls that need simple HTTP semantics (for example, branch environment orchestration).
 - Sidecar and devbox proxies establish long-lived WebSocket tunnels only after control-plane authorization succeeds via their respective tarpc channels.

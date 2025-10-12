@@ -3477,6 +3477,7 @@ dependencies = [
  "lapdev-common",
  "lapdev-kube-rpc",
  "lapdev-rpc",
+ "lapdev-tunnel",
  "pem",
  "reqwest",
  "serde",

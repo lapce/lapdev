@@ -383,11 +383,6 @@ pub trait KubeManagerRpc {
     ) -> Result<(), String>;
 
     // Preview URL tunnel methods
-    async fn establish_data_plane_tunnel(
-        controller_endpoint: String,
-        auth_token: String,
-    ) -> Result<TunnelEstablishmentResponse, String>;
-
     async fn get_tunnel_status() -> Result<TunnelStatus, String>;
 
     async fn close_tunnel_connection(tunnel_id: String) -> Result<(), String>;

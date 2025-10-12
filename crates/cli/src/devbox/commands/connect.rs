@@ -3,6 +3,7 @@ use colored::Colorize;
 use futures::StreamExt;
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest};
 use lapdev_rpc::spawn_twoway;
+use lapdev_tunnel::WebSocketTransport;
 use lapdev_tunnel::{
     run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
 };
@@ -20,10 +21,7 @@ use uuid::Uuid;
 
 use crate::{
     auth,
-    devbox::{
-        dns::{HostsManager, ServiceBridge, ServiceEndpoint, SyntheticIpAllocator},
-        websocket_transport::WebSocketTransport,
-    },
+    devbox::dns::{HostsManager, ServiceBridge, ServiceEndpoint, SyntheticIpAllocator},
 };
 
 /// Execute the devbox connect command

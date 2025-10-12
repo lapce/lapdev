@@ -4,8 +4,8 @@ use lapdev_common::kube::{
     PaginationParams,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadsWithResources, TunnelEstablishmentResponse,
-    TunnelStatus, WorkloadIdentifier,
+    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadsWithResources, TunnelStatus,
+    WorkloadIdentifier,
 };
 use uuid::Uuid;
 
@@ -375,30 +375,6 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                     e
                 );
                 Err(format!("Failed to create branch deployment: {}", e))
-            }
-        }
-    }
-
-    async fn establish_data_plane_tunnel(
-        self,
-        _context: ::tarpc::context::Context,
-        controller_endpoint: String,
-        auth_token: String,
-    ) -> Result<TunnelEstablishmentResponse, String> {
-        tracing::info!("Establishing data plane tunnel to {}", controller_endpoint);
-
-        match self
-            .manager
-            .establish_tunnel(controller_endpoint, auth_token)
-            .await
-        {
-            Ok(response) => {
-                tracing::info!("Successfully established tunnel: {:?}", response);
-                Ok(response)
-            }
-            Err(e) => {
-                tracing::error!("Failed to establish tunnel: {}", e);
-                Err(format!("Failed to establish tunnel: {}", e))
             }
         }
     }

@@ -29,3 +29,4 @@ tracing-journald = "0.3.0"
 lapdev-rpc.workspace = true
 lapdev-common.workspace = true
 lapdev-kube-rpc.workspace = true
+lapdev-tunnel.workspace = true

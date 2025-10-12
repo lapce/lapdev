@@ -3787,17 +3787,6 @@ impl KubeManager {
             .map_err(|e| anyhow::anyhow!("Failed to serialize service YAML: {}", e))
     }
 
-    // Tunnel management methods (delegated to TunnelManager)
-    pub async fn establish_tunnel(
-        &self,
-        controller_endpoint: String,
-        auth_token: String,
-    ) -> Result<TunnelEstablishmentResponse> {
-        self.tunnel_manager
-            .establish_tunnel(controller_endpoint, auth_token)
-            .await
-    }
-
     pub async fn get_tunnel_status(&self) -> Result<TunnelStatus> {
         self.tunnel_manager.get_tunnel_status().await
     }

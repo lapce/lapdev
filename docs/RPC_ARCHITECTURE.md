@@ -14,13 +14,8 @@ flowchart LR
     subgraph API["Lapdev API (CoreState)"]
         APIHttp["HTTP router & HRPC endpoints"]
         DevboxRPC["Devbox RPC server"]
-        Conductor["Conductor"]
         KubeCtl["Kube controller"]
         Tunnel["Tunnel broker"]
-    end
-
-    subgraph Workspace["Workspace Host"]
-        WS["lapdev-ws"]
     end
 
     subgraph Kubernetes["Kubernetes Agents"]
@@ -32,7 +27,6 @@ flowchart LR
     Dashboard -- "HTTPS (HRPC)<br/>HrpcService" --> APIHttp
     CLI <-->|"WebSocket + tarpc<br/>DevboxSessionRpc & DevboxClientRpc"| DevboxRPC
     CLI <-->|"WebSocket tunnels<br/>tunnel crate"| Tunnel
-    Conductor <-->|"TCP + tarpc<br/>WorkspaceService & ConductorService"| WS
     KubeCtl <-->|"WebSocket + tarpc<br/>KubeClusterRpc & KubeManagerRpc"| KM
     KM <-->|"TCP + tarpc<br/>SidecarProxyManagerRpc & SidecarProxyRpc"| Sidecar
     KM <-->|"TCP + tarpc<br/>DevboxProxyManagerRpc & DevboxProxyRpc"| DevboxProxy
@@ -52,8 +46,6 @@ Green edges represent high-throughput data-plane tunnels, while the remaining li
 | Dashboard → API HTTP router | HTTPS (JSON) | `HrpcService` (lapdev_hrpc) | Dashboard and admin UI call HRPC endpoints for user, org, and Kubernetes environment management |
 | Devbox CLI ↔ Devbox RPC server | WebSocket + tarpc | `DevboxSessionRpc`, `DevboxClientRpc` | CLI maintains a control-plane session for authentication, intercept lifecycle, and device displacement notifications |
 | Devbox CLI ↔ Tunnel broker | WebSocket (tunnel crate) | Multiplexed TCP streams | Streams intercepted workload traffic from the cluster back to developer machines |
-| Conductor ↔ lapdev-ws | TCP + tarpc | `WorkspaceService`, `ConductorService` | Provision, start/stop, and monitor container-based workspaces on each host while sending host metrics back to the conductor |
-| lapdev-ws hosts ↔ lapdev-ws hosts | TCP + tarpc | `InterWorkspaceService` | Peer-to-peer prebuild transfer between workspace hosts when images need to move across machines |
 | Kube controller ↔ lapdev-kube-manager | WebSocket + tarpc | `KubeClusterRpc`, `KubeManagerRpc` | Control plane for Kubernetes workloads: cluster registration, workload discovery, deployments, and tunnel heartbeats |
 | lapdev-kube-manager ↔ kube-sidecar-proxy | TCP + tarpc | `SidecarProxyManagerRpc`, `SidecarProxyRpc` | Configures per-workload sidecar proxies, distributes devbox intercept routes, and collects proxy heartbeats/metrics |
 | lapdev-kube-manager ↔ kube-devbox-proxy | TCP + tarpc | `DevboxProxyManagerRpc`, `DevboxProxyRpc` | Registers environment-scoped devbox proxies and pushes branch-environment routing updates |

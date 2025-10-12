@@ -38,7 +38,10 @@ impl DevboxProxyServer {
                     info!("WebSocket tunnel connection closed, reconnecting...");
                 }
                 Err(e) => {
-                    error!("Failed to connect WebSocket tunnel: {}, retrying in 5s...", e);
+                    error!(
+                        "Failed to connect WebSocket tunnel: {}, retrying in 5s...",
+                        e
+                    );
                 }
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -53,7 +56,9 @@ impl DevboxProxyServer {
         // Build WebSocket URL: ws://api/kube/devbox-proxy/tunnel/{environment_id}
         let ws_url = format!(
             "{}/kube/devbox-proxy/tunnel/{}",
-            api_url.replace("http://", "ws://").replace("https://", "wss://"),
+            api_url
+                .replace("http://", "ws://")
+                .replace("https://", "wss://"),
             environment_id
         );
 
@@ -68,7 +73,10 @@ impl DevboxProxyServer {
 
         // Connect to WebSocket
         let (ws_stream, response) = connect_async(request).await?;
-        info!("WebSocket tunnel connected, status: {:?}", response.status());
+        info!(
+            "WebSocket tunnel connected, status: {:?}",
+            response.status()
+        );
 
         let (_ws_sender, mut ws_receiver) = ws_stream.split();
 

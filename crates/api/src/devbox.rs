@@ -377,28 +377,23 @@ pub async fn devbox_client_tunnel_websocket(
         session.device_name
     );
 
-    // TODO: Get the environment_id from the session and pair this with the devbox-proxy
-    // For now, just keep the connection alive
+    let environment_id = session
+        .active_environment_id
+        .ok_or_else(|| ApiError::InvalidRequest("No active environment selected".to_string()))?;
+
+    tracing::info!(
+        "Devbox client tunnel session {} targeting environment {}",
+        session.id,
+        environment_id
+    );
+
+    let broker = state.tunnel_broker.clone();
+    let session_id = session.id;
+
     Ok(websocket.on_upgrade(move |socket| async move {
-        tracing::info!("Devbox client tunnel established for session {}", session.id);
-
-        let (mut _sender, mut receiver) = socket.split();
-
-        while let Some(msg) = receiver.next().await {
-            match msg {
-                Ok(axum::extract::ws::Message::Close(_)) => {
-                    tracing::info!("Devbox client tunnel closed for session {}", session.id);
-                    break;
-                }
-                Err(e) => {
-                    tracing::error!("Devbox client tunnel error for session {}: {}", session.id, e);
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        tracing::info!("Devbox client tunnel connection closed for session {}", session.id);
+        broker
+            .register_devbox_proxy_client(environment_id, session_id, socket)
+            .await;
     }))
 }
 

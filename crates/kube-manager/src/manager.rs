@@ -32,6 +32,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
 
+use crate::devbox_proxy_manager::DevboxProxyManager;
 use crate::manager_rpc::KubeManagerRpcServer;
 use crate::{
     sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager,
@@ -45,6 +46,7 @@ pub struct KubeManager {
     pub(crate) kube_client: Arc<kube::Client>,
     // rpc_client: KubeClusterRpcClient,
     proxy_manager: Arc<SidecarProxyManager>,
+    pub(crate) devbox_proxy_manager: Arc<DevboxProxyManager>,
     tunnel_manager: TunnelManager,
 }
 
@@ -102,6 +104,7 @@ impl KubeManager {
         })?;
 
         let proxy_manager = Arc::new(SidecarProxyManager::new().await?);
+        let devbox_proxy_manager = Arc::new(DevboxProxyManager::new().await?);
 
         let token = std::env::var(KUBE_CLUSTER_TOKEN_ENV_VAR)
             .map_err(|_| anyhow::anyhow!("can't find env var {}", KUBE_CLUSTER_TOKEN_ENV_VAR))?;
@@ -125,6 +128,7 @@ impl KubeManager {
         let manager = KubeManager {
             kube_client: Arc::new(kube_client),
             proxy_manager,
+            devbox_proxy_manager,
             tunnel_manager: TunnelManager::new(tunnel_request),
         };
 

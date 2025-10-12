@@ -18,12 +18,20 @@ futures-util.workspace = true
 # WebSocket
 tokio-tungstenite.workspace = true
 
+# RPC
+tarpc.workspace = true
+serde.workspace = true
+
 # Error handling
 anyhow.workspace = true
 
 # Logging and tracing
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# Lapdev crates
+lapdev-kube-rpc.workspace = true
+lapdev-rpc.workspace = true
 
 # Utilities
 uuid.workspace = true

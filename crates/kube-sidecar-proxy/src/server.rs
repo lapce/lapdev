@@ -71,9 +71,8 @@ impl SidecarProxyServer {
         })?;
 
         // Parse environment ID - now required
-        let env_id = Uuid::parse_str(&environment_id).map_err(|e| {
-            anyhow!("Failed to parse environment_id as UUID: {}", e)
-        })?;
+        let env_id = Uuid::parse_str(&environment_id)
+            .map_err(|e| anyhow!("Failed to parse environment_id as UUID: {}", e))?;
 
         // Create initial configuration
         let config = ProxyConfig {

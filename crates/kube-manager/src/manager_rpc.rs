@@ -425,4 +425,68 @@ impl KubeManagerRpc for KubeManagerRpcServer {
             .await
             .map_err(|e| format!("Failed to close tunnel connection: {}", e))
     }
+
+    async fn add_branch_environment(
+        self,
+        _context: ::tarpc::context::Context,
+        base_environment_id: Uuid,
+        branch: lapdev_kube_rpc::BranchEnvironmentInfo,
+    ) -> Result<(), String> {
+        tracing::info!(
+            "Adding branch environment {} to devbox-proxy for base environment {}",
+            branch.environment_id,
+            base_environment_id
+        );
+
+        // Get the devbox-proxy RPC client for the base environment
+        let proxy_client = self
+            .manager
+            .devbox_proxy_manager
+            .get_proxy_client(base_environment_id)
+            .await
+            .ok_or_else(|| {
+                format!(
+                    "No devbox-proxy registered for base environment {}",
+                    base_environment_id
+                )
+            })?;
+
+        // Forward the request to the devbox-proxy
+        proxy_client
+            .add_branch_environment(tarpc::context::current(), branch)
+            .await
+            .map_err(|e| format!("RPC call to devbox-proxy failed: {}", e))?
+    }
+
+    async fn remove_branch_environment(
+        self,
+        _context: ::tarpc::context::Context,
+        base_environment_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String> {
+        tracing::info!(
+            "Removing branch environment {} from devbox-proxy for base environment {}",
+            branch_environment_id,
+            base_environment_id
+        );
+
+        // Get the devbox-proxy RPC client for the base environment
+        let proxy_client = self
+            .manager
+            .devbox_proxy_manager
+            .get_proxy_client(base_environment_id)
+            .await
+            .ok_or_else(|| {
+                format!(
+                    "No devbox-proxy registered for base environment {}",
+                    base_environment_id
+                )
+            })?;
+
+        // Forward the request to the devbox-proxy
+        proxy_client
+            .remove_branch_environment(tarpc::context::current(), branch_environment_id)
+            .await
+            .map_err(|e| format!("RPC call to devbox-proxy failed: {}", e))?
+    }
 }

@@ -391,6 +391,17 @@ pub trait KubeManagerRpc {
     async fn get_tunnel_status() -> Result<TunnelStatus, String>;
 
     async fn close_tunnel_connection(tunnel_id: String) -> Result<(), String>;
+
+    // Devbox-proxy management methods
+    async fn add_branch_environment(
+        base_environment_id: Uuid,
+        branch: BranchEnvironmentInfo,
+    ) -> Result<(), String>;
+
+    async fn remove_branch_environment(
+        base_environment_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String>;
 }
 
 #[tarpc::service]
@@ -452,4 +463,39 @@ pub trait SidecarProxyRpc {
 
     /// List all active DevboxTunnel routes
     async fn list_devbox_routes() -> Result<Vec<DevboxRouteConfig>, String>;
+}
+
+/// Information about a branch environment that shares the devbox-proxy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchEnvironmentInfo {
+    pub environment_id: Uuid,
+    pub auth_token: String,
+    pub namespace: String,
+}
+
+#[tarpc::service]
+pub trait DevboxProxyRpc {
+    /// Heartbeat to keep the RPC connection alive
+    async fn heartbeat() -> Result<(), String>;
+
+    /// Add a new branch environment to the devbox-proxy
+    /// Called when a branch environment is created
+    async fn add_branch_environment(branch: BranchEnvironmentInfo) -> Result<(), String>;
+
+    /// Remove a branch environment from the devbox-proxy
+    /// Called when a branch environment is deleted
+    async fn remove_branch_environment(environment_id: Uuid) -> Result<(), String>;
+
+    /// Get list of all configured branch environments
+    async fn list_branch_environments() -> Result<Vec<BranchEnvironmentInfo>, String>;
+}
+
+#[tarpc::service]
+pub trait DevboxProxyManagerRpc {
+    /// Register a devbox-proxy with the manager
+    /// Called when devbox-proxy starts up
+    async fn register_devbox_proxy(environment_id: Uuid) -> Result<(), String>;
+
+    /// Heartbeat from devbox-proxy to manager
+    async fn heartbeat(environment_id: Uuid) -> Result<(), String>;
 }

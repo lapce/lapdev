@@ -397,30 +397,9 @@ pub async fn devbox_proxy_tunnel_websocket(
         environment.id
     );
 
-    // TODO: Store the devbox-proxy WebSocket connection for this environment
-    // This will be used to forward connections from devboxes to in-cluster services
-    // For now, just keep the connection alive
+    let broker = state.tunnel_broker.clone();
+
     Ok(websocket.on_upgrade(move |socket| async move {
-        tracing::info!("Devbox proxy WebSocket connection established for environment {}", environment_id);
-
-        // Keep the connection alive by reading messages
-        use futures::StreamExt;
-        let (mut _sender, mut receiver) = socket.split();
-
-        while let Some(msg) = receiver.next().await {
-            match msg {
-                Ok(axum::extract::ws::Message::Close(_)) => {
-                    tracing::info!("Devbox proxy closed connection for environment {}", environment_id);
-                    break;
-                }
-                Err(e) => {
-                    tracing::error!("Devbox proxy WebSocket error for environment {}: {}", environment_id, e);
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        tracing::info!("Devbox proxy WebSocket connection closed for environment {}", environment_id);
+        broker.register_devbox_proxy(environment_id, socket).await;
     }))
 }

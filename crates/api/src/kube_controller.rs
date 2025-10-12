@@ -714,6 +714,51 @@ impl KubeController {
             // TODO: Implement actual K8s resource cleanup
         }
 
+        // If this is a branch environment, notify the base environment's devbox-proxy before deletion
+        if let Some(base_env_id) = environment.base_environment_id {
+            if let Some(server) = self
+                .get_random_kube_cluster_server(environment.cluster_id)
+                .await
+            {
+                match server
+                    .rpc_client
+                    .remove_branch_environment(
+                        tarpc::context::current(),
+                        base_env_id,
+                        environment_id,
+                    )
+                    .await
+                {
+                    Ok(Ok(())) => {
+                        tracing::info!(
+                            "Successfully notified devbox-proxy about branch environment {} deletion",
+                            environment_id
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!(
+                            "Failed to notify devbox-proxy about branch environment {} deletion: {}",
+                            environment_id,
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "RPC call failed when notifying about branch environment {} deletion: {}",
+                            environment_id,
+                            e
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "No connected KubeManager for cluster {} - branch environment {} deletion not notified to devbox-proxy",
+                    environment.cluster_id,
+                    environment_id
+                );
+            }
+        }
+
         // Delete from database (soft delete)
         self.db
             .delete_kube_environment(environment_id)
@@ -1238,6 +1283,55 @@ impl KubeController {
             )
             .await
             .map_err(ApiError::from)?;
+
+        // Notify kube-manager about the new branch environment via RPC
+        if let Some(server) = self
+            .get_random_kube_cluster_server(base_environment.cluster_id)
+            .await
+        {
+            let branch_info = lapdev_kube_rpc::BranchEnvironmentInfo {
+                environment_id: created_env.id,
+                auth_token: created_env.auth_token.clone(),
+                namespace: created_env.namespace.clone(),
+            };
+
+            match server
+                .rpc_client
+                .add_branch_environment(
+                    tarpc::context::current(),
+                    base_environment_id,
+                    branch_info,
+                )
+                .await
+            {
+                Ok(Ok(())) => {
+                    tracing::info!(
+                        "Successfully notified devbox-proxy about new branch environment {}",
+                        created_env.id
+                    );
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(
+                        "Failed to notify devbox-proxy about new branch environment {}: {}",
+                        created_env.id,
+                        e
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "RPC call failed when notifying about new branch environment {}: {}",
+                        created_env.id,
+                        e
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                "No connected KubeManager for cluster {} - branch environment {} not registered with devbox-proxy",
+                base_environment.cluster_id,
+                created_env.id
+            );
+        }
 
         // Convert the database model to the API type
         Ok(lapdev_common::kube::KubeEnvironment {

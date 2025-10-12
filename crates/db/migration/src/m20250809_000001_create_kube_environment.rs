@@ -51,7 +51,11 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(ColumnDef::new(KubeEnvironment::BaseEnvironmentId).uuid())
-                    .col(ColumnDef::new(KubeEnvironment::AuthToken).string().not_null())
+                    .col(
+                        ColumnDef::new(KubeEnvironment::AuthToken)
+                            .string()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(KubeEnvironment::Table, KubeEnvironment::AppCatalogId)

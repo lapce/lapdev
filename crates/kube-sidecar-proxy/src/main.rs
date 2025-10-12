@@ -58,9 +58,9 @@ async fn main() -> Result<()> {
     info!("Pod name: {:?}", args.pod_name);
 
     // Validate that environment ID and auth token are present
-    let environment_id = args.environment_id.ok_or_else(|| {
-        anyhow::anyhow!("LAPDEV_ENVIRONMENT_ID environment variable is required")
-    })?;
+    let environment_id = args
+        .environment_id
+        .ok_or_else(|| anyhow::anyhow!("LAPDEV_ENVIRONMENT_ID environment variable is required"))?;
     let environment_auth_token = args.environment_auth_token.ok_or_else(|| {
         anyhow::anyhow!("LAPDEV_ENVIRONMENT_AUTH_TOKEN environment variable is required")
     })?;

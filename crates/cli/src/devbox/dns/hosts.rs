@@ -129,7 +129,10 @@ impl HostsManager {
     /// Print manual instructions if we can't modify hosts file
     pub fn print_manual_instructions(&self, endpoints: &[ServiceEndpoint]) {
         eprintln!("\n⚠️  Unable to automatically update hosts file.");
-        eprintln!("Please manually add the following entries to {:?}:\n", self.hosts_path);
+        eprintln!(
+            "Please manually add the following entries to {:?}:\n",
+            self.hosts_path
+        );
         eprintln!("{}", BEGIN_MARKER);
         for endpoint in endpoints {
             let aliases = endpoint.aliases().join(" ");

@@ -85,8 +85,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
         DevboxSessionRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
     // Create RPC server (for server to call us)
-    let client_rpc_server =
-        DevboxClientRpcServer::new(shutdown_tx.clone(), env_change_tx.clone());
+    let client_rpc_server = DevboxClientRpcServer::new(shutdown_tx.clone(), env_change_tx.clone());
 
     // Spawn the RPC server task
     let server_task = tokio::spawn(async move {
@@ -199,11 +198,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
             .setup_dns_for_environment(env.environment_id, &rpc_client)
             .await
         {
-            eprintln!(
-                "{} Failed to set up DNS: {}",
-                "⚠".yellow(),
-                e
-            );
+            eprintln!("{} Failed to set up DNS: {}", "⚠".yellow(), e);
         }
     }
 
@@ -383,8 +378,16 @@ impl DevboxTunnelManager {
     fn check_and_warn_permissions(&self) {
         if !self.hosts_manager.check_permissions() {
             eprintln!();
-            eprintln!("{} {}", "⚠".yellow(), "Insufficient permissions to modify hosts file".yellow().bold());
-            eprintln!("  Service DNS resolution will not work without write access to the hosts file.");
+            eprintln!(
+                "{} {}",
+                "⚠".yellow(),
+                "Insufficient permissions to modify hosts file"
+                    .yellow()
+                    .bold()
+            );
+            eprintln!(
+                "  Service DNS resolution will not work without write access to the hosts file."
+            );
             eprintln!();
             if cfg!(unix) {
                 eprintln!("  To fix this, run the command with sudo:");
@@ -394,7 +397,9 @@ impl DevboxTunnelManager {
                 eprintln!("    Right-click the terminal and select 'Run as Administrator'");
             }
             eprintln!();
-            eprintln!("  Alternatively, you can manually add entries to the hosts file when prompted.");
+            eprintln!(
+                "  Alternatively, you can manually add entries to the hosts file when prompted."
+            );
             eprintln!();
         }
     }
@@ -417,10 +422,7 @@ impl DevboxTunnelManager {
 
         // Check hosts file permissions upfront
         if !self.hosts_manager.check_permissions() {
-            eprintln!(
-                "{} No write permission for hosts file",
-                "⚠".yellow()
-            );
+            eprintln!("{} No write permission for hosts file", "⚠".yellow());
             eprintln!(
                 "  DNS will not work until you grant permissions or manually update the hosts file."
             );
@@ -440,11 +442,7 @@ impl DevboxTunnelManager {
         {
             Ok(services) => services,
             Err(e) => {
-                eprintln!(
-                    "{} Failed to fetch services: {}",
-                    "⚠".yellow(),
-                    e
-                );
+                eprintln!("{} Failed to fetch services: {}", "⚠".yellow(), e);
                 return Ok(());
             }
         };
@@ -461,7 +459,12 @@ impl DevboxTunnelManager {
         for service in &services {
             for port in &service.ports {
                 if let Some(ip) = allocator.allocate(&service.name, &service.namespace, port.port) {
-                    endpoints.push(ServiceEndpoint::new(service, port.port, port.protocol.clone(), ip));
+                    endpoints.push(ServiceEndpoint::new(
+                        service,
+                        port.port,
+                        port.protocol.clone(),
+                        ip,
+                    ));
                 }
             }
         }
@@ -475,11 +478,7 @@ impl DevboxTunnelManager {
                 println!("{} Hosts file updated", "✓".green());
             }
             Err(e) => {
-                eprintln!(
-                    "{} Failed to update hosts file: {}",
-                    "⚠".yellow(),
-                    e
-                );
+                eprintln!("{} Failed to update hosts file: {}", "⚠".yellow(), e);
                 self.hosts_manager.print_manual_instructions(&endpoints);
                 // Still continue to start the service bridge - user might update manually
             }

@@ -1,10 +1,6 @@
 use anyhow::{Context, Result};
 use lapdev_tunnel::TunnelClient;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::RwLock,
@@ -87,7 +83,11 @@ impl ServiceBridge {
     }
 
     /// Spawn a TCP listener for a specific address
-    async fn spawn_listener(&self, addr: SocketAddr, tunnel_client: Arc<TunnelClient>) -> Result<JoinHandle<()>> {
+    async fn spawn_listener(
+        &self,
+        addr: SocketAddr,
+        tunnel_client: Arc<TunnelClient>,
+    ) -> Result<JoinHandle<()>> {
         let listener = TcpListener::bind(addr)
             .await
             .with_context(|| format!("Failed to bind to {}", addr))?;

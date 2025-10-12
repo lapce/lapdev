@@ -448,7 +448,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
             </Show>
 
             // Devbox Session Banner
-            <DevboxSessionBanner active_session environment_id update_counter />
+            <DevboxSessionBanner active_session environment_id />
 
             // Environment Resources (Workloads & Services)
             <Show when=move || environment_info.get().is_some()>
@@ -1055,7 +1055,15 @@ pub fn EnvironmentWorkloadItem(
                 <TableCell>
                     {move || {
                         let intercepts = workload_intercepts.get();
-                        let has_active_session = active_session.get().flatten().is_some();
+                        let (has_active_session, is_active_environment) =
+                            match active_session.get().flatten() {
+                                Some(session) => {
+                                    let is_active_env =
+                                        session.active_environment_id == Some(environment_id);
+                                    (true, is_active_env)
+                                }
+                                None => (false, false),
+                            };
 
                         if intercepts.is_empty() {
                             view! {
@@ -1085,6 +1093,7 @@ pub fn EnvironmentWorkloadItem(
                                             <WorkloadInterceptCard
                                                 intercept=intercept
                                                 has_active_session=has_active_session
+                                                is_active_environment=is_active_environment
                                                 update_counter
                                                 workload_ports=workload_ports.clone()
                                                 workload_id
@@ -1112,6 +1121,7 @@ pub fn EnvironmentWorkloadItem(
 fn WorkloadInterceptCard(
     intercept: DevboxWorkloadInterceptSummary,
     has_active_session: bool,
+    is_active_environment: bool,
     update_counter: RwSignal<usize>,
     workload_ports: Vec<lapdev_common::kube::KubeServicePort>,
     workload_id: Uuid,
@@ -1130,12 +1140,19 @@ fn WorkloadInterceptCard(
             "text-xs",
             "Stopped",
         )
-    } else if has_active_session {
+    } else if has_active_session && is_active_environment {
         (
             "bg-green-50 dark:bg-green-950/20",
             "border-green-200 dark:border-green-900",
             "text-xs bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
             "Active",
+        )
+    } else if has_active_session {
+        (
+            "bg-red-50 dark:bg-red-950/20",
+            "border-red-200 dark:border-red-900",
+            "text-xs bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+            "Inactive Environment",
         )
     } else {
         (
@@ -1706,28 +1723,34 @@ pub fn EditInterceptModal(
 pub fn DevboxSessionBanner(
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     environment_id: Uuid,
-    update_counter: RwSignal<usize>,
 ) -> impl IntoView {
     let is_expanded = RwSignal::new(false);
 
     // Action to set this environment as active
-    let set_active_action = Action::new_local(move |_| async move {
-        let client = HrpcServiceClient::new("/api/rpc".to_string());
-        match client
-            .devbox_session_set_active_environment(environment_id)
-            .await
-        {
-            Ok(Ok(())) => {
-                update_counter.update(|c| *c += 1);
-                Ok(())
+    let active_session_clone = active_session.clone();
+    let set_active_action = Action::new_local(move |_| {
+        let active_session_clone = active_session_clone.clone();
+        async move {
+            let client = HrpcServiceClient::new("/api/rpc".to_string());
+            match client
+                .devbox_session_set_active_environment(environment_id)
+                .await
+            {
+                Ok(Ok(())) => {
+                    active_session_clone.refetch();
+                    Ok(())
+                }
+                Ok(Err(e)) => Err(ErrorResponse {
+                    error: format!("{:?}", e),
+                }),
+                Err(e) => Err(ErrorResponse {
+                    error: e.to_string(),
+                }),
             }
-            Ok(Err(e)) => Err(ErrorResponse { error: e }),
-            Err(e) => Err(ErrorResponse {
-                error: e.to_string(),
-            }),
         }
     });
     let set_active_pending = set_active_action.pending();
+    let set_active_result = set_active_action.value();
 
     view! {
         <Suspense fallback=move || view! { <div></div> }>
@@ -1755,13 +1778,19 @@ pub fn DevboxSessionBanner(
                                                     </Badge>
                                                     {if is_active {
                                                         view! {
-                                                            <Badge variant=BadgeVariant::Secondary class="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                                                            <Badge variant=BadgeVariant::Secondary class="flex items-center gap-1 text-sm bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
                                                                 <lucide_leptos::Check attr:class="h-3 w-3" />
                                                                 "Active Environment"
                                                             </Badge>
                                                         }.into_any()
                                                     } else {
-                                                        ().into_any()
+                                                        view! {
+                                                            <Badge variant=BadgeVariant::Secondary class="flex items-center gap-1 text-sm bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300">
+                                                                <lucide_leptos::Ban attr:class="h-3 w-3" />
+                                                                "Inactive Environment"
+                                                            </Badge>
+                                                        }
+                                                            .into_any()
                                                     }}
                                                 </div>
                                                 <div class="text-sm text-muted-foreground flex items-center gap-1">
@@ -1770,29 +1799,33 @@ pub fn DevboxSessionBanner(
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="flex items-center gap-2">
-                                            {if !is_active {
-                                                view! {
-                                                    <Button
-                                                        variant=ButtonVariant::Outline
-                                                        size=ButtonSize::Sm
-                                                        on:click=move |_| { set_active_action.dispatch(()); }
-                                                        disabled=Signal::derive(move || set_active_pending.get())
-                                                    >
-                                                        <lucide_leptos::Check attr:class="h-4 w-4" />
-                                                        {move || if set_active_pending.get() { "Setting..." } else { "Set as Active" }}
-                                                    </Button>
-                                                }.into_any()
-                                            } else {
-                                                ().into_any()
-                                            }}
-                                            <a href="/devbox/sessions">
-                                                <Button variant=ButtonVariant::Outline size=ButtonSize::Sm>
-                                                    <lucide_leptos::Settings attr:class="h-4 w-4" />
-                                                    "Manage Sessions"
+                                        {if !is_active {
+                                            view! {
+                                                <Button
+                                                    variant=ButtonVariant::Outline
+                                                    size=ButtonSize::Sm
+                                                    on:click=move |_| { set_active_action.dispatch(()); }
+                                                    disabled=Signal::derive(move || set_active_pending.get())
+                                                >
+                                                    <lucide_leptos::Check attr:class="h-4 w-4" />
+                                                    {move || if set_active_pending.get() { "Setting..." } else { "Set as Active" }}
                                                 </Button>
-                                            </a>
-                                        </div>
+                                            }
+                                                .into_any()
+                                        } else {
+                                            ().into_any()
+                                        }}
+                                        <Show when=move || matches!(set_active_result.get(), Some(Err(_)))>
+                                            <P class="text-sm text-destructive mt-2">
+                                                {move || {
+                                                    set_active_result
+                                                        .get()
+                                                        .and_then(|res| res.err())
+                                                        .map(|err| err.error)
+                                                        .unwrap_or_default()
+                                                }}
+                                            </P>
+                                        </Show>
                                     </div>
                                 </div>
                             }

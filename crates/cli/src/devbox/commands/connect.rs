@@ -6,10 +6,9 @@ use lapdev_rpc::spawn_twoway;
 use lapdev_tunnel::{
     run_tunnel_server, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
 };
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::time::Duration;
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
-    net::TcpListener,
     signal,
     sync::{mpsc, oneshot, Mutex},
     task::JoinHandle,
@@ -70,7 +69,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
         tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
     let (server_chan, client_chan, _abort_handle) = spawn_twoway(transport);
 
-    let intercept_manager = Arc::new(InterceptManager::new());
+    let tunnel_manager = DevboxTunnelManager::default();
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<ShutdownSignal>();
 
     // Create RPC client (for calling server methods)
@@ -78,8 +77,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
         DevboxSessionRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
     // Create RPC server (for server to call us)
-    let client_rpc_server =
-        DevboxClientRpcServer::new(intercept_manager.clone(), shutdown_tx.clone());
+    let client_rpc_server = DevboxClientRpcServer::new(shutdown_tx.clone());
 
     // Spawn the RPC server task
     let server_task = tokio::spawn(async move {
@@ -121,10 +119,14 @@ pub async fn execute(api_url: &str) -> Result<()> {
         }
     };
 
-    intercept_manager
-        .ensure_tunnel(api_url, &token, session_info.session_id)
+    tunnel_manager
+        .ensure_intercept(api_url, &token, session_info.session_id)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to start devbox tunnel: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to start intercept tunnel: {}", e))?;
+    tunnel_manager
+        .ensure_client(api_url, &token, session_info.session_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start client tunnel: {}", e))?;
 
     // Attempt to rehydrate active environment and intercepts
     let active_environment = match rpc_client
@@ -166,33 +168,13 @@ pub async fn execute(api_url: &str) -> Result<()> {
                         continue;
                     }
 
-                    let request = StartInterceptRequest {
-                        intercept_id: intercept.intercept_id,
-                        workload_id: intercept.workload_id,
-                        workload_name: intercept.workload_name.clone(),
-                        namespace: intercept.namespace.clone(),
-                        port_mappings: intercept.port_mappings.clone(),
-                    };
-
-                    match intercept_manager.start(request).await {
-                        Ok(port_count) => {
-                            println!(
-                                "  {} Rehydrated intercept for {}/{} ({} port(s))",
-                                "↻".green(),
-                                intercept.namespace.bright_white(),
-                                intercept.workload_name.cyan(),
-                                port_count
-                            );
-                        }
-                        Err(err) => {
-                            eprintln!(
-                                "{} Failed to rehydrate intercept {}: {}",
-                                "✗".red(),
-                                intercept.intercept_id,
-                                err
-                            );
-                        }
-                    }
+                    println!(
+                        "  {} Intercept active for {}/{} ({} port(s))",
+                        "↻".green(),
+                        intercept.namespace.bright_white(),
+                        intercept.workload_name.cyan(),
+                        intercept.port_mappings.len()
+                    );
                 }
             }
             Err(err) => {
@@ -228,8 +210,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
         }
     }
 
-    intercept_manager.stop_all().await;
-    intercept_manager.shutdown_tunnel().await;
+    tunnel_manager.shutdown().await;
 
     if !server_task.is_finished() {
         server_task.abort();
@@ -242,19 +223,12 @@ pub async fn execute(api_url: &str) -> Result<()> {
 /// This handles incoming calls from the server
 #[derive(Clone)]
 struct DevboxClientRpcServer {
-    manager: Arc<InterceptManager>,
     shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
 }
 
 impl DevboxClientRpcServer {
-    fn new(
-        manager: Arc<InterceptManager>,
-        shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
-    ) -> Self {
-        Self {
-            manager,
-            shutdown_tx,
-        }
+    fn new(shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>) -> Self {
+        Self { shutdown_tx }
     }
 }
 
@@ -271,33 +245,7 @@ impl DevboxClientRpc for DevboxClientRpcServer {
             intercept.workload_name
         );
 
-        for mapping in &intercept.port_mappings {
-            println!(
-                "  {} localhost:{} → {}:{}",
-                "↔".dimmed(),
-                mapping.local_port,
-                intercept.workload_name,
-                mapping.workload_port
-            );
-        }
-
-        let mapping_count = intercept.port_mappings.len();
-
-        tracing::info!(
-            "Applying intercept {} with {} port mappings",
-            intercept.intercept_id,
-            mapping_count
-        );
-
-        let manager = self.manager;
-        let port_count = manager.start(intercept).await?;
-
-        println!(
-            "  {} Intercept listeners active on {} port(s)",
-            "✓".green(),
-            port_count
-        );
-
+        tracing::info!("Intercept {} acknowledged by CLI", intercept.intercept_id);
         Ok(())
     }
 
@@ -306,16 +254,14 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         _context: tarpc::context::Context,
         intercept_id: Uuid,
     ) -> Result<(), String> {
-        println!("{} Stopping intercept: {}", "✗".yellow(), intercept_id);
-        let manager = self.manager;
-        manager.stop(intercept_id).await
+        println!("{} Received stop intercept: {}", "✗".yellow(), intercept_id);
+        tracing::info!("Intercept {} stop acknowledged by CLI", intercept_id);
+        Ok(())
     }
 
     async fn session_displaced(self, _context: tarpc::context::Context, new_device_name: String) {
-        let manager = self.manager;
         let shutdown_tx = self.shutdown_tx;
 
-        manager.stop_all().await;
         let _ = shutdown_tx.send(ShutdownSignal::Displaced(new_device_name.clone()));
 
         tracing::warn!("Session displaced by: {}", new_device_name);
@@ -331,118 +277,16 @@ enum ShutdownSignal {
     Displaced(String),
 }
 
-struct InterceptManager {
-    intercepts: Mutex<HashMap<Uuid, InterceptHandle>>,
-    tunnel: DevboxTunnelManager,
-}
-
-impl InterceptManager {
-    fn new() -> Self {
-        Self {
-            intercepts: Mutex::new(HashMap::new()),
-            tunnel: DevboxTunnelManager::default(),
-        }
-    }
-
-    async fn start(&self, intercept: StartInterceptRequest) -> Result<usize, String> {
-        let previous = {
-            let mut intercepts = self.intercepts.lock().await;
-            intercepts.remove(&intercept.intercept_id)
-        };
-
-        if let Some(handle) = previous {
-            handle.shutdown().await;
-        }
-
-        let mut listeners = Vec::new();
-        for mapping in &intercept.port_mappings {
-            match ListenerHandle::new(
-                intercept.intercept_id,
-                &intercept.workload_name,
-                &intercept.namespace,
-                mapping,
-            )
-            .await
-            {
-                Ok(listener) => listeners.push(listener),
-                Err(err) => {
-                    for listener in listeners {
-                        listener.shutdown().await;
-                    }
-                    return Err(err);
-                }
-            }
-        }
-
-        let listener_count = listeners.len();
-
-        let mut intercepts = self.intercepts.lock().await;
-        intercepts.insert(
-            intercept.intercept_id,
-            InterceptHandle {
-                intercept,
-                listeners,
-            },
-        );
-
-        Ok(listener_count)
-    }
-
-    async fn stop(&self, intercept_id: Uuid) -> Result<(), String> {
-        let handle = {
-            let mut intercepts = self.intercepts.lock().await;
-            intercepts.remove(&intercept_id)
-        };
-
-        if let Some(handle) = handle {
-            handle.shutdown().await;
-        }
-
-        Ok(())
-    }
-
-    async fn stop_all(&self) {
-        let handles = {
-            let mut intercepts = self.intercepts.lock().await;
-            intercepts
-                .drain()
-                .map(|(_, handle)| handle)
-                .collect::<Vec<_>>()
-        };
-
-        for handle in handles {
-            handle.shutdown().await;
-        }
-    }
-
-    async fn ensure_tunnel(
-        &self,
-        api_url: &str,
-        token: &str,
-        session_id: Uuid,
-    ) -> Result<(), String> {
-        self.tunnel.ensure_running(api_url, token, session_id).await
-    }
-
-    async fn shutdown_tunnel(&self) {
-        self.tunnel.shutdown().await;
-    }
-}
-
 #[derive(Default)]
 struct DevboxTunnelManager {
-    state: Mutex<Option<TunnelHandles>>,
+    intercept_task: Mutex<Option<TunnelTask>>,
+    client_task: Mutex<Option<TunnelTask>>,
 }
 
 struct TunnelTask {
     kind: TunnelKind,
     shutdown: oneshot::Sender<()>,
     handle: JoinHandle<()>,
-}
-
-struct TunnelHandles {
-    intercept: TunnelTask,
-    client: TunnelTask,
 }
 
 #[derive(Copy, Clone)]
@@ -465,59 +309,77 @@ impl TunnelKind {
 }
 
 impl DevboxTunnelManager {
-    async fn ensure_running(
+    async fn ensure_intercept(
         &self,
         api_url: &str,
         token: &str,
         session_id: Uuid,
     ) -> Result<(), String> {
-        let mut state = self.state.lock().await;
-        if state.is_some() {
+        let mut guard = self.intercept_task.lock().await;
+        if guard.is_some() {
             return Ok(());
         }
 
-        let api_url = api_url.trim_end_matches('/').to_string();
-        let token = token.to_string();
-
-        let intercept_task = spawn_tunnel_task(
+        let task = spawn_tunnel_task(
             TunnelKind::Intercept,
-            api_url.clone(),
-            token.clone(),
+            api_url.trim_end_matches('/').to_string(),
+            token.to_string(),
             session_id,
         );
-        let client_task = spawn_tunnel_task(TunnelKind::Client, api_url, token, session_id);
-
-        *state = Some(TunnelHandles {
-            intercept: intercept_task,
-            client: client_task,
-        });
-
+        *guard = Some(task);
         Ok(())
     }
 
-    async fn shutdown(&self) {
-        let tasks = {
-            let mut state = self.state.lock().await;
-            state.take()
-        };
+    async fn ensure_client(
+        &self,
+        api_url: &str,
+        token: &str,
+        session_id: Uuid,
+    ) -> Result<(), String> {
+        let mut guard = self.client_task.lock().await;
+        if guard.is_some() {
+            return Ok(());
+        }
 
-        if let Some(handles) = tasks {
-            let TunnelHandles { intercept, client } = handles;
-            for task in [intercept, client] {
-                let TunnelTask {
-                    kind,
-                    shutdown,
-                    handle,
-                } = task;
-                let _ = shutdown.send(());
-                if let Err(err) = handle.await {
-                    tracing::warn!(
-                        tunnel_kind = kind.as_str(),
-                        error = %err,
-                        "Devbox tunnel task exited with error"
-                    );
-                }
-            }
+        let task = spawn_tunnel_task(
+            TunnelKind::Client,
+            api_url.trim_end_matches('/').to_string(),
+            token.to_string(),
+            session_id,
+        );
+        *guard = Some(task);
+        Ok(())
+    }
+
+    async fn stop_client(&self) {
+        if let Some(task) = self.client_task.lock().await.take() {
+            Self::stop_task(task, "Devbox client tunnel").await;
+        }
+    }
+
+    async fn shutdown(&self) {
+        if let Some(task) = self.intercept_task.lock().await.take() {
+            Self::stop_task(task, "Devbox intercept tunnel").await;
+        }
+        if let Some(task) = self.client_task.lock().await.take() {
+            Self::stop_task(task, "Devbox client tunnel").await;
+        }
+    }
+
+    async fn stop_task(task: TunnelTask, context: &str) {
+        let TunnelTask {
+            kind,
+            shutdown,
+            handle,
+        } = task;
+        let _ = shutdown.send(());
+        if let Err(err) = handle.await {
+            tracing::warn!(
+                tunnel_kind = kind.as_str(),
+                error = %err,
+                "{} task exited with error",
+                context
+            );
         }
     }
 }
@@ -541,97 +403,6 @@ fn spawn_tunnel_task(
         kind,
         shutdown: shutdown_tx,
         handle,
-    }
-}
-
-struct InterceptHandle {
-    listeners: Vec<ListenerHandle>,
-}
-
-impl InterceptHandle {
-    async fn shutdown(self) {
-        for listener in self.listeners {
-            listener.shutdown().await;
-        }
-    }
-}
-
-struct ListenerHandle {
-    local_port: u16,
-    shutdown: Option<oneshot::Sender<()>>,
-    task: JoinHandle<()>,
-}
-
-impl ListenerHandle {
-    async fn new(
-        intercept_id: Uuid,
-        workload_name: &str,
-        namespace: &str,
-        mapping: &lapdev_devbox_rpc::PortMapping,
-    ) -> Result<Self, String> {
-        let local_port = mapping.local_port;
-        let workload_port = mapping.workload_port;
-
-        let listener = TcpListener::bind(("127.0.0.1", local_port))
-            .await
-            .map_err(|err| format!("Failed to bind local port {}: {}", local_port, err))?;
-
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
-
-        let workload_name = workload_name.to_string();
-        let namespace = namespace.to_string();
-
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => {
-                        tracing::debug!(intercept_id = %intercept_id, port = local_port, "Shutting down intercept listener");
-                        break;
-                    }
-                    accept_result = listener.accept() => {
-                        match accept_result {
-                            Ok((stream, addr)) => {
-                                tracing::info!(
-                                    intercept_id = %intercept_id,
-                                    local_port,
-                                    workload_port,
-                                    client = %addr,
-                                    "Accepted connection for {}/{}",
-                                    namespace,
-                                    workload_name
-                                );
-                                drop(stream);
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    intercept_id = %intercept_id,
-                                    port = local_port,
-                                    error = %err,
-                                    "Intercept listener accept failed"
-                                );
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(Self {
-            local_port,
-            shutdown: Some(shutdown_tx),
-            task,
-        })
-    }
-
-    async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
-        }
-
-        if let Err(err) = self.task.await {
-            tracing::debug!(port = self.local_port, error = %err, "Listener task exited with error");
-        }
     }
 }
 

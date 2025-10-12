@@ -6,9 +6,6 @@ use uuid::Uuid;
 
 mod branch_config;
 mod rpc_server;
-mod server;
-
-use server::DevboxProxyServer;
 
 pub const DEFAULT_KUBE_MANAGER_RPC_HOST: &str = "lapdev-kube-manager";
 pub const DEFAULT_KUBE_MANAGER_RPC_PORT: u16 = 7771;
@@ -90,12 +87,8 @@ async fn main() -> Result<()> {
     let env_id_clone = env_id;
     tokio::spawn(async move {
         loop {
-            match connect_to_kube_manager(
-                &kube_manager_addr,
-                env_id_clone,
-                rpc_server.clone(),
-            )
-            .await
+            match connect_to_kube_manager(&kube_manager_addr, env_id_clone, rpc_server.clone())
+                .await
             {
                 Ok(_) => {
                     info!("RPC connection to kube-manager closed, reconnecting in 5s...");
@@ -140,19 +133,20 @@ async fn connect_to_kube_manager(
 
     info!("Establishing RPC connection to kube-manager at {}", addr);
 
-    let transport = tarpc::serde_transport::tcp::connect(addr, tarpc::tokio_serde::formats::Bincode::default)
-        .await?;
+    let transport =
+        tarpc::serde_transport::tcp::connect(addr, tarpc::tokio_serde::formats::Bincode::default)
+            .await?;
 
     let (server_chan, client_chan, _) = spawn_twoway(transport);
 
     // Create RPC client to call kube-manager
-    let manager_client = DevboxProxyManagerRpcClient::new(
-        tarpc::client::Config::default(),
-        client_chan,
-    )
-    .spawn();
+    let manager_client =
+        DevboxProxyManagerRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
-    info!("Registering devbox-proxy with kube-manager for environment {}", environment_id);
+    info!(
+        "Registering devbox-proxy with kube-manager for environment {}",
+        environment_id
+    );
 
     // Register with kube-manager
     manager_client

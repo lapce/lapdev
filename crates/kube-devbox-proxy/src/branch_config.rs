@@ -67,7 +67,10 @@ impl BranchConfig {
             .ok_or_else(|| format!("Branch environment {} not found", environment_id))?;
 
         if branch_tunnel.tunnel_task.is_some() {
-            return Err(format!("Tunnel for branch {} is already running", environment_id));
+            return Err(format!(
+                "Tunnel for branch {} is already running",
+                environment_id
+            ));
         }
 
         tracing::info!("Starting tunnel for branch environment {}", environment_id);
@@ -76,7 +79,12 @@ impl BranchConfig {
         let api_url = self.api_url.clone();
         let auth_token = branch_tunnel.info.auth_token.clone();
         let tunnel_task = tokio::spawn(async move {
-            crate::rpc_server::DevboxProxyRpcServer::maintain_tunnel(api_url, environment_id, auth_token).await;
+            crate::rpc_server::DevboxProxyRpcServer::maintain_tunnel(
+                api_url,
+                environment_id,
+                auth_token,
+            )
+            .await;
         });
 
         branch_tunnel.tunnel_task = Some(tunnel_task);
@@ -95,7 +103,10 @@ impl BranchConfig {
             task.abort();
             Ok(())
         } else {
-            Err(format!("Tunnel for branch {} is not running", environment_id))
+            Err(format!(
+                "Tunnel for branch {} is not running",
+                environment_id
+            ))
         }
     }
 

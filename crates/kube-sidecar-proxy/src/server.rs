@@ -14,6 +14,9 @@ use kube::Client;
 use lapdev_common::kube::{SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR};
 use lapdev_kube_rpc::{http_parser, SidecarProxyManagerRpcClient, SidecarProxyRpc};
 use lapdev_rpc::spawn_twoway;
+use lapdev_tunnel::{
+    TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
+};
 use std::{collections::HashMap, io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
@@ -24,9 +27,6 @@ use tokio::{
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tracing::{debug, error, info, warn};
-use lapdev_tunnel::{
-    TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
-};
 use uuid::Uuid;
 
 /// Main sidecar proxy server

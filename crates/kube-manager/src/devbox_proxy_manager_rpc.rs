@@ -11,10 +11,7 @@ pub struct DevboxProxyManagerRpcServer {
 }
 
 impl DevboxProxyManagerRpcServer {
-    pub(crate) fn new(
-        manager: DevboxProxyManager,
-        rpc_client: DevboxProxyRpcClient,
-    ) -> Self {
+    pub(crate) fn new(manager: DevboxProxyManager, rpc_client: DevboxProxyRpcClient) -> Self {
         Self {
             manager,
             rpc_client,
@@ -48,7 +45,10 @@ impl DevboxProxyManagerRpc for DevboxProxyManagerRpcServer {
         environment_id: Uuid,
     ) -> Result<(), String> {
         // TODO: Update last_heartbeat timestamp
-        tracing::debug!("Heartbeat from devbox-proxy for environment {}", environment_id);
+        tracing::debug!(
+            "Heartbeat from devbox-proxy for environment {}",
+            environment_id
+        );
         Ok(())
     }
 }

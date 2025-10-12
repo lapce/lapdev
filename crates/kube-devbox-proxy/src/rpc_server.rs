@@ -104,7 +104,8 @@ impl DevboxProxyRpc for DevboxProxyRpcServer {
                 // Start base tunnel for personal environment
                 if self.is_shared {
                     return Err(
-                        "Base tunnel (None) is only supported for personal environments".to_string(),
+                        "Base tunnel (None) is only supported for personal environments"
+                            .to_string(),
                     );
                 }
 
@@ -135,7 +136,8 @@ impl DevboxProxyRpc for DevboxProxyRpcServer {
                 // Start branch tunnel for shared environment
                 if !self.is_shared {
                     return Err(
-                        "Branch tunnel (Some) is only supported for shared environments".to_string(),
+                        "Branch tunnel (Some) is only supported for shared environments"
+                            .to_string(),
                     );
                 }
 
@@ -156,7 +158,8 @@ impl DevboxProxyRpc for DevboxProxyRpcServer {
                 // Stop base tunnel for personal environment
                 if self.is_shared {
                     return Err(
-                        "Base tunnel (None) is only supported for personal environments".to_string(),
+                        "Base tunnel (None) is only supported for personal environments"
+                            .to_string(),
                     );
                 }
 
@@ -177,7 +180,8 @@ impl DevboxProxyRpc for DevboxProxyRpcServer {
                 // Stop branch tunnel for shared environment
                 if !self.is_shared {
                     return Err(
-                        "Branch tunnel (Some) is only supported for shared environments".to_string(),
+                        "Branch tunnel (Some) is only supported for shared environments"
+                            .to_string(),
                     );
                 }
 

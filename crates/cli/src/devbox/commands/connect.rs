@@ -3,6 +3,9 @@ use colored::Colorize;
 use futures::StreamExt;
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient, StartInterceptRequest};
 use lapdev_rpc::spawn_twoway;
+use lapdev_tunnel::{
+    run_tunnel_server, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
+};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
@@ -14,7 +17,6 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
-use lapdev_tunnel::{run_tunnel_server, TunnelError, WebSocketTransport as TunnelWebSocketTransport};
 use uuid::Uuid;
 
 use crate::{auth, devbox::websocket_transport::WebSocketTransport};
@@ -429,12 +431,37 @@ impl InterceptManager {
 
 #[derive(Default)]
 struct DevboxTunnelManager {
-    state: Mutex<Option<TunnelTask>>,
+    state: Mutex<Option<TunnelHandles>>,
 }
 
 struct TunnelTask {
+    kind: TunnelKind,
     shutdown: oneshot::Sender<()>,
     handle: JoinHandle<()>,
+}
+
+struct TunnelHandles {
+    intercept: TunnelTask,
+    client: TunnelTask,
+}
+
+#[derive(Copy, Clone)]
+enum TunnelKind {
+    Intercept,
+    Client,
+}
+
+impl TunnelKind {
+    fn path(self) -> &'static str {
+        match self {
+            TunnelKind::Intercept => "intercept",
+            TunnelKind::Client => "client",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        self.path()
+    }
 }
 
 impl DevboxTunnelManager {
@@ -451,29 +478,69 @@ impl DevboxTunnelManager {
 
         let api_url = api_url.trim_end_matches('/').to_string();
         let token = token.to_string();
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let handle = tokio::spawn(run_tunnel_loop(api_url, token, session_id, shutdown_rx));
-        *state = Some(TunnelTask {
-            shutdown: shutdown_tx,
-            handle,
+        let intercept_task = spawn_tunnel_task(
+            TunnelKind::Intercept,
+            api_url.clone(),
+            token.clone(),
+            session_id,
+        );
+        let client_task = spawn_tunnel_task(TunnelKind::Client, api_url, token, session_id);
+
+        *state = Some(TunnelHandles {
+            intercept: intercept_task,
+            client: client_task,
         });
 
         Ok(())
     }
 
     async fn shutdown(&self) {
-        let task = {
+        let tasks = {
             let mut state = self.state.lock().await;
             state.take()
         };
 
-        if let Some(task) = task {
-            let _ = task.shutdown.send(());
-            if let Err(err) = task.handle.await {
-                tracing::warn!("Devbox tunnel task exited with error: {}", err);
+        if let Some(handles) = tasks {
+            let TunnelHandles { intercept, client } = handles;
+            for task in [intercept, client] {
+                let TunnelTask {
+                    kind,
+                    shutdown,
+                    handle,
+                } = task;
+                let _ = shutdown.send(());
+                if let Err(err) = handle.await {
+                    tracing::warn!(
+                        tunnel_kind = kind.as_str(),
+                        error = %err,
+                        "Devbox tunnel task exited with error"
+                    );
+                }
             }
         }
+    }
+}
+
+fn spawn_tunnel_task(
+    kind: TunnelKind,
+    api_url: String,
+    token: String,
+    session_id: Uuid,
+) -> TunnelTask {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let handle = tokio::spawn(run_tunnel_loop(
+        kind,
+        api_url,
+        token,
+        session_id,
+        shutdown_rx,
+    ));
+
+    TunnelTask {
+        kind,
+        shutdown: shutdown_tx,
+        handle,
     }
 }
 
@@ -569,6 +636,7 @@ impl ListenerHandle {
 }
 
 async fn run_tunnel_loop(
+    kind: TunnelKind,
     api_url: String,
     token: String,
     session_id: Uuid,
@@ -578,8 +646,9 @@ async fn run_tunnel_loop(
         .replace("https://", "wss://")
         .replace("http://", "ws://");
     let ws_url = format!(
-        "{}/api/v1/kube/devbox/tunnel/{}",
+        "{}/api/v1/kube/devbox/tunnel/{}/{}",
         ws_base.trim_end_matches('/'),
+        kind.path(),
         session_id
     );
 
@@ -588,24 +657,24 @@ async fn run_tunnel_loop(
     loop {
         tokio::select! {
             _ = &mut shutdown_rx => {
-                tracing::info!(%session_id, "Devbox tunnel shutdown signal received");
+                tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel shutdown signal received");
                 break;
             }
             result = connect_and_run_tunnel(&ws_url, &token) => {
                 match result {
                     Ok(()) => {
-                        tracing::info!(%session_id, "Devbox tunnel closed gracefully");
+                        tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel closed gracefully");
                         backoff = Duration::from_secs(1);
                     }
                     Err(err) => {
-                        tracing::warn!(%session_id, "Devbox tunnel disconnected: {}", err);
+                        tracing::warn!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel disconnected: {}", err);
                         backoff = (backoff.saturating_mul(2)).min(Duration::from_secs(30));
                     }
                 }
 
                 tokio::select! {
                     _ = &mut shutdown_rx => {
-                        tracing::info!(%session_id, "Devbox tunnel shutdown signal received");
+                        tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel shutdown signal received");
                         break;
                     }
                     _ = sleep(backoff) => {}

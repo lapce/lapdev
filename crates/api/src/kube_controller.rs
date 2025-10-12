@@ -1297,11 +1297,7 @@ impl KubeController {
 
             match server
                 .rpc_client
-                .add_branch_environment(
-                    tarpc::context::current(),
-                    base_environment_id,
-                    branch_info,
-                )
+                .add_branch_environment(tarpc::context::current(), base_environment_id, branch_info)
                 .await
             {
                 Ok(Ok(())) => {

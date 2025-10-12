@@ -42,6 +42,7 @@ impl HrpcService for CoreState {
             .into_iter()
             .map(|session| DevboxSessionSummary {
                 id: session.id,
+                session_id: session.session_id,
                 device_name: session.device_name,
                 token_prefix: session.token_prefix,
                 active_environment_id: session.active_environment_id,
@@ -158,7 +159,7 @@ impl HrpcService for CoreState {
             .await?;
 
         self.db
-            .update_devbox_session_active_environment(ctx.session.id, Some(environment_id))
+            .update_devbox_session_active_environment(ctx.session.session_id, Some(environment_id))
             .await
             .map_err(hrpc_from_anyhow)?;
 
@@ -986,7 +987,7 @@ impl CoreState {
                     .ok_or_else(|| hrpc_error("Active session not found"))?;
 
                 self.db
-                    .update_devbox_session_last_used(session.id)
+                    .update_devbox_session_last_used(session.session_id)
                     .await
                     .map_err(hrpc_from_anyhow)?;
 
@@ -1008,7 +1009,7 @@ impl CoreState {
             .ok_or_else(|| hrpc_error("No active devbox session"))?;
 
         self.db
-            .update_devbox_session_last_used(session.id)
+            .update_devbox_session_last_used(session.session_id)
             .await
             .map_err(hrpc_from_anyhow)?;
 

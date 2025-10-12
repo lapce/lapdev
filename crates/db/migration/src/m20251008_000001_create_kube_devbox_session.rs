@@ -20,6 +20,11 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
+                    .col(
+                        ColumnDef::new(KubeDevboxSession::SessionId)
+                            .uuid()
+                            .not_null(),
+                    )
                     .col(ColumnDef::new(KubeDevboxSession::UserId).uuid().not_null())
                     .col(
                         ColumnDef::new(KubeDevboxSession::SessionTokenHash)
@@ -94,6 +99,18 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Create index for session identifiers
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_devbox_session_session_id_idx")
+                    .table(KubeDevboxSession::Table)
+                    .col(KubeDevboxSession::SessionId)
+                    .unique()
+                    .to_owned(),
+            )
+            .await?;
+
         // Create index for active environment lookups
         manager
             .create_index(
@@ -136,6 +153,7 @@ impl MigrationTrait for Migration {
 pub enum KubeDevboxSession {
     Table,
     Id,
+    SessionId,
     UserId,
     SessionTokenHash,
     TokenPrefix,

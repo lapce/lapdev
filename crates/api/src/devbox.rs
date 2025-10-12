@@ -124,6 +124,7 @@ pub async fn devbox_rpc_websocket(
         .db
         .create_or_update_devbox_session(
             ctx.user.id,
+            ctx.session_id,
             token,
             ctx.device_name.clone(),
             expires_at.into(),
@@ -133,7 +134,7 @@ pub async fn devbox_rpc_websocket(
 
     tracing::info!(
         "Created devbox session {} for user {} on device {}",
-        session.id,
+        session.session_id,
         ctx.user.id,
         ctx.device_name
     );
@@ -141,7 +142,7 @@ pub async fn devbox_rpc_websocket(
     Ok(handle_devbox_rpc_upgrade(
         websocket,
         state,
-        session.id,
+        session.session_id,
         ctx.user.id,
         ctx.organization_id,
         ctx.device_name,
@@ -297,10 +298,10 @@ pub async fn devbox_intercept_tunnel_websocket(
         .map_err(|e| ApiError::InternalError(format!("Failed to load devbox session: {}", e)))?
         .ok_or(ApiError::Unauthenticated)?;
 
-    if session.id != requested_session_id {
+    if session.session_id != requested_session_id {
         tracing::warn!(
             "Devbox session ID mismatch: token session {} vs path {}",
-            session.id,
+            session.session_id,
             requested_session_id
         );
         return Err(ApiError::Unauthenticated);
@@ -308,19 +309,19 @@ pub async fn devbox_intercept_tunnel_websocket(
 
     state
         .db
-        .update_devbox_session_last_used(session.id)
+        .update_devbox_session_last_used(session.session_id)
         .await
         .map_err(|e| ApiError::InternalError(format!("Failed to update session usage: {}", e)))?;
 
     tracing::info!(
         "Devbox tunnel WebSocket authenticated for user {} session {} ({})",
         session.user_id,
-        session.id,
+        session.session_id,
         session.device_name
     );
 
     let broker = state.tunnel_broker.clone();
-    let session_id = session.id;
+    let session_id = session.session_id;
 
     Ok(websocket.on_upgrade(move |socket| async move {
         broker.register_devbox(session_id, socket).await;
@@ -355,10 +356,10 @@ pub async fn devbox_client_tunnel_websocket(
         .map_err(|e| ApiError::InternalError(format!("Failed to load devbox session: {}", e)))?
         .ok_or(ApiError::Unauthenticated)?;
 
-    if session.id != requested_session_id {
+    if session.session_id != requested_session_id {
         tracing::warn!(
             "Devbox session ID mismatch: token session {} vs path {}",
-            session.id,
+            session.session_id,
             requested_session_id
         );
         return Err(ApiError::Unauthenticated);
@@ -366,14 +367,14 @@ pub async fn devbox_client_tunnel_websocket(
 
     state
         .db
-        .update_devbox_session_last_used(session.id)
+        .update_devbox_session_last_used(session.session_id)
         .await
         .map_err(|e| ApiError::InternalError(format!("Failed to update session usage: {}", e)))?;
 
     tracing::info!(
         "Devbox client tunnel WebSocket authenticated for user {} session {} ({})",
         session.user_id,
-        session.id,
+        session.session_id,
         session.device_name
     );
 
@@ -383,12 +384,12 @@ pub async fn devbox_client_tunnel_websocket(
 
     tracing::info!(
         "Devbox client tunnel session {} targeting environment {}",
-        session.id,
+        session.session_id,
         environment_id
     );
 
     let broker = state.tunnel_broker.clone();
-    let session_id = session.id;
+    let session_id = session.session_id;
 
     Ok(websocket.on_upgrade(move |socket| async move {
         broker
@@ -451,7 +452,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             .ok_or_else(|| "Session not found".to_string())?;
 
         Ok(DevboxSessionInfo {
-            session_id: session.id,
+            session_id: session.session_id,
             user_id: self.user_id,
             email: user.email.unwrap_or_default(),
             device_name: session.device_name,

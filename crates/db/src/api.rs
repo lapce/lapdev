@@ -2046,6 +2046,7 @@ impl DbApi {
     pub async fn create_or_update_devbox_session(
         &self,
         user_id: Uuid,
+        session_id: Uuid,
         session_token: &str,
         device_name: String,
         expires_at: DateTimeWithTimeZone,
@@ -2062,16 +2063,40 @@ impl DbApi {
         // Start a transaction to handle the atomic operation
         let txn = self.conn.begin().await?;
 
-        // Fetch existing active session (if any)
-        let existing_session = lapdev_db_entities::kube_devbox_session::Entity::find()
+        let now: DateTimeWithTimeZone = Utc::now().into();
+
+        // If a session already exists with this session_id, update it in place.
+        if let Some(existing) = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionId.eq(session_id))
+            .one(&txn)
+            .await?
+        {
+            if existing.user_id != user_id {
+                return Err(anyhow!(
+                    "session_id is already associated with another user"
+                ));
+            }
+
+            let mut active: lapdev_db_entities::kube_devbox_session::ActiveModel = existing.into();
+            active.session_token_hash = ActiveValue::Set(token_hash.clone());
+            active.token_prefix = ActiveValue::Set(token_prefix.clone());
+            active.device_name = ActiveValue::Set(device_name.clone());
+            active.expires_at = ActiveValue::Set(expires_at);
+            active.last_used_at = ActiveValue::Set(now);
+            active.revoked_at = ActiveValue::Set(None);
+            active.user_id = ActiveValue::Set(user_id);
+            let updated = active.update(&txn).await?;
+            txn.commit().await?;
+            return Ok(updated);
+        }
+
+        // Revoke existing active session (if present)
+        if let Some(existing) = lapdev_db_entities::kube_devbox_session::Entity::find()
             .filter(lapdev_db_entities::kube_devbox_session::Column::UserId.eq(user_id))
             .filter(lapdev_db_entities::kube_devbox_session::Column::RevokedAt.is_null())
             .one(&txn)
-            .await?;
-
-        // Revoke existing active session (if present)
-        let now: DateTimeWithTimeZone = Utc::now().into();
-        if let Some(existing) = &existing_session {
+            .await?
+        {
             lapdev_db_entities::kube_devbox_session::ActiveModel {
                 id: ActiveValue::Set(existing.id),
                 revoked_at: ActiveValue::Set(Some(now)),
@@ -2081,18 +2106,18 @@ impl DbApi {
             .await?;
         }
 
-        // Create new session
-        let new_session_id = Uuid::new_v4();
+        // Create new session row
         let session = lapdev_db_entities::kube_devbox_session::ActiveModel {
-            id: ActiveValue::Set(new_session_id),
+            id: ActiveValue::Set(Uuid::new_v4()),
+            session_id: ActiveValue::Set(session_id),
             user_id: ActiveValue::Set(user_id),
             session_token_hash: ActiveValue::Set(token_hash),
             token_prefix: ActiveValue::Set(token_prefix),
             device_name: ActiveValue::Set(device_name),
             active_environment_id: ActiveValue::Set(None),
-            created_at: ActiveValue::Set(Utc::now().into()),
+            created_at: ActiveValue::Set(now),
             expires_at: ActiveValue::Set(expires_at),
-            last_used_at: ActiveValue::Set(Utc::now().into()),
+            last_used_at: ActiveValue::Set(now),
             revoked_at: ActiveValue::Set(None),
         }
         .insert(&txn)
@@ -2140,26 +2165,38 @@ impl DbApi {
 
     /// Revoke a devbox session
     pub async fn revoke_devbox_session(&self, session_id: Uuid) -> Result<()> {
-        lapdev_db_entities::kube_devbox_session::ActiveModel {
-            id: ActiveValue::Set(session_id),
-            revoked_at: ActiveValue::Set(Some(Utc::now().into())),
-            ..Default::default()
+        if let Some(existing) = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionId.eq(session_id))
+            .one(&self.conn)
+            .await?
+        {
+            lapdev_db_entities::kube_devbox_session::ActiveModel {
+                id: ActiveValue::Set(existing.id),
+                revoked_at: ActiveValue::Set(Some(Utc::now().into())),
+                ..Default::default()
+            }
+            .update(&self.conn)
+            .await?;
         }
-        .update(&self.conn)
-        .await?;
 
         Ok(())
     }
 
     /// Update the last_used_at timestamp for a devbox session
     pub async fn update_devbox_session_last_used(&self, session_id: Uuid) -> Result<()> {
-        lapdev_db_entities::kube_devbox_session::ActiveModel {
-            id: ActiveValue::Set(session_id),
-            last_used_at: ActiveValue::Set(Utc::now().into()),
-            ..Default::default()
+        if let Some(existing) = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionId.eq(session_id))
+            .one(&self.conn)
+            .await?
+        {
+            lapdev_db_entities::kube_devbox_session::ActiveModel {
+                id: ActiveValue::Set(existing.id),
+                last_used_at: ActiveValue::Set(Utc::now().into()),
+                ..Default::default()
+            }
+            .update(&self.conn)
+            .await?;
         }
-        .update(&self.conn)
-        .await?;
 
         Ok(())
     }
@@ -2170,13 +2207,19 @@ impl DbApi {
         session_id: Uuid,
         device_name: String,
     ) -> Result<()> {
-        lapdev_db_entities::kube_devbox_session::ActiveModel {
-            id: ActiveValue::Set(session_id),
-            device_name: ActiveValue::Set(device_name.into()),
-            ..Default::default()
+        if let Some(existing) = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionId.eq(session_id))
+            .one(&self.conn)
+            .await?
+        {
+            lapdev_db_entities::kube_devbox_session::ActiveModel {
+                id: ActiveValue::Set(existing.id),
+                device_name: ActiveValue::Set(device_name.into()),
+                ..Default::default()
+            }
+            .update(&self.conn)
+            .await?;
         }
-        .update(&self.conn)
-        .await?;
 
         Ok(())
     }
@@ -2187,13 +2230,19 @@ impl DbApi {
         session_id: Uuid,
         environment_id: Option<Uuid>,
     ) -> Result<()> {
-        lapdev_db_entities::kube_devbox_session::ActiveModel {
-            id: ActiveValue::Set(session_id),
-            active_environment_id: ActiveValue::Set(environment_id),
-            ..Default::default()
+        if let Some(existing) = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionId.eq(session_id))
+            .one(&self.conn)
+            .await?
+        {
+            lapdev_db_entities::kube_devbox_session::ActiveModel {
+                id: ActiveValue::Set(existing.id),
+                active_environment_id: ActiveValue::Set(environment_id),
+                ..Default::default()
+            }
+            .update(&self.conn)
+            .await?;
         }
-        .update(&self.conn)
-        .await?;
 
         Ok(())
     }
@@ -2203,7 +2252,8 @@ impl DbApi {
         &self,
         session_id: Uuid,
     ) -> Result<Option<lapdev_db_entities::kube_devbox_session::Model>> {
-        let session = lapdev_db_entities::kube_devbox_session::Entity::find_by_id(session_id)
+        let session = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionId.eq(session_id))
             .filter(lapdev_db_entities::kube_devbox_session::Column::RevokedAt.is_null())
             .one(&self.conn)
             .await?;
@@ -2216,7 +2266,8 @@ impl DbApi {
         &self,
         session_id: Uuid,
     ) -> Result<Option<lapdev_db_entities::kube_devbox_session::Model>> {
-        let session = lapdev_db_entities::kube_devbox_session::Entity::find_by_id(session_id)
+        let session = lapdev_db_entities::kube_devbox_session::Entity::find()
+            .filter(lapdev_db_entities::kube_devbox_session::Column::SessionId.eq(session_id))
             .one(&self.conn)
             .await?;
 

@@ -48,6 +48,7 @@ pub async fn generate_cli_token(
     cli_claims.add_additional("organization_id", user.current_organization.to_string())?;
     cli_claims.add_additional("session_type", "cli")?;
     cli_claims.add_additional("device_name", req.device_name.clone())?;
+    cli_claims.add_additional("session_id", req.session_id.to_string())?;
     let cli_token = pasetors::local::encrypt(&state.auth_token_key, &cli_claims, None, None)?;
 
     // Store in pending_cli_auth map (5-min TTL)

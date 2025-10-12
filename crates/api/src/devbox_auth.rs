@@ -12,6 +12,7 @@ use crate::state::CoreState;
 pub struct DevboxContext {
     pub user: user::Model,
     pub organization_id: Uuid,
+    pub session_id: Uuid,
     pub device_name: String,
     pub token_claims: Claims,
 }
@@ -66,6 +67,11 @@ impl CoreState {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .ok_or(ApiError::Unauthenticated)?;
 
+        let session_id: Uuid = claims
+            .get_claim("session_id")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or(ApiError::Unauthenticated)?;
+
         // 3. Load user (same as browser sessions - no session table lookup!)
         let user = user::Entity::find_by_id(user_id)
             .filter(user::Column::DeletedAt.is_null())
@@ -77,6 +83,7 @@ impl CoreState {
         Ok(DevboxContext {
             user,
             organization_id,
+            session_id,
             device_name,
             token_claims: claims.clone(),
         })

@@ -5,6 +5,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevboxSessionSummary {
     pub id: Uuid,
+    pub session_id: Uuid,
     pub device_name: String,
     pub token_prefix: String,
     pub active_environment_id: Option<Uuid>,

@@ -57,7 +57,7 @@ impl ServiceBridge {
         let mut tasks = Vec::new();
         for endpoint in endpoints {
             let addr = SocketAddr::new(endpoint.synthetic_ip, endpoint.port);
-            match self.spawn_listener(addr, Arc::clone(&tunnel_client)).await {
+            match self.spawn_listener(addr, endpoint.clone(), Arc::clone(&tunnel_client)).await {
                 Ok(task) => tasks.push(task),
                 Err(e) => {
                     error!("Failed to start listener on {}: {}", addr, e);
@@ -86,6 +86,7 @@ impl ServiceBridge {
     async fn spawn_listener(
         &self,
         addr: SocketAddr,
+        endpoint: ServiceEndpoint,
         tunnel_client: Arc<TunnelClient>,
     ) -> Result<JoinHandle<()>> {
         let listener = TcpListener::bind(addr)
@@ -94,7 +95,10 @@ impl ServiceBridge {
 
         let endpoints = Arc::clone(&self.endpoints);
 
-        info!("Started listener on {}", addr);
+        info!(
+            "Started listener on {} for {}/{} (port {})",
+            addr, endpoint.namespace, endpoint.service_name, endpoint.port
+        );
 
         let task = tokio::spawn(async move {
             loop {

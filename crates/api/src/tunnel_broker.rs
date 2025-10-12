@@ -230,17 +230,17 @@ impl TunnelBroker {
             match kind {
                 InterceptEndpointKind::Devbox => {
                     if entry.devbox.is_some() {
-                        warn!("Duplicate devbox endpoint for session {}", session_id);
-                        let _ = notify_tx.send(());
-                        return;
+                        warn!("Duplicate devbox endpoint for session {} - cleaning up old connection", session_id);
+                        // Remove the old stale connection and replace with new one
+                        entry.devbox = None;
                     }
                     entry.devbox = Some(PendingEndpoint::new(socket, notify_tx));
                 }
                 InterceptEndpointKind::Sidecar => {
                     if entry.sidecar.is_some() {
-                        warn!("Duplicate sidecar endpoint for session {}", session_id);
-                        let _ = notify_tx.send(());
-                        return;
+                        warn!("Duplicate sidecar endpoint for session {} - cleaning up old connection", session_id);
+                        // Remove the old stale connection and replace with new one
+                        entry.sidecar = None;
                     }
                     entry.sidecar = Some(PendingEndpoint::new(socket, notify_tx));
                 }
@@ -276,7 +276,33 @@ impl TunnelBroker {
             );
         }
 
+        // Wait for notification - either paired successfully or this connection closes
         let _ = notify_rx.await;
+
+        // Cleanup if we were waiting and the connection closed
+        // This handles the case where one endpoint connects but the other never does
+        // and the WebSocket times out or disconnects
+        let mut sessions = self.intercept_sessions.lock().await;
+        if let Some(entry) = sessions.get_mut(&session_id) {
+            match kind {
+                InterceptEndpointKind::Devbox => {
+                    if entry.devbox.is_some() {
+                        info!("Cleaning up waiting devbox endpoint for session {}", session_id);
+                        entry.devbox = None;
+                    }
+                }
+                InterceptEndpointKind::Sidecar => {
+                    if entry.sidecar.is_some() {
+                        info!("Cleaning up waiting sidecar endpoint for session {}", session_id);
+                        entry.sidecar = None;
+                    }
+                }
+            }
+            // Remove the entire entry if both endpoints are now None
+            if entry.devbox.is_none() && entry.sidecar.is_none() {
+                sessions.remove(&session_id);
+            }
+        }
     }
 
     fn spawn_intercept_bridge(

@@ -578,12 +578,23 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 
         // Fire and forget - don't wait for client response
         let client_rpc = self.client_rpc.clone();
+        tracing::info!(
+            "Spawning task to notify CLI about environment change to {} ({})",
+            env_info.cluster_name,
+            env_info.namespace
+        );
         tokio::spawn(async move {
-            if let Err(e) = client_rpc
-                .environment_changed(tarpc::context::current(), Some(env_info))
+            tracing::info!("Calling environment_changed RPC on client...");
+            match client_rpc
+                .environment_changed(tarpc::context::current(), Some(env_info.clone()))
                 .await
             {
-                tracing::warn!("Failed to notify client of environment change: {}", e);
+                Ok(_) => {
+                    tracing::info!("Successfully notified client of environment change to {}", env_info.namespace);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to notify client of environment change: {}", e);
+                }
             }
         });
 

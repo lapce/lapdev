@@ -163,6 +163,66 @@ impl HrpcService for CoreState {
             .await
             .map_err(hrpc_from_anyhow)?;
 
+        // Notify CLI about the environment change
+        let cluster = self
+            .db
+            .get_kube_cluster(environment.cluster_id)
+            .await
+            .map_err(hrpc_from_anyhow)?
+            .ok_or_else(|| hrpc_error("Cluster not found"))?;
+
+        let env_info = lapdev_devbox_rpc::DevboxEnvironmentInfo {
+            environment_id: environment.id,
+            cluster_name: cluster.name.clone(),
+            namespace: environment.namespace.clone(),
+        };
+
+        tracing::info!(
+            "set_active_environment (HRPC) called for session {} with environment {} ({}/{})",
+            ctx.session.session_id,
+            environment_id,
+            cluster.name,
+            environment.namespace
+        );
+
+        // Get the RPC client for the active session
+        let rpc_client = {
+            let sessions = self.active_devbox_sessions.read().await;
+            sessions
+                .get(&ctx.user.id)
+                .map(|handle| handle.rpc_client.clone())
+        };
+
+        if let Some(client) = rpc_client {
+            tracing::info!(
+                "Spawning task to notify CLI about environment change to {} ({})",
+                env_info.cluster_name,
+                env_info.namespace
+            );
+            tokio::spawn(async move {
+                tracing::info!("Calling environment_changed RPC on client...");
+                match client
+                    .environment_changed(context::current(), Some(env_info.clone()))
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!(
+                            "Successfully notified client of environment change to {}",
+                            env_info.namespace
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to notify client of environment change: {}", e);
+                    }
+                }
+            });
+        } else {
+            tracing::warn!(
+                "No active WebSocket connection for user {}, environment change saved but CLI not notified",
+                ctx.user.id
+            );
+        }
+
         Ok(())
     }
 

@@ -28,11 +28,89 @@ use crate::{
 
 /// Execute the devbox connect command
 pub async fn execute(api_url: &str) -> Result<()> {
-    // Load token from keychain
-    let token = auth::get_token(api_url)
-        .context("Failed to load authentication token. Please run 'lapdev login' first.")?;
+    // Load token from keychain, or prompt for login if not found
+    let token = match auth::get_token(api_url) {
+        Ok(token) => token,
+        Err(_) => {
+            // No token found, run login flow
+            println!("{}", "No authentication token found. Starting login...".yellow());
+            println!();
 
-    println!("{}", "🔌 Connecting to Lapdev devbox...".cyan());
+            // Run login
+            super::login::execute(api_url, None).await?;
+
+            // Retrieve the newly stored token
+            auth::get_token(api_url)
+                .context("Failed to load authentication token after login")?
+        }
+    };
+
+    let tunnel_manager = Arc::new(DevboxTunnelManager::new());
+
+    // Check hosts file permissions early and warn user
+    tunnel_manager.check_and_warn_permissions();
+
+    let mut backoff = Duration::from_secs(1);
+    let mut is_first_connection = true;
+
+    loop {
+        match connect_and_run_rpc(
+            api_url,
+            &token,
+            Arc::clone(&tunnel_manager),
+            is_first_connection,
+        )
+        .await
+        {
+            Ok(should_exit) => {
+                if should_exit {
+                    // Clean exit (Ctrl+C or session displaced)
+                    break;
+                }
+                // Otherwise fall through to retry
+                tracing::info!("RPC connection closed, will retry...");
+            }
+            Err(e) => {
+                if is_first_connection {
+                    // On first connection, fail fast for auth errors
+                    return Err(e);
+                }
+                eprintln!("{} Connection error: {}", "⚠".yellow(), e);
+            }
+        }
+
+        is_first_connection = false;
+
+        // Wait before reconnecting
+        println!("{} Reconnecting in {} seconds...", "🔄".cyan(), backoff.as_secs());
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                println!("\n{}", "Received Ctrl+C, disconnecting...".yellow());
+                break;
+            }
+            _ = sleep(backoff) => {
+                backoff = (backoff.saturating_mul(2)).min(Duration::from_secs(30));
+            }
+        }
+    }
+
+    tunnel_manager.cleanup_dns().await;
+    tunnel_manager.shutdown().await;
+
+    Ok(())
+}
+
+async fn connect_and_run_rpc(
+    api_url: &str,
+    token: &str,
+    tunnel_manager: Arc<DevboxTunnelManager>,
+    is_first_connection: bool,
+) -> Result<bool> {
+    if is_first_connection {
+        println!("{}", "🔌 Connecting to Lapdev devbox...".cyan());
+    } else {
+        println!("{}", "🔌 Reconnecting to Lapdev devbox...".cyan());
+    }
 
     // Construct WebSocket URL
     let ws_url = api_url
@@ -75,10 +153,9 @@ pub async fn execute(api_url: &str) -> Result<()> {
         tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
     let (server_chan, client_chan, _abort_handle) = spawn_twoway(transport);
 
-    let tunnel_manager = Arc::new(DevboxTunnelManager::new());
+    // Create channels for this connection
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<ShutdownSignal>();
-    let (env_change_tx, mut env_change_rx) =
-        mpsc::unbounded_channel::<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>();
+    let (env_change_tx, mut env_change_rx) = mpsc::unbounded_channel::<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>();
 
     // Create RPC client (for calling server methods)
     let rpc_client =
@@ -128,16 +205,13 @@ pub async fn execute(api_url: &str) -> Result<()> {
     };
 
     tunnel_manager
-        .ensure_intercept(api_url, &token, session_info.session_id)
+        .ensure_intercept(api_url, token, session_info.session_id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start intercept tunnel: {}", e))?;
     tunnel_manager
-        .ensure_client(api_url, &token, session_info.session_id)
+        .ensure_client(api_url, token, session_info.session_id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start client tunnel: {}", e))?;
-
-    // Check hosts file permissions early and warn user
-    tunnel_manager.check_and_warn_permissions();
 
     // Attempt to rehydrate active environment and intercepts
     let active_environment = match rpc_client
@@ -202,54 +276,78 @@ pub async fn execute(api_url: &str) -> Result<()> {
         }
     }
 
-    println!("{}", "\n👂 Listening for intercept requests...".cyan());
-    println!("{}", "Press Ctrl+C to disconnect".dimmed());
+    if is_first_connection {
+        println!("{}", "\n✓ Connected and ready".green());
+        println!("{}", "  Press Ctrl+C to disconnect".dimmed());
+    } else {
+        println!("{}", "✓ Reconnected successfully".green());
+    }
 
     let mut server_task = server_task;
+    let mut should_exit = false;
 
-    tokio::select! {
-        res = &mut server_task => {
-            res.context("Devbox RPC server task failed")?;
-        }
-        _ = signal::ctrl_c() => {
-            println!("\n{}", "Received Ctrl+C, disconnecting...".yellow());
-        }
-        maybe_signal = shutdown_rx.recv() => {
-            if let Some(signal) = maybe_signal {
-                match signal {
-                    ShutdownSignal::Displaced(device) => {
-                        println!(
-                            "\n{} Session displaced by new login from: {}",
-                            "⚠".yellow(),
-                            device.bright_white()
-                        );
+    loop {
+        tokio::select! {
+            res = &mut server_task => {
+                match res {
+                    Ok(()) => {
+                        tracing::info!("RPC server task completed normally");
+                    }
+                    Err(e) => {
+                        tracing::warn!("RPC server task failed: {}", e);
                     }
                 }
+                // Connection closed, retry
+                break;
             }
-        }
-        Some(env) = env_change_rx.recv() => {
-            match env {
-                Some(env_info) => {
-                    if let Err(e) = tunnel_manager.setup_dns_for_environment(env_info.environment_id, &rpc_client).await {
-                        eprintln!("{} Failed to refresh DNS: {}", "⚠".yellow(), e);
+            _ = signal::ctrl_c() => {
+                println!("\n{}", "Received Ctrl+C, disconnecting...".yellow());
+                should_exit = true;
+                break;
+            }
+            maybe_signal = shutdown_rx.recv() => {
+                if let Some(signal) = maybe_signal {
+                    match signal {
+                        ShutdownSignal::Displaced(device) => {
+                            println!(
+                                "\n{} Session displaced by new login from: {}",
+                                "⚠".yellow(),
+                                device.bright_white()
+                            );
+                            should_exit = true;
+                        }
                     }
                 }
-                None => {
-                    println!("{} Clearing DNS entries...", "🔧".cyan());
-                    tunnel_manager.cleanup_dns().await;
+                break;
+            }
+            Some(env) = env_change_rx.recv() => {
+                tracing::info!("Event loop received environment change notification");
+                match env {
+                    Some(env_info) => {
+                        tracing::info!("Setting up DNS for environment {}", env_info.environment_id);
+                        if let Err(e) = tunnel_manager.setup_dns_for_environment(env_info.environment_id, &rpc_client).await {
+                            eprintln!("{} Failed to refresh DNS: {}", "⚠".yellow(), e);
+                        } else {
+                            tracing::info!("DNS setup completed successfully");
+                        }
+                    }
+                    None => {
+                        tracing::info!("Clearing DNS entries");
+                        println!("{} Clearing DNS entries...", "🔧".cyan());
+                        tunnel_manager.cleanup_dns().await;
+                    }
                 }
+                // Continue the loop instead of exiting
             }
         }
     }
-
-    tunnel_manager.cleanup_dns().await;
-    tunnel_manager.shutdown().await;
 
     if !server_task.is_finished() {
         server_task.abort();
     }
 
-    Ok(())
+    // Return true if we should exit completely, false to retry connection
+    Ok(should_exit)
 }
 
 /// RPC server implementation for the CLI
@@ -312,6 +410,7 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         _context: tarpc::context::Context,
         environment: Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>,
     ) {
+        tracing::info!("environment_changed RPC handler called");
         let env_change_tx = self.env_change_tx;
 
         if let Some(ref env) = environment {
@@ -331,7 +430,14 @@ impl DevboxClientRpc for DevboxClientRpcServer {
             tracing::info!("Active environment cleared");
         }
 
-        let _ = env_change_tx.send(environment);
+        match env_change_tx.send(environment.clone()) {
+            Ok(_) => {
+                tracing::info!("Successfully sent environment change to main loop");
+            }
+            Err(e) => {
+                tracing::error!("Failed to send environment change to main loop: {:?}", e);
+            }
+        }
     }
 
     async fn ping(self, _context: tarpc::context::Context) -> Result<(), String> {
@@ -485,7 +591,6 @@ impl DevboxTunnelManager {
         }
 
         // Start service bridge
-        self.service_bridge.stop().await; // Stop old listeners first
         self.service_bridge.set_tunnel_client(tunnel_client).await;
         if let Err(e) = self.service_bridge.start(endpoints).await {
             eprintln!("{} Failed to start service bridge: {}", "⚠".yellow(), e);

@@ -62,10 +62,20 @@ async fn main() -> anyhow::Result<()> {
         tracing::Level::INFO
     };
 
-    tracing_subscriber::fmt()
-        .with_max_level(log_level)
-        .with_target(false)
-        .without_time()
+    use tracing_subscriber::{fmt, EnvFilter, prelude::*};
+
+    // Filter out tarpc internal tracing
+    let filter = EnvFilter::from_default_env()
+        .add_directive(log_level.into())
+        .add_directive("tarpc=warn".parse().unwrap()); // Only show tarpc warnings/errors
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .without_time()
+        )
         .init();
 
     // Handle commands

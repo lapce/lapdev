@@ -23,7 +23,7 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
-    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, TunnelEstablishmentResponse, TunnelStatus,
+    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, TunnelStatus,
 };
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;

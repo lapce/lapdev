@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use tokio::{
     io::{self, AsyncRead, AsyncWrite},
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, Mutex, Notify},
     task::JoinHandle,
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -95,6 +95,7 @@ pub struct TunnelClient {
     inner: Arc<Inner>,
     writer_task: JoinHandle<()>,
     reader_task: JoinHandle<()>,
+    close_notify: Arc<Notify>,
 }
 
 impl fmt::Debug for TunnelClient {
@@ -114,9 +115,11 @@ impl TunnelClient {
 
         let (send_tx, mut send_rx) = mpsc::unbounded_channel::<WireMessage>();
         let inner = Arc::new(Inner::new(send_tx));
+        let close_notify = Arc::new(Notify::new());
 
         let writer_task = tokio::spawn({
             let inner = Arc::clone(&inner);
+            let notify = Arc::clone(&close_notify);
             async move {
                 while let Some(message) = send_rx.recv().await {
                     match serde_json::to_vec(&message) {
@@ -136,10 +139,13 @@ impl TunnelClient {
                 if let Err(err) = writer.flush().await {
                     debug!("Failed to flush tunnel writer: {}", err);
                 }
+
+                notify.notify_waiters();
             }
         });
 
         let reader_inner = inner.clone();
+        let reader_notify = Arc::clone(&close_notify);
         let reader_task = tokio::spawn(async move {
             while let Some(result) = reader.next().await {
                 match result {
@@ -155,13 +161,28 @@ impl TunnelClient {
             }
 
             reader_inner.fail_all("connection closed").await;
+            reader_notify.notify_waiters();
         });
 
         Self {
             inner,
             writer_task,
             reader_task,
+            close_notify,
         }
+    }
+
+    /// Returns true if the underlying transport tasks have terminated.
+    pub fn is_closed(&self) -> bool {
+        self.writer_task.is_finished() || self.reader_task.is_finished()
+    }
+
+    /// Wait until the underlying transport has closed.
+    pub async fn closed(&self) {
+        if self.is_closed() {
+            return;
+        }
+        self.close_notify.notified().await;
     }
 
     /// Open a TCP tunnel to the specified host and port.
@@ -241,6 +262,7 @@ impl Drop for TunnelClient {
         });
         self.writer_task.abort();
         self.reader_task.abort();
+        self.close_notify.notify_waiters();
     }
 }
 

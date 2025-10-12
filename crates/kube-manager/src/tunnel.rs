@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use lapdev_common::kube::KUBE_CLUSTER_TOKEN_HEADER;
-use lapdev_kube_rpc::{TunnelEstablishmentResponse, TunnelStatus};
+use lapdev_kube_rpc::TunnelStatus;
 use lapdev_tunnel::{run_tunnel_server, WebSocketTransport as TunnelWebSocketTransport};
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 /// Tunnel client for managing data plane WebSocket connection
 #[derive(Debug)]
 pub struct TunnelClient {

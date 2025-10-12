@@ -29,3 +29,4 @@ tokio.workspace = true
 futures.workspace = true
 axum.workspace = true
 tokio-tungstenite.workspace = true
+lapdev-tunnel.workspace = true

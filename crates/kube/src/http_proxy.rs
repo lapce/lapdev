@@ -6,7 +6,7 @@ use axum::{
 };
 use std::{io, sync::Arc};
 use tokio::{
-    io::AsyncWriteExt,
+    io::{copy_bidirectional, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 use tracing::{debug, error, info, warn};
@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::{
     preview_url::{PreviewUrlError, PreviewUrlResolver, PreviewUrlTarget},
-    tunnel::{TunnelRegistry, TunnelResponse},
+    tunnel::TunnelRegistry,
 };
 use lapdev_db::api::DbApi;
 use lapdev_kube_rpc::http_parser;
@@ -207,23 +207,6 @@ impl PreviewUrlProxy {
         self.send_http_response(stream, response).await
     }
 
-    /// Helper method to clean up tunnel connection
-    async fn cleanup_tunnel_connection(&self, cluster_id: Uuid, tunnel_id: &str) {
-        // Send close message
-        let close_msg = lapdev_kube_rpc::ServerTunnelMessage::CloseConnection {
-            tunnel_id: tunnel_id.to_string(),
-            reason: lapdev_kube_rpc::CloseReason::ClientRequest,
-        };
-
-        let _ = self
-            .tunnel_registry
-            .send_tunnel_message(cluster_id, close_msg)
-            .await;
-
-        // Clean up registry resources
-        self.tunnel_registry.cleanup_tunnel(tunnel_id).await;
-    }
-
     /// Resolve preview URL target from subdomain
     async fn resolve_preview_url_target(
         &self,
@@ -269,20 +252,32 @@ impl PreviewUrlProxy {
     /// Start direct TCP proxying between client and target service
     async fn start_tcp_proxy(
         &self,
-        client_stream: TcpStream,
+        mut client_stream: TcpStream,
         target: PreviewUrlTarget,
         initial_request_data: Vec<u8>,
     ) -> Result<(), ProxyError> {
-        use lapdev_kube_rpc::ServerTunnelMessage;
-        use std::time::Duration;
-
         info!(
             "Starting TCP proxy to {}:{} in cluster {}",
             target.service_name, target.service_port, target.cluster_id
         );
 
-        // Generate unique tunnel ID for this TCP connection
-        let tunnel_id = format!("tcp_{}", uuid::Uuid::new_v4());
+        let tunnel_client = self
+            .tunnel_registry
+            .get_client(target.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ProxyError::TunnelNotAvailable(format!(
+                    "No active tunnel connection for cluster {}",
+                    target.cluster_id
+                ))
+            })?;
+
+        if tunnel_client.is_closed() {
+            return Err(ProxyError::TunnelNotAvailable(format!(
+                "Tunnel connection for cluster {} is closed",
+                target.cluster_id
+            )));
+        }
 
         // Build the target host for the service inside the cluster
         let target_host = format!(
@@ -292,175 +287,39 @@ impl PreviewUrlProxy {
 
         debug!("Target: {}:{}", target_host, target.service_port);
 
-        // Create data channel to receive data from the tunnel
-        self.tunnel_registry
-            .associate_tunnel_with_cluster(tunnel_id.clone(), target.cluster_id)
-            .await;
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        self.tunnel_registry
-            .register_data_channel(tunnel_id.clone(), data_tx)
-            .await;
-
-        // 1. Send OpenConnection message and wait for response
-        let open_msg = ServerTunnelMessage::OpenConnection {
-            tunnel_id: tunnel_id.clone(),
-            target_host: target_host.clone(),
-            target_port: target.service_port,
-            protocol_hint: Some("tcp".to_string()),
-        };
-
-        let connection_response = self
-            .tunnel_registry
-            .send_tunnel_message_with_response(target.cluster_id, open_msg, Duration::from_secs(10))
+        let mut tunnel_stream = tunnel_client
+            .connect_tcp(target_host.clone(), target.service_port)
             .await
             .map_err(|e| {
-                ProxyError::TunnelNotAvailable(format!("Failed to open connection: {}", e))
+                ProxyError::TunnelNotAvailable(format!("Failed to open tunnel connection: {}", e))
             })?;
 
-        // Handle connection response
-        match connection_response {
-            TunnelResponse::ConnectionOpened { .. } => {
-                info!(
-                    "TCP tunnel connection opened successfully for tunnel: {}",
-                    tunnel_id
-                );
-            }
-            TunnelResponse::ConnectionFailed { error, .. } => {
-                self.tunnel_registry.cleanup_tunnel(&tunnel_id).await;
-                return Err(ProxyError::TunnelNotAvailable(format!(
-                    "Connection failed: {}",
-                    error
-                )));
-            }
-            _ => {
-                self.tunnel_registry.cleanup_tunnel(&tunnel_id).await;
-                return Err(ProxyError::Internal("Unexpected response type".to_string()));
-            }
-        }
-
-        // 2. Send the initial request data through the tunnel (with environment ID in tracestate)
         if !initial_request_data.is_empty() {
-            let data_msg = ServerTunnelMessage::Data {
-                tunnel_id: tunnel_id.clone(),
-                payload: initial_request_data,
-                sequence_num: Some(1),
-            };
-
-            self.tunnel_registry
-                .send_tunnel_message(target.cluster_id, data_msg)
+            tunnel_stream
+                .write_all(&initial_request_data)
                 .await
                 .map_err(|e| {
-                    ProxyError::TunnelNotAvailable(format!("Failed to send initial data: {}", e))
+                    ProxyError::NetworkError(format!(
+                        "Failed to send initial request through tunnel: {}",
+                        e
+                    ))
                 })?;
-
-            debug!("Sent initial request data with environment ID in tracestate through tunnel");
         }
 
-        // 3. Start bidirectional TCP proxying
-        let proxy_result = self
-            .run_bidirectional_proxy(client_stream, target.cluster_id, tunnel_id.clone(), data_rx)
-            .await;
+        let (bytes_tx, bytes_rx) = copy_bidirectional(&mut client_stream, &mut tunnel_stream)
+            .await
+            .map_err(|e| ProxyError::NetworkError(format!("Tunnel proxying failed: {}", e)))?;
 
-        // Clean up tunnel connection
-        self.cleanup_tunnel_connection(target.cluster_id, &tunnel_id)
-            .await;
+        info!(
+            "Tunnel proxied {} bytes upstream and {} bytes downstream (cluster={})",
+            bytes_tx, bytes_rx, target.cluster_id
+        );
 
-        proxy_result
-    }
+        if let Err(err) = AsyncWriteExt::shutdown(&mut tunnel_stream).await {
+            debug!("Failed to shutdown tunnel stream cleanly: {}", err);
+        }
 
-    /// Run bidirectional TCP proxy between client stream and tunnel
-    async fn run_bidirectional_proxy(
-        &self,
-        client_stream: TcpStream,
-        cluster_id: Uuid,
-        tunnel_id: String,
-        mut tunnel_data_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
-    ) -> Result<(), ProxyError> {
-        use lapdev_kube_rpc::ServerTunnelMessage;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let (client_read, client_write) = client_stream.into_split();
-        let mut client_read = client_read;
-        let mut client_write = client_write;
-
-        let tunnel_registry = Arc::clone(&self.tunnel_registry);
-        let tunnel_id_clone = tunnel_id.clone();
-
-        // Task 1: Read from client and send to tunnel
-        let client_to_tunnel = {
-            let tunnel_registry = tunnel_registry.clone();
-            let tunnel_id = tunnel_id_clone.clone();
-            tokio::spawn(async move {
-                let mut buffer = vec![0u8; 8192];
-                let mut sequence_num = 2u32; // Starting from 2 since initial request was 1
-
-                loop {
-                    match client_read.read(&mut buffer).await {
-                        Ok(0) => {
-                            debug!("Client connection closed (read EOF)");
-                            break;
-                        }
-                        Ok(n) => {
-                            let data = buffer[..n].to_vec();
-
-                            let data_msg = ServerTunnelMessage::Data {
-                                tunnel_id: tunnel_id.clone(),
-                                payload: data,
-                                sequence_num: Some(sequence_num),
-                            };
-
-                            if let Err(e) = tunnel_registry
-                                .send_tunnel_message(cluster_id, data_msg)
-                                .await
-                            {
-                                error!("Failed to send client data to tunnel: {}", e);
-                                break;
-                            }
-
-                            sequence_num = sequence_num.wrapping_add(1);
-                        }
-                        Err(e) => {
-                            debug!("Client read error: {}", e);
-                            break;
-                        }
-                    }
-                }
-
-                debug!("Client-to-tunnel task completed");
-            })
-        };
-
-        // Task 2: Read from tunnel and send to client
-        let tunnel_to_client = tokio::spawn(async move {
-            while let Some(data) = tunnel_data_rx.recv().await {
-                if let Err(e) = client_write.write_all(&data).await {
-                    debug!("Client write error: {}", e);
-                    break;
-                }
-
-                if let Err(e) = client_write.flush().await {
-                    debug!("Client flush error: {}", e);
-                    break;
-                }
-            }
-
-            debug!("Tunnel-to-client task completed");
-        });
-
-        // Wait for either task to complete (indicating connection closure)
-        let result = tokio::select! {
-            _ = client_to_tunnel => {
-                debug!("Client-to-tunnel task finished first");
-                Ok(())
-            }
-            _ = tunnel_to_client => {
-                debug!("Tunnel-to-client task finished first");
-                Ok(())
-            }
-        };
-
-        info!("TCP proxy session completed for tunnel: {}", tunnel_id);
-        result
+        Ok(())
     }
 
     /// Add environment ID to the tracestate header in HTTP request using parsed header info
@@ -468,7 +327,7 @@ impl PreviewUrlProxy {
         &self,
         request_data: &[u8],
         headers_len: usize,
-        environment_id: uuid::Uuid,
+        environment_id: Uuid,
     ) -> Result<Vec<u8>, ProxyError> {
         // Split headers and body based on headers_len from httparse
         let headers_part = &request_data[..headers_len];

@@ -12,9 +12,19 @@ use futures::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::io::{CopyToBytes, SinkWriter, StreamReader};
 
+/// Adapter that exposes an Axum `WebSocket` as an `AsyncRead`/`AsyncWrite` transport.
 pub struct WebSocketTransport {
-    writer: SinkWriter<CopyToBytes<SplitSink<WebSocketStream, Bytes>>>,
-    reader: StreamReader<SplitStream<WebSocketStream>, Bytes>,
+    writer: SinkWriter<CopyToBytes<SplitSink<SocketStream, Bytes>>>,
+    reader: StreamReader<SplitStream<SocketStream>, Bytes>,
+}
+
+impl WebSocketTransport {
+    pub fn new(socket: WebSocket) -> Self {
+        let (sink, stream) = SocketStream(socket).split();
+        let reader = StreamReader::new(stream);
+        let writer = SinkWriter::new(CopyToBytes::new(sink));
+        Self { reader, writer }
+    }
 }
 
 impl AsyncRead for WebSocketTransport {
@@ -52,27 +62,33 @@ impl AsyncWrite for WebSocketTransport {
     }
 }
 
-pub struct WebSocketStream(pub WebSocket);
+struct SocketStream(WebSocket);
 
-impl Stream for WebSocketStream {
+impl Stream for SocketStream {
     type Item = Result<Bytes, std::io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             match futures_util::ready!(self.0.poll_next_unpin(cx)) {
-                Some(Ok(msg)) => {
-                    if let Message::Binary(msg) = msg {
-                        return Poll::Ready(Some(Ok(msg)));
-                    }
+                Some(Ok(Message::Binary(data))) => {
+                    return Poll::Ready(Some(Ok(data)));
                 }
-                Some(Err(err)) => return Poll::Ready(Some(Err(std::io::Error::other(err)))),
-                None => return Poll::Ready(None),
+                Some(Ok(Message::Close(_))) => {
+                    return Poll::Ready(None);
+                }
+                Some(Ok(_)) => continue, // Ignore non-binary frames.
+                Some(Err(err)) => {
+                    return Poll::Ready(Some(Err(std::io::Error::other(err))));
+                }
+                None => {
+                    return Poll::Ready(None);
+                }
             }
         }
     }
 }
 
-impl Sink<Bytes> for WebSocketStream {
+impl Sink<Bytes> for SocketStream {
     type Error = std::io::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -97,14 +113,5 @@ impl Sink<Bytes> for WebSocketStream {
         Pin::new(&mut self.0)
             .poll_close(cx)
             .map_err(std::io::Error::other)
-    }
-}
-
-impl WebSocketTransport {
-    pub fn new(socket: WebSocket) -> Self {
-        let (sink, stream) = WebSocketStream(socket).split();
-        let reader = StreamReader::new(stream);
-        let writer = SinkWriter::new(CopyToBytes::new(sink));
-        Self { reader, writer }
     }
 }

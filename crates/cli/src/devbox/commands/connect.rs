@@ -14,7 +14,7 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
-use tunnel::{run_tunnel_server, TunnelError, WebSocketTransport as TunnelWebSocketTransport};
+use lapdev_tunnel::{run_tunnel_server, TunnelError, WebSocketTransport as TunnelWebSocketTransport};
 use uuid::Uuid;
 
 use crate::{auth, devbox::websocket_transport::WebSocketTransport};

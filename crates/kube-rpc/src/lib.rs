@@ -478,16 +478,31 @@ pub trait DevboxProxyRpc {
     /// Heartbeat to keep the RPC connection alive
     async fn heartbeat() -> Result<(), String>;
 
-    /// Add a new branch environment to the devbox-proxy
+    /// Add a new branch environment to the devbox-proxy (shared environments only)
     /// Called when a branch environment is created
     async fn add_branch_environment(branch: BranchEnvironmentInfo) -> Result<(), String>;
 
-    /// Remove a branch environment from the devbox-proxy
+    /// Remove a branch environment from the devbox-proxy (shared environments only)
     /// Called when a branch environment is deleted
     async fn remove_branch_environment(environment_id: Uuid) -> Result<(), String>;
 
-    /// Get list of all configured branch environments
+    /// Get list of all configured branch environments (shared environments only)
     async fn list_branch_environments() -> Result<Vec<BranchEnvironmentInfo>, String>;
+
+    /// Start a tunnel
+    /// - Personal environment: pass None to start the base tunnel
+    /// - Shared environment: pass Some(branch_environment_id) to start a branch tunnel
+    async fn start_tunnel(environment_id: Option<Uuid>) -> Result<(), String>;
+
+    /// Stop a tunnel
+    /// - Personal environment: pass None to stop the base tunnel
+    /// - Shared environment: pass Some(branch_environment_id) to stop a branch tunnel
+    async fn stop_tunnel(environment_id: Option<Uuid>) -> Result<(), String>;
+
+    /// Get tunnel status
+    /// - Personal environment: pass None to check base tunnel status
+    /// - Shared environment: pass Some(branch_environment_id) to check branch tunnel status
+    async fn get_tunnel_status(environment_id: Option<Uuid>) -> Result<bool, String>;
 }
 
 #[tarpc::service]

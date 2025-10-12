@@ -24,7 +24,7 @@ use tokio::{
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tracing::{debug, error, info, warn};
-use tunnel::{
+use lapdev_tunnel::{
     TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
 };
 use uuid::Uuid;

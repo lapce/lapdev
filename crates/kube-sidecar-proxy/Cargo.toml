@@ -53,7 +53,7 @@ lapdev-common.workspace = true
 lapdev-hrpc.workspace = true
 lapdev-kube-rpc.workspace = true
 lapdev-rpc.workspace = true
-tunnel.workspace = true
+lapdev-tunnel.workspace = true
 
 # Utilities
 uuid.workspace = true
@@ -61,6 +61,7 @@ chrono.workspace = true
 bytes.workspace = true
 url = "2.5"
 httparse = "1.8"
+http = "1.0"
 
 # System level networking for iptables redirection
 libc = "0.2"

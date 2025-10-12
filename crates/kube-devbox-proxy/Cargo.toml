@@ -32,6 +32,7 @@ tracing-subscriber.workspace = true
 # Lapdev crates
 lapdev-kube-rpc.workspace = true
 lapdev-rpc.workspace = true
+lapdev-tunnel.workspace = true
 
 # Utilities
 uuid.workspace = true

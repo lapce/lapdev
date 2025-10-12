@@ -69,46 +69,61 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow!("Failed to parse environment_id as UUID: {}", e))?;
 
     let api_url = args.api_url.clone();
-    let server = DevboxProxyServer::new(api_url.clone(), env_id, environment_auth_token).await?;
 
     info!("Devbox proxy server initialized successfully");
 
-    // For shared environments, also connect to kube-manager RPC
-    if args.is_shared {
-        info!("Shared environment detected, connecting to kube-manager RPC");
-        let kube_manager_addr = format!("{}:{}", args.kube_manager_host, args.kube_manager_port);
-        info!("Connecting to kube-manager at {}", kube_manager_addr);
+    // Connect to kube-manager RPC (for both shared and personal environments)
+    info!("Connecting to kube-manager RPC");
+    let kube_manager_addr = format!("{}:{}", args.kube_manager_host, args.kube_manager_port);
+    info!("Connecting to kube-manager at {}", kube_manager_addr);
 
-        let branch_config = branch_config::BranchConfig::new(api_url);
-        let rpc_server = rpc_server::DevboxProxyRpcServer::new(branch_config);
+    let branch_config = branch_config::BranchConfig::new(api_url.clone());
+    let rpc_server = rpc_server::DevboxProxyRpcServer::new(
+        branch_config,
+        args.is_shared,
+        api_url.clone(),
+        env_id,
+        environment_auth_token.clone(),
+    );
 
-        // Spawn RPC connection in background
-        let env_id_clone = env_id;
-        tokio::spawn(async move {
-            loop {
-                match connect_to_kube_manager(
-                    &kube_manager_addr,
-                    env_id_clone,
-                    rpc_server.clone(),
-                )
-                .await
-                {
-                    Ok(_) => {
-                        info!("RPC connection to kube-manager closed, reconnecting in 5s...");
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to connect to kube-manager: {}, retrying in 5s...",
-                            e
-                        );
-                    }
+    // Spawn RPC connection in background
+    let env_id_clone = env_id;
+    tokio::spawn(async move {
+        loop {
+            match connect_to_kube_manager(
+                &kube_manager_addr,
+                env_id_clone,
+                rpc_server.clone(),
+            )
+            .await
+            {
+                Ok(_) => {
+                    info!("RPC connection to kube-manager closed, reconnecting in 5s...");
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to connect to kube-manager: {}, retrying in 5s...",
+                        e
+                    );
+                }
             }
-        });
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+    });
+
+    // For shared environments, no base tunnel is needed
+    // Shared environments only manage branch environment tunnels
+    // For personal environments, wait for RPC commands to start/stop tunnel on-demand
+    if args.is_shared {
+        info!("Shared environment - no base tunnel needed, only managing branch environments");
+    } else {
+        info!("Personal environment - waiting for RPC commands to start/stop tunnel");
     }
 
-    server.run().await?;
+    // Keep the process alive
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+    }
 
     Ok(())
 }

@@ -21,39 +21,10 @@
               "index",
               "quickstart"
             ]
-          },
-          {
-            "group": "Customization",
-            "pages": [
-              "settings",
-              "users",
-              "features"
-            ]
-          },
-          {
-            "group": "Billing",
-            "pages": [
-              "billing/overview",
-              "billing/payments",
-              "billing/subscriptions"
-            ]
           }
-        ]
-      },
-      {
-        "dropdown": "Changelog",
-        "icon": "history",
-        "description": "Updates and changes",
-        "pages": [
-          "changelog"
         ]
       }
     ]
-  },
-  "logo": {
-    "light": "/logo-light.svg",
-    "dark": "/logo-dark.svg",
-    "href": "https://example.com"
   },
   "navbar": {
     "links": [

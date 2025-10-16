@@ -18,8 +18,7 @@
           {
             "group": "Getting started",
             "pages": [
-              "index",
-              "quickstart"
+              "docs/index"
             ]
           }
         ]

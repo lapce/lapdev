@@ -13,7 +13,8 @@
       {
         "group": "Getting started",
         "pages": [
-          "index"
+          "index",
+          "test"
         ]
       }
     ]

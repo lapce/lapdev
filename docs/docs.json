@@ -9,18 +9,11 @@
     "dark": "#0F172A"
   },
   "navigation": {
-    "dropdowns": [
+    "groups": [
       {
-        "dropdown": "Documentation",
-        "icon": "book",
-        "description": "How to use the Example Co. product",
-        "groups": [
-          {
-            "group": "Getting started",
-            "pages": [
-              "index"
-            ]
-          }
+        "group": "Getting started",
+        "pages": [
+          "index"
         ]
       }
     ]

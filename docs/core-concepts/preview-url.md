@@ -1,8 +1,8 @@
 # Preview URL
 
-A **Preview URL** is a unique, automatically generated HTTPS endpoint that lets you access your Lapdev environment directly from the web — without any manual DNS or Ingress configuration.
+A **Preview URL** is a unique, automatically generated HTTPS endpoint that lets you access services in your Lapdev environment directly from the web — without any manual DNS or Ingress configuration.
 
-Every Lapdev environment, whether **personal**, **shared**, or **branch**, gets its own Preview URL.\
+You can create Preview URLs for any environment type (**personal**, **shared**, or **branch**), exposing specific services for access and sharing.\
 This makes it easy to preview changes, share work with teammates, and test production-like behavior in real time.
 
 ### Why Preview URLs
@@ -20,33 +20,16 @@ Lapdev solves this with **automatic Preview URLs** — secure, per-environment e
 
 ### How It Works
 
-When you create an environment, Lapdev:
+When you create a Preview URL for a service in your environment, Lapdev:
 
-1. Detects your app’s exposed **Services** (e.g. `frontend`, `api`, `gateway`).
-2.  Automatically provisions a **unique domain** for that environment, such as:
+1. Detects the service you want to expose (e.g. `frontend`, `api`, `gateway`)
+2. Automatically generates a unique HTTPS domain for that service
+3. Configures TLS certificates automatically — no `cert-manager`, DNS setup, or manual YAML needed
+4. Routes traffic through Lapdev's managed proxy layer directly to your service inside the cluster
 
-    ```
-    alice-checkout-feature.app.lap.dev
-    ```
-3. Configures HTTPS certificates automatically — no `cert-manager`, DNS setup, or manual YAML needed.
-4. Routes traffic through Lapdev’s managed proxy layer directly to your workloads inside the target cluster.
+All routing and TLS termination are handled by Lapdev's control plane, so your cluster stays secure and simple.
 
-All routing and TLS termination are handled by Lapdev’s control plane, so your cluster stays secure and simple.
-
-### Domain and Structure
-
-Preview URLs follow a consistent, human-readable pattern:
-
-```
-<user-or-branch>-<app-name>.app.lap.dev
-```
-
-Examples:
-
-* `mia-checkout-feature.app.lap.dev` → personal or branch environment
-* `staging-checkout.app.lap.dev` → shared environment
-
-This makes it easy to tell what you’re looking at — and safe to share with your team.
+Each Preview URL is unique and automatically managed by Lapdev, making it safe to share with your team.
 
 ### Access Control
 
@@ -74,8 +57,13 @@ Access settings are managed per environment in the Lapdev dashboard.
 | **Environment** | A running instance of the app in Kubernetes.                                |
 | **Preview URL** | Provides web access to that environment — with automatic routing and HTTPS. |
 
-### Example Flow
+### Usage Pattern
 
-1. You create a **personal environment** from your App Catalog.
-2. Lapdev deploys the workloads and assigns a Preview URL automatically.
-3. You share that URL with a teammate — no ingress, no firewall changes, just click and open.
+Preview URLs make collaboration effortless:
+
+* Create an environment and expose the services you want to share
+* Lapdev generates secure HTTPS URLs automatically
+* Share URLs with teammates, QA, or stakeholders instantly
+* No infrastructure changes, ingress configuration, or firewall rules needed
+
+> For step-by-step instructions, see [**Use Preview URLs**](../how-to-guides/use-preview-urls.md).

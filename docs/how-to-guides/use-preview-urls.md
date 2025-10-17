@@ -5,6 +5,8 @@ Lapdev lets you create **Preview URLs** for your environments so you can securel
 Each Preview URL points to a specific **service** inside your environment (for example, your `frontend`, `api-gateway`, or `admin` service).\
 You can create multiple Preview URLs per environment, each targeting a different service.
 
+> **New to Preview URLs?** Read [**Preview URL**](../core-concepts/preview-url.md) to understand what they are and why they're useful.
+
 ### Prerequisites
 
 Before you begin:
@@ -31,12 +33,8 @@ Before you begin:
 
 Lapdev will:
 
-*   Assign a unique domain like
-
-    ```
-    mia-frontend-feature.app.lap.dev
-    ```
-* Automatically handle routing, DNS, and HTTPS for that URL
+* Automatically generate a unique HTTPS domain for the selected service
+* Handle routing, DNS, and TLS certificates for that URL
 * Route traffic directly to the selected service inside your environment
 
 ### View and Open Preview URLs
@@ -100,6 +98,6 @@ Deleting a Preview URL does **not** affect the environment or its workloads — 
 
 ### Next Steps
 
-* Learn how Preview URLs work internally
-* Use Devbox for real-time debugging connected to your environment
-* Explore App Catalogs to define which workloads appear in your environments
+* Learn more about [Preview URLs](../core-concepts/preview-url.md) and how they work internally
+* Use [Devbox](local-development-with-devbox.md) for real-time debugging connected to your environment
+* Explore [App Catalogs](create-an-app-catalog.md) to define which workloads appear in your environments

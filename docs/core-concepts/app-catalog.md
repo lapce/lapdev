@@ -23,7 +23,8 @@ The App Catalog solves this by:
 4. The catalog is stored in Lapdev and can be reused to create environments on any connected cluster.
 
 > 💡 The **source cluster** is typically your staging or production cluster.\
-> You can also use a dedicated cluster that mirrors production manifests.
+> You can also use a dedicated cluster that mirrors production manifests.\
+> Learn more about cluster roles in [**Cluster**](cluster.md).
 
 ### Relationship Between App Catalogs and Environments
 

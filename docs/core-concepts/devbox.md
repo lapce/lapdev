@@ -48,3 +48,7 @@ When you start Devbox inside a Lapdev environment:
 * When debugging complex issues that depend on real cluster state.
 * When integrating or testing locally while keeping the rest of the system in-cluster.
 
+### Next Steps
+
+Ready to use Devbox? See [**Local Development with Devbox**](../how-to-guides/local-development-with-devbox.md) for setup instructions.
+

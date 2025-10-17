@@ -2,18 +2,20 @@
 
 A **Lapdev Environment** is a running instance of your app inside a Kubernetes cluster.
 
-It’s created from an existing **App Catalog**, which defines which workloads make up your application.
+It's created from an existing **App Catalog**, which defines which workloads make up your application.
 
 This guide walks you through how to create personal, shared, and branch environments from an App Catalog.
+
+> **New to Environments?** Read [**Environment**](../core-concepts/environment.md) to understand environment types and how they work.
 
 ### Prerequisites
 
 Before creating an environment:
 
 * You must have at least one **connected Kubernetes cluster** (Active in the Lapdev dashboard).
-*   You must have an existing **App Catalog** that defines your app’s workloads.
+*   You must have an existing **App Catalog** that defines your app's workloads.
 
-    > If you haven’t created one yet, follow Create an App Catalog.
+    > If you haven't created one yet, see [**Create an App Catalog**](create-an-app-catalog.md).
 
 ### Start from an App Catalog
 
@@ -63,6 +65,6 @@ You can monitor status, logs, and sync state directly from the dashboard.
 
 Your environment is ready! You can now:
 
-* Use Devbox CLI to connect locally for live debugging.
-* Sync environment configuration with production updates.
-* Manage or delete environments when you’re done.
+* Use [Devbox](local-development-with-devbox.md) to connect locally for live debugging
+* Create [Preview URLs](use-preview-urls.md) to share your work
+* Learn more about [Environments](../core-concepts/environment.md)

@@ -10,9 +10,11 @@ This guide walks you through creating an App Catalog from your connected cluster
 
 Before creating an App Catalog, make sure:
 
-* You’ve connected at least one **Kubernetes cluster** to Lapdev.
-* The cluster you’ll read workloads from shows as **Active** in the Lapdev dashboard.
+* You've connected at least one **Kubernetes cluster** to Lapdev.
+* The cluster you'll read workloads from shows as **Active** in the Lapdev dashboard.
 * The cluster contains the workloads you want to include (e.g. your production or staging workloads).
+
+> Don't have a cluster connected yet? See [**Connect Your Kubernetes Cluster**](connect-your-kubernetes-cluster.md).
 
 > 💡 The same cluster can be used later for both reading workloads **and** deploying environments.
 
@@ -66,7 +68,7 @@ _Example screenshot:_
 
 Once your App Catalog is ready, you can:
 
-* Create a Lapdev Environment from it
-* Edit or sync it when workloads change
-* Manage environment templates for multiple apps
+* Create a [Lapdev Environment](create-lapdev-environment.md) from it
+* Learn about [Environment types](../core-concepts/environment.md)
+* Understand [Cluster roles](../core-concepts/cluster.md) for multi-cluster setups
 

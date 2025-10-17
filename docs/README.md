@@ -57,3 +57,12 @@ Share your work with teammates, PMs, or QA instantly - they can test your change
 ### Easy Installation in Your Cluster
 
 Lapdev requires just one deployment `lapdev-kube-manager` installed in your cluster. That's it.
+
+## Getting Started
+
+1. [Connect Your Kubernetes Cluster](how-to-guides/connect-your-kubernetes-cluster.md)
+2. [Create an App Catalog](how-to-guides/create-an-app-catalog.md)
+3. [Create Your First Environment](how-to-guides/create-lapdev-environment.md)
+4. [Start Local Development with Devbox](how-to-guides/local-development-with-devbox.md)
+
+Learn more about [Core Concepts](core-concepts/architecture/README.md).

@@ -2,6 +2,8 @@
 
 This guide walks you through connecting your Kubernetes cluster to **Lapdev**, so Lapdev can manage development environments inside your cluster.
 
+> **New to Clusters?** Read [**Cluster**](../core-concepts/cluster.md) to understand cluster roles, permissions, and how kube-manager works.
+
 ### Create a Cluster in the Lapdev Dashboard
 
 1. Go to the Lapdev dashboard: [https://app.lap.dev](https://app.lap.dev)
@@ -20,27 +22,21 @@ kubectl create namespace lapdev
 kubectl apply -f https://get.lap.dev/lapdev-kube-manager.yaml
 ```
 
-> 💡 The `lapdev-kube-manager` is a lightweight controller that securely connects your Kubernetes cluster to Lapdev.\
-> It runs inside the `lapdev` namespace and handles synchronisation, environment creation, and traffic routing. You can read more about how it works in our [Architecture doc](../core-concepts/architecture/).
+This deploys the `lapdev-kube-manager` controller that securely connects your cluster to Lapdev.
 
 ### Configure Cluster Permissions
 
-After the cluster is created, you’ll see **permission settings** in the cluster details page.
+After the cluster is connected, configure which environment types can be deployed to this cluster:
 
-These control [**what kinds of environments**](../core-concepts/environment.md) can be deployed to this cluster:
+1. Go to the cluster details page in the dashboard
+2. Find the **Permissions** section
+3. Toggle permissions based on your needs:
+   * **Personal Environments** - Allow developers to create isolated environments
+   * **Shared Environments** - Allow team-wide baseline and branch environments
 
-* **Personal Environments:**\
-  Allow individual developers to create isolated environments directly in this cluster. Each developer’s workloads, ConfigMaps, and Secrets will be namespaced separately for full isolation.
-* **Shared Environments:**\
-  Allow shared or branch environments that multiple developers can use together — ideal for cost-efficient setups.
+You can change these settings at any time.
 
-You can toggle these permissions **on or off** at any time, depending on how you want the cluster to be used.
-
-For example:
-
-* Enable both for a staging or dev cluster.
-* Enable only shared environments for a pre-prod cluster used by the whole team.
-* Enable only personal environments for testing or private development.
+> Learn more about cluster permissions and use cases in [**Cluster**](../core-concepts/cluster.md).
 
 ### Verify Connection
 
@@ -64,5 +60,6 @@ Your cluster is now connected to Lapdev! 🎉
 
 You can start:
 
-* Creating [environments](../core-concepts/environment.md)
-* Using [Devbox CLI](local-development-with-devbox.md) for local development (link to CLI doc)
+* Creating an [App Catalog](create-an-app-catalog.md) from your cluster's workloads
+* Creating [Environments](create-lapdev-environment.md) from your App Catalog
+* Learn more about [Cluster concepts](../core-concepts/cluster.md) and architecture

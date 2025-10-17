@@ -2,19 +2,16 @@
 
 This guide shows how to set up and use **Devbox** for local development with your Lapdev environments.
 
-#### Prerequisites
+> **New to Devbox?** Read [**Devbox**](../core-concepts/devbox.md) to understand what it does and when to use it.
 
-* Lapdev CLI installed.
-* An active Lapdev environment (personal or branch).
-* `kubectl` access to the connected cluster.
+### Prerequisites
 
-#### Install Devbox
+Before using Devbox, you need:
 
-```bash
-curl -sSL https://get.lap.dev/install-devbox.sh | bash
-```
+* **Lapdev CLI installed** - Devbox is built into the `lapdev` command
+* **An active Lapdev environment** - Personal, shared, or branch environment
 
-#### Connect to Lapdev
+### Connect to Lapdev
 
 First, connect your Devbox CLI to Lapdev:
 
@@ -24,7 +21,7 @@ lapdev devbox connect
 
 This establishes a secure connection between your local machine and Lapdev.
 
-#### Set Active Environment
+### Set Active Environment
 
 After connecting, set which environment you want to work with in the Lapdev dashboard:
 
@@ -36,7 +33,7 @@ Once set, all traffic interception and service access will route through this ac
 
 _Placeholder screenshot:_
 
-#### Intercept a Service
+### Intercept a Service
 
 Once connected, you can intercept traffic for a specific service through the Lapdev dashboard:
 
@@ -54,11 +51,11 @@ After enabling interception:
 
 _Placeholder screenshot:_
 
-#### Access In-Cluster Services
+### Access In-Cluster Services
 
 While connected via Devbox, you can access any service in your environment using their cluster DNS names (e.g., `postgres-service:5432`, `redis-service:6379`) directly from your local code. Devbox handles the tunneling automatically — no port forwarding or VPN needed.
 
-#### Next Steps
+### Next Steps
 
 * Learn more about [Devbox architecture](../core-concepts/devbox.md)
 * Understand [traffic routing](../core-concepts/architecture/traffic-routing-architecture.md)

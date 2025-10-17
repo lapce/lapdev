@@ -55,7 +55,7 @@ When you create a branch, you specify which service(s) you're modifying:
 
 #### Traffic Routing Overview
 
-When someone accesses your branch preview URL, Lapdev routes traffic intelligently:
+When someone accesses your branch [preview URL](../preview-url.md), Lapdev routes traffic intelligently:
 
 * Requests to services you've modified → route to your branch version
 * Requests to all other services → route to the shared environment
@@ -66,7 +66,7 @@ When someone accesses your branch preview URL, Lapdev routes traffic intelligent
 
 **1. Header Injection**
 
-When a request enters through a preview URL, Lapdev automatically injects an OpenTelemetry `tracestate` header that identifies which branch the request belongs to.
+When a request enters through a [preview URL](../preview-url.md), Lapdev automatically injects an OpenTelemetry `tracestate` header that identifies which branch the request belongs to.
 
 **2. Header Propagation (Your Responsibility)**
 
@@ -105,7 +105,7 @@ The Lapdev Sidecar Proxy (automatically injected by Lapdev into each pod in mana
 5. Routes to the shared environment if no override exists
 6. The header continues to propagate to the next service
 
-> **Note:** The sidecar proxy is automatically added when Lapdev creates your environment. No manual configuration needed.
+> **Note:** The sidecar proxy is automatically added when Lapdev creates your environment. No manual configuration needed. For more details, see [Traffic Routing Architecture](traffic-routing-architecture.md).
 
 ### Key Benefits
 
@@ -167,3 +167,18 @@ This is **expected behavior**. Branch environments share databases and other sta
 * Use branch-specific database prefixes or namespaces
 * Test with read-only database operations
 * Use separate test databases per branch (requires manual configuration)
+
+### Learn More
+
+**Related Architecture Documentation:**
+* [Traffic Routing Architecture](traffic-routing-architecture.md) - Detailed explanation of how routing works across all environment types
+* [Architecture Overview](README.md) - Overall system design and component interactions
+
+**Core Concepts:**
+* [Environment](../environment.md) - Understanding Personal, Shared, and Branch environments
+* [Preview URL](../preview-url.md) - HTTPS access to your services
+* [App Catalog](../app-catalog.md) - Blueprint for your application
+
+**How-To Guides:**
+* [Create Lapdev Environment](../../how-to-guides/create-lapdev-environment.md) - How to create branch environments
+* [Use Preview URLs](../../how-to-guides/use-preview-urls.md) - Access and share your branch environment

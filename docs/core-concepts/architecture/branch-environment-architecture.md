@@ -1,6 +1,6 @@
 # Branch Environment Architecture
 
-Branch environments are a cost-effective way to run development environments in Kubernetes. Instead of duplicating all services for each developer, branch environments build on a shared environment and only run the services you're actively modifying.
+Branch environments are a cost-effective way to run development environments in Kubernetes. Instead of duplicating all services for each developer, branch environments build on a [shared environment](../environment.md) and only run the services you're actively modifying.
 
 ### Architecture Diagram
 

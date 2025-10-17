@@ -44,15 +44,21 @@ After creating an App Catalog, you can modify it anytime:
 
 Lapdev automatically tracks these updates and keeps associated environments consistent with the latest configuration.
 
-### Example Workflow
+### Typical Usage Pattern
 
-1. **Connect clusters** to Lapdev (source and target).
-2. **Create an App Catalog** from your source cluster’s workloads.
-3. **Use the App Catalog** to create environments (personal, shared, or branch).
-4. **Sync updates** when production manifests change.
+App Catalogs fit into your workflow like this:
 
-\
-&#xNAN;_&#x45;xample: Selecting workloads and naming an App Catalog._
+```
+Source Cluster (Production/Staging)
+        ↓
+   App Catalog (Blueprint)
+        ↓
+Multiple Environments (Personal/Shared/Branch)
+```
+
+Once created, catalogs can be synced when production manifests change, keeping all environments up to date.
+
+> For step-by-step instructions, see [**Create an App Catalog**](../how-to-guides/create-an-app-catalog.md).
 
 ### Benefits of App Catalogs
 

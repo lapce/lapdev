@@ -1,8 +1,10 @@
 # Create an App Catalog
 
-An **App Catalog** defines which workloads make up your application — it’s the blueprint Lapdev uses to create development environments.&#x20;
+An **App Catalog** defines which workloads make up your application — it's the blueprint Lapdev uses to create development environments.&#x20;
 
 This guide walks you through creating an App Catalog from your connected cluster.
+
+> To understand why App Catalogs exist and how they fit into Lapdev, read [**App Catalog**](../core-concepts/app-catalog.md) first.
 
 ### Prerequisites
 

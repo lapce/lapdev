@@ -15,6 +15,7 @@
 * [Architecture](core-concepts/architecture/README.md)
   * [Traffic Routing Architecture](core-concepts/architecture/traffic-routing-architecture.md)
   * [Branch Environment Architecture](core-concepts/architecture/branch-environment-architecture.md)
+* [Cluster](core-concepts/cluster.md)
 * [App Catalog](core-concepts/app-catalog.md)
 * [Environment](core-concepts/environment.md)
 * [Devbox](core-concepts/devbox.md)

@@ -23,13 +23,13 @@ Lapdev reads your **production Kubernetes manifests directly from your cluster**
 ### Automatic Sync with Production
 
 * Lapdev continuously monitors your production manifests for changes
-* Get notified when ConfigMaps, Secrets, or deployment specs are updated
-* Pull updates into your environment with one click, or enable auto-sync
+* App Catalogs automatically update when their source workloads change
+* All environments created from the catalog use the latest configuration
 * **Never again:** "My dev environment is 3 months behind prod"
 
 ### Flexible Environment Models
 
-**Isolated Environments:** Each developer gets a complete, independent copy of all workloads. Perfect for testing breaking changes or complex multi-service interactions with full isolation.
+**Personal Environments:** Each developer gets a complete, independent copy of all workloads. Perfect for testing breaking changes or complex multi-service interactions with full isolation.
 
 **Branch Environments (Cost-Effective):** A shared baseline environment runs all services once. Developers create lightweight "branch environments" for only the services they're actively modifying. Lapdev automatically routes your traffic to your version while everything else uses the shared baseline.
 
@@ -44,10 +44,10 @@ Lapdev includes **Devbox**, a CLI tool that integrates seamlessly with your envi
 
 ### Preview URLs with Zero Configuration
 
-Every environment gets:
+Create Preview URLs for any service in your environment:
 
-* A unique URL with a preconfigured domain: `alice-checkout-feature.app.lap.dev`
-* Automatic HTTPS
+* Unique HTTPS URLs automatically generated for each service
+* Automatic TLS certificates and DNS configuration
 * Traffic proxied directly to your in-cluster services
 * Optional access control - configure URLs to be accessible only to Lapdev logged-in users
 * No firewall changes, no manual Ingress configuration, no cert-manager setup

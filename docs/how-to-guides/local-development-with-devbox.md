@@ -14,34 +14,52 @@ This guide shows how to set up and use **Devbox** for local development with you
 curl -sSL https://get.lap.dev/install-devbox.sh | bash
 ```
 
-#### Connect to an Environment
+#### Connect to Lapdev
+
+First, connect your Devbox CLI to Lapdev:
 
 ```bash
-devbox connect <environment-name>
+lapdev devbox connect
 ```
 
-Devbox will:
+This establishes a secure connection between your local machine and Lapdev.
 
-* Authenticate and connect to the environment’s namespace.
-* Set up secure routing between your local machine and the cluster.
+#### Set Active Environment
+
+After connecting, set which environment you want to work with in the Lapdev dashboard:
+
+1. Go to the **Environments** tab
+2. Select the environment you want to use
+3. Click **Set as Active Environment**
+
+Once set, all traffic interception and service access will route through this active environment.
 
 _Placeholder screenshot:_
 
 #### Intercept a Service
 
-To reroute in-cluster traffic to your local process:
+Once connected, you can intercept traffic for a specific service through the Lapdev dashboard:
 
-```bash
-devbox intercept checkout-service
-```
+1. Open your environment in the Lapdev dashboard
+2. Navigate to the **Services** section
+3. Find the service you want to intercept (e.g., `checkout-service`)
+4. Click **Enable Intercept**
+5. Specify the local port where your service is running (e.g., `localhost:8080`)
 
-After interception:
+After enabling interception:
 
-* Requests to `checkout-service` in the cluster will route to your local code.
-* You can make edits, hot-reload, or debug directly in your IDE.
+* All cluster traffic for that service routes to your local machine
+* You can make edits, hot-reload, or debug directly in your IDE
+* Other services in the cluster remain unaffected
 
 _Placeholder screenshot:_
 
 #### Access In-Cluster Services
 
-While connected, you can
+While connected via Devbox, you can access any service in your environment using their cluster DNS names (e.g., `postgres-service:5432`, `redis-service:6379`) directly from your local code. Devbox handles the tunneling automatically — no port forwarding or VPN needed.
+
+#### Next Steps
+
+* Learn more about [Devbox architecture](../core-concepts/devbox.md)
+* Understand [traffic routing](../core-concepts/architecture/traffic-routing-architecture.md)
+* Create [preview URLs](use-preview-urls.md) to share your work

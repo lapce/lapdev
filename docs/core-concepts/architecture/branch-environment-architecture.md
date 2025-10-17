@@ -1,6 +1,6 @@
 # Branch Environment Architecture
 
-Branch environments are a cost-effective way to run development environments in Kubernetes. Instead of duplicating all services for each developer, branch environments share a baseline and only run the services you're actively modifying.
+Branch environments are a cost-effective way to run development environments in Kubernetes. Instead of duplicating all services for each developer, branch environments build on a shared environment and only run the services you're actively modifying.
 
 ### Architecture Diagram
 
@@ -11,107 +11,159 @@ Branch environments are a cost-effective way to run development environments in 
 Without Branch Environments:
 
 ```
-Alice's environment: 100 services (all running separately)
-Bob's environment: 100 services (all running separately)
-Total: 200 services
+10 developers × 100 services each = 1000 pods total
+Every developer runs a complete copy of all services
 ```
 
 With Branch Environments:
 
 ```
-Baseline environment: 100 services (shared by everyone)
-Alice's branch: 1 service (api - her modified version)
-Bob's branch: 1 service (worker - his modified version)
-Total: 102 services
+Shared environment: 100 services (shared by everyone)
++ 10 developers × 2 modified services each = 20 branched services
+Total: 120 pods
 ```
+
+**Example:** Alice modifies `api`, Bob modifies `worker` - they only run their modified services while sharing the rest.
+
+**Savings: 88% reduction in infrastructure costs**
+
+### Prerequisites
+
+Branch environments require:
+
+* **HTTP/HTTPS communication only** - Non-HTTP components (databases, message queues, gRPC) remain shared across all branches
+* **Header propagation** - Your application must forward OpenTelemetry `tracestate` headers in service-to-service calls
+
+**Important:** While Lapdev automatically injects the tracestate header for incoming requests, your application code must forward headers in service-to-service HTTP calls for routing to work correctly.
 
 ### How It Works
 
-#### The Baseline Environment
+#### The Shared Environment
 
 One shared environment runs all your services:
 
 * Contains a complete copy of all workloads
 * Shared by all developers
-* Updated when production manifests change
+* Acts as the baseline for all branch environments
 
 #### Your Branch Environment
 
 When you create a branch, you specify which service(s) you're modifying:
 
 * Only those services run in your branch namespace
-* Everything else uses the baseline
+* Everything else routes to the shared environment
 
-#### Traffic Routing
+#### Traffic Routing Overview
 
-When someone accesses your preview URL, Lapdev routes traffic intelligently:
+When someone accesses your branch preview URL, Lapdev routes traffic intelligently:
 
-Example: Alice's branch modifies the `api` service
+* Requests to services you've modified → route to your branch version
+* Requests to all other services → route to the shared environment
 
-Request to `https://alice-branch.app.lap.dev`:
+**Example:** If Alice's branch modifies only the `api` service, then requests for `api` go to her branch while `web`, `worker`, and all other services use the shared environment.
 
-1. Starts at baseline environment
-2. When it needs to call the `api` service → routes to Alice's branch
-3. When it needs `web`, `worker`, or any other service → uses baseline
+#### Routing Mechanism
 
-Example: Bob's branch modifies the `worker` service
+**1. Header Injection**
 
-Request to `https://bob-branch.app.lap.dev`:
+When a request enters through a preview URL, Lapdev automatically injects an OpenTelemetry `tracestate` header that identifies which branch the request belongs to.
 
-1. Starts at baseline environment
-2. When it needs to call the `worker` service → routes to Bob's branch
-3. When it needs `api`, `web`, or any other service → uses baseline
+**2. Header Propagation (Your Responsibility)**
 
-#### How Routing Works
+Your application must forward the `tracestate` header in all HTTP service-to-service calls.
 
-Each request gets a special identifier (tracestate) that tells services which branch it belongs to. The Lapdev Sidecar Proxy in each pod:
+**How to implement:**
 
-1. Checks if the service being called has a branch override
-2. Routes to the branch if it exists
-3. Routes to baseline if no override exists
-4. Passes the identifier along to the next service
+Most HTTP clients automatically forward headers when you pass them explicitly. For example:
 
-This happens automatically - your code doesn't need any changes.
-
-### Visual Example
-
-```
-Baseline Environment:
-├── api (baseline version)
-├── web (baseline version)
-└── worker (baseline version)
-
-Alice's Branch:
-└── api (Alice's custom version)
-
-Bob's Branch:
-└── worker (Bob's custom version)
+```javascript
+// Forward all incoming headers to downstream services
+const response = await axios.get('http://other-service:8080/api', {
+  headers: request.headers  // This includes the tracestate header
+});
 ```
 
-Traffic to alice-branch.app.lap.dev:
+**Framework-specific approaches:**
 
-* api → Alice's version ✓
-* web → baseline version
-* worker → baseline version
+✅ **Automatic with these frameworks:**
+- Spring Cloud Sleuth (auto-propagates OpenTelemetry headers)
+- OpenTelemetry-instrumented applications (SDK handles propagation)
 
-Traffic to bob-branch.app.lap.dev:
+⚠️ **Manual forwarding required:**
+- Express.js, Fastify, Koa (pass `request.headers` to HTTP client)
+- Go HTTP clients (copy headers from incoming request)
+- Any custom HTTP client implementation
 
-* api → baseline version
-* web → baseline version
-* worker → Bob's version ✓
+**3. Routing Decision**
 
-Traffic to baseline.app.lap.dev:
+The Lapdev Sidecar Proxy (automatically injected by Lapdev into each pod in managed environments):
 
-* api → baseline version
-* web → baseline version
-* worker → baseline version
+1. Intercepts outgoing HTTP requests from your service
+2. Reads the `tracestate` header to identify the branch
+3. Checks if the target service has a branch override for this branch
+4. Routes to the branched version if it exists
+5. Routes to the shared environment if no override exists
+6. The header continues to propagate to the next service
+
+> **Note:** The sidecar proxy is automatically added when Lapdev creates your environment. No manual configuration needed.
 
 ### Key Benefits
 
-* Cost-effective: Only run what you're changing (10x cheaper than isolated environments)
-* Instant creation: Branch environments are created instantly - custom workloads are only deployed when you modify it.
+* **Cost-effective:** Only run what you're changing (up to 88% infrastructure reduction)
+* **Instant creation:** Branch environments are created instantly - branched workloads are only deployed when you modify them
+* **Realistic testing:** Test your changes against real production-like services, not mocks
+* **No conflicts:** Multiple developers can work on different services simultaneously
 
 ### Limitations
 
-* Shared databases: All branches use the baseline's database (be careful with schema changes)
-* Tracestate propagation: Your application needs to pass the tracestate header in service-to-service calls for routing to work correctly
+#### 1. Header Propagation Required
+
+Your application must forward the `tracestate` header in service-to-service HTTP calls, otherwise routing will break mid-request chain. See the **Routing Mechanism** section above for implementation guidance.
+
+#### 2. HTTP/HTTPS Traffic Only
+
+Branch routing works exclusively for HTTP/HTTPS communication. Other protocols are always shared:
+
+* **Shared across all branches:** Databases, message queues, gRPC services, TCP connections
+* **Implication:** Be careful with database schema changes or queue message format changes
+
+#### 3. Stateful Services Considerations
+
+Services with persistent state (databases, caches) are shared across branches:
+
+* Database writes from one branch affect all other branches
+* Redis/Memcached entries are visible to all branches
+* File uploads or background jobs may interfere between branches
+
+**Best Practice:** Use branch-specific prefixes for cache keys and database records when testing data modifications.
+
+### Troubleshooting
+
+#### Traffic not routing correctly to my branch
+
+**Symptoms:**
+- Changes aren't visible when accessing your branch preview URL
+- Some requests use your branch version, others use the shared version (inconsistent routing)
+
+**Possible causes:**
+
+1. **Headers not propagated:** Your services aren't forwarding the `tracestate` header in HTTP calls
+2. **Service not branched:** The service is not actually deployed in your branch environment
+3. **Wrong preview URL:** You're accessing the shared environment URL instead of your branch URL
+
+**Debug steps:**
+
+* Verify your HTTP clients forward incoming headers to downstream services (see example above)
+* Check the Lapdev dashboard to confirm which services are branched in your environment
+* Check sidecar proxy logs to see routing decisions
+* Look for the `tracestate` header in your service logs - if it's missing after the first hop, headers aren't being propagated
+
+#### Database changes from my branch affect other developers
+
+This is **expected behavior**. Branch environments share databases and other stateful services.
+
+**Solutions:**
+
+* Use branch-specific database prefixes or namespaces
+* Test with read-only database operations
+* Use separate test databases per branch (requires manual configuration)

@@ -6,7 +6,7 @@ It’s created from an existing **App Catalog**, which defines which workloads m
 
 This guide walks you through how to create personal, shared, and branch environments from an App Catalog.
 
-### 1. Prerequisites
+### Prerequisites
 
 Before creating an environment:
 
@@ -25,7 +25,7 @@ _Example screenshot:_
 
 ### Select Environment Type
 
-Lapdev supports multiple environment models depending on your workflow and cost needs.
+Lapdev supports three environment types depending on your workflow and cost needs.
 
 #### **Personal Environment**
 
@@ -40,10 +40,12 @@ Lapdev supports multiple environment models depending on your workflow and cost 
 #### **Branch Environment**
 
 * Built from an existing **Shared Environment**.
-* Includes only workloads you’ve changed; unmodified services reuse the shared baseline.
+* Includes only workloads you've changed; unmodified services reuse the shared environment.
 * Created directly from the **Shared Environment details page** — click **Create Branch Environment**.
 
-> 🧠 Use **branch environments** for feature work — they’re lightweight, fast to spin up, and cost-efficient.
+> **Note:** You must first create a Shared Environment before you can create Branch Environments from it.
+
+> 🧠 Use **branch environments** for feature work — they're lightweight, fast to spin up, and cost-efficient.
 
 ### Verify and Access Your Environment
 
@@ -53,11 +55,11 @@ After creation:
 * Lapdev automatically provisions:
   * All workloads from the App Catalog
   * Associated ConfigMaps, Secrets, and Services
-  * A unique HTTPS URL (e.g. `mia-checkout-feature.app.lap.dev`)
+  * Unique HTTPS preview URLs for accessing your services
 
 You can monitor status, logs, and sync state directly from the dashboard.
 
-### 5. Next Steps
+### Next Steps
 
 Your environment is ready! You can now:
 

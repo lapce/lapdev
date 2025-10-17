@@ -44,7 +44,7 @@ One shared environment runs all your services:
 
 * Contains a complete copy of all workloads
 * Shared by all developers
-* Acts as the baseline for all branch environments
+* Acts as the foundation for all branch environments
 
 #### Your Branch Environment
 

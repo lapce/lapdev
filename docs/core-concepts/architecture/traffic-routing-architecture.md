@@ -6,8 +6,8 @@ This document explains how traffic flows through Lapdev for both preview URLs an
 
 Lapdev handles two main traffic patterns:
 
-1. **Preview URL Traffic** - External users accessing your development environment via browser
-2. **Devbox Traffic** - Developers debugging locally while accessing cluster services
+1. **[Preview URL](../preview-url.md) Traffic** - External users accessing your development environment via browser
+2. **[Devbox](../devbox.md) Traffic** - Developers debugging locally while accessing cluster services
 
 Both patterns use secure tunnels through the Lapdev cloud service, eliminating the need for VPNs or firewall changes.
 
@@ -24,7 +24,7 @@ Both patterns use secure tunnels through the Lapdev cloud service, eliminating t
 * Orchestrates environment creation and management
 * Maintains connection to Lapdev cloud service
 
-**Lapdev Environment (Namespace)**
+**Lapdev [Environment](../environment.md) (Namespace)**
 
 * Contains your replicated workloads
 * Each environment is isolated in its own namespace
@@ -34,7 +34,7 @@ Both patterns use secure tunnels through the Lapdev cloud service, eliminating t
 
 * Your application container(s)
 * Runs unmodified in Personal and Shared environments
-* Branch environments may require header propagation (see Branch Environment Routing below)
+* [Branch environments](branch-environment-architecture.md) may require header propagation (see Branch Environment Routing below)
 
 **Lapdev Sidecar Proxy**
 
@@ -73,7 +73,7 @@ Both patterns use secure tunnels through the Lapdev cloud service, eliminating t
 
 When a user accesses a Preview URL:
 
-1. **Browser** → Request to `https://service-name.app.lap.dev`
+1. **Browser** → Request to automatically generated HTTPS URL
 2. **Lapdev Cloud Service** → Authenticates request (if access control enabled)
 3. **Lapdev Cloud Service** → Routes through WebSocket tunnel to kube-manager
 4. **Kube-Manager** → Forwards to appropriate environment namespace
@@ -124,8 +124,16 @@ This enables multiple developers to test different modifications simultaneously 
 
 ### Learn More
 
-For detailed information on specific routing patterns:
+**Specialized Routing Documentation:**
+* [Branch Environment Architecture](branch-environment-architecture.md) - Tracestate header propagation, routing mechanism, and troubleshooting
+* [Architecture Overview](README.md) - Overall system design and component interactions
 
-* **Branch Environment Routing** - See [Branch Environment Architecture](branch-environment-architecture.md) for tracestate header propagation, routing mechanism, and troubleshooting
-* **Devbox Integration** - See [Devbox](../devbox.md) for local development workflows
-* **Cluster Architecture** - See [Architecture Overview](README.md) for overall system design
+**Core Concepts:**
+* [Environment](../environment.md) - Personal, Shared, and Branch environment types
+* [Devbox](../devbox.md) - Local development with cluster connectivity
+* [Preview URL](../preview-url.md) - HTTPS access to your services
+
+**How-To Guides:**
+* [Use Preview URLs](../../how-to-guides/use-preview-urls.md) - Create and manage preview URLs
+* [Local Development with Devbox](../../how-to-guides/local-development-with-devbox.md) - Set up traffic interception and cluster access
+* [Create Lapdev Environment](../../how-to-guides/create-lapdev-environment.md) - Set up different environment types

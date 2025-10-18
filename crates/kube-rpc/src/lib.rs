@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespaceInfo, KubeServiceWithYaml,
     KubeWorkloadDetails, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
@@ -36,6 +37,37 @@ pub struct TunnelInfo {
     pub websocket_endpoint: String,
     pub supported_protocols: Vec<String>,
     pub max_concurrent_connections: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum ResourceType {
+    Deployment,
+    StatefulSet,
+    DaemonSet,
+    ReplicaSet,
+    Job,
+    CronJob,
+    ConfigMap,
+    Secret,
+    Service,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ResourceChangeType {
+    Created,
+    Updated,
+    Deleted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceChangeEvent {
+    pub namespace: String,
+    pub resource_type: ResourceType,
+    pub resource_name: String,
+    pub change_type: ResourceChangeType,
+    pub resource_version: String,
+    pub resource_yaml: Option<String>,
+    pub timestamp: DateTime<Utc>,
 }
 
 // Messages sent FROM KubeManager TO Server (Client -> Server)
@@ -322,6 +354,8 @@ pub trait KubeClusterRpc {
         connection_count: u64,
         connection_errors: u64,
     ) -> Result<(), String>;
+
+    async fn report_resource_change(event: ResourceChangeEvent) -> Result<(), String>;
 }
 
 #[tarpc::service]
@@ -359,6 +393,8 @@ pub trait KubeManagerRpc {
     async fn get_workloads_details(
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeWorkloadDetails>, String>;
+
+    async fn configure_watches(namespaces: Vec<String>) -> Result<(), String>;
 
     async fn update_workload_containers(
         environment_id: Uuid,

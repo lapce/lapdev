@@ -379,6 +379,28 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         }
     }
 
+    async fn configure_watches(
+        self,
+        _context: ::tarpc::context::Context,
+        namespaces: Vec<String>,
+    ) -> Result<(), String> {
+        tracing::info!(
+            "Configuring namespace watches for {} namespaces",
+            namespaces.len()
+        );
+
+        match self.manager.watch_manager.configure_watches(namespaces).await {
+            Ok(_) => {
+                tracing::info!("Successfully configured namespace watches");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Failed to configure namespace watches: {e}");
+                Err(format!("Failed to configure namespace watches: {e}"))
+            }
+        }
+    }
+
     async fn destroy_environment(
         self,
         _context: ::tarpc::context::Context,

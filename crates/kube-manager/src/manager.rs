@@ -40,7 +40,7 @@ use crate::devbox_proxy_manager::DevboxProxyManager;
 use crate::manager_rpc::KubeManagerRpcServer;
 use crate::{
     sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager,
-    websocket_transport::WebSocketTransport,
+    watch_manager::WatchManager, websocket_transport::WebSocketTransport,
 };
 
 const SCOPE: &[&str] = &["https://www.googleapis.com/auth/cloud-platform"];
@@ -52,6 +52,7 @@ pub struct KubeManager {
     proxy_manager: Arc<SidecarProxyManager>,
     pub(crate) devbox_proxy_manager: Arc<DevboxProxyManager>,
     tunnel_manager: TunnelManager,
+    pub(crate) watch_manager: Arc<WatchManager>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,13 +103,15 @@ pub struct Cluster {
 
 impl KubeManager {
     pub async fn connect_cluster() -> Result<()> {
-        let kube_client = Self::new_kube_client().await.map_err(|e| {
+        let kube_client = Arc::new(Self::new_kube_client().await.map_err(|e| {
             tracing::error!("Failed to create Kubernetes client: {}", e);
             e
-        })?;
+        })?);
 
-        let proxy_manager = Arc::new(SidecarProxyManager::new(kube_client.clone()).await?);
+        let proxy_manager =
+            Arc::new(SidecarProxyManager::new(kube_client.as_ref().clone()).await?);
         let devbox_proxy_manager = Arc::new(DevboxProxyManager::new().await?);
+        let watch_manager = Arc::new(WatchManager::new(kube_client.clone()));
 
         let token = std::env::var(KUBE_CLUSTER_TOKEN_ENV_VAR)
             .map_err(|_| anyhow::anyhow!("can't find env var {}", KUBE_CLUSTER_TOKEN_ENV_VAR))?;
@@ -130,10 +133,11 @@ impl KubeManager {
             .insert(KUBE_CLUSTER_TOKEN_HEADER, token.parse()?);
 
         let manager = KubeManager {
-            kube_client: Arc::new(kube_client),
+            kube_client,
             proxy_manager,
             devbox_proxy_manager,
             tunnel_manager: TunnelManager::new(tunnel_request),
+            watch_manager,
         };
 
         // Start the tunnel manager connection cycle in the background
@@ -192,7 +196,11 @@ impl KubeManager {
         let rpc_client =
             KubeClusterRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
-        let rpc_server = KubeManagerRpcServer::new(self.clone(), rpc_client);
+        self.watch_manager
+            .set_rpc_client(rpc_client.clone())
+            .await;
+
+        let rpc_server = KubeManagerRpcServer::new(self.clone(), rpc_client.clone());
 
         // Spawn the WebSocket RPC server mainloop in the background
         let rpc_clone = rpc_server.clone();
@@ -223,7 +231,11 @@ impl KubeManager {
             tracing::info!("Successfully reported cluster info");
         }
 
-        if let Err(e) = websocket_server_task.await {
+        let websocket_result = websocket_server_task.await;
+
+        self.watch_manager.clear_rpc_client().await;
+
+        if let Err(e) = websocket_result {
             return Err(anyhow!("WebSocket RPC server task failed: {}", e));
         }
 

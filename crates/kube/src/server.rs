@@ -1,6 +1,6 @@
 use lapdev_common::kube::KubeClusterInfo;
 use lapdev_db::api::DbApi;
-use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
+use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -145,5 +145,19 @@ impl KubeClusterRpc for KubeClusterServer {
                 connection_errors,
             )
             .await
+    }
+
+    async fn report_resource_change(
+        self,
+        _context: ::tarpc::context::Context,
+        event: ResourceChangeEvent,
+    ) -> Result<(), String> {
+        tracing::debug!(
+            "Received resource change event from cluster {}: {:?}",
+            self.cluster_id,
+            event
+        );
+        // TODO: Persist and process resource change events (Phase 2).
+        Ok(())
     }
 }

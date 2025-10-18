@@ -118,7 +118,7 @@ bytes = "1.5.0"
 hyper = { version = "1.2.0", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1.2", features = ["tokio", "client-legacy", "server", "server-auto"] }
 http-body-util = "0.1.1"
-kube = { version = "1.1.0", features = [] }
+kube = { version = "1.1.0", features = ["runtime"] }
 k8s-openapi = { version = "0.25.0", features = ["latest"] }
 tarpc = { version = "0.36.0", features = ["full"] }
 rustls-webpki = "0.102.2"

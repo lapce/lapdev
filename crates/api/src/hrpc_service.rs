@@ -758,21 +758,12 @@ impl HrpcService for CoreState {
         app_catalog_id: Uuid,
         cluster_id: Uuid,
         name: String,
-        namespace: String,
         is_shared: bool,
     ) -> Result<KubeEnvironment, HrpcError> {
         let user = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller
-            .create_kube_environment(
-                org_id,
-                user.id,
-                app_catalog_id,
-                cluster_id,
-                name,
-                namespace,
-                is_shared,
-            )
+            .create_kube_environment(org_id, user.id, app_catalog_id, cluster_id, name, is_shared)
             .await
             .map_err(HrpcError::from)
     }

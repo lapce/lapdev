@@ -382,6 +382,8 @@ pub trait KubeManagerRpc {
         labels: std::collections::HashMap<String, String>,
     ) -> Result<(), String>;
 
+    async fn destroy_environment(environment_id: Uuid, namespace: String) -> Result<(), String>;
+
     // Preview URL tunnel methods
     async fn get_tunnel_status() -> Result<TunnelStatus, String>;
 

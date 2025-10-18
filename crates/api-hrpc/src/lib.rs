@@ -167,7 +167,6 @@ pub trait HrpcService {
         app_catalog_id: Uuid,
         cluster_id: Uuid,
         name: String,
-        namespace: String,
         is_shared: bool,
     ) -> Result<KubeEnvironment, HrpcError>;
 

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -12,7 +12,10 @@ use k8s_openapi::{
     },
     NamespaceResourceScope,
 };
-use kube::{api::ListParams, config::AuthInfo};
+use kube::{
+    api::{DeleteParams, ListParams},
+    config::AuthInfo,
+};
 use lapdev_common::kube::{
     KubeAppCatalogWorkload, KubeClusterInfo, KubeClusterStatus, KubeContainerImage,
     KubeContainerInfo, KubeContainerPort, KubeNamespaceInfo, KubeServiceDetails, KubeServicePort,
@@ -28,6 +31,7 @@ use lapdev_kube_rpc::{
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;
 use tarpc::server::{BaseChannel, Channel};
+use tokio::time::{sleep, Duration};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
@@ -2790,6 +2794,62 @@ impl KubeManager {
 
         namespaces.create(&Default::default(), &ns).await?;
         tracing::info!("Created namespace: {}", namespace);
+        Ok(())
+    }
+
+    pub(crate) async fn destroy_environment(
+        &self,
+        environment_id: Uuid,
+        namespace: &str,
+    ) -> Result<()> {
+        tracing::info!(
+            "Destroying environment {} and cleaning namespace '{}'",
+            environment_id,
+            namespace
+        );
+        self.delete_namespace(namespace).await
+    }
+
+    async fn delete_namespace(&self, namespace: &str) -> Result<()> {
+        let client = &self.kube_client;
+        let namespaces: kube::Api<Namespace> = kube::Api::all((**client).clone());
+
+        if namespaces.get_opt(namespace).await?.is_none() {
+            tracing::info!(
+                "Namespace '{}' not found during deletion, assuming already removed",
+                namespace
+            );
+            return Ok(());
+        }
+
+        match namespaces.delete(namespace, &DeleteParams::default()).await {
+            Ok(_) => {
+                let timeout = Duration::from_secs(60);
+                let start = Instant::now();
+                loop {
+                    if namespaces.get_opt(namespace).await?.is_none() {
+                        tracing::info!("Namespace '{}' deleted successfully", namespace);
+                        break;
+                    }
+
+                    if start.elapsed() >= timeout {
+                        return Err(anyhow!(
+                            "Timed out waiting for namespace '{}' deletion",
+                            namespace
+                        ));
+                    }
+
+                    sleep(Duration::from_secs(1)).await;
+                }
+            }
+            Err(kube::Error::Api(ae)) if ae.code == 404 => {
+                tracing::info!("Namespace '{}' already deleted", namespace);
+            }
+            Err(e) => {
+                return Err(anyhow!("Failed to delete namespace '{}': {}", namespace, e));
+            }
+        }
+
         Ok(())
     }
 

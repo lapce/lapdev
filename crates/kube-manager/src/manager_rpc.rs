@@ -379,6 +379,36 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         }
     }
 
+    async fn destroy_environment(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+        namespace: String,
+    ) -> Result<(), String> {
+        tracing::info!(
+            "Received request to destroy environment {} in namespace {}",
+            environment_id,
+            namespace
+        );
+
+        match self
+            .manager
+            .destroy_environment(environment_id, &namespace)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::error!(
+                    "Failed to destroy environment {} in namespace {}: {}",
+                    environment_id,
+                    namespace,
+                    e
+                );
+                Err(format!("Failed to destroy environment: {}", e))
+            }
+        }
+    }
+
     async fn get_tunnel_status(
         self,
         _context: ::tarpc::context::Context,

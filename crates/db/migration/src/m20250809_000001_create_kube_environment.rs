@@ -147,6 +147,14 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE UNIQUE INDEX kube_environment_cluster_namespace_unique_idx
+                 ON kube_environment (cluster_id, namespace, deleted_at) NULLS NOT DISTINCT",
+            )
+            .await?;
+
         Ok(())
     }
 }

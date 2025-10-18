@@ -500,8 +500,8 @@ pub fn EnvironmentInfoCard(
                 let env_name = environment.name.clone();
                 let env_namespace = environment.namespace.clone();
                 let env_namespace2 = environment.namespace.clone();
-                let env_status = environment.status.clone().unwrap_or_else(|| "Unknown".to_string());
-                let env_status2 = environment.status.clone().unwrap_or_else(|| "Unknown".to_string());
+                let env_status = environment.status.clone();
+                let env_status2 = environment.status.clone();
                 let created_at_str = environment.created_at.clone();
                 let is_shared = environment.is_shared;
                 let is_branch = environment.base_environment_id.is_some();

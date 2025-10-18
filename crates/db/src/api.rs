@@ -36,7 +36,7 @@ struct KubeEnvironmentWithRelated {
     pub env_namespace: String,
     pub env_app_catalog_id: Uuid,
     pub env_cluster_id: Uuid,
-    pub env_status: Option<String>,
+    pub env_status: String,
     pub env_created_at: DateTimeWithTimeZone,
     pub env_is_shared: bool,
     pub env_organization_id: Uuid,
@@ -560,7 +560,7 @@ impl DbApi {
         let model = kube_cluster::ActiveModel {
             id: ActiveValue::Set(id),
             cluster_version: ActiveValue::Set(cluster_version),
-            status: ActiveValue::Set(status),
+            status: status.map(ActiveValue::Set).unwrap_or(ActiveValue::NotSet),
             region: ActiveValue::Set(region),
             last_reported_at: ActiveValue::Set(Some(now)),
             ..Default::default()
@@ -858,7 +858,7 @@ impl DbApi {
         org_id: Uuid,
         user_id: Uuid,
         name: String,
-        status: Option<String>,
+        status: String,
     ) -> Result<lapdev_db_entities::kube_cluster::Model> {
         let cluster = lapdev_db_entities::kube_cluster::ActiveModel {
             id: ActiveValue::Set(cluster_id),
@@ -1397,7 +1397,7 @@ impl DbApi {
                             id: related.env_cluster_id,
                             name,
                             cluster_version: None,
-                            status: None,
+                            status: "Not Ready".to_string(),
                             region: None,
                             created_at: related.env_created_at,
                             created_by: related.env_user_id,
@@ -1687,7 +1687,7 @@ impl DbApi {
         cluster_id: Uuid,
         name: String,
         namespace: String,
-        status: Option<String>,
+        status: String,
         is_shared: bool,
         base_environment_id: Option<Uuid>,
         workloads: Vec<KubeWorkloadDetails>,

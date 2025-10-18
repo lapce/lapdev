@@ -67,10 +67,7 @@ impl KubeController {
                     available_memory: "N/A".to_string(), // TODO: Get actual memory from kube-manager
                     provider: None,                      // TODO: Get provider info
                     region: c.region,
-                    status: c
-                        .status
-                        .as_deref()
-                        .and_then(|s| KubeClusterStatus::from_str(s).ok())
+                    status: KubeClusterStatus::from_str(&c.status)
                         .unwrap_or(KubeClusterStatus::NotReady),
                 },
             })
@@ -97,7 +94,7 @@ impl KubeController {
                 org_id,
                 user_id,
                 name,
-                Some(KubeClusterStatus::Provisioning.to_string()),
+                KubeClusterStatus::Provisioning.to_string(),
             )
             .await
             .map_err(ApiError::from)?;
@@ -416,10 +413,7 @@ impl KubeController {
             available_memory: "N/A".to_string(), // TODO: Get actual memory from kube-manager
             provider: None, // TODO: Get provider info
             region: cluster.region,
-            status: cluster
-                .status
-                .as_deref()
-                .and_then(|s| KubeClusterStatus::from_str(s).ok())
+            status: KubeClusterStatus::from_str(&cluster.status)
                 .unwrap_or(KubeClusterStatus::NotReady),
         };
 
@@ -1094,7 +1088,7 @@ impl KubeController {
                 cluster_id,
                 name.clone(),
                 namespace.clone(),
-                Some("Pending".to_string()),
+                "Pending".to_string(),
                 is_shared,
                 None, // No base environment for regular environments
                 workload_details,
@@ -1275,7 +1269,7 @@ impl KubeController {
                 base_environment.cluster_id,
                 name.clone(),
                 base_environment.namespace.clone(), // Use same namespace as base
-                Some("Pending".to_string()),
+                "Pending".to_string(),
                 false, // Branch environments are always personal (not shared)
                 Some(base_environment_id), // Set the base environment reference
                 workload_details,

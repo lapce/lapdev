@@ -59,6 +59,7 @@ This causes drift between production and development environments.
 - ConfigMaps/Secrets often contain environment-specific values (dev vs staging vs prod)
 - Services are discovered dynamically based on current workload selectors
 - Storing at environment level allows per-environment customization while still syncing from source
+- Catalogs serve as blueprints that update automatically when source workloads change, while still allowing teams to curate manual edits when required.
 - A dedicated dependency index (`kube_environment_dependency`) tracks which production ConfigMaps/Secrets feed each environment so change detection can fan out events without re-scanning workloads.
 
 ## Design Decisions
@@ -124,38 +125,45 @@ trait KubeManagerRpc {
 3. Kube-manager sends: `report_resource_change(ResourceChangeEvent { namespace: "production", resource_type: Deployment, resource_name: "api-server", ... })`
 4. API server receives event
 5. API server queries: "Which catalog has workload 'api-server' in namespace 'production'?" → finds catalog ID
-6. API server creates/updates `kube_app_catalog_sync_status` record
-7. API server immediately updates the catalog and records the change in `kube_app_catalog_sync_status`
+6. API server fetches the latest workload manifest from the source cluster, updates the catalog workload spec, and records an `auto_applied` activity (actor `NULL`).
+7. Environments referencing the catalog have their `latest_catalog_sync_id` set to the new activity record and receive notifications prompting `Sync From Catalog` / `Sync With Cluster`.
 
-### 2. Catalog Updates: Always Automatic
+### 2. Catalog Updates: Auto From Cluster & Manual Edits
 
-**Decision:** App Catalogs always auto-apply detected workload changes; no manual approval path.
+**Decision:** Catalog specs update automatically when the reference workloads in the source cluster change, and administrators can still make explicit edits through the UI.
 
-**Behavior:**
-- Catalog update executes immediately after the Sync Decision Engine validates a workload change.
-- Users receive a post-apply notification summarizing the change (e.g., "Catalog 'production-services' auto-updated (3 workloads changed)").
-- Catalog update instantly triggers downstream environment sync handling (respecting environment auto-sync flags).
+**Behavior (Cluster-Driven Auto Update):**
+- Kube-manager events deliver the latest workload manifest to the API server.
+- Catalog workload specs are updated in place, and an `auto_applied` activity is recorded (`actor_id = NULL`).
+- Environments referencing the catalog set `latest_catalog_sync_id` to the new activity and proceed through the environment sync flow (auto or manual).
 
-**Catalog Notification (Activity Summary):**
+**Behavior (Admin Edits):**
+- When a user saves catalog edits, the platform applies the new workload set immediately and records an `applied` activity with the actor’s ID.
+- These manual edits follow the same environment sync flow, respecting environment auto-sync flags.
+
+**Catalog Activity Summary (Auto Update Example):**
 
 ```
 ┌─────────────────────────────────────────────────┐
 │ App Catalog: production-services                │
 ├─────────────────────────────────────────────────┤
-│ ✅ Auto-sync applied from Production            │
+│ ℹ️  Production change auto-applied               │
 │                                                  │
-│ Changes detected:                               │
-│   • 3 Workloads changed                         │
+│ Workloads updated:                              │
+│   • api-server                                   │
+│   • worker                                       │
 │ Applied at: 2025-10-17T22:15Z                   │
 │                                                  │
-│ [View Details]                                  │
+│ [Review Workloads]                              │
 └─────────────────────────────────────────────────┘
 ```
 
+When a user edits the catalog, the summary shifts to reflect the applied change (e.g., "✅ Workload 'api-server' added by Alice") and references the same activity log for auditing.
+
 **Scope:**
-- **App Catalog watches**: Workloads only
+- **App Catalog watches**: Workloads only (for notification context)
 - **No tracking**: ConfigMaps, Secrets, Services (environment-level concerns)
-- **Granularity**: Count only (e.g., "3 workloads")
+- **Granularity**: Workload counts/names sufficient for review
 - **No detailed diffs**: Too complex for v1; link routes to workload list for context
 
 ### 3. Environment Sync: Default Manual, Auto Opt-In
@@ -168,8 +176,8 @@ trait KubeManagerRpc {
 - Allowing an explicit opt-in keeps developers in control while supporting hands-off pipelines.
 
 **Behavior:**
-- When catalog updates, ALL environments show "Update available" by default with `Sync From Catalog` highlighted.
-- When ConfigMap/Secret changes arrive, impacted environments show "Config update available" with `Sync With Cluster` highlighted.
+- When a user updates the catalog (add/remove workloads), ALL environments show "Catalog update available" with `Sync From Catalog` highlighted.
+- When ConfigMap/Secret changes arrive from production, impacted environments show "Config update available" with `Sync With Cluster` highlighted.
 - Environments with `auto_sync=false` require a manual button click for each action type; auto environments run both actions as events arrive.
 - Environments with `auto_sync=true` apply the relevant action automatically and surface the outcome afterward (success, failure, conflict).
 
@@ -189,7 +197,7 @@ When catalog updates, environments are notified with a **simple summary**:
 └─────────────────────────────────────────────────┘
 ```
 
-`Dismiss` records the prompt as dismissed in `kube_environment_dependency_sync_status` (for dependency events) or logs a manual deferral for catalog prompts without mutating workloads, ensuring auditability while letting developers defer action.
+`Dismiss` records the prompt as dismissed in `kube_environment_dependency_sync_status` (for dependency events) or emits an audit log event for catalog prompts (no schema change) without mutating workloads, ensuring auditability while letting developers defer action.
 
 **Environment Sync Actions:**
 - **`Sync From Catalog`** (workload-focused)
@@ -205,7 +213,7 @@ When catalog updates, environments are notified with a **simple summary**:
 
 **Manual Sync Confirmation (Sync From Catalog):**
 1. UI requests latest catalog sync metadata and displays confirmation dialog with timestamp + workload count.
-2. Backend verifies the catalog sync referenced by the environment (`latest_catalog_sync_id`) is still the newest available; if not, the UI refreshes with the latest summary.
+2. Backend verifies the catalog sync referenced by the environment (`latest_catalog_sync_id`) is the newest entry with `status` in (`auto_applied`,`applied`); if not, the UI refreshes with the latest summary.
 3. Environment Sync Orchestrator enqueues a reconciliation job marked `manual_trigger=true`, `action='catalog'`.
 4. Job locks the environment record (optimistic concurrency) to prevent overlapping catalog syncs.
 5. Job runs the workload reconciliation pipeline (catalog apply → dependency discovery → service refresh).
@@ -258,12 +266,12 @@ The system uses **simple notifications at both levels**:
 
 ### Auto-Sync Control
 
-Catalogs always apply updates automatically. Control resides entirely at the environment layer:
+Catalogs update automatically on cluster changes and can also be edited manually; environments decide whether to apply those catalog/dependency updates automatically or manually:
 
 | Environment Auto-Sync | Behavior |
 |---|---|
-| ✅ **ON** | **Fully automatic**: Catalog updates trigger immediate `Sync From Catalog`; dependency events trigger immediate `Sync With Cluster` |
-| ❌ **OFF** | **Manual environment sync**: Catalog updates produce `Sync From Catalog` prompts; dependency events produce `Sync With Cluster` prompts |
+| ✅ **ON** | **Fully automatic**: Catalog auto updates (or manual edits) trigger immediate `Sync From Catalog`; dependency events trigger immediate `Sync With Cluster`. |
+| ❌ **OFF** | **Manual environment sync**: Catalog auto updates/manual edits produce `Sync From Catalog` prompts; dependency events produce `Sync With Cluster` prompts. |
 
 **Use Cases:**
 
@@ -365,35 +373,36 @@ Default posture is **Manual (OFF)** for new environments to minimize surprise ch
 
 ## End-to-End Flow
 
-### A. Production Change → Catalog Decision
+### A. Production Change → Lapdev API
 1. Production resource changes (Deployment/StatefulSet/etc.) surface through the Kubernetes Watch stream handled by kube-manager.
-2. Kube-manager forwards the raw event to the API server via `report_resource_change`.
+2. Kube-manager forwards the raw event to the Lapdev API server via `report_resource_change`.
 3. Change Event Processor normalizes/merges events for the same workload within the dedupe window.
-4. Sync Decision Engine resolves the catalog owner, records the workload names and counts, and emits/updates a `kube_app_catalog_sync_status`.
-5. Catalog update executes immediately (`status = auto_applied`), generating activity notifications but no approval gate.
+4. Sync Decision Engine maps the event to affected catalogs (for workload ownership) and environments (via dependency index) without mutating catalog data.
+5. Impacted environments receive notification records directly; catalogs only receive activity entries for visibility.
 
-### B. Catalog Update → Environment Sync
-1. Immediately after detection, Catalog Updater writes the new spec into `kube_app_catalog_workload` and stamps `last_synced_at`.
+### B. Catalog Ownership Change → Environment Sync
+1. User edits the App Catalog (add/remove workload). Catalog Updater writes the new spec into `kube_app_catalog_workload` and stamps `last_synced_at`.
 2. Environment Sync Orchestrator enumerates impacted environments and splits them into auto-sync and manual buckets.
 3. Auto-sync environments queue execution jobs that call kube-manager to reconcile workloads and re-discover dependent ConfigMaps/Secrets/Services.
 4. Manual environments receive notifications referencing the originating `kube_app_catalog_sync_status`; when a user clicks "Sync From Catalog", the orchestrator enqueues a reconciliation job identical to the auto-sync path.
-5. Reconciliation outcome is persisted back on the environment (`last_catalog_synced_at` and/or `last_dependency_synced_at`, plus error metadata if failures occur) and surfaced in UI/alerts.
+5. Reconciliation outcome is persisted back on the environment (`last_catalog_synced_at` and/or `last_dependency_synced_at`, plus error metadata if failures occur) and surfaced in UI/alerts; `latest_catalog_sync_id` is advanced to the newly applied record.
 6. Dependency index updates record which source ConfigMaps/Secrets each environment now references, ensuring future events fan out correctly.
 
-### C. Dependency Change → Environment Prompt
+### C. Production Dependency Change → Environment Prompt
 1. ConfigMap/Secret event arrives; Change Event Processor looks up impacted environments via `kube_environment_dependency`.
-2. For each environment, create or update a `kube_environment_dependency_sync_status` record summarizing resource names, change types, and detection time.
+2. For each environment, create or update a `kube_environment_dependency_sync_status` record summarizing resource names, change types, and detection time, and set `latest_dependency_sync_id` to point at it.
 3. Auto-sync environments enqueue `Sync With Cluster` jobs immediately; manual environments receive notifications with counts per resource type.
-4. When sync completes, the dependency sync status transitions to `completed` (or `failed` with error payload) and `last_dependency_synced_at` is updated.
+4. When sync completes, the dependency sync status transitions to `completed` (or `failed` with error payload), `last_dependency_synced_at` is updated, and `latest_dependency_sync_id` is cleared or replaced with the next pending record.
 
 ### Sync Record State Machine
 
 | State | Trigger | Next States | Notes |
 |---|---|---|---|
-| `auto_applied` | Catalog change detected | `completed`, `failed` | Catalog update applied immediately; environment sync queued |
-| `completed` | Catalog and all required environment syncs succeed | _terminal_ | Timestamped for reporting and metrics |
-| `failed` | Catalog update or required environment sync fails | `retrying`, `manual_intervention` | Failure reason persisted for diagnosis |
-| `retrying` | Automatic retry scheduled/executing | `completed`, `failed` | Retry budget/interval configurable |
+| `auto_applied` | Cluster change detected and catalog auto-updated | `failed`, _terminal_ | Catalog update applies immediately; `actor_id = NULL`; environment sync queued |
+| `applied` | User saves catalog edit | `failed`, _terminal_ | Catalog update applies immediately; `actor_id` records user; environment sync queued |
+| `failed` | Catalog edit apply fails | `retrying`, `manual_intervention` | Failure reason persisted for diagnosis |
+| `retrying` | Automatic retry scheduled/executing | `applied`, `failed` | Retry budget/interval configurable |
+| `dismissed` | User dismisses catalog notification without editing | _terminal_ | Keeps audit trail without spec change |
 | `manual_intervention` | Automated retries exhausted or blocked | _terminal_ | Signals operators to intervene |
 
 State machine extensions (`retrying`, `manual_intervention`) go beyond the minimal DDL but capture expected lifecycle so future iterations can expand persistence as needed.
@@ -419,10 +428,9 @@ CREATE TABLE kube_app_catalog_sync_status (
     id UUID PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL,
     app_catalog_id UUID NOT NULL REFERENCES kube_app_catalog(id),
-    status VARCHAR NOT NULL, -- 'auto_applied','completed','failed','retrying','manual_intervention'
+    status VARCHAR NOT NULL, -- 'auto_applied','applied','failed','retrying','dismissed','manual_intervention'
     detected_at TIMESTAMPTZ NOT NULL,
-    reviewed_at TIMESTAMPTZ,
-    reviewed_by UUID REFERENCES users(id),
+    actor_id UUID REFERENCES users(id), -- null for system-generated notifications
     workload_count INTEGER NOT NULL, -- Simple count: how many workloads changed
     workload_names TEXT[] NOT NULL -- Array of workload names that changed
 );
@@ -430,8 +438,10 @@ CREATE TABLE kube_app_catalog_sync_status (
 
 **Storage Strategy:**
 - **Simple summary only**: Just count + list of workload names
-- No detailed diffs stored (not needed for immediate auto-apply)
-- Environments reference this record via `latest_catalog_sync_id` to know a sync is available
+- `status = auto_applied` captures production-driven updates; `status = applied` records manual catalog edits
+- `actor_id` stores the user that applied a catalog edit; system-driven auto updates leave it `NULL`
+- No detailed diffs stored (not needed for immediate application)
+- Environments reference this record via `latest_catalog_sync_id` to know when a catalog change is available to sync
 
 #### New Table: `kube_environment_configmap`
 
@@ -489,7 +499,7 @@ CREATE TABLE kube_environment_dependency_sync_status (
     id UUID PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL,
     environment_id UUID NOT NULL REFERENCES kube_environment(id),
-    status VARCHAR NOT NULL, -- 'pending','in_progress','completed','failed','dismissed'
+    status VARCHAR NOT NULL, -- 'pending','in_progress','completed','failed','retrying','dismissed','manual_intervention'
     detected_at TIMESTAMPTZ NOT NULL,
     resolved_at TIMESTAMPTZ,
     resolved_by UUID REFERENCES users(id),
@@ -517,7 +527,7 @@ ALTER TABLE kube_environment
 ADD COLUMN latest_dependency_sync_id UUID REFERENCES kube_environment_dependency_sync_status(id);
 ```
 
-**Note:** When catalog updates, we just store a reference to the catalog sync that triggered the update. The environment doesn't need its own detailed diff - users can click through to the catalog sync to see details if needed. The dependency index (`kube_environment_dependency`) enables constant-time lookup when a production ConfigMap/Secret event arrives, while `kube_environment_dependency_sync_status` tracks pending dependency changes that power the `Sync With Cluster` UI.
+**Note:** When catalog updates, we store references to the catalog sync (`latest_catalog_sync_id`) and dependency sync (`latest_dependency_sync_id`) records that triggered notifications. The environment doesn't need its own detailed diff - users can click through to these records to see details. The dependency index (`kube_environment_dependency`) enables constant-time lookup when a production ConfigMap/Secret event arrives, while `kube_environment_dependency_sync_status` tracks pending dependency changes that power the `Sync With Cluster` UI.
 
 #### Modified Table: `kube_app_catalog`
 
@@ -526,14 +536,10 @@ ALTER TABLE kube_app_catalog
 ADD COLUMN last_synced_at TIMESTAMPTZ;
 
 ALTER TABLE kube_app_catalog
-ADD COLUMN watch_enabled BOOLEAN NOT NULL DEFAULT true;
-
-ALTER TABLE kube_app_catalog
 ADD COLUMN source_namespace VARCHAR NOT NULL; -- Which namespace to watch in the source cluster
 ```
 
 **Note:**
-- `watch_enabled` controls whether to watch for changes at all
 - `source_namespace` tells kube-manager which namespace to watch
 
 **Namespace Watch Configuration:**
@@ -574,7 +580,7 @@ ADD COLUMN source_namespace VARCHAR NOT NULL; -- Which namespace to watch in the
    - Map ConfigMap/Secret/Service events to environments:
      - Query: Which environments reference ConfigMap X in namespace Y?
 4. Build **Sync Decision Engine**:
-   - Workload events → Check if belongs to any catalog → Trigger catalog sync
+   - Workload events → Check if belongs to any catalog → Record catalog activity entry (`status = auto_applied`, actor_id = NULL)
    - ConfigMap/Secret/Service events → Check if belongs to any environment → Trigger environment sync
    - Check environment `auto_sync` flags to decide immediate reconcile vs manual prompt
    - Use dependency index (`kube_environment_dependency`) to map source resources to environments and create/update `kube_environment_dependency_sync_status`
@@ -583,14 +589,14 @@ ADD COLUMN source_namespace VARCHAR NOT NULL; -- Which namespace to watch in the
 ### Phase 2: Sync Status & Notifications
 1. Create `kube_app_catalog_sync_status` table.
 2. Implement sync status API endpoints for querying recent catalog updates.
-3. Execute catalog auto-sync logic on every detected change, recording outcome as `auto_applied`.
-4. Publish dashboard and activity feed surfaces for catalog updates (e.g., "3 workloads changed").
-5. Emit webhook/notification events (if enabled) to inform downstream systems of automatic catalog changes.
+3. Record catalog activity entries on production changes (`status = auto_applied`) and catalog edits (`status = applied`).
+4. Publish dashboard and activity feed surfaces for production detections and user-applied catalog edits.
+5. Emit webhook/notification events (if enabled) to inform downstream systems of catalog activity (without auto-mutating specs).
 6. Provide API utilities to resolve ConfigMap/Secret events to environments via `kube_environment_dependency` and expose `kube_environment_dependency_sync_status` summaries (updating `latest_dependency_sync_id`).
 
 ### Phase 3: Catalog Update
-1. Implement catalog update logic that runs immediately after sync decision
-2. Update `kube_app_catalog_workload` specs from production cluster
+1. Implement catalog update logic invoked when users save catalog edits
+2. Update `kube_app_catalog_workload` specs based on the saved user edits (optionally sourcing manifests from production for new workloads)
 3. Update `kube_app_catalog.last_synced_at` timestamp
 4. Trigger environment sync flow (Phase 4)
 5. Track version history (optional)
@@ -619,10 +625,77 @@ ADD COLUMN source_namespace VARCHAR NOT NULL; -- Which namespace to watch in the
 5. Add environment sync status indicators.
 6. Add manual sync triggers for environments with auto-sync disabled.
 7. Implement notification badges:
-   - Catalog: "Auto-updated - 3 workloads"
+   - Catalog: "Production change detected - 3 workloads" (notification) vs "Edit applied - workload foo added"
    - Environment: "Catalog update available - 3 workloads" vs "Config update available - 2 ConfigMaps" (manual) and a single "Syncing..." state for auto actions
 8. Support dismiss actions that update dependency sync status (set to `dismissed`) or log catalog deferrals without applying changes.
 
+## Detailed Implementation Steps
+
+1. **Schema & Persistence**
+   - [ ] Draft migration plan
+     - [ ] Document new tables/columns, data types, indexes, FK relationships.
+     - [ ] Review migration design with Data Platform (sizing, retention, encryption).
+   - [ ] Implement migrations
+     - [ ] Create tables `kube_environment_configmap`, `kube_environment_secret`, `kube_environment_dependency`, `kube_environment_dependency_sync_status`.
+     - [ ] Alter `kube_app_catalog_sync_status` and `kube_environment` to add new statuses/timestamps/references.
+     - [ ] Add supporting indexes (config/secret uniqueness, dependency lookup, catalog status filtering).
+     - [ ] Add constraints/foreign keys with documented ON DELETE behavior.
+   - [ ] Backfill legacy data
+     - [ ] Snapshot current environment resources (scripts/queries).
+     - [ ] Populate config/secret tables (respect encryption requirements).
+     - [ ] Build & run dependency discovery seeding script.
+     - [ ] Seed catalog activity rows with `status = auto_applied`, `actor_id = NULL` (representing current production state).
+   - [ ] Validate & harden
+     - [ ] Add automated tests verifying row counts/integrity post-backfill.
+     - [ ] Prepare rollback SQL for each migration.
+     - [ ] Write migration runbook (order, downtime, verification).
+
+2. **Kube-Manager Enhancements**
+   - [ ] Implement `configure_watches` RPC (handler, diffing, persistence, retries).
+   - [ ] Extend resource watchers to include workloads/configmaps/secrets/services with full YAML payloads.
+   - [ ] Add event queuing/backpressure controls and Prometheus metrics (latency, queue depth, resource version lag).
+   - [ ] Write integration tests (namespace changes, reconnects, event storms).
+   - [ ] Update deployment artifacts (Helm/manifests), permissions, and release notes.
+
+3. **Lapdev API – Event Processing**
+   - [ ] Build Change Event Processor endpoint (validation, YAML parsing, auth).
+   - [ ] Implement workload event flow (catalog ownership lookup, dedupe, create `auto_applied` activity with `actor_id = NULL`, enqueue notification job).
+   - [ ] Implement dependency event flow (dependency lookup, upsert sync status, auto-sync queueing, update environment `latest_dependency_sync_id`).
+   - [ ] Add dedupe windowing + stale dependency guard rails (rebuild triggers).
+   - [ ] Expose APIs to list catalog activity and dependency statuses (with tests).
+
+4. **Catalog Management**
+   - [ ] Update backend edit handlers (apply workload adds/removes, optional manifest fetch).
+   - [ ] Insert `status = applied` activity rows with actor metadata and trigger environment sync orchestration.
+   - [ ] Build catalog activity listing endpoints + UI components (feed, details, filters).
+   - [ ] Implement catalog dismiss audit endpoint and UI action.
+   - [ ] Add automated/unit/UI tests for edits, rollbacks, activity log correctness.
+
+5. **Environment Sync Orchestrator**
+   - [ ] Define `sync_environment` RPC schema and job queue wiring.
+   - [ ] Implement catalog sync worker (workload apply, dependency refresh, service updates, update environment timestamps, set `latest_catalog_sync_id` to applied record).
+   - [ ] Implement dependency sync worker (resource fetch, table updates, dependency pruning, update status/timestamps, clear or advance `latest_dependency_sync_id`).
+   - [ ] Add concurrency controls (per-environment locks) and execution telemetry logging.
+   - [ ] Implement retry/backoff policy and error reporting surfaced to API/UI.
+
+6. **User Experience & Notifications**
+   - [ ] Build catalog activity feed UI (notification cards, workload links, dismiss action).
+   - [ ] Build environment sync UI (pending actions panel, `Sync From Catalog` / `Sync With Cluster` modals, history).
+   - [ ] Add environment settings page for auto-sync toggles and reminders.
+   - [ ] Extend notification service for Slack/email/webhooks with consistent payloads.
+   - [ ] Instrument UX analytics (CTA usage, dismissals, sync outcomes) and dashboard.
+
+7. **Observability & Operations**
+   - [ ] Instrument metrics (event ingest, dedupe, queue depth, sync latency, failure/dismiss counts) with tagging.
+   - [ ] Define alerts and write runbooks (watch health, backlog, failure spikes, stale prompts, dismissal spikes).
+   - [ ] Implement feature flags/kill switches (environment auto-sync, catalog notifications, dependency auto-sync) plus documentation.
+   - [ ] Deliver operational tooling (CLI/API for manual sync, dependency rebuild, dismissal reset) and train support/SRE teams.
+
+8. **Rollout & Validation**
+   - [ ] Internal dogfood: enable flags, simulate production changes, test dismiss/sync flows, run chaos scenarios.
+   - [ ] Design partner preview: enable for selected customers, collect qualitative/quantitative feedback, iterate on thresholds/UX.
+   - [ ] Progressive auto-sync: allow opt-in, instrument success/failure, shadow dependency auto-sync before enabling writes.
+   - [ ] General availability: publish docs/support materials, default new environments to manual, monitor telemetry/support closely, plan post-release review.
 ## Workstream Overview & Dependencies
 
 | Workstream | Scope | Lead Team | Key Dependencies |
@@ -640,10 +713,10 @@ Critical path: Watch Infrastructure → Sync Decision Engine → Persistence →
 
 1. **Internal Dogfood (Phase 1–3)**  
    - Target a non-production catalog within Lapdev infrastructure.  
-   - Run with catalog auto-sync enabled and environments in manual mode to validate detection and apply fidelity.
+   - Validate production-change notifications with environments in manual mode; ensure catalog activity logs populate without mutating specs.
 2. **Design Partner Preview (Phase 4)**  
    - Select 1–2 customers with tolerant workloads.  
-   - Gate behind feature flag: catalog auto-sync enforced, environments default manual.  
+   - Gate behind feature flag: catalog notifications enabled, environments default manual.  
    - Collect SLA metrics (event latency, sync duration) and monitor false-positive rate.
 3. **Progressive Environment Auto-Sync Enablement (Phase 5)**  
    - Offer environment auto-sync opt-in to preview customers once reconciliation stability is proven.  
@@ -719,13 +792,13 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 1. **Selective Field Sync**: User chooses which fields to sync (e.g., always sync images, but not resource limits)
 2. **Rollback**: Revert catalog to previous version if sync causes issues
 3. **Dry Run**: Preview what would change in environments before applying
-4. **Scheduled Sync**: Define maintenance windows for auto-sync
+4. **Scheduled Sync**: Define maintenance windows for environment auto-sync
 5. **Notifications**: Slack/email notifications for environment sync prompts
 
 ## Security Considerations
 
 1. **RBAC**: Only catalog editors can modify watch settings; environment sync actions require environment write access.
-2. **Audit Log**: Record all catalog auto-sync executions and manual environment sync invocations with actor (or system) and timestamp.
+2. **Audit Log**: Record all catalog edits (who changed workloads) and manual environment sync invocations with actor (or system) and timestamp.
 3. **Validation**: Validate workload specs before applying (resource limits, security contexts)
 4. **Rate Limiting**: Prevent sync storms (max N syncs per minute)
 5. **Secret Handling**:
@@ -764,7 +837,7 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 5. **Edge Case Tests**:
    - Unknown events (resources not in any catalog)
    - Namespace watch list changes during active sync
-   - Catalog deleted shortly after auto-sync
+   - Catalog deleted shortly after edit applied
    - Multiple overlapping syncs for same catalog
 
 ## Metrics & Monitoring
@@ -783,7 +856,7 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 - Deduplication effectiveness (events deduplicated / total events)
 
 **Sync Workflow Metrics:**
-- Catalog sync latency (detection → catalog applied)
+- Catalog edit latency (user save → catalog applied)
 - Environment sync latency (catalog updated → environment synced)
 - Environment decision latency (catalog applied → user-triggered sync) for manual environments
 - Dependency sync latency (event detected → dependency sync completed)
@@ -802,7 +875,7 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 - **Runbooks:** Document common failure paths (watch disconnect, sync failure, secret decryption error, dependency sync backlog) including diagnostic commands and escalation contacts.
 - **Alerting:** Trigger alerts when sync latency or failure rate breach thresholds, or when no events are received for a watched namespace within N minutes.
 - **Backfill:** Provide a CLI/API command to backfill sync records after outages; ensures state catch-up without manual DB edits.
-- **Feature Flags:** Maintain kill switches for auto-sync at catalog and environment level to halt rollout quickly if issues emerge.
+- **Feature Flags:** Maintain kill switches for environment auto-sync (and catalog notifications) to halt rollout quickly if issues emerge.
 - **Access Controls:** Verify permissions for support engineers to inspect sync status without granting ability to trigger environment syncs.
 
 ## Risks & Mitigations

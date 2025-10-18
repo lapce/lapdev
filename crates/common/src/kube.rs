@@ -282,7 +282,7 @@ pub struct KubeEnvironment {
     pub app_catalog_name: String,
     pub cluster_id: Uuid,
     pub cluster_name: String,
-    pub status: Option<String>,
+    pub status: String,
     pub created_at: String,
     pub is_shared: bool,
     pub base_environment_id: Option<Uuid>,

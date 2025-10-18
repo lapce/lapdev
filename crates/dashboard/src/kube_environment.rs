@@ -367,10 +367,10 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
     //     leptos::logging::log!("Delete environment: {}", env_name_for_delete);
     // };
 
-    let status_variant = match environment.status.as_deref() {
-        Some("Running") => BadgeVariant::Secondary,
-        Some("Pending") => BadgeVariant::Outline,
-        Some("Failed") | Some("Error") => BadgeVariant::Destructive,
+    let status_variant = match environment.status.as_str() {
+        "Running" => BadgeVariant::Secondary,
+        "Pending" => BadgeVariant::Outline,
+        "Failed" | "Error" => BadgeVariant::Destructive,
         _ => BadgeVariant::Outline,
     };
 
@@ -459,7 +459,7 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
             </TableCell>
             <TableCell>
                 <Badge variant=status_variant>
-                    {environment.status.clone().unwrap_or_else(|| "Unknown".to_string())}
+                    {environment.status.clone()}
                 </Badge>
             </TableCell>
             <TableCell>

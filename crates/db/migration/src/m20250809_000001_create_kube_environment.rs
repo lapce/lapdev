@@ -44,7 +44,7 @@ impl MigrationTrait for Migration {
                             .string()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(KubeEnvironment::Status).string())
+                    .col(ColumnDef::new(KubeEnvironment::Status).string().not_null())
                     .col(
                         ColumnDef::new(KubeEnvironment::IsShared)
                             .boolean()

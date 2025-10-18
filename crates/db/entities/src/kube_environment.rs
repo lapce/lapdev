@@ -15,7 +15,7 @@ pub struct Model {
     pub cluster_id: Uuid,
     pub name: String,
     pub namespace: String,
-    pub status: Option<String>,
+    pub status: String,
     pub is_shared: bool,
     pub base_environment_id: Option<Uuid>,
     pub auth_token: String,

@@ -13,7 +13,7 @@ pub struct Model {
     pub created_by: Uuid,
     pub name: String,
     pub cluster_version: Option<String>,
-    pub status: Option<String>,
+    pub status: String,
     pub region: Option<String>,
     pub last_reported_at: Option<DateTimeWithTimeZone>,
     pub can_deploy_personal: bool,

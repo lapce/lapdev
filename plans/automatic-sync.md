@@ -61,6 +61,8 @@ This causes drift between production and development environments.
 - Storing at environment level allows per-environment customization while still syncing from source
 - Catalogs serve as blueprints that update automatically when source workloads change, while still allowing teams to curate manual edits when required.
 - Environment resource tables (`kube_environment_configmap` / `kube_environment_secret` / `kube_environment_service`) retain source metadata (namespace/name) so the API can map production changes to environments without re-scanning workloads.
+- **Tables store routing metadata only (source→target mapping), not actual data content**
+- **Actual ConfigMap/Secret data is fetched from Kubernetes during sync operations**
 
 ## Design Decisions
 
@@ -109,7 +111,8 @@ struct ResourceChangeEvent {
     resource_type: ResourceType, // Deployment, StatefulSet, DaemonSet, ConfigMap, Secret, Service
     resource_name: String,
     change_type: ChangeType, // Created, Updated, Deleted
-    resource_yaml: String, // Full resource spec in YAML format
+    resource_version: String, // Kubernetes resource version for deduplication
+    resource_yaml: Option<String>, // Full resource spec; only sent for Workloads, omit for ConfigMaps/Secrets
     timestamp: DateTime<Utc>,
 }
 
@@ -118,6 +121,8 @@ trait KubeManagerRpc {
     async fn configure_watches(namespaces: Vec<String>) -> Result<()>;
 }
 ```
+
+**Note:** For ConfigMaps and Secrets, `resource_yaml` is not sent in the event. The event serves only to notify which environments need sync. Actual data is fetched on-demand during sync operations.
 
 **Event Flow Example:**
 1. Production deployment `api-server` updated in namespace `production`
@@ -208,10 +213,11 @@ When catalog updates, environments are notified with a **simple summary**:
   3. Trigger dependency discovery for any new/removed workloads and refresh source metadata on `kube_environment_configmap` / `kube_environment_secret` / `kube_environment_service` accordingly.
   4. Update environment tables for workloads plus referenced ConfigMaps/Secrets/Services encountered during discovery.
 - **`Sync With Cluster`** (dependency-focused)
-  1. Rediscover ConfigMaps, Secrets, and Services from the source cluster using the stored source metadata on the environment resource tables.
-  2. Refresh values in `kube_environment_configmap`, `kube_environment_secret`, `kube_environment_service`.
-  3. Update discovery timestamps in those tables; remove rows whose backing resources no longer exist.
-  4. Leave workloads untouched, allowing developers to defer catalog changes while still pulling latest configs.
+  1. Query routing tables (`kube_environment_configmap`, `kube_environment_secret`, `kube_environment_service`) for source metadata.
+  2. Fetch current ConfigMap/Secret/Service content from source cluster.
+  3. Apply directly to environment namespace in Kubernetes.
+  4. Update `last_discovered_at` timestamps in routing tables; remove rows whose backing resources no longer exist.
+  5. Leave workloads untouched, allowing developers to defer catalog changes while still pulling latest configs.
 
 **Manual Sync Confirmation (Sync From Catalog):**
 1. UI requests latest catalog sync metadata (`sync_version`, `last_sync_status`, `last_synced_at`, `last_sync_summary`) and displays confirmation dialog with timestamp + workload count.
@@ -428,7 +434,7 @@ CREATE TABLE kube_environment_configmap (
     source_namespace VARCHAR NOT NULL,
     source_name VARCHAR NOT NULL,
     last_discovered_at TIMESTAMPTZ NOT NULL,
-    data JSONB NOT NULL,
+    -- Data is fetched from K8s on-demand, not stored here
     UNIQUE(environment_id, namespace, name),
     UNIQUE(environment_id, source_namespace, source_name)
 );
@@ -447,8 +453,7 @@ CREATE TABLE kube_environment_secret (
     source_namespace VARCHAR NOT NULL,
     source_name VARCHAR NOT NULL,
     last_discovered_at TIMESTAMPTZ NOT NULL,
-    data JSONB NOT NULL, -- Encrypted
-    type VARCHAR NOT NULL, -- Opaque, kubernetes.io/tls, etc.
+    -- Data is fetched from K8s on-demand, not stored here
     UNIQUE(environment_id, namespace, name),
     UNIQUE(environment_id, source_namespace, source_name)
 );
@@ -456,6 +461,58 @@ CREATE TABLE kube_environment_secret (
 
 > Existing service metadata table (`kube_environment_service`) will likewise gain `source_namespace`, `source_name`, and `last_discovered_at` columns plus matching indexes to support service-driven event fan-out.
 
+#### Modified Table: `kube_app_catalog_workload`
+
+**Note:** The existing `kube_app_catalog_workload` table already has `namespace` (source namespace) and `name` fields. We need to add `cluster_id` for faster event routing.
+
+```sql
+-- Add cluster_id to eliminate joins during event routing
+ALTER TABLE kube_app_catalog_workload
+ADD COLUMN cluster_id UUID NOT NULL REFERENCES kube_cluster(id);
+
+-- Constraint: workload's cluster must match its catalog's cluster
+-- (This will be enforced at application level or via trigger)
+```
+
+#### Indexes for Event Routing and Performance
+
+```sql
+-- Critical index for fast event routing: which catalog owns this workload?
+-- With cluster_id, we can route events without joining to kube_app_catalog!
+CREATE INDEX idx_catalog_workload_event_routing
+    ON kube_app_catalog_workload(cluster_id, namespace, name)
+    WHERE deleted_at IS NULL;
+
+-- Index for finding workloads by catalog
+CREATE INDEX idx_catalog_workload_catalog_id
+    ON kube_app_catalog_workload(catalog_id)
+    WHERE deleted_at IS NULL;
+
+-- Indexes for environment ConfigMap/Secret routing
+CREATE INDEX idx_env_configmap_source
+    ON kube_environment_configmap(source_namespace, source_name)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_env_configmap_env_id
+    ON kube_environment_configmap(environment_id)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_env_secret_source
+    ON kube_environment_secret(source_namespace, source_name)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_env_secret_env_id
+    ON kube_environment_secret(environment_id)
+    WHERE deleted_at IS NULL;
+
+-- Index for environment sync queries
+CREATE INDEX idx_env_catalog_sync
+    ON kube_environment(catalog_id, catalog_sync_version);
+
+CREATE INDEX idx_env_dependency_status
+    ON kube_environment(dependency_sync_status)
+    WHERE dependency_sync_status != 'idle';
+```
 
 #### Modified Table: `kube_environment`
 
@@ -494,9 +551,6 @@ ALTER TABLE kube_app_catalog
 ADD COLUMN last_synced_at TIMESTAMPTZ;
 
 ALTER TABLE kube_app_catalog
-ADD COLUMN source_namespace VARCHAR NOT NULL; -- Which namespace to watch in the source cluster
-
-ALTER TABLE kube_app_catalog
 ADD COLUMN sync_version BIGINT NOT NULL DEFAULT 0;
 
 ALTER TABLE kube_app_catalog
@@ -510,14 +564,65 @@ ADD COLUMN last_sync_summary JSONB NOT NULL DEFAULT '{}'::jsonb;
 ```
 
 **Note:**
-- `source_namespace` tells kube-manager which namespace to watch
 - `sync_version`/`last_sync_status`/`last_sync_actor_id`/`last_sync_summary` capture the most recent catalog update metadata (auto or manual)
+- No `source_namespace` on catalog because workloads can come from different namespaces
+- Watched namespaces are derived from distinct `kube_app_catalog_workload.namespace` values
 
 **Namespace Watch Configuration:**
-- API server aggregates all `source_namespace` values for a given cluster
-- Sends list of namespaces to kube-manager: `["production", "staging"]`
+- API server queries all distinct `kube_app_catalog_workload.namespace` values for a given cluster
+- Sends list of namespaces to kube-manager: `["production", "admin", "monitoring"]`
 - Kube-manager watches ALL resources in those namespaces
-- API server filters events to determine which belong to which catalog
+- API server filters events by matching `(cluster_id, namespace, workload_name)` to workload table to determine which catalogs are affected
+
+### Event Routing Strategy
+
+When a workload event arrives from kube-manager:
+
+1. **Extract from RPC context:** `cluster_id` (from authenticated connection)
+2. **Extract from event:** `namespace`, `workload_name`, `resource_version`
+3. **Fast lookup (no joins!):**
+   ```sql
+   SELECT catalog_id
+   FROM kube_app_catalog_workload
+   WHERE cluster_id = $cluster_id
+     AND namespace = $namespace
+     AND name = $workload_name
+     AND deleted_at IS NULL
+   LIMIT 1;
+   ```
+   Uses index: `idx_catalog_workload_event_routing(cluster_id, namespace, name)`
+
+4. **Update catalog sync metadata** (bump `sync_version`, set `last_sync_status`)
+5. **Trigger environment sync** for environments using this catalog
+
+**Note:** Adding `cluster_id` to `kube_app_catalog_workload` eliminates the need to join with `kube_app_catalog` during event routing, making this operation O(1) index lookup instead of a join.
+
+### Summary of Key Schema Decisions
+
+**1. No `source_namespace` on `kube_app_catalog`**
+- ❌ Catalog does NOT have a single source namespace
+- ✅ Workloads can come from different namespaces within the same catalog
+- ✅ Watched namespaces derived from `kube_app_catalog_workload.namespace` (already exists)
+
+**2. Add `cluster_id` to `kube_app_catalog_workload`**
+- ✅ Enables fast event routing without joins
+- ✅ Index on `(cluster_id, namespace, name)` makes routing O(1)
+- ✅ Denormalization worth it (events are high-volume, catalog updates are rare)
+
+**3. ConfigMap/Secret tables store routing metadata only**
+- ✅ No data storage in database
+- ✅ Fetch from Kubernetes on-demand during sync
+- ✅ Simpler, more secure, no encryption complexity
+
+**4. Catalog identifies cluster, workloads identify namespace**
+```
+kube_cluster
+  └── kube_app_catalog (cluster_id)
+        └── kube_app_catalog_workload (cluster_id, namespace, name)
+                ├── namespace: "production"
+                ├── namespace: "admin"
+                └── namespace: "monitoring"
+```
 
 ## Implementation Plan
 
@@ -540,7 +645,7 @@ ADD COLUMN last_sync_summary JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 **API Server Changes (Centralized service):**
 1. Implement namespace watch configuration management:
-   - When catalog created/updated: aggregate `source_namespace` per cluster
+   - When catalog/workload created/updated: query distinct `kube_app_catalog_workload.namespace` per cluster
    - Send `configure_watches([namespaces])` RPC to kube-manager
    - Track which namespaces are being watched per cluster
 2. Implement `report_resource_change` RPC handler
@@ -580,8 +685,8 @@ ADD COLUMN last_sync_summary JSONB NOT NULL DEFAULT '{}'::jsonb;
    - For `sync_request.action = 'dependency'`: refreshes ConfigMaps/Secrets/Services only, based on stored source metadata
    - Payload includes the target `catalog_sync_version` or serialized dependency snapshot to support auditing and idempotency
 6. Handle both shared and branch environments
-7. Implement ConfigMap/Secret discovery and update logic with proper encryption for Secrets
-8. Persist source metadata in `kube_environment_configmap` / `kube_environment_secret` / `kube_environment_service` for each referenced ConfigMap/Secret/Service
+7. Implement ConfigMap/Secret discovery and sync logic (fetch from source, apply to target)
+8. Persist source metadata in `kube_environment_configmap` / `kube_environment_secret` / `kube_environment_service` for each referenced ConfigMap/Secret/Service (metadata only, not data)
 9. Implement service discovery and preview URL updates
 10. Update `kube_environment.last_catalog_synced_at`/`last_dependency_synced_at` timestamps based on action completed and set `catalog_sync_version` to the applied `sync_version`.
 11. Audit manual triggers by storing initiating user id, catalog `sync_version`, dependency event ids, and outcome for every `manual_trigger=true` job
@@ -603,16 +708,17 @@ ADD COLUMN last_sync_summary JSONB NOT NULL DEFAULT '{}'::jsonb;
 1. **Schema & Persistence**
    - [ ] Draft migration plan
      - [ ] Document new tables/columns, data types, indexes, FK relationships.
-     - [ ] Review migration design with Data Platform (sizing, retention, encryption).
+     - [ ] Review migration design with Data Platform (sizing, retention).
    - [ ] Implement migrations
-     - [ ] Create/extend `kube_environment_configmap`, `kube_environment_secret`, and `kube_environment_service` tables with source metadata columns; add dependency-tracking columns to `kube_environment`.
-     - [ ] Alter `kube_app_catalog` to add sync metadata columns (`sync_version`, `last_sync_status`, `last_synced_at`, `last_sync_actor_id`, `last_sync_summary` with sensible default such as `'{}'::jsonb`).
-     - [ ] Alter `kube_environment` to add `catalog_sync_version` and `latest_dependency_sync_id` along with timestamps.
-     - [ ] Add supporting indexes (config/secret uniqueness, dependency lookup, catalog sync metadata filtering).
+     - [ ] Create/extend `kube_environment_configmap`, `kube_environment_secret`, and `kube_environment_service` tables with source metadata columns (no data storage); add dependency-tracking columns to `kube_environment`.
+     - [ ] Alter `kube_app_catalog` to add sync metadata columns ONLY (`sync_version`, `last_sync_status`, `last_synced_at`, `last_sync_actor_id`, `last_sync_summary`). Do NOT add `source_namespace` to catalog.
+     - [ ] Alter `kube_app_catalog_workload` to add `cluster_id` for fast event routing (backfill from catalog's cluster_id).
+     - [ ] Alter `kube_environment` to add `catalog_sync_version` and dependency tracking columns along with timestamps.
+     - [ ] Add supporting indexes including critical `idx_catalog_workload_event_routing(cluster_id, namespace, name)`.
      - [ ] Add constraints/foreign keys with documented ON DELETE behavior.
    - [ ] Backfill legacy data
      - [ ] Snapshot current environment resources (scripts/queries).
-     - [ ] Populate config/secret tables (respect encryption requirements).
+     - [ ] Populate config/secret routing tables with source metadata only (no data).
      - [ ] Build & run dependency discovery seeding script.
      - [ ] Seed catalog sync metadata (`sync_version`, `last_sync_status = 'auto_applied'`, `last_sync_actor_id = NULL`, `last_synced_at = now()`, summary payload).
      - [ ] Initialize environment dependency tracking fields (`dependency_sync_status = 'idle'`, clear summaries/errors).
@@ -631,7 +737,7 @@ ADD COLUMN last_sync_summary JSONB NOT NULL DEFAULT '{}'::jsonb;
 3. **Lapdev API – Event Processing**
    - [ ] Build Change Event Processor endpoint (validation, YAML parsing, auth).
    - [ ] Implement workload event flow (catalog ownership lookup, dedupe, update `kube_app_catalog` sync metadata with `sync_version++`, `last_sync_status = 'auto_applied'`, `last_synced_at = now()`, `last_sync_actor_id = NULL`, `last_sync_summary`, enqueue notification job targeting environments where `catalog_sync_version` < catalog `sync_version`).
-   - [ ] Implement dependency event flow (dependency lookup, upsert sync status, auto-sync queueing, update environment `latest_dependency_sync_id`).
+   - [ ] Implement dependency event flow (dependency lookup, upsert sync status, auto-sync queueing, update environment `dependency_summary` and `dependency_sync_status`).
    - [ ] Add dedupe windowing + stale dependency guard rails (rebuild triggers).
    - [ ] Expose APIs to read catalog sync metadata (`sync_version`, `last_sync_status`, `last_synced_at`, `last_sync_actor_id`, `last_sync_summary`) and dependency statuses (with tests).
 
@@ -645,7 +751,7 @@ ADD COLUMN last_sync_summary JSONB NOT NULL DEFAULT '{}'::jsonb;
 5. **Environment Sync Orchestrator**
    - [ ] Define `sync_environment` RPC schema (carrying `catalog_sync_version`/`dependency_sync_id`) and job queue wiring.
    - [ ] Implement catalog sync worker (validate expected `catalog_sync_version`, perform workload apply, dependency refresh, service updates, update environment timestamps, set environment `catalog_sync_version` to match the catalog, and update catalog `last_sync_status`/`last_sync_summary` on success or failure).
-   - [ ] Implement dependency sync worker (resource fetch, table updates, dependency pruning, update status/timestamps, clear or advance `latest_dependency_sync_id`).
+   - [ ] Implement dependency sync worker (resource fetch, table updates, dependency pruning, update status/timestamps, clear `dependency_summary` on completion).
    - [ ] Add concurrency controls (per-environment locks) and execution telemetry logging; validate expected `catalog_sync_version` before applying.
    - [ ] Implement retry/backoff policy and error reporting surfaced to API/UI.
 
@@ -671,9 +777,9 @@ ADD COLUMN last_sync_summary JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 | Workstream | Scope | Lead Team | Key Dependencies |
 |---|---|---|---|
-| Watch Infrastructure | Kube-manager watch plumbing, RPC schema, API ingestion | Platform Agents | Requires namespace metadata on catalogs |
+| Watch Infrastructure | Kube-manager watch plumbing, RPC schema, API ingestion | Platform Agents | Requires namespace metadata on workloads |
 | Sync Decision Engine | Event classification, dedupe, sync record lifecycle | Backend Services | Needs Watch Infrastructure |
-| Catalog & Environment Persistence | DDL migrations, ORM updates, encryption plumbing | Data Platform | Sequenced before UI/API consumption |
+| Catalog & Environment Persistence | DDL migrations, ORM updates | Data Platform | Sequenced before UI/API consumption |
 | Orchestration & Queues | Catalog update executor, environment reconciliation workers | Backend Services | Depends on Persistence schema |
 | UI & Notification Layer | Dashboard surfaces, toggles, notification delivery | Frontend & UX | Needs API endpoints & sync records |
 | Observability & Ops | Metrics, alerting, runbooks, failure injection | SRE | Consumes telemetry hooks from all layers |
@@ -732,9 +838,9 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 - Show combined notification: "5 workloads changed"
 - List affected workload names
 
-### New Catalog Created or Namespace Changed
-- When catalog is created or `source_namespace` is updated
-- API server recalculates namespace watch list for the cluster
+### New Catalog/Workload Created or Namespace Changed
+- When catalog created, workload added/removed, or workload namespace updated
+- API server recalculates namespace watch list by querying distinct `kube_app_catalog_workload.namespace` for the cluster
 - Sends `configure_watches([new_namespace_list])` to kube-manager
 - Kube-manager dynamically adds/removes watches as needed
 - No restart required
@@ -773,11 +879,12 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 3. **Validation**: Validate workload specs before applying (resource limits, security contexts)
 4. **Rate Limiting**: Prevent sync storms (max N syncs per minute)
 5. **Secret Handling**:
-   - Secrets stored encrypted in `kube_environment_secret` table
-   - Diff view shows key names and change indicators, not actual secret values
-   - Secret values only transmitted over TLS between components
-   - RBAC: Separate permission for viewing Secret diffs
-   - Audit: Log all Secret access and modifications
+   - Secrets remain in Kubernetes only; never stored in Lapdev database
+   - Routing tables store only metadata (source namespace/name → target namespace/name)
+   - Sync operations fetch directly from source cluster and apply to target namespace
+   - All secret data remains encrypted at rest by Kubernetes
+   - Secret access audited via Kubernetes audit logs
+   - RBAC: Environment sync requires appropriate K8s RBAC permissions on both source and target clusters
 
 ## Testing Strategy
 
@@ -790,7 +897,7 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
    - End-to-end flow: Production change → Kube-manager event → API decision → Catalog/environment sync
    - Namespace watch reconfiguration when catalogs added/removed
    - Auto-sync vs manual environment workflows
-   - ConfigMap/Secret/Service discovery during environment sync with source-metadata updates
+   - ConfigMap/Secret/Service discovery during environment sync (fetch from source, apply to target, persist routing metadata)
 
 3. **Load Tests**:
    - 100+ workloads across multiple namespaces
@@ -851,7 +958,7 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 
 ## Risks & Mitigations
 - **False Positives/Noise:** Deduplication window and workload ownership mapping errors could generate noisy syncs. Mitigation: add resource ownership cache, alert on high manual deferral rates.
-- **Secrets Exposure:** Transporting full secret data increases blast radius. Mitigation: enforce envelope encryption at rest, limit log redaction, and gate diff visibility behind elevated RBAC.
+- **Secrets Exposure:** Syncing secrets from production to development increases risk of exposure. Mitigation: secrets never stored in Lapdev database, only routing metadata; fetched directly from K8s during sync; leverage K8s RBAC for access control; audit all sync operations.
 - **Customer Cluster Load:** Watching all resources could stress API servers. Mitigation: allow namespace-level sampling configuration and backoff when resource version drift detected.
 - **Long-Running Branch Mods:** Auto-sync might overwrite intentional branch divergences. Mitigation: branch environments default to manual; surface conflicts with ability to reapply branch overrides.
 - **Partial Failures:** Catalog update succeeding while environment sync fails leaves inconsistent state. Mitigation: persist failure reason, expose retry control, and guard rails to prevent infinite retries.
@@ -881,7 +988,7 @@ Each stage requires explicit go/no-go review covering error budget impact, suppo
 1. Should kube-manager batch events before sending to API server, or send immediately?
    - Decision: Send immediately for low latency; API server handles batching/deduplication.
 2. How should we handle very large resources (e.g., ConfigMap with 10MB of data)?
-   - Recommendation: Send checksum + metadata via event; API server fetches full resource on-demand when diffing.
+   - Decision: ConfigMaps/Secrets don't send data in events; only metadata is sent to trigger sync. Workloads send full YAML since they need to be stored in catalog. For extremely large workload specs, implement size limits and error handling.
 3. Should we implement event replay/audit log?
     - Recommendation: Store raw events for 7 days in object storage with index for compliance, gated behind feature flag.
 4. What happens if kube-manager falls behind (event backlog)?

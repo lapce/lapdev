@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context as _, Result as AnyResult};
 use k8s_openapi::api::{
     apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
     batch::v1::{CronJob, Job},
-    core::v1::PodSpec,
+    core::v1::{PodSpec, Service},
 };
 use lapdev_common::kube::{
     KubeClusterInfo, KubeContainerImage, KubeContainerInfo, KubeContainerPort, KubeWorkloadKind,
@@ -12,10 +12,9 @@ use lapdev_db_entities::kube_app_catalog_workload::{self, Entity as CatalogWorkl
 use lapdev_kube_rpc::{
     KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent, ResourceChangeType, ResourceType,
 };
-use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter,
-};
 use sea_orm::prelude::Json;
+use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -176,7 +175,12 @@ impl KubeClusterRpc for KubeClusterServer {
             "Received resource change event"
         );
 
-        if let Err(err) = self.handle_workload_change(&event).await {
+        let result = match event.resource_type {
+            ResourceType::Service => self.handle_service_change(&event).await,
+            _ => self.handle_workload_change(&event).await,
+        };
+
+        if let Err(err) = result {
             tracing::error!(
                 cluster_id = %self.cluster_id,
                 namespace = %event.namespace,
@@ -212,8 +216,8 @@ impl KubeClusterServer {
             .as_ref()
             .context("workload event missing resource YAML")?;
 
-        let new_containers = extract_containers_from_yaml(event.resource_type, yaml)
-            .with_context(|| {
+        let new_containers =
+            extract_containers_from_yaml(event.resource_type, yaml).with_context(|| {
                 format!(
                     "failed to parse workload YAML for {}/{} ({:?})",
                     event.namespace, event.resource_name, event.resource_type
@@ -267,8 +271,8 @@ impl KubeClusterServer {
                 }
             }
 
-            let merged_containers =
-                merge_containers(&workload.containers, &new_containers).with_context(|| {
+            let merged_containers = merge_containers(&workload.containers, &new_containers)
+                .with_context(|| {
                     format!(
                         "failed to merge container definitions for workload {}",
                         workload.id
@@ -299,6 +303,83 @@ impl KubeClusterServer {
 
         Ok(())
     }
+
+    async fn handle_service_change(&self, event: &ResourceChangeEvent) -> AnyResult<()> {
+        if matches!(event.change_type, ResourceChangeType::Deleted) {
+            self.db
+                .mark_cluster_service_deleted(
+                    self.cluster_id,
+                    &event.namespace,
+                    &event.resource_name,
+                    event.timestamp,
+                )
+                .await?;
+            return Ok(());
+        }
+
+        let yaml = event
+            .resource_yaml
+            .as_ref()
+            .context("service event missing resource YAML")?;
+
+        let service: Service = serde_yaml::from_str(yaml)?;
+
+        let (selector_json, ports_json, service_type, cluster_ip) = {
+            let spec = service.spec.as_ref();
+            let selector = spec
+                .and_then(|spec| spec.selector.clone())
+                .unwrap_or_default();
+            let selector_json = json!(selector);
+
+            let ports = spec
+                .and_then(|spec| spec.ports.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|port| {
+                    let target_port = port.target_port.map(|tp| match tp {
+                        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(v) => {
+                            json!(v)
+                        }
+                        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(s) => {
+                            json!(s)
+                        }
+                    });
+
+                    json!({
+                        "name": port.name,
+                        "port": port.port,
+                        "target_port": target_port,
+                        "protocol": port.protocol,
+                        "app_protocol": port.app_protocol,
+                        "node_port": port.node_port,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let ports_json = json!(ports);
+
+            let service_type = spec.and_then(|spec| spec.type_.clone());
+            let cluster_ip = spec.and_then(|spec| spec.cluster_ip.clone());
+
+            (selector_json, ports_json, service_type, cluster_ip)
+        };
+
+        self.db
+            .upsert_cluster_service(
+                self.cluster_id,
+                &event.namespace,
+                &event.resource_name,
+                &event.resource_version,
+                yaml.clone(),
+                selector_json,
+                ports_json,
+                service_type,
+                cluster_ip,
+                event.timestamp,
+            )
+            .await?;
+
+        Ok(())
+    }
 }
 
 fn workload_kind_for(resource_type: ResourceType) -> Option<KubeWorkloadKind> {
@@ -309,9 +390,7 @@ fn workload_kind_for(resource_type: ResourceType) -> Option<KubeWorkloadKind> {
         ResourceType::ReplicaSet => Some(KubeWorkloadKind::ReplicaSet),
         ResourceType::Job => Some(KubeWorkloadKind::Job),
         ResourceType::CronJob => Some(KubeWorkloadKind::CronJob),
-        ResourceType::ConfigMap
-        | ResourceType::Secret
-        | ResourceType::Service => None,
+        ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => None,
     }
 }
 
@@ -376,9 +455,7 @@ fn extract_containers_from_yaml(
                 .context("cronjob missing pod spec")?;
             extract_pod_spec_containers(pod_spec)
         }
-        ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => {
-            Ok(Vec::new())
-        }
+        ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => Ok(Vec::new()),
     }
 }
 

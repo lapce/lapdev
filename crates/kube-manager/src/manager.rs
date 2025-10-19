@@ -39,8 +39,8 @@ use uuid::Uuid;
 use crate::devbox_proxy_manager::DevboxProxyManager;
 use crate::manager_rpc::KubeManagerRpcServer;
 use crate::{
-    sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager,
-    watch_manager::WatchManager, websocket_transport::WebSocketTransport,
+    sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager, watch_manager::WatchManager,
+    websocket_transport::WebSocketTransport,
 };
 
 const SCOPE: &[&str] = &["https://www.googleapis.com/auth/cloud-platform"];
@@ -108,8 +108,7 @@ impl KubeManager {
             e
         })?);
 
-        let proxy_manager =
-            Arc::new(SidecarProxyManager::new(kube_client.as_ref().clone()).await?);
+        let proxy_manager = Arc::new(SidecarProxyManager::new(kube_client.as_ref().clone()).await?);
         let devbox_proxy_manager = Arc::new(DevboxProxyManager::new().await?);
         let watch_manager = Arc::new(WatchManager::new(kube_client.clone()));
 
@@ -196,9 +195,7 @@ impl KubeManager {
         let rpc_client =
             KubeClusterRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
-        self.watch_manager
-            .set_rpc_client(rpc_client.clone())
-            .await;
+        self.watch_manager.set_rpc_client(rpc_client.clone()).await;
 
         let rpc_server = KubeManagerRpcServer::new(self.clone(), rpc_client.clone());
 

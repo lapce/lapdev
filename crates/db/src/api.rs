@@ -10,6 +10,7 @@ use lapdev_common::{
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
 };
+use lapdev_db_entities::kube_cluster_service;
 use lapdev_db_migration::Migrator;
 use pasetors::{
     keys::{Generate, SymmetricKey},
@@ -948,6 +949,98 @@ impl DbApi {
         Ok(updated)
     }
 
+    pub async fn upsert_cluster_service(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+        name: &str,
+        resource_version: &str,
+        service_yaml: String,
+        selector: serde_json::Value,
+        ports: serde_json::Value,
+        service_type: Option<String>,
+        cluster_ip: Option<String>,
+        observed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Uuid> {
+        let observed = observed_at.into();
+        let selector_json = Json::from(selector);
+        let ports_json = Json::from(ports);
+
+        let existing = kube_cluster_service::Entity::find()
+            .filter(kube_cluster_service::Column::ClusterId.eq(cluster_id))
+            .filter(kube_cluster_service::Column::Namespace.eq(namespace))
+            .filter(kube_cluster_service::Column::Name.eq(name))
+            .one(&self.conn)
+            .await?;
+
+        if let Some(model) = existing {
+            let same_resource_version = model.resource_version == resource_version;
+            let mut active: kube_cluster_service::ActiveModel = model.into();
+            if !same_resource_version {
+                active.resource_version = ActiveValue::Set(resource_version.to_string());
+            }
+            active.service_yaml = ActiveValue::Set(service_yaml);
+            active.selector = ActiveValue::Set(selector_json);
+            active.ports = ActiveValue::Set(ports_json);
+            active.service_type = ActiveValue::Set(service_type);
+            active.cluster_ip = ActiveValue::Set(cluster_ip);
+            active.updated_at = ActiveValue::Set(observed);
+            active.last_observed_at = ActiveValue::Set(observed);
+            active.deleted_at = ActiveValue::Set(None);
+
+            let updated = active.update(&self.conn).await?;
+            Ok(updated.id)
+        } else {
+            let new_id = Uuid::new_v4();
+            let active = kube_cluster_service::ActiveModel {
+                id: ActiveValue::Set(new_id),
+                created_at: ActiveValue::Set(observed),
+                updated_at: ActiveValue::Set(observed),
+                deleted_at: ActiveValue::Set(None),
+                cluster_id: ActiveValue::Set(cluster_id),
+                namespace: ActiveValue::Set(namespace.to_string()),
+                name: ActiveValue::Set(name.to_string()),
+                resource_version: ActiveValue::Set(resource_version.to_string()),
+                service_yaml: ActiveValue::Set(service_yaml),
+                selector: ActiveValue::Set(selector_json),
+                ports: ActiveValue::Set(ports_json),
+                service_type: ActiveValue::Set(service_type),
+                cluster_ip: ActiveValue::Set(cluster_ip),
+                last_observed_at: ActiveValue::Set(observed),
+            };
+
+            active.insert(&self.conn).await?;
+            Ok(new_id)
+        }
+    }
+
+    pub async fn mark_cluster_service_deleted(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+        name: &str,
+        observed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let model = match kube_cluster_service::Entity::find()
+            .filter(kube_cluster_service::Column::ClusterId.eq(cluster_id))
+            .filter(kube_cluster_service::Column::Namespace.eq(namespace))
+            .filter(kube_cluster_service::Column::Name.eq(name))
+            .one(&self.conn)
+            .await?
+        {
+            Some(model) => model,
+            None => return Ok(()),
+        };
+
+        let observed = observed_at.into();
+        let mut active: kube_cluster_service::ActiveModel = model.into();
+        active.deleted_at = ActiveValue::Set(Some(observed));
+        active.updated_at = ActiveValue::Set(chrono::Utc::now().into());
+        active.last_observed_at = ActiveValue::Set(observed);
+        active.update(&self.conn).await?;
+        Ok(())
+    }
+
     // App catalog operations
     pub async fn create_app_catalog(
         &self,
@@ -1023,7 +1116,7 @@ impl DbApi {
             enriched_workloads,
             now,
         )
-            .await?;
+        .await?;
 
         txn.commit().await?;
         Ok(catalog_id)

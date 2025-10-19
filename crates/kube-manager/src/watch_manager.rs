@@ -281,7 +281,8 @@ where
         + Sync
         + 'static
         + serde::Serialize,
-    <K as Resource>::DynamicType: Default + Eq + std::hash::Hash + Clone + std::fmt::Debug + Send + Sync,
+    <K as Resource>::DynamicType:
+        Default + Eq + std::hash::Hash + Clone + std::fmt::Debug + Send + Sync,
 {
     let api: Api<K> = Api::namespaced(kube_client.as_ref().clone(), &namespace);
     let watcher_stream = watcher(api, watcher::Config::default().timeout(60));
@@ -291,16 +292,24 @@ where
     while let Some(event) = watcher_stream.try_next().await.map_err(map_watcher_error)? {
         match event {
             Event::Apply(obj) => {
-                if let Some(change_event) =
-                    build_event(&namespace, resource_type, ResourceChangeType::Created, &mut seen_versions, obj)
-                {
+                if let Some(change_event) = build_event(
+                    &namespace,
+                    resource_type,
+                    ResourceChangeType::Created,
+                    &mut seen_versions,
+                    obj,
+                ) {
                     send_event(rpc_client.clone(), change_event).await;
                 }
             }
             Event::Delete(obj) => {
-                if let Some(change_event) =
-                    build_event(&namespace, resource_type, ResourceChangeType::Deleted, &mut seen_versions, obj)
-                {
+                if let Some(change_event) = build_event(
+                    &namespace,
+                    resource_type,
+                    ResourceChangeType::Deleted,
+                    &mut seen_versions,
+                    obj,
+                ) {
                     send_event(rpc_client.clone(), change_event).await;
                 }
             }
@@ -312,9 +321,13 @@ where
                 );
             }
             Event::InitApply(obj) => {
-                if let Some(change_event) =
-                    build_event(&namespace, resource_type, ResourceChangeType::Created, &mut seen_versions, obj)
-                {
+                if let Some(change_event) = build_event(
+                    &namespace,
+                    resource_type,
+                    ResourceChangeType::Created,
+                    &mut seen_versions,
+                    obj,
+                ) {
                     send_event(rpc_client.clone(), change_event).await;
                 }
             }
@@ -384,7 +397,11 @@ where
             }
         }
         ResourceChangeType::Updated => {
-            if seen_versions.get(&name).map(|prev| prev == &resource_version) == Some(true) {
+            if seen_versions
+                .get(&name)
+                .map(|prev| prev == &resource_version)
+                == Some(true)
+            {
                 return None;
             }
             ResourceChangeType::Updated
@@ -439,6 +456,7 @@ fn should_include_yaml(resource_type: ResourceType) -> bool {
             | ResourceType::ReplicaSet
             | ResourceType::Job
             | ResourceType::CronJob
+            | ResourceType::Service
     )
 }
 

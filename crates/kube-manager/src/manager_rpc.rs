@@ -389,7 +389,12 @@ impl KubeManagerRpc for KubeManagerRpcServer {
             namespaces.len()
         );
 
-        match self.manager.watch_manager.configure_watches(namespaces).await {
+        match self
+            .manager
+            .watch_manager
+            .configure_watches(namespaces)
+            .await
+        {
             Ok(_) => {
                 tracing::info!("Successfully configured namespace watches");
                 Ok(())

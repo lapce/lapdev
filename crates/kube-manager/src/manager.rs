@@ -26,7 +26,8 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadWithServices, KubeWorkloadYaml,
-    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, TunnelStatus,
+    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, NamespacedResourceRequest,
+    NamespacedResourceResponse, TunnelStatus,
 };
 use lapdev_rpc::spawn_twoway;
 use serde::de::DeserializeOwned;
@@ -2502,6 +2503,58 @@ impl KubeManager {
         }
 
         Ok((services_yaml_map, configmaps_yaml_map, secrets_yaml_map))
+    }
+
+    pub(crate) async fn fetch_namespaced_resources(
+        &self,
+        requests: Vec<NamespacedResourceRequest>,
+    ) -> Result<Vec<NamespacedResourceResponse>> {
+        let client = &self.kube_client;
+        let mut results = Vec::with_capacity(requests.len());
+
+        for request in requests {
+            let namespace = request.namespace.clone();
+            let configmaps_api: kube::Api<ConfigMap> =
+                kube::Api::namespaced((**client).clone(), &namespace);
+            let secrets_api: kube::Api<Secret> =
+                kube::Api::namespaced((**client).clone(), &namespace);
+
+            let mut configmap_yamls = HashMap::new();
+            for name in request.configmaps {
+                match configmaps_api.get(&name).await {
+                    Ok(configmap) => {
+                        if let Ok(yaml) = serde_yaml::to_string(&configmap) {
+                            configmap_yamls.insert(name.clone(), yaml);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!("Could not fetch ConfigMap {}/{}: {}", namespace, name, err);
+                    }
+                }
+            }
+
+            let mut secret_yamls = HashMap::new();
+            for name in request.secrets {
+                match secrets_api.get(&name).await {
+                    Ok(secret) => {
+                        if let Ok(yaml) = serde_yaml::to_string(&secret) {
+                            secret_yamls.insert(name.clone(), yaml);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!("Could not fetch Secret {}/{}: {}", namespace, name, err);
+                    }
+                }
+            }
+
+            results.push(NamespacedResourceResponse {
+                namespace,
+                configmaps: configmap_yamls,
+                secrets: secret_yamls,
+            });
+        }
+
+        Ok(results)
     }
 
     pub(crate) async fn apply_workloads_with_resources(

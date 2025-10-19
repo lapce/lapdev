@@ -5,7 +5,7 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml, KubeWorkloadsWithResources,
-    TunnelStatus, WorkloadIdentifier,
+    NamespacedResourceRequest, NamespacedResourceResponse, TunnelStatus, WorkloadIdentifier,
 };
 use uuid::Uuid;
 
@@ -309,6 +309,20 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         }
 
         Ok(result)
+    }
+
+    async fn get_namespaced_resources(
+        self,
+        _context: ::tarpc::context::Context,
+        requests: Vec<NamespacedResourceRequest>,
+    ) -> Result<Vec<NamespacedResourceResponse>, String> {
+        match self.manager.fetch_namespaced_resources(requests).await {
+            Ok(resources) => Ok(resources),
+            Err(e) => {
+                tracing::error!("Failed to fetch namespaced resources: {e}");
+                Err(format!("Failed to fetch namespaced resources: {e}"))
+            }
+        }
     }
 
     async fn update_workload_containers(

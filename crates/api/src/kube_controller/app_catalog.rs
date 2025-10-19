@@ -1,16 +1,21 @@
+use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use lapdev_common::kube::{
     KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeServiceDetails,
     KubeServiceWithYaml, PagePaginationParams, PaginatedInfo, PaginatedResult,
 };
 use lapdev_db::api::CachedClusterService;
-use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
+use lapdev_db_entities::kube_app_catalog_workload_dependency;
+use lapdev_kube_rpc::{
+    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, NamespacedResourceRequest,
+};
 use lapdev_rpc::error::ApiError;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use super::{
-    workload_yaml_cleaner::rebuild_workload_yaml, yaml_parser::build_workload_details_from_yaml,
+    resources::{clean_configmap, clean_secret, rebuild_workload_yaml},
+    yaml_parser::build_workload_details_from_yaml,
     KubeController,
 };
 use chrono::Utc;
@@ -180,20 +185,132 @@ impl KubeController {
             );
         }
 
+        let dependency_rows = if workload_ids.is_empty() {
+            Vec::new()
+        } else {
+            kube_app_catalog_workload_dependency::Entity::find()
+                .filter(
+                    kube_app_catalog_workload_dependency::Column::WorkloadId
+                        .is_in(workload_ids.clone()),
+                )
+                .filter(kube_app_catalog_workload_dependency::Column::DeletedAt.is_null())
+                .all(&self.db.conn)
+                .await
+                .map_err(ApiError::from)?
+        };
+
+        let mut dependency_requests: HashMap<String, (HashSet<String>, HashSet<String>)> =
+            HashMap::new();
+
+        for row in dependency_rows {
+            let namespace = row.namespace.clone();
+            let resource_name = row.resource_name.clone();
+            let entry = dependency_requests.entry(namespace).or_default();
+            match row.resource_type.as_str() {
+                "configmap" => {
+                    entry.0.insert(resource_name);
+                }
+                "secret" => {
+                    entry.1.insert(resource_name);
+                }
+                _ => {}
+            }
+        }
+
+        let mut configmaps_map: HashMap<String, String> = HashMap::new();
+        let mut secrets_map: HashMap<String, String> = HashMap::new();
+
+        if !dependency_requests.is_empty() {
+            let cluster_server = self
+                .get_random_kube_cluster_server(cluster_id)
+                .await
+                .ok_or_else(|| {
+                    ApiError::InvalidRequest(
+                        "No connected KubeManager for the app catalog's source cluster".to_string(),
+                    )
+                })?;
+
+            let requests: Vec<NamespacedResourceRequest> = dependency_requests
+                .into_iter()
+                .map(
+                    |(namespace, (configmaps, secrets))| NamespacedResourceRequest {
+                        namespace,
+                        configmaps: configmaps.into_iter().collect(),
+                        secrets: secrets.into_iter().collect(),
+                    },
+                )
+                .collect();
+
+            if !requests.is_empty() {
+                let responses = match cluster_server
+                    .rpc_client
+                    .get_namespaced_resources(tarpc::context::current(), requests)
+                    .await
+                {
+                    Ok(Ok(res)) => res,
+                    Ok(Err(e)) => {
+                        return Err(ApiError::InvalidRequest(format!(
+                            "Failed to fetch ConfigMaps/Secrets: {e}"
+                        )))
+                    }
+                    Err(e) => {
+                        return Err(ApiError::InvalidRequest(format!(
+                            "Connection error to source cluster: {e}"
+                        )))
+                    }
+                };
+
+                for response in responses {
+                    for (name, yaml) in response.configmaps {
+                        let parsed: ConfigMap = serde_yaml::from_str(&yaml).map_err(|err| {
+                            ApiError::InvalidRequest(format!(
+                                "Failed to parse ConfigMap '{name}' from namespace {}: {err}",
+                                response.namespace
+                            ))
+                        })?;
+                        let cleaned = clean_configmap(parsed);
+                        let cleaned_yaml = serde_yaml::to_string(&cleaned).map_err(|err| {
+                            ApiError::InvalidRequest(format!(
+                                "Failed to serialize ConfigMap '{name}' from namespace {}: {err}",
+                                response.namespace
+                            ))
+                        })?;
+                        configmaps_map.insert(name, cleaned_yaml);
+                    }
+                    for (name, yaml) in response.secrets {
+                        let parsed: Secret = serde_yaml::from_str(&yaml).map_err(|err| {
+                            ApiError::InvalidRequest(format!(
+                                "Failed to parse Secret '{name}' from namespace {}: {err}",
+                                response.namespace
+                            ))
+                        })?;
+                        let cleaned = clean_secret(parsed);
+                        let cleaned_yaml = serde_yaml::to_string(&cleaned).map_err(|err| {
+                            ApiError::InvalidRequest(format!(
+                                "Failed to serialize Secret '{name}' from namespace {}: {err}",
+                                response.namespace
+                            ))
+                        })?;
+                        secrets_map.insert(name, cleaned_yaml);
+                    }
+                }
+            }
+        }
+
         tracing::info!(
-            "Built catalog workload resources from DB: {} workloads, {} matching services (cluster: {})",
+            "Built catalog workload resources from DB: {} workloads, {} services, {} configmaps, {} secrets (cluster: {})",
             workload_yamls.len(),
             services_map.len(),
+            configmaps_map.len(),
+            secrets_map.len(),
             cluster_id,
         );
 
         Ok(KubeWorkloadsWithResources {
             workloads: workload_yamls,
             services: services_map,
-            // ConfigMaps and Secrets aren't cached in DB yet, but the workload YAML
-            // should already reference them, so they'll be deployed as part of the workload
-            configmaps: HashMap::new(),
-            secrets: HashMap::new(),
+            configmaps: configmaps_map,
+            secrets: secrets_map,
         })
     }
 

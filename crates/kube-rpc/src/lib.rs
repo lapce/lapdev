@@ -342,6 +342,20 @@ pub struct KubeWorkloadsWithResources {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamespacedResourceRequest {
+    pub namespace: String,
+    pub configmaps: Vec<String>,
+    pub secrets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamespacedResourceResponse {
+    pub namespace: String,
+    pub configmaps: HashMap<String, String>,
+    pub secrets: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeRawWorkloadYaml {
     pub name: String,
     pub namespace: String,
@@ -405,6 +419,10 @@ pub trait KubeManagerRpc {
     async fn get_workloads_raw_yaml(
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeRawWorkloadYaml>, String>;
+
+    async fn get_namespaced_resources(
+        requests: Vec<NamespacedResourceRequest>,
+    ) -> Result<Vec<NamespacedResourceResponse>, String>;
 
     async fn configure_watches(namespaces: Vec<String>) -> Result<(), String>;
 

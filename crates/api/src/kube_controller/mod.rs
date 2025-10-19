@@ -12,10 +12,10 @@ mod cluster;
 mod deployment;
 mod environment;
 mod preview_url;
+mod resources;
 mod service;
 pub mod validation;
 mod workload;
-mod workload_yaml_cleaner;
 pub mod yaml_parser;
 
 // Re-exports

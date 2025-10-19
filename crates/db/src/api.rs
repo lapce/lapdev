@@ -979,7 +979,7 @@ impl DbApi {
         .await?;
 
         // Insert individual workloads
-        self.insert_workloads_to_catalog(&txn, catalog_id, workloads, now)
+        self.insert_workloads_to_catalog(&txn, catalog_id, cluster_id, workloads, now)
             .await?;
 
         txn.commit().await?;
@@ -1016,7 +1016,13 @@ impl DbApi {
         .await?;
 
         // Insert enriched workloads
-        self.insert_enriched_workloads_to_catalog(&txn, catalog_id, enriched_workloads, now)
+        self.insert_enriched_workloads_to_catalog(
+            &txn,
+            catalog_id,
+            cluster_id,
+            enriched_workloads,
+            now,
+        )
             .await?;
 
         txn.commit().await?;
@@ -1512,6 +1518,7 @@ impl DbApi {
         &self,
         txn: &sea_orm::DatabaseTransaction,
         catalog_id: Uuid,
+        cluster_id: Uuid,
         workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkloadCreate>,
         created_at: sea_orm::prelude::DateTimeWithTimeZone,
     ) -> Result<(), sea_orm::DbErr> {
@@ -1521,6 +1528,7 @@ impl DbApi {
                 created_at: ActiveValue::Set(created_at),
                 deleted_at: ActiveValue::Set(None),
                 app_catalog_id: ActiveValue::Set(catalog_id),
+                cluster_id: ActiveValue::Set(cluster_id),
                 name: ActiveValue::Set(workload.name.clone()),
                 namespace: ActiveValue::Set(workload.namespace.clone()),
                 kind: ActiveValue::Set(workload.kind.to_string()),
@@ -1537,6 +1545,7 @@ impl DbApi {
         &self,
         txn: &sea_orm::DatabaseTransaction,
         catalog_id: Uuid,
+        cluster_id: Uuid,
         enriched_workloads: Vec<KubeWorkloadDetails>,
         created_at: sea_orm::prelude::DateTimeWithTimeZone,
     ) -> Result<(), sea_orm::DbErr> {
@@ -1555,6 +1564,7 @@ impl DbApi {
                 created_at: ActiveValue::Set(created_at),
                 deleted_at: ActiveValue::Set(None),
                 app_catalog_id: ActiveValue::Set(catalog_id),
+                cluster_id: ActiveValue::Set(cluster_id),
                 name: ActiveValue::Set(workload.name),
                 namespace: ActiveValue::Set(workload.namespace),
                 kind: ActiveValue::Set(workload.kind.to_string()),

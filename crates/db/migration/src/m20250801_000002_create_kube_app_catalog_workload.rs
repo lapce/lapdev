@@ -1,6 +1,9 @@
 use sea_orm_migration::prelude::*;
 
-use crate::m20250801_000000_create_kube_app_catalog::KubeAppCatalog;
+use crate::{
+    m20250729_082625_create_kube_cluster::KubeCluster,
+    m20250801_000000_create_kube_app_catalog::KubeAppCatalog,
+};
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -30,6 +33,11 @@ impl MigrationTrait for Migration {
                     )
                     .col(
                         ColumnDef::new(KubeAppCatalogWorkload::AppCatalogId)
+                            .uuid()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(KubeAppCatalogWorkload::ClusterId)
                             .uuid()
                             .not_null(),
                     )
@@ -66,6 +74,14 @@ impl MigrationTrait for Migration {
                             )
                             .to(KubeAppCatalog::Table, KubeAppCatalog::Id),
                     )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(
+                                KubeAppCatalogWorkload::Table,
+                                KubeAppCatalogWorkload::ClusterId,
+                            )
+                            .to(KubeCluster::Table, KubeCluster::Id),
+                    )
                     .to_owned(),
             )
             .await?;
@@ -77,6 +93,20 @@ impl MigrationTrait for Migration {
                     .name("kube_app_catalog_workload_app_catalog_deleted_idx")
                     .table(KubeAppCatalogWorkload::Table)
                     .col(KubeAppCatalogWorkload::AppCatalogId)
+                    .col(KubeAppCatalogWorkload::DeletedAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Cluster scoped index to quickly find workloads by cluster/name/namespace
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_app_catalog_workload_cluster_lookup_idx")
+                    .table(KubeAppCatalogWorkload::Table)
+                    .col(KubeAppCatalogWorkload::ClusterId)
+                    .col(KubeAppCatalogWorkload::Name)
+                    .col(KubeAppCatalogWorkload::Namespace)
                     .col(KubeAppCatalogWorkload::DeletedAt)
                     .to_owned(),
             )
@@ -110,6 +140,7 @@ pub enum KubeAppCatalogWorkload {
     CreatedAt,
     DeletedAt,
     AppCatalogId,
+    ClusterId,
     Name,
     Namespace,
     Kind,

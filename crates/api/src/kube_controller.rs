@@ -992,7 +992,13 @@ impl KubeController {
 
         match self
             .db
-            .insert_enriched_workloads_to_catalog(&txn, catalog_id, enriched_workloads, now)
+            .insert_enriched_workloads_to_catalog(
+                &txn,
+                catalog_id,
+                catalog.cluster_id,
+                enriched_workloads,
+                now,
+            )
             .await
         {
             Ok(_) => {

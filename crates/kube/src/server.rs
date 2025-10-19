@@ -1,6 +1,21 @@
-use lapdev_common::kube::KubeClusterInfo;
+use anyhow::{anyhow, Context as _, Result as AnyResult};
+use k8s_openapi::api::{
+    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
+    batch::v1::{CronJob, Job},
+    core::v1::PodSpec,
+};
+use lapdev_common::kube::{
+    KubeClusterInfo, KubeContainerImage, KubeContainerInfo, KubeContainerPort, KubeWorkloadKind,
+};
 use lapdev_db::api::DbApi;
-use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent};
+use lapdev_db_entities::kube_app_catalog_workload::{self, Entity as CatalogWorkloadEntity};
+use lapdev_kube_rpc::{
+    KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent, ResourceChangeType, ResourceType,
+};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter,
+};
+use sea_orm::prelude::Json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -153,11 +168,321 @@ impl KubeClusterRpc for KubeClusterServer {
         event: ResourceChangeEvent,
     ) -> Result<(), String> {
         tracing::debug!(
-            "Received resource change event from cluster {}: {:?}",
-            self.cluster_id,
-            event
+            cluster_id = %self.cluster_id,
+            namespace = %event.namespace,
+            resource_name = %event.resource_name,
+            resource_type = ?event.resource_type,
+            change_type = ?event.change_type,
+            "Received resource change event"
         );
-        // TODO: Persist and process resource change events (Phase 2).
+
+        if let Err(err) = self.handle_workload_change(&event).await {
+            tracing::error!(
+                cluster_id = %self.cluster_id,
+                namespace = %event.namespace,
+                resource_name = %event.resource_name,
+                error = ?err,
+                "Failed to process resource change event"
+            );
+            return Err(err.to_string());
+        }
+
         Ok(())
     }
+}
+
+impl KubeClusterServer {
+    async fn handle_workload_change(&self, event: &ResourceChangeEvent) -> AnyResult<()> {
+        let Some(workload_kind) = workload_kind_for(event.resource_type) else {
+            // Ignore non-workload resources for now.
+            return Ok(());
+        };
+
+        if matches!(event.change_type, ResourceChangeType::Deleted) {
+            tracing::debug!(
+                namespace = %event.namespace,
+                resource_name = %event.resource_name,
+                "Skipping deleted workload event (not yet handled)"
+            );
+            return Ok(());
+        }
+
+        let yaml = event
+            .resource_yaml
+            .as_ref()
+            .context("workload event missing resource YAML")?;
+
+        let new_containers = extract_containers_from_yaml(event.resource_type, yaml)
+            .with_context(|| {
+                format!(
+                    "failed to parse workload YAML for {}/{} ({:?})",
+                    event.namespace, event.resource_name, event.resource_type
+                )
+            })?;
+
+        if new_containers.is_empty() {
+            tracing::warn!(
+                namespace = %event.namespace,
+                resource_name = %event.resource_name,
+                "Parsed workload contains no containers; skipping update"
+            );
+            return Ok(());
+        }
+
+        let workloads = CatalogWorkloadEntity::find()
+            .filter(kube_app_catalog_workload::Column::Name.eq(event.resource_name.clone()))
+            .filter(kube_app_catalog_workload::Column::Namespace.eq(event.namespace.clone()))
+            .filter(kube_app_catalog_workload::Column::DeletedAt.is_null())
+            .filter(kube_app_catalog_workload::Column::ClusterId.eq(self.cluster_id))
+            .all(&self.db.conn)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed querying catalog workloads for {}/{}",
+                    event.namespace, event.resource_name
+                )
+            })?;
+
+        if workloads.is_empty() {
+            tracing::trace!(
+                namespace = %event.namespace,
+                resource_name = %event.resource_name,
+                "Workload not tracked in any catalog; ignoring"
+            );
+            return Ok(());
+        }
+
+        for workload in workloads {
+            // Ensure the stored kind matches; if not, skip but log.
+            if let Ok(stored_kind) = workload.kind.parse::<KubeWorkloadKind>() {
+                if stored_kind != workload_kind {
+                    tracing::warn!(
+                        namespace = %event.namespace,
+                        resource_name = %event.resource_name,
+                        stored_kind = %workload.kind,
+                        event_kind = ?workload_kind,
+                        "Catalog workload kind mismatch; skipping update"
+                    );
+                    continue;
+                }
+            }
+
+            let merged_containers =
+                merge_containers(&workload.containers, &new_containers).with_context(|| {
+                    format!(
+                        "failed to merge container definitions for workload {}",
+                        workload.id
+                    )
+                })?;
+
+            let containers_json = serde_json::to_value(&merged_containers)
+                .context("failed to serialize merged container definition")?;
+
+            let active_model = kube_app_catalog_workload::ActiveModel {
+                id: ActiveValue::Set(workload.id),
+                containers: ActiveValue::Set(Json::from(containers_json)),
+                ..Default::default()
+            };
+
+            active_model
+                .update(&self.db.conn)
+                .await
+                .with_context(|| format!("failed to update workload {}", workload.id))?;
+
+            tracing::info!(
+                workload_id = %workload.id,
+                namespace = %event.namespace,
+                resource_name = %event.resource_name,
+                "Updated catalog workload containers from cluster event"
+            );
+        }
+
+        Ok(())
+    }
+}
+
+fn workload_kind_for(resource_type: ResourceType) -> Option<KubeWorkloadKind> {
+    match resource_type {
+        ResourceType::Deployment => Some(KubeWorkloadKind::Deployment),
+        ResourceType::StatefulSet => Some(KubeWorkloadKind::StatefulSet),
+        ResourceType::DaemonSet => Some(KubeWorkloadKind::DaemonSet),
+        ResourceType::ReplicaSet => Some(KubeWorkloadKind::ReplicaSet),
+        ResourceType::Job => Some(KubeWorkloadKind::Job),
+        ResourceType::CronJob => Some(KubeWorkloadKind::CronJob),
+        ResourceType::ConfigMap
+        | ResourceType::Secret
+        | ResourceType::Service => None,
+    }
+}
+
+fn extract_containers_from_yaml(
+    resource_type: ResourceType,
+    yaml: &str,
+) -> AnyResult<Vec<KubeContainerInfo>> {
+    match resource_type {
+        ResourceType::Deployment => {
+            let deployment: Deployment = serde_yaml::from_str(yaml)?;
+            let pod_spec = deployment
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.spec.as_ref())
+                .context("deployment missing pod spec")?;
+            extract_pod_spec_containers(pod_spec)
+        }
+        ResourceType::StatefulSet => {
+            let statefulset: StatefulSet = serde_yaml::from_str(yaml)?;
+            let pod_spec = statefulset
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.spec.as_ref())
+                .context("statefulset missing pod spec")?;
+            extract_pod_spec_containers(pod_spec)
+        }
+        ResourceType::DaemonSet => {
+            let daemonset: DaemonSet = serde_yaml::from_str(yaml)?;
+            let pod_spec = daemonset
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.spec.as_ref())
+                .context("daemonset missing pod spec")?;
+            extract_pod_spec_containers(pod_spec)
+        }
+        ResourceType::ReplicaSet => {
+            let replicaset: ReplicaSet = serde_yaml::from_str(yaml)?;
+            let pod_spec = replicaset
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.as_ref())
+                .and_then(|t| t.spec.as_ref())
+                .context("replicaset missing pod spec")?;
+            extract_pod_spec_containers(pod_spec)
+        }
+        ResourceType::Job => {
+            let job: Job = serde_yaml::from_str(yaml)?;
+            let pod_spec = job
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.spec.as_ref())
+                .context("job missing pod spec")?;
+            extract_pod_spec_containers(pod_spec)
+        }
+        ResourceType::CronJob => {
+            let cron_job: CronJob = serde_yaml::from_str(yaml)?;
+            let pod_spec = cron_job
+                .spec
+                .as_ref()
+                .and_then(|s| s.job_template.spec.as_ref())
+                .and_then(|s| s.template.spec.as_ref())
+                .context("cronjob missing pod spec")?;
+            extract_pod_spec_containers(pod_spec)
+        }
+        ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => {
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn extract_pod_spec_containers(pod_spec: &PodSpec) -> AnyResult<Vec<KubeContainerInfo>> {
+    pod_spec
+        .containers
+        .iter()
+        .map(|container| {
+            let mut cpu_request = None;
+            let mut cpu_limit = None;
+            let mut memory_request = None;
+            let mut memory_limit = None;
+
+            if let Some(resources) = &container.resources {
+                if let Some(requests) = &resources.requests {
+                    if let Some(cpu) = requests.get("cpu") {
+                        cpu_request = Some(cpu.0.clone());
+                    }
+                    if let Some(memory) = requests.get("memory") {
+                        memory_request = Some(memory.0.clone());
+                    }
+                }
+                if let Some(limits) = &resources.limits {
+                    if let Some(cpu) = limits.get("cpu") {
+                        cpu_limit = Some(cpu.0.clone());
+                    }
+                    if let Some(memory) = limits.get("memory") {
+                        memory_limit = Some(memory.0.clone());
+                    }
+                }
+            }
+
+            let image = container
+                .image
+                .clone()
+                .ok_or_else(|| anyhow!("container '{}' missing image", container.name))?;
+
+            let ports = container
+                .ports
+                .as_ref()
+                .map(|ports| {
+                    ports
+                        .iter()
+                        .map(|port| KubeContainerPort {
+                            name: port.name.clone(),
+                            container_port: port.container_port,
+                            protocol: port.protocol.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            Ok(KubeContainerInfo {
+                name: container.name.clone(),
+                original_image: image.clone(),
+                image: KubeContainerImage::FollowOriginal,
+                cpu_request,
+                cpu_limit,
+                memory_request,
+                memory_limit,
+                env_vars: Vec::new(),
+                original_env_vars: Vec::new(),
+                ports,
+            })
+        })
+        .collect()
+}
+
+fn merge_containers(
+    existing: &Json,
+    new_containers: &[KubeContainerInfo],
+) -> AnyResult<Vec<KubeContainerInfo>> {
+    let existing_containers: Vec<KubeContainerInfo> =
+        serde_json::from_value(existing.clone()).unwrap_or_default();
+    let mut existing_map: HashMap<String, KubeContainerInfo> = existing_containers
+        .into_iter()
+        .map(|container| (container.name.clone(), container))
+        .collect();
+
+    let mut merged = Vec::new();
+    for new_container in new_containers {
+        if let Some(mut existing) = existing_map.remove(&new_container.name) {
+            existing.original_image = new_container.original_image.clone();
+            existing.cpu_request = new_container.cpu_request.clone();
+            existing.cpu_limit = new_container.cpu_limit.clone();
+            existing.memory_request = new_container.memory_request.clone();
+            existing.memory_limit = new_container.memory_limit.clone();
+            existing.ports = new_container.ports.clone();
+            // Preserve customized image choices; otherwise keep following original.
+            if let KubeContainerImage::FollowOriginal = existing.image {
+                existing.image = KubeContainerImage::FollowOriginal;
+            }
+            merged.push(existing);
+        } else {
+            merged.push(new_container.clone());
+        }
+    }
+
+    if !existing_map.is_empty() {
+        tracing::debug!(
+            removed_containers = ?existing_map.keys().collect::<Vec<_>>(),
+            "Dropping containers no longer present in source workload"
+        );
+    }
+
+    Ok(merged)
 }

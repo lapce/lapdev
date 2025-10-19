@@ -10,7 +10,9 @@ use lapdev_common::{
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
 };
-use lapdev_db_entities::{kube_cluster_service, kube_cluster_service_selector};
+use lapdev_db_entities::{
+    kube_app_catalog_workload_dependency, kube_cluster_service, kube_cluster_service_selector,
+};
 use lapdev_db_migration::Migrator;
 use pasetors::{
     keys::{Generate, SymmetricKey},
@@ -28,7 +30,7 @@ use serde::Deserialize;
 use serde_json;
 use serde_yaml::Value;
 use sqlx::PgPool;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::TryFrom;
 use uuid::Uuid;
 
@@ -1823,6 +1825,8 @@ impl DbApi {
 
             let workload_id = Uuid::new_v4();
             let labels = labels_from_workload_yaml(&kind, &workload_yaml);
+            let (configmap_refs, secret_refs) =
+                dependencies_from_workload_yaml(&kind, &workload_yaml);
 
             lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
                 id: ActiveValue::Set(workload_id),
@@ -1848,6 +1852,18 @@ impl DbApi {
                 cluster_id,
                 &namespace,
                 &labels,
+                created_at,
+            )
+            .await?;
+
+            self.replace_workload_dependencies_txn(
+                txn,
+                workload_id,
+                catalog_id,
+                cluster_id,
+                &namespace,
+                &configmap_refs,
+                &secret_refs,
                 created_at,
             )
             .await?;
@@ -1895,6 +1911,53 @@ impl DbApi {
             cluster_id,
             namespace,
             labels,
+            timestamp,
+        )
+        .await
+    }
+
+    pub async fn replace_workload_dependencies_txn(
+        &self,
+        txn: &DatabaseTransaction,
+        workload_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        namespace: &str,
+        configmaps: &BTreeSet<String>,
+        secrets: &BTreeSet<String>,
+        timestamp: DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        replace_workload_dependencies_with_conn(
+            txn,
+            workload_id,
+            app_catalog_id,
+            cluster_id,
+            namespace,
+            configmaps,
+            secrets,
+            timestamp,
+        )
+        .await
+    }
+
+    pub async fn replace_workload_dependencies(
+        &self,
+        workload_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        namespace: &str,
+        configmaps: &BTreeSet<String>,
+        secrets: &BTreeSet<String>,
+        timestamp: DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        replace_workload_dependencies_with_conn(
+            &self.conn,
+            workload_id,
+            app_catalog_id,
+            cluster_id,
+            namespace,
+            configmaps,
+            secrets,
             timestamp,
         )
         .await
@@ -2025,6 +2088,29 @@ impl DbApi {
         }
 
         Ok(results)
+    }
+
+    pub async fn find_workloads_by_dependency(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+        resource_type: &str,
+        resource_name: &str,
+    ) -> Result<Vec<(Uuid, Uuid)>> {
+        let rows = kube_app_catalog_workload_dependency::Entity::find()
+            .select_only()
+            .column(kube_app_catalog_workload_dependency::Column::WorkloadId)
+            .column(kube_app_catalog_workload_dependency::Column::AppCatalogId)
+            .filter(kube_app_catalog_workload_dependency::Column::ClusterId.eq(cluster_id))
+            .filter(kube_app_catalog_workload_dependency::Column::Namespace.eq(namespace))
+            .filter(kube_app_catalog_workload_dependency::Column::ResourceType.eq(resource_type))
+            .filter(kube_app_catalog_workload_dependency::Column::ResourceName.eq(resource_name))
+            .filter(kube_app_catalog_workload_dependency::Column::DeletedAt.is_null())
+            .into_tuple::<(Uuid, Uuid)>()
+            .all(&self.conn)
+            .await?;
+
+        Ok(rows)
     }
 
     pub async fn update_catalog_workload_versions(
@@ -2979,6 +3065,147 @@ fn mapping_to_labels(node: &Value) -> BTreeMap<String, String> {
     labels
 }
 
+fn dependencies_from_workload_yaml(
+    kind: &lapdev_common::kube::KubeWorkloadKind,
+    yaml: &str,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let value: Value = match serde_yaml::from_str(yaml) {
+        Ok(v) => v,
+        Err(_) => return (BTreeSet::new(), BTreeSet::new()),
+    };
+
+    let pod_spec_path: &[&str] = match kind {
+        lapdev_common::kube::KubeWorkloadKind::Deployment
+        | lapdev_common::kube::KubeWorkloadKind::StatefulSet
+        | lapdev_common::kube::KubeWorkloadKind::DaemonSet
+        | lapdev_common::kube::KubeWorkloadKind::ReplicaSet
+        | lapdev_common::kube::KubeWorkloadKind::Job => &["spec", "template", "spec"],
+        lapdev_common::kube::KubeWorkloadKind::Pod => &["spec"],
+        lapdev_common::kube::KubeWorkloadKind::CronJob => {
+            &["spec", "jobTemplate", "spec", "template", "spec"]
+        }
+    };
+
+    let pod_spec = match traverse_yaml(&value, pod_spec_path) {
+        Some(spec) => spec,
+        None => return (BTreeSet::new(), BTreeSet::new()),
+    };
+
+    collect_dependencies_from_spec(pod_spec)
+}
+
+fn collect_dependencies_from_spec(spec: &Value) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut configmaps = BTreeSet::new();
+    let mut secrets = BTreeSet::new();
+
+    let collect_env =
+        |container: &Value, configmaps: &mut BTreeSet<String>, secrets: &mut BTreeSet<String>| {
+            if let Some(envs) = container.get("env").and_then(|v| v.as_sequence()) {
+                for env in envs {
+                    if let Some(value_from) = env.get("valueFrom") {
+                        if let Some(cfg) = value_from
+                            .get("configMapKeyRef")
+                            .and_then(|v| v.get("name"))
+                            .and_then(|v| v.as_str())
+                        {
+                            configmaps.insert(cfg.to_string());
+                        }
+                        if let Some(sec) = value_from
+                            .get("secretKeyRef")
+                            .and_then(|v| v.get("name"))
+                            .and_then(|v| v.as_str())
+                        {
+                            secrets.insert(sec.to_string());
+                        }
+                    }
+                }
+            }
+
+            if let Some(env_from) = container.get("envFrom").and_then(|v| v.as_sequence()) {
+                for source in env_from {
+                    if let Some(cfg) = source
+                        .get("configMapRef")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        configmaps.insert(cfg.to_string());
+                    }
+                    if let Some(sec) = source
+                        .get("secretRef")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        secrets.insert(sec.to_string());
+                    }
+                }
+            }
+        };
+
+    if let Some(containers) = spec.get("containers").and_then(|v| v.as_sequence()) {
+        for container in containers {
+            collect_env(container, &mut configmaps, &mut secrets);
+        }
+    }
+
+    if let Some(init_containers) = spec.get("initContainers").and_then(|v| v.as_sequence()) {
+        for container in init_containers {
+            collect_env(container, &mut configmaps, &mut secrets);
+        }
+    }
+
+    if let Some(ephemeral) = spec
+        .get("ephemeralContainers")
+        .and_then(|v| v.as_sequence())
+    {
+        for container in ephemeral {
+            collect_env(container, &mut configmaps, &mut secrets);
+        }
+    }
+
+    if let Some(volumes) = spec.get("volumes").and_then(|v| v.as_sequence()) {
+        for volume in volumes {
+            if let Some(cfg) = volume
+                .get("configMap")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                configmaps.insert(cfg.to_string());
+            }
+            if let Some(sec) = volume
+                .get("secret")
+                .and_then(|v| v.get("secretName"))
+                .and_then(|v| v.as_str())
+            {
+                secrets.insert(sec.to_string());
+            }
+            if let Some(projected_sources) = volume
+                .get("projected")
+                .and_then(|v| v.get("sources"))
+                .and_then(|v| v.as_sequence())
+            {
+                for source in projected_sources {
+                    if let Some(cfg) = source
+                        .get("configMap")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        configmaps.insert(cfg.to_string());
+                    }
+                    if let Some(sec) = source
+                        .get("secret")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        secrets.insert(sec.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    (configmaps, secrets)
+}
+
 async fn replace_workload_labels_with_conn<C>(
     conn: &C,
     workload_id: Uuid,
@@ -3014,6 +3241,64 @@ where
             namespace: ActiveValue::Set(namespace.to_owned()),
             label_key: ActiveValue::Set(key.clone()),
             label_value: ActiveValue::Set(value.clone()),
+        }
+        .insert(conn)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn replace_workload_dependencies_with_conn<C>(
+    conn: &C,
+    workload_id: Uuid,
+    app_catalog_id: Uuid,
+    cluster_id: Uuid,
+    namespace: &str,
+    configmaps: &BTreeSet<String>,
+    secrets: &BTreeSet<String>,
+    timestamp: DateTimeWithTimeZone,
+) -> Result<(), sea_orm::DbErr>
+where
+    C: ConnectionTrait + Send + Sync,
+{
+    kube_app_catalog_workload_dependency::Entity::update_many()
+        .filter(kube_app_catalog_workload_dependency::Column::WorkloadId.eq(workload_id))
+        .filter(kube_app_catalog_workload_dependency::Column::DeletedAt.is_null())
+        .col_expr(
+            kube_app_catalog_workload_dependency::Column::DeletedAt,
+            Expr::value(timestamp),
+        )
+        .exec(conn)
+        .await?;
+
+    for name in configmaps {
+        kube_app_catalog_workload_dependency::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            created_at: ActiveValue::Set(timestamp),
+            deleted_at: ActiveValue::Set(None),
+            app_catalog_id: ActiveValue::Set(app_catalog_id),
+            workload_id: ActiveValue::Set(workload_id),
+            cluster_id: ActiveValue::Set(cluster_id),
+            namespace: ActiveValue::Set(namespace.to_owned()),
+            resource_name: ActiveValue::Set(name.clone()),
+            resource_type: ActiveValue::Set("configmap".to_string()),
+        }
+        .insert(conn)
+        .await?;
+    }
+
+    for name in secrets {
+        kube_app_catalog_workload_dependency::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            created_at: ActiveValue::Set(timestamp),
+            deleted_at: ActiveValue::Set(None),
+            app_catalog_id: ActiveValue::Set(app_catalog_id),
+            workload_id: ActiveValue::Set(workload_id),
+            cluster_id: ActiveValue::Set(cluster_id),
+            namespace: ActiveValue::Set(namespace.to_owned()),
+            resource_name: ActiveValue::Set(name.clone()),
+            resource_type: ActiveValue::Set("secret".to_string()),
         }
         .insert(conn)
         .await?;

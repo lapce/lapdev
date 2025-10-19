@@ -19,7 +19,7 @@ use lapdev_kube_rpc::{
 use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -181,6 +181,8 @@ impl KubeClusterRpc for KubeClusterServer {
 
         let result = match event.resource_type {
             ResourceType::Service => self.handle_service_change(&event).await,
+            ResourceType::ConfigMap => self.handle_dependency_change(&event, "configmap").await,
+            ResourceType::Secret => self.handle_dependency_change(&event, "secret").await,
             _ => self.handle_workload_change(&event).await,
         };
 
@@ -229,6 +231,8 @@ impl KubeClusterServer {
             })?;
         let new_containers = extracted.containers;
         let workload_labels = extracted.labels;
+        let configmap_refs = extracted.configmap_refs;
+        let secret_refs = extracted.secret_refs;
 
         if new_containers.is_empty() {
             tracing::warn!(
@@ -324,6 +328,24 @@ impl KubeClusterServer {
                 .with_context(|| {
                     format!(
                         "failed to update workload label mapping for {}",
+                        workload.id
+                    )
+                })?;
+
+            self.db
+                .replace_workload_dependencies(
+                    workload.id,
+                    workload.app_catalog_id,
+                    workload.cluster_id,
+                    &workload.namespace,
+                    &configmap_refs,
+                    &secret_refs,
+                    event.timestamp.into(),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to update workload dependency mapping for {}",
                         workload.id
                     )
                 })?;
@@ -559,6 +581,60 @@ impl KubeClusterServer {
 
         Ok(())
     }
+
+    async fn handle_dependency_change(
+        &self,
+        event: &ResourceChangeEvent,
+        resource_type: &str,
+    ) -> AnyResult<()> {
+        let workloads = self
+            .db
+            .find_workloads_by_dependency(
+                self.cluster_id,
+                &event.namespace,
+                resource_type,
+                &event.resource_name,
+            )
+            .await?;
+
+        if workloads.is_empty() {
+            return Ok(());
+        }
+
+        let mut workloads_by_catalog: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        for (workload_id, catalog_id) in workloads {
+            workloads_by_catalog
+                .entry(catalog_id)
+                .or_default()
+                .push(workload_id);
+        }
+
+        let synced_at: DateTimeWithTimeZone = event.timestamp.into();
+        for (catalog_id, workload_ids) in workloads_by_catalog {
+            let new_version = self
+                .db
+                .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to bump sync version for catalog {} after {} change",
+                        catalog_id, resource_type
+                    )
+                })?;
+
+            self.db
+                .update_catalog_workload_versions(&workload_ids, new_version)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to update workload sync version for catalog {}",
+                        catalog_id
+                    )
+                })?;
+        }
+
+        Ok(())
+    }
 }
 
 fn workload_kind_for(resource_type: ResourceType) -> Option<KubeWorkloadKind> {
@@ -576,6 +652,8 @@ fn workload_kind_for(resource_type: ResourceType) -> Option<KubeWorkloadKind> {
 struct ExtractedWorkload {
     containers: Vec<KubeContainerInfo>,
     labels: BTreeMap<String, String>,
+    configmap_refs: BTreeSet<String>,
+    secret_refs: BTreeSet<String>,
 }
 
 fn extract_workload_from_yaml(
@@ -597,7 +675,13 @@ fn extract_workload_from_yaml(
                 .and_then(|m| m.labels.clone())
                 .unwrap_or_default();
             let containers = extract_pod_spec_containers(pod_spec)?;
-            Ok(ExtractedWorkload { containers, labels })
+            let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
+            Ok(ExtractedWorkload {
+                containers,
+                labels,
+                configmap_refs,
+                secret_refs,
+            })
         }
         ResourceType::StatefulSet => {
             let statefulset: StatefulSet = serde_yaml::from_str(yaml)?;
@@ -613,7 +697,13 @@ fn extract_workload_from_yaml(
                 .and_then(|m| m.labels.clone())
                 .unwrap_or_default();
             let containers = extract_pod_spec_containers(pod_spec)?;
-            Ok(ExtractedWorkload { containers, labels })
+            let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
+            Ok(ExtractedWorkload {
+                containers,
+                labels,
+                configmap_refs,
+                secret_refs,
+            })
         }
         ResourceType::DaemonSet => {
             let daemonset: DaemonSet = serde_yaml::from_str(yaml)?;
@@ -629,7 +719,13 @@ fn extract_workload_from_yaml(
                 .and_then(|m| m.labels.clone())
                 .unwrap_or_default();
             let containers = extract_pod_spec_containers(pod_spec)?;
-            Ok(ExtractedWorkload { containers, labels })
+            let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
+            Ok(ExtractedWorkload {
+                containers,
+                labels,
+                configmap_refs,
+                secret_refs,
+            })
         }
         ResourceType::ReplicaSet => {
             let replicaset: ReplicaSet = serde_yaml::from_str(yaml)?;
@@ -647,7 +743,13 @@ fn extract_workload_from_yaml(
                 .and_then(|m| m.labels.clone())
                 .unwrap_or_default();
             let containers = extract_pod_spec_containers(pod_spec)?;
-            Ok(ExtractedWorkload { containers, labels })
+            let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
+            Ok(ExtractedWorkload {
+                containers,
+                labels,
+                configmap_refs,
+                secret_refs,
+            })
         }
         ResourceType::Job => {
             let job: Job = serde_yaml::from_str(yaml)?;
@@ -663,7 +765,13 @@ fn extract_workload_from_yaml(
                 .and_then(|m| m.labels.clone())
                 .unwrap_or_default();
             let containers = extract_pod_spec_containers(pod_spec)?;
-            Ok(ExtractedWorkload { containers, labels })
+            let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
+            Ok(ExtractedWorkload {
+                containers,
+                labels,
+                configmap_refs,
+                secret_refs,
+            })
         }
         ResourceType::CronJob => {
             let cron_job: CronJob = serde_yaml::from_str(yaml)?;
@@ -680,12 +788,20 @@ fn extract_workload_from_yaml(
                 .and_then(|m| m.labels.clone())
                 .unwrap_or_default();
             let containers = extract_pod_spec_containers(pod_spec)?;
-            Ok(ExtractedWorkload { containers, labels })
+            let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
+            Ok(ExtractedWorkload {
+                containers,
+                labels,
+                configmap_refs,
+                secret_refs,
+            })
         }
         ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => {
             Ok(ExtractedWorkload {
                 containers: Vec::new(),
                 labels: BTreeMap::new(),
+                configmap_refs: BTreeSet::new(),
+                secret_refs: BTreeSet::new(),
             })
         }
     }
@@ -754,6 +870,89 @@ fn extract_pod_spec_containers(pod_spec: &PodSpec) -> AnyResult<Vec<KubeContaine
             })
         })
         .collect()
+}
+
+fn extract_pod_spec_dependencies(pod_spec: &PodSpec) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut configmaps = BTreeSet::new();
+    let mut secrets = BTreeSet::new();
+
+    let insert_trimmed = |set: &mut BTreeSet<String>, raw: &str| {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            set.insert(trimmed.to_owned());
+        }
+    };
+
+    let mut process_env_sources =
+        |env: &Option<Vec<k8s_openapi::api::core::v1::EnvVar>>,
+         env_from: &Option<Vec<k8s_openapi::api::core::v1::EnvFromSource>>| {
+            if let Some(envs) = env {
+                for item in envs {
+                    if let Some(value_from) = &item.value_from {
+                        if let Some(cfg) = &value_from.config_map_key_ref {
+                            insert_trimmed(&mut configmaps, &cfg.name);
+                        }
+                        if let Some(sec) = &value_from.secret_key_ref {
+                            insert_trimmed(&mut secrets, &sec.name);
+                        }
+                    }
+                }
+            }
+
+            if let Some(env_from) = env_from {
+                for source in env_from {
+                    if let Some(cfg) = &source.config_map_ref {
+                        insert_trimmed(&mut configmaps, &cfg.name);
+                    }
+                    if let Some(sec) = &source.secret_ref {
+                        insert_trimmed(&mut secrets, &sec.name);
+                    }
+                }
+            }
+        };
+
+    for container in &pod_spec.containers {
+        process_env_sources(&container.env, &container.env_from);
+    }
+
+    if let Some(init_containers) = pod_spec.init_containers.as_ref() {
+        for container in init_containers {
+            process_env_sources(&container.env, &container.env_from);
+        }
+    }
+
+    if let Some(ephemeral) = pod_spec.ephemeral_containers.as_ref() {
+        for container in ephemeral {
+            process_env_sources(&container.env, &container.env_from);
+        }
+    }
+
+    if let Some(volumes) = pod_spec.volumes.as_ref() {
+        for volume in volumes {
+            if let Some(cfg) = &volume.config_map {
+                insert_trimmed(&mut configmaps, &cfg.name);
+            }
+            if let Some(secret) = &volume.secret {
+                if let Some(name) = secret.secret_name.as_ref() {
+                    insert_trimmed(&mut secrets, name);
+                }
+            }
+            if let Some(projected) = &volume.projected {
+                if let Some(sources) = projected.sources.as_ref() {
+                    for source in sources {
+                        if let Some(cfg) = &source.config_map {
+                            insert_trimmed(&mut configmaps, &cfg.name);
+                        }
+                        if let Some(secret) = &source.secret {
+                            insert_trimmed(&mut secrets, &secret.name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (configmaps, secrets)
 }
 
 fn merge_containers(

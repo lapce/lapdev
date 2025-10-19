@@ -367,6 +367,12 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         LocalResource::new(move || async move { get_active_devbox_session().await.ok().flatten() });
 
     let environment_info = Signal::derive(move || environment_result.get().flatten());
+    let environment_catalog_version = Signal::derive(move || {
+        environment_info
+            .get()
+            .map(|env| env.catalog_sync_version)
+            .unwrap_or(0)
+    });
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
     let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
     let all_preview_urls = Signal::derive(move || preview_urls_result.get().unwrap_or_default());
@@ -374,17 +380,18 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
 
     // Filter workloads based on search query
     let filtered_workloads = Signal::derive(move || {
+        let env_version = environment_catalog_version.get();
         let workloads = all_workloads.get();
         let search_term = debounced_search.get().to_lowercase();
 
-        if search_term.trim().is_empty() {
-            workloads
-        } else {
-            workloads
-                .into_iter()
-                .filter(|workload| workload.name.to_lowercase().contains(&search_term))
-                .collect()
-        }
+        workloads
+            .into_iter()
+            .filter(|workload| {
+                workload.catalog_sync_version > env_version
+                    && (search_term.trim().is_empty()
+                        || workload.name.to_lowercase().contains(&search_term))
+            })
+            .collect()
     });
 
     let navigate = leptos_router::hooks::use_navigate();
@@ -995,8 +1002,8 @@ pub fn EnvironmentWorkloadsContent(
                             <For
                                 each=move || filtered_workloads.get()
                                 key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
-                                children=move |workload| {
-                                    view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts active_session update_counter /> }
+                            children=move |workload| {
+                                    view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts active_session update_counter env_catalog_version=environment_catalog_version.clone() /> }
                                 }
                             />
                         </TableBody>
@@ -1058,11 +1065,20 @@ pub fn EnvironmentWorkloadItem(
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
+    env_catalog_version: Signal<i64>,
 ) -> impl IntoView {
     let workload_id = workload.id;
     let workload_name = workload.name.clone();
     let workload_containers = workload.containers.clone();
     let workload_ports = workload.ports.clone();
+    let workload_catalog_version = workload.catalog_sync_version;
+    let row_class = Signal::derive(move || {
+        if env_catalog_version.get() < workload_catalog_version {
+            "bg-amber-50/70 dark:bg-amber-900/20 border-l-4 border-amber-500"
+        } else {
+            ""
+        }
+    });
 
     // Find intercepts for this workload
     let workload_intercepts = Signal::derive(move || {
@@ -1117,11 +1133,20 @@ pub fn EnvironmentWorkloadItem(
 
     view! {
         <>
-            <TableRow>
+            <TableRow class=row_class>
                 <TableCell>
                     <a href=format!("/kubernetes/environments/{}/workloads/{}", environment_id, workload.id)>
                         <Button variant=ButtonVariant::Link class="p-0">
                             <span class="font-medium">{workload.name}</span>
+                            {if workload.catalog_sync_version > environment_catalog_version.get_untracked() {
+                                view! {
+                                    <Badge variant=BadgeVariant::Destructive class="ml-2 text-[10px] uppercase tracking-wide">
+                                        "Update"
+                                    </Badge>
+                                }.into_any()
+                            } else {
+                                view! { <></> }.into_any()
+                            }}
                         </Button>
                     </a>
                 </TableCell>

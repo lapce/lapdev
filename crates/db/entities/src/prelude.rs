@@ -4,6 +4,7 @@ pub use super::audit_log::Entity as AuditLog;
 pub use super::config::Entity as Config;
 pub use super::kube_app_catalog::Entity as KubeAppCatalog;
 pub use super::kube_app_catalog_workload::Entity as KubeAppCatalogWorkload;
+pub use super::kube_app_catalog_workload_dependency::Entity as KubeAppCatalogWorkloadDependency;
 pub use super::kube_app_catalog_workload_label::Entity as KubeAppCatalogWorkloadLabel;
 pub use super::kube_cluster::Entity as KubeCluster;
 pub use super::kube_cluster_service::Entity as KubeClusterService;

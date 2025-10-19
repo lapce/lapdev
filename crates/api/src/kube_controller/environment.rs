@@ -11,7 +11,7 @@ use sea_orm::{
     prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
     QueryFilter, TransactionTrait,
 };
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 use uuid::Uuid;
 
 use super::{EnvironmentNamespaceKind, KubeController};
@@ -802,33 +802,88 @@ impl KubeController {
                     )
                 })?;
 
+            // Get existing environment workloads
+            let existing_workloads = self
+                .db
+                .get_environment_workloads(environment.id)
+                .await
+                .map_err(ApiError::from)?;
+
+            // Build a map of existing workloads by name for quick lookup
+            let existing_workloads_map: std::collections::HashMap<String, _> = existing_workloads
+                .into_iter()
+                .map(|w| (w.name.clone(), w))
+                .collect();
+
             let catalog_workloads = self
                 .db
                 .get_app_catalog_workloads(catalog.id)
                 .await
                 .map_err(ApiError::from)?;
 
-            let workloads_with_resources = self
-                .get_workloads_yaml_for_catalog(&catalog, catalog_workloads.clone())
+            // Determine which workloads need to be deployed (added or updated)
+            let workloads_to_deploy: Vec<_> = catalog_workloads
+                .iter()
+                .filter(|catalog_workload| {
+                    match existing_workloads_map.get(&catalog_workload.name) {
+                        Some(existing_workload) => {
+                            // Workload needs update if catalog version is newer
+                            catalog_workload.catalog_sync_version > existing_workload.catalog_sync_version
+                        }
+                        None => {
+                            // New workload, needs to be deployed
+                            true
+                        }
+                    }
+                })
+                .cloned()
+                .collect();
+
+            // Only fetch YAML and deploy if there are workloads that need updating
+            let service_names = if !workloads_to_deploy.is_empty() {
+                tracing::info!(
+                    "Syncing {}/{} workloads for environment {} (only changed ones)",
+                    workloads_to_deploy.len(),
+                    catalog_workloads.len(),
+                    environment.name
+                );
+
+                let workloads_with_resources = self
+                    .get_workloads_yaml_for_catalog(&catalog, workloads_to_deploy.clone())
+                    .await?;
+
+                let service_names: HashSet<String> = workloads_with_resources
+                    .services
+                    .keys()
+                    .cloned()
+                    .collect();
+
+                self.deploy_app_catalog_with_yaml(
+                    &target_server,
+                    &environment.namespace,
+                    &environment.name,
+                    environment.id,
+                    Some(environment.auth_token.clone()),
+                    workloads_with_resources,
+                )
                 .await?;
 
-            self.deploy_app_catalog_with_yaml(
-                &target_server,
-                &environment.namespace,
-                &environment.name,
-                environment.id,
-                Some(environment.auth_token.clone()),
-                workloads_with_resources,
-            )
-            .await?;
+                service_names
+            } else {
+                tracing::info!(
+                    "No workload changes detected for environment {} - skipping K8s deployment",
+                    environment.name
+                );
+                HashSet::new()
+            };
 
-            Ok::<_, ApiError>(catalog_workloads)
+            Ok::<_, ApiError>((catalog_workloads, workloads_to_deploy, service_names))
         }
         .await;
 
         // If sync failed, reset status to idle and return error
-        let catalog_workloads = match sync_result {
-            Ok(workloads) => workloads,
+        let (catalog_workloads, workloads_to_deploy, service_names) = match sync_result {
+            Ok(result) => result,
             Err(e) => {
                 // Reset sync_status to idle on failure
                 let _ = lapdev_db_entities::kube_environment::ActiveModel {
@@ -845,21 +900,66 @@ impl KubeController {
         let now = Utc::now().into();
         let txn = self.db.conn.begin().await.map_err(ApiError::from)?;
 
-        lapdev_db_entities::kube_environment_workload::Entity::update_many()
+        // Build a set of catalog workload names for efficient lookup
+        let catalog_workload_names: HashSet<String> = catalog_workloads
+            .iter()
+            .map(|w| w.name.clone())
+            .collect();
+
+        // Only soft-delete workloads that no longer exist in the catalog
+        let deleted_workloads = lapdev_db_entities::kube_environment_workload::Entity::find()
             .filter(
                 lapdev_db_entities::kube_environment_workload::Column::EnvironmentId
                     .eq(environment.id),
             )
             .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
+            .all(&txn)
+            .await
+            .map_err(ApiError::from)?;
+
+        for existing_workload in deleted_workloads {
+            if !catalog_workload_names.contains(&existing_workload.name) {
+                // This workload no longer exists in the catalog, soft-delete it
+                lapdev_db_entities::kube_environment_workload::ActiveModel {
+                    id: ActiveValue::Set(existing_workload.id),
+                    deleted_at: ActiveValue::Set(Some(now)),
+                    ..Default::default()
+                }
+                .update(&txn)
+                .await
+                .map_err(ApiError::from)?;
+            }
+        }
+
+        let mut service_delete_query =
+            lapdev_db_entities::kube_environment_service::Entity::update_many()
+                .filter(
+                    lapdev_db_entities::kube_environment_service::Column::EnvironmentId
+                        .eq(environment.id),
+                )
+                .filter(
+                    lapdev_db_entities::kube_environment_service::Column::DeletedAt.is_null(),
+                );
+
+        if !service_names.is_empty() {
+            let existing: Vec<String> = service_names.into_iter().collect();
+            service_delete_query = service_delete_query
+                .filter(lapdev_db_entities::kube_environment_service::Column::Name.is_not_in(
+                    existing,
+                ));
+        }
+
+        service_delete_query
             .col_expr(
-                lapdev_db_entities::kube_environment_workload::Column::DeletedAt,
+                lapdev_db_entities::kube_environment_service::Column::DeletedAt,
                 Expr::value(now),
             )
             .exec(&txn)
             .await
             .map_err(ApiError::from)?;
 
-        for workload in &catalog_workloads {
+        // Only insert/update workloads that were actually deployed
+        for workload in &workloads_to_deploy {
             let containers_json = serde_json::to_value(&workload.containers)
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
@@ -867,6 +967,28 @@ impl KubeController {
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
 
+            // First, soft-delete any existing workload with the same name
+            lapdev_db_entities::kube_environment_workload::Entity::update_many()
+                .filter(
+                    lapdev_db_entities::kube_environment_workload::Column::EnvironmentId
+                        .eq(environment.id),
+                )
+                .filter(
+                    lapdev_db_entities::kube_environment_workload::Column::Name
+                        .eq(workload.name.clone()),
+                )
+                .filter(
+                    lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null(),
+                )
+                .col_expr(
+                    lapdev_db_entities::kube_environment_workload::Column::DeletedAt,
+                    Expr::value(now),
+                )
+                .exec(&txn)
+                .await
+                .map_err(ApiError::from)?;
+
+            // Then insert the new version
             lapdev_db_entities::kube_environment_workload::ActiveModel {
                 id: ActiveValue::Set(Uuid::new_v4()),
                 created_at: ActiveValue::Set(now),

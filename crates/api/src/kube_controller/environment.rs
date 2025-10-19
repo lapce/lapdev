@@ -68,6 +68,8 @@ impl KubeController {
                     is_shared: env.is_shared,
                     base_environment_id: env.base_environment_id,
                     base_environment_name,
+                    catalog_sync_version: env.catalog_sync_version,
+                    last_catalog_synced_at: env.last_catalog_synced_at.map(|dt| dt.to_string()),
                 })
             })
             .collect();
@@ -152,6 +154,8 @@ impl KubeController {
             is_shared: environment.is_shared,
             base_environment_id: environment.base_environment_id,
             base_environment_name,
+            catalog_sync_version: environment.catalog_sync_version,
+            last_catalog_synced_at: environment.last_catalog_synced_at.map(|dt| dt.to_string()),
         })
     }
 
@@ -479,6 +483,8 @@ impl KubeController {
             created_at: created_env.created_at.to_string(),
             base_environment_id: created_env.base_environment_id,
             base_environment_name: None, // Regular environments have no base environment
+            catalog_sync_version: created_env.catalog_sync_version,
+            last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
         })
     }
 
@@ -707,6 +713,8 @@ impl KubeController {
             created_at: created_env.created_at.to_string(),
             base_environment_id: created_env.base_environment_id,
             base_environment_name: Some(base_environment.name), // Branch environments have the base environment name
+            catalog_sync_version: created_env.catalog_sync_version,
+            last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
         })
     }
 

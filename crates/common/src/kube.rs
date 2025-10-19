@@ -289,6 +289,8 @@ pub struct KubeEnvironment {
     pub is_shared: bool,
     pub base_environment_id: Option<Uuid>,
     pub base_environment_name: Option<String>,
+    pub catalog_sync_version: i64,
+    pub last_catalog_synced_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

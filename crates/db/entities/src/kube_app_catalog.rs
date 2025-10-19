@@ -17,6 +17,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub resources: String,
     pub cluster_id: Uuid,
+    pub sync_version: i64,
+    pub last_synced_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

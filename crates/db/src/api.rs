@@ -1139,6 +1139,8 @@ impl DbApi {
             created_by: ActiveValue::Set(user_id),
             organization_id: ActiveValue::Set(org_id),
             deleted_at: ActiveValue::Set(None),
+            sync_version: ActiveValue::Set(0),
+            last_synced_at: ActiveValue::Set(None),
         }
         .insert(&txn)
         .await?;
@@ -1176,6 +1178,8 @@ impl DbApi {
             created_by: ActiveValue::Set(user_id),
             organization_id: ActiveValue::Set(org_id),
             deleted_at: ActiveValue::Set(None),
+            sync_version: ActiveValue::Set(0),
+            last_synced_at: ActiveValue::Set(None),
         }
         .insert(&txn)
         .await?;
@@ -1896,6 +1900,8 @@ impl DbApi {
             namespace: ActiveValue::Set(namespace.clone()),
             status: ActiveValue::Set(status),
             is_shared: ActiveValue::Set(is_shared),
+            catalog_sync_version: ActiveValue::Set(0),
+            last_catalog_synced_at: ActiveValue::Set(None),
             base_environment_id: ActiveValue::Set(base_environment_id),
             auth_token: ActiveValue::Set(auth_token),
         }

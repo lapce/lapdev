@@ -35,6 +35,13 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(KubeAppCatalog::Description).text())
                     .col(ColumnDef::new(KubeAppCatalog::Resources).text().not_null())
                     .col(ColumnDef::new(KubeAppCatalog::ClusterId).uuid().not_null())
+                    .col(
+                        ColumnDef::new(KubeAppCatalog::SyncVersion)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(ColumnDef::new(KubeAppCatalog::LastSyncedAt).timestamp_with_time_zone())
                     .foreign_key(
                         ForeignKey::create()
                             .from(KubeAppCatalog::Table, KubeAppCatalog::ClusterId)
@@ -106,4 +113,6 @@ pub enum KubeAppCatalog {
     Description,
     Resources,
     ClusterId,
+    SyncVersion,
+    LastSyncedAt,
 }

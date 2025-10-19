@@ -17,6 +17,8 @@ pub struct Model {
     pub namespace: String,
     pub status: String,
     pub is_shared: bool,
+    pub catalog_sync_version: i64,
+    pub last_catalog_synced_at: Option<DateTimeWithTimeZone>,
     pub base_environment_id: Option<Uuid>,
     pub auth_token: String,
 }

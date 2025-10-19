@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -10,15 +7,15 @@ use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube::tunnel::TunnelRegistry;
 
 // Submodules
-pub mod validation;
-pub mod yaml_parser;
-mod cluster;
 mod app_catalog;
-mod environment;
-mod workload;
-mod service;
-mod preview_url;
+mod cluster;
 mod deployment;
+mod environment;
+mod preview_url;
+mod service;
+pub mod validation;
+mod workload;
+pub mod yaml_parser;
 
 // Re-exports
 pub use validation::*;

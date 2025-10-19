@@ -6,12 +6,12 @@ use lapdev_common::{
     },
     utils::rand_string,
 };
-use std::str::FromStr;
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
     prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
     QueryFilter, TransactionTrait,
 };
+use std::str::FromStr;
 use uuid::Uuid;
 
 use super::{EnvironmentNamespaceKind, KubeController};
@@ -81,7 +81,6 @@ impl KubeController {
                     catalog_sync_version,
                     last_catalog_synced_at,
                     catalog_update_available,
-                    catalog_last_sync_actor_id: catalog.last_sync_actor_id,
                     sync_status: KubeEnvironmentSyncStatus::from_str(&env.sync_status)
                         .unwrap_or(KubeEnvironmentSyncStatus::Idle),
                 })
@@ -173,7 +172,6 @@ impl KubeController {
             catalog_sync_version: environment.catalog_sync_version,
             last_catalog_synced_at: environment.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available,
-            catalog_last_sync_actor_id: catalog.last_sync_actor_id,
             sync_status: KubeEnvironmentSyncStatus::from_str(&environment.sync_status)
                 .unwrap_or(KubeEnvironmentSyncStatus::Idle),
         })
@@ -407,7 +405,7 @@ impl KubeController {
         let services_map = workloads_with_resources.services.clone();
 
         // Store the environment workloads in the database before deployment
-        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> = workloads
+        let workload_details: Vec<KubeWorkloadDetails> = workloads
             .into_iter()
             .map(|workload| {
                 let mut containers = workload.containers;
@@ -506,7 +504,6 @@ impl KubeController {
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available: false,
-            catalog_last_sync_actor_id: None, // New environment, no sync yet
             sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
                 .unwrap_or(KubeEnvironmentSyncStatus::Idle),
         })
@@ -611,7 +608,7 @@ impl KubeController {
             .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
 
         // Convert workloads to the format needed for database creation
-        let workload_details: Vec<lapdev_common::kube::KubeWorkloadDetails> = base_workloads
+        let workload_details: Vec<KubeWorkloadDetails> = base_workloads
             .into_iter()
             .filter_map(|workload| {
                 workload.kind.parse().ok().map(|kind| {
@@ -740,7 +737,6 @@ impl KubeController {
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available: false,
-            catalog_last_sync_actor_id: None, // New branch environment, no sync yet
             sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
                 .unwrap_or(KubeEnvironmentSyncStatus::Idle),
         })

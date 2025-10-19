@@ -9,7 +9,10 @@ use lapdev_common::kube::{
     KubeWorkloadKind,
 };
 use lapdev_db::api::{CachedClusterService, DbApi};
-use lapdev_db_entities::kube_app_catalog_workload::{self, Entity as CatalogWorkloadEntity};
+use lapdev_db_entities::{
+    kube_app_catalog_workload::{self, Entity as CatalogWorkloadEntity},
+    kube_app_catalog_workload_label,
+};
 use lapdev_kube_rpc::{
     KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent, ResourceChangeType, ResourceType,
 };
@@ -308,6 +311,23 @@ impl KubeClusterServer {
                 .await
                 .with_context(|| format!("failed to update workload {}", workload.id))?;
 
+            self.db
+                .replace_workload_labels(
+                    workload.id,
+                    workload.app_catalog_id,
+                    workload.cluster_id,
+                    &workload.namespace,
+                    &workload_labels,
+                    event.timestamp.into(),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to update workload label mapping for {}",
+                        workload.id
+                    )
+                })?;
+
             tracing::info!(
                 workload_id = %workload.id,
                 namespace = %event.namespace,
@@ -356,12 +376,13 @@ impl KubeClusterServer {
 
         let service: Service = serde_yaml::from_str(yaml)?;
 
-        let (selector_json, ports_json, service_type, cluster_ip) = {
+        let (selector_map, selector_json, ports_json, service_type, cluster_ip) = {
             let spec = service.spec.as_ref();
             let selector = spec
                 .and_then(|spec| spec.selector.clone())
                 .unwrap_or_default();
-            let selector_json = json!(selector);
+            let selector_map: BTreeMap<String, String> = selector.into_iter().collect();
+            let selector_json = json!(selector_map);
 
             let ports = spec
                 .and_then(|spec| spec.ports.clone())
@@ -392,7 +413,13 @@ impl KubeClusterServer {
             let service_type = spec.and_then(|spec| spec.type_.clone());
             let cluster_ip = spec.and_then(|spec| spec.cluster_ip.clone());
 
-            (selector_json, ports_json, service_type, cluster_ip)
+            (
+                selector_map,
+                selector_json,
+                ports_json,
+                service_type,
+                cluster_ip,
+            )
         };
 
         self.db
@@ -409,6 +436,101 @@ impl KubeClusterServer {
                 event.timestamp,
             )
             .await?;
+
+        if selector_map.is_empty() {
+            return Ok(());
+        }
+
+        let matching_workload_ids = self
+            .db
+            .find_workloads_matching_selector(self.cluster_id, &event.namespace, &selector_map)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to resolve workloads matching service selector for {}",
+                    event.resource_name
+                )
+            })?;
+
+        if matching_workload_ids.is_empty() {
+            return Ok(());
+        }
+
+        let workloads = CatalogWorkloadEntity::find()
+            .filter(kube_app_catalog_workload::Column::Id.is_in(matching_workload_ids.clone()))
+            .filter(kube_app_catalog_workload::Column::DeletedAt.is_null())
+            .all(&self.db.conn)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed querying catalog workloads for service selector {}/{}",
+                    event.namespace, event.resource_name
+                )
+            })?;
+
+        if workloads.is_empty() {
+            return Ok(());
+        }
+
+        let cached_services = self
+            .db
+            .get_active_cluster_services(self.cluster_id, &event.namespace)
+            .await?;
+
+        let label_rows = kube_app_catalog_workload_label::Entity::find()
+            .filter(
+                kube_app_catalog_workload_label::Column::WorkloadId.is_in(matching_workload_ids),
+            )
+            .filter(kube_app_catalog_workload_label::Column::DeletedAt.is_null())
+            .all(&self.db.conn)
+            .await?
+            .into_iter()
+            .fold(
+                HashMap::<Uuid, BTreeMap<String, String>>::new(),
+                |mut acc, row| {
+                    acc.entry(row.workload_id)
+                        .or_default()
+                        .insert(row.label_key, row.label_value);
+                    acc
+                },
+            );
+
+        let mut touched_catalogs = HashSet::new();
+
+        for workload in workloads {
+            let labels = label_rows.get(&workload.id).cloned().unwrap_or_default();
+            let service_ports = ports_from_cached_services(&labels, &cached_services);
+            let ports_json = Json::from(serde_json::to_value(&service_ports)?);
+
+            if ports_json != workload.ports {
+                let active_model = kube_app_catalog_workload::ActiveModel {
+                    id: ActiveValue::Set(workload.id),
+                    ports: ActiveValue::Set(ports_json),
+                    ..Default::default()
+                };
+
+                active_model.update(&self.db.conn).await.with_context(|| {
+                    format!("failed to update workload ports for {}", workload.id)
+                })?;
+
+                touched_catalogs.insert(workload.app_catalog_id);
+            }
+        }
+
+        if !touched_catalogs.is_empty() {
+            let synced_at: DateTimeWithTimeZone = event.timestamp.into();
+            for catalog_id in touched_catalogs {
+                self.db
+                    .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to bump sync version for catalog {} after service update",
+                            catalog_id
+                        )
+                    })?;
+            }
+        }
 
         Ok(())
     }

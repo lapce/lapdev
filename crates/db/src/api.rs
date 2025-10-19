@@ -18,14 +18,15 @@ use pasetors::{
 };
 use sea_orm::{
     prelude::{DateTimeWithTimeZone, Json},
-    sea_query::{Alias, Expr, Func, OnConflict},
-    ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, DatabaseTransaction,
-    EntityTrait, FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
-    RelationTrait, TransactionTrait,
+    sea_query::{Alias, Condition, Expr, Func, OnConflict},
+    ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    DatabaseTransaction, EntityTrait, FromQueryResult, JoinType, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, RelationTrait, TransactionTrait,
 };
 use sea_orm_migration::MigratorTrait;
 use serde::Deserialize;
 use serde_json;
+use serde_yaml::Value;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
@@ -50,6 +51,7 @@ struct KubeEnvironmentWithRelated {
     pub env_auth_token: String,
     pub env_catalog_sync_version: i64,
     pub env_last_catalog_synced_at: Option<DateTimeWithTimeZone>,
+    pub env_sync_status: String,
 
     // App catalog fields
     pub catalog_name: Option<String>,
@@ -1537,6 +1539,10 @@ impl DbApi {
                 lapdev_db_entities::kube_environment::Column::AuthToken,
                 "env_auth_token",
             )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::SyncStatus,
+                "env_sync_status",
+            )
             // Join and select app catalog columns
             .join(
                 JoinType::LeftJoin,
@@ -1602,6 +1608,7 @@ impl DbApi {
                     is_shared: related.env_is_shared,
                     catalog_sync_version: related.env_catalog_sync_version,
                     last_catalog_synced_at: related.env_last_catalog_synced_at,
+                    sync_status: related.env_sync_status.clone(),
                     base_environment_id: related.env_base_environment_id,
                     auth_token: related.env_auth_token,
                 };
@@ -1778,32 +1785,152 @@ impl DbApi {
         created_at: sea_orm::prelude::DateTimeWithTimeZone,
     ) -> Result<(), sea_orm::DbErr> {
         for workload in enriched_workloads {
-            // Serialize all containers
-            let containers_json = serde_json::to_value(&workload.containers)
+            let KubeWorkloadDetails {
+                name,
+                namespace,
+                kind,
+                containers,
+                ports,
+                workload_yaml,
+            } = workload;
+
+            let containers_json = serde_json::to_value(&containers)
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
 
-            let ports_json = serde_json::to_value(&workload.ports)
+            let ports_json = serde_json::to_value(&ports)
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
+            let workload_id = Uuid::new_v4();
+            let labels = labels_from_workload_yaml(&kind, &workload_yaml);
 
             lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
-                id: ActiveValue::Set(Uuid::new_v4()),
+                id: ActiveValue::Set(workload_id),
                 created_at: ActiveValue::Set(created_at),
                 deleted_at: ActiveValue::Set(None),
                 app_catalog_id: ActiveValue::Set(catalog_id),
                 cluster_id: ActiveValue::Set(cluster_id),
-                name: ActiveValue::Set(workload.name),
-                namespace: ActiveValue::Set(workload.namespace),
-                kind: ActiveValue::Set(workload.kind.to_string()),
+                name: ActiveValue::Set(name.clone()),
+                namespace: ActiveValue::Set(namespace.clone()),
+                kind: ActiveValue::Set(kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
-                workload_yaml: ActiveValue::Set(workload.workload_yaml),
+                workload_yaml: ActiveValue::Set(workload_yaml),
             }
             .insert(txn)
             .await?;
+
+            self.replace_workload_labels_txn(
+                txn,
+                workload_id,
+                catalog_id,
+                cluster_id,
+                &namespace,
+                &labels,
+                created_at,
+            )
+            .await?;
         }
         Ok(())
+    }
+
+    pub async fn replace_workload_labels_txn(
+        &self,
+        txn: &DatabaseTransaction,
+        workload_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        namespace: &str,
+        labels: &BTreeMap<String, String>,
+        timestamp: DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        replace_workload_labels_with_conn(
+            txn,
+            workload_id,
+            app_catalog_id,
+            cluster_id,
+            namespace,
+            labels,
+            timestamp,
+        )
+        .await
+    }
+
+    pub async fn replace_workload_labels(
+        &self,
+        workload_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        namespace: &str,
+        labels: &BTreeMap<String, String>,
+        timestamp: DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        replace_workload_labels_with_conn(
+            &self.conn,
+            workload_id,
+            app_catalog_id,
+            cluster_id,
+            namespace,
+            labels,
+            timestamp,
+        )
+        .await
+    }
+
+    pub async fn find_workloads_matching_selector(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+        selector: &BTreeMap<String, String>,
+    ) -> Result<Vec<Uuid>> {
+        if selector.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut condition = Condition::any();
+        for (key, value) in selector {
+            condition = condition.add(
+                Condition::all()
+                    .add(
+                        lapdev_db_entities::kube_app_catalog_workload_label::Column::LabelKey
+                            .eq(key.clone()),
+                    )
+                    .add(
+                        lapdev_db_entities::kube_app_catalog_workload_label::Column::LabelValue
+                            .eq(value.clone()),
+                    ),
+            );
+        }
+
+        let required_matches = selector.len() as i32;
+
+        let workloads = lapdev_db_entities::kube_app_catalog_workload_label::Entity::find()
+            .select_only()
+            .column(lapdev_db_entities::kube_app_catalog_workload_label::Column::WorkloadId)
+            .filter(
+                lapdev_db_entities::kube_app_catalog_workload_label::Column::ClusterId
+                    .eq(cluster_id),
+            )
+            .filter(
+                lapdev_db_entities::kube_app_catalog_workload_label::Column::Namespace
+                    .eq(namespace.to_string()),
+            )
+            .filter(
+                lapdev_db_entities::kube_app_catalog_workload_label::Column::DeletedAt.is_null(),
+            )
+            .filter(condition)
+            .group_by(lapdev_db_entities::kube_app_catalog_workload_label::Column::WorkloadId)
+            .having(
+                Expr::col(lapdev_db_entities::kube_app_catalog_workload_label::Column::WorkloadId)
+                    .count()
+                    .eq(required_matches),
+            )
+            .into_tuple::<Uuid>()
+            .all(&self.conn)
+            .await?;
+
+        Ok(workloads)
     }
 
     pub async fn get_environment_workloads(
@@ -1955,6 +2082,7 @@ impl DbApi {
             is_shared: ActiveValue::Set(is_shared),
             catalog_sync_version: ActiveValue::Set(0),
             last_catalog_synced_at: ActiveValue::Set(None),
+            sync_status: ActiveValue::Set("idle".to_string()),
             base_environment_id: ActiveValue::Set(base_environment_id),
             auth_token: ActiveValue::Set(auth_token),
         }
@@ -2653,4 +2781,99 @@ impl DbApi {
 
         Ok(intercepts)
     }
+}
+
+fn labels_from_workload_yaml(
+    kind: &lapdev_common::kube::KubeWorkloadKind,
+    yaml: &str,
+) -> BTreeMap<String, String> {
+    let value: Value = match serde_yaml::from_str(yaml) {
+        Ok(v) => v,
+        Err(_) => return BTreeMap::new(),
+    };
+
+    let path: &[&str] = match kind {
+        lapdev_common::kube::KubeWorkloadKind::Deployment
+        | lapdev_common::kube::KubeWorkloadKind::StatefulSet
+        | lapdev_common::kube::KubeWorkloadKind::DaemonSet
+        | lapdev_common::kube::KubeWorkloadKind::ReplicaSet
+        | lapdev_common::kube::KubeWorkloadKind::Job => &["spec", "template", "metadata", "labels"],
+        lapdev_common::kube::KubeWorkloadKind::Pod => &["metadata", "labels"],
+        lapdev_common::kube::KubeWorkloadKind::CronJob => &[
+            "spec",
+            "jobTemplate",
+            "spec",
+            "template",
+            "metadata",
+            "labels",
+        ],
+    };
+
+    traverse_yaml(&value, path)
+        .map(mapping_to_labels)
+        .unwrap_or_default()
+}
+
+fn traverse_yaml<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        let mapping = current.as_mapping()?;
+        current = mapping.get(&Value::String((*key).to_string()))?;
+    }
+    Some(current)
+}
+
+fn mapping_to_labels(node: &Value) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    if let Some(mapping) = node.as_mapping() {
+        for (key, value) in mapping {
+            if let (Value::String(k), Value::String(v)) = (key, value) {
+                labels.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    labels
+}
+
+async fn replace_workload_labels_with_conn<C>(
+    conn: &C,
+    workload_id: Uuid,
+    app_catalog_id: Uuid,
+    cluster_id: Uuid,
+    namespace: &str,
+    labels: &BTreeMap<String, String>,
+    timestamp: DateTimeWithTimeZone,
+) -> Result<(), sea_orm::DbErr>
+where
+    C: ConnectionTrait + Send + Sync,
+{
+    lapdev_db_entities::kube_app_catalog_workload_label::Entity::update_many()
+        .filter(
+            lapdev_db_entities::kube_app_catalog_workload_label::Column::WorkloadId.eq(workload_id),
+        )
+        .filter(lapdev_db_entities::kube_app_catalog_workload_label::Column::DeletedAt.is_null())
+        .col_expr(
+            lapdev_db_entities::kube_app_catalog_workload_label::Column::DeletedAt,
+            Expr::value(timestamp),
+        )
+        .exec(conn)
+        .await?;
+
+    for (key, value) in labels {
+        lapdev_db_entities::kube_app_catalog_workload_label::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            created_at: ActiveValue::Set(timestamp),
+            deleted_at: ActiveValue::Set(None),
+            app_catalog_id: ActiveValue::Set(app_catalog_id),
+            workload_id: ActiveValue::Set(workload_id),
+            cluster_id: ActiveValue::Set(cluster_id),
+            namespace: ActiveValue::Set(namespace.to_owned()),
+            label_key: ActiveValue::Set(key.clone()),
+            label_value: ActiveValue::Set(value.clone()),
+        }
+        .insert(conn)
+        .await?;
+    }
+
+    Ok(())
 }

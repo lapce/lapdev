@@ -23,3 +23,4 @@ lapdev-db-migration.workspace = true
 lapdev-db-entities.workspace = true
 lapdev-common.workspace = true
 secrecy.workspace = true
+serde_yaml.workspace = true

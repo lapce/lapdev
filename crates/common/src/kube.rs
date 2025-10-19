@@ -46,7 +46,9 @@ pub enum KubeClusterStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display, PartialEq)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display, PartialEq,
+)]
 pub enum KubeEnvironmentSyncStatus {
     Idle,
     Syncing,
@@ -298,7 +300,6 @@ pub struct KubeEnvironment {
     pub catalog_sync_version: i64,
     pub last_catalog_synced_at: Option<String>,
     pub catalog_update_available: bool,
-    pub catalog_last_sync_actor_id: Option<Uuid>, // NULL = cluster auto-update, Some(user_id) = admin edit
     pub sync_status: KubeEnvironmentSyncStatus,
 }
 

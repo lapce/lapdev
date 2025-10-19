@@ -357,6 +357,7 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
 
     let navigate = leptos_router::hooks::use_navigate();
     let environment_id = environment.id;
+    let needs_catalog_sync = environment.catalog_update_available;
     // let view_details = move |_| {
     //     let url = format!("/kubernetes/environments/{}", environment_id);
     //     navigate(&url, Default::default());
@@ -390,11 +391,20 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
     view! {
         <TableRow>
             <TableCell>
-                <a href={format!("/kubernetes/environments/{}", environment.id)}>
-                    <Button variant=ButtonVariant::Link class="p-0">
-                        <span class="font-medium">{environment.name.clone()}</span>
-                    </Button>
-                </a>
+                <div class="flex items-center gap-2">
+                    <a href={format!("/kubernetes/environments/{}", environment.id)}>
+                        <Button variant=ButtonVariant::Link class="p-0">
+                            <span class="font-medium">{environment.name.clone()}</span>
+                        </Button>
+                    </a>
+                    {if needs_catalog_sync {
+                        view! {
+                            <Badge variant=BadgeVariant::Destructive class="text-[10px] uppercase tracking-wide">"Sync required"</Badge>
+                        }.into_any()
+                    } else {
+                        view! { <></> }.into_any()
+                    }}
+                </div>
             </TableCell>
             <TableCell>
                 <Badge variant=BadgeVariant::Outline>{environment.namespace.clone()}</Badge>
@@ -484,6 +494,19 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
                         open=dropdown_expanded.read_only()
                         class="min-w-48 -translate-x-2"
                     >
+                        {if needs_catalog_sync {
+                            view! {
+                                <DropdownMenuItem class="p-0">
+                                    <button class="flex items-center gap-2 px-2 py-1.5 w-full text-amber-600 dark:text-amber-300 cursor-not-allowed" disabled>
+                                        <lucide_leptos::RefreshCcw />
+                                        "Sync From Catalog"
+                                    </button>
+                                </DropdownMenuItem>
+                            }.into_any()
+                        } else {
+                            view! { <></> }.into_any()
+                        }}
+
                         <DropdownMenuItem class="p-0">
                             <a href=format!("/kubernetes/environments/{}", environment_id) class="flex items-center gap-2 px-2 py-1.5 w-full">
                                 <lucide_leptos::Eye />

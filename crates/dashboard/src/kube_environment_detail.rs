@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::{
     app::AppConfig,
     component::{
+        alert::{Alert, AlertDescription, AlertTitle},
         badge::{Badge, BadgeVariant},
         button::{Button, ButtonSize, ButtonVariant},
         card::Card,
@@ -509,6 +510,12 @@ pub fn EnvironmentInfoCard(
                 let app_catalog_name = environment.app_catalog_name.clone();
                 let cluster_id = environment.cluster_id;
                 let cluster_name = environment.cluster_name.clone();
+                let catalog_update_available = environment.catalog_update_available;
+                let last_catalog_synced_at = environment.last_catalog_synced_at.clone();
+                let last_sync_message = last_catalog_synced_at
+                    .clone()
+                    .map(|ts| format!("Last synced at {ts}"))
+                    .unwrap_or_else(|| "This environment has not been synced from the catalog yet.".to_string());
 
                 let status_variant = match env_status.as_str() {
                     "Running" => BadgeVariant::Secondary,
@@ -526,7 +533,27 @@ pub fn EnvironmentInfoCard(
                 };
 
                 view! {
-                    <Card class="p-6">
+                    <div class="flex flex-col gap-4">
+                        {if catalog_update_available {
+                            view! {
+                                <Alert class="border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/40 text-amber-900 dark:text-amber-100">
+                                    <lucide_leptos::TriangleAlert attr:class="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                                    <AlertTitle>Catalog update available</AlertTitle>
+                                    <AlertDescription class="gap-3">
+                                        <span>"New catalog changes are ready to apply. Sync the environment to pull the latest workloads."</span>
+                                        <span class="text-xs text-amber-800 dark:text-amber-300">{last_sync_message.clone()}</span>
+                                        <Button variant=ButtonVariant::Outline size=ButtonSize::Sm class="pointer-events-none opacity-60" disabled>
+                                            <lucide_leptos::RefreshCcw />
+                                            "Sync From Catalog"
+                                        </Button>
+                                    </AlertDescription>
+                                </Alert>
+                            }.into_any()
+                        } else {
+                            view! { <></> }.into_any()
+                        }}
+
+                        <Card class="p-6">
                         <div class="flex flex-col gap-6">
                             // Header with actions
                             <div class="flex items-start justify-between">
@@ -677,14 +704,15 @@ pub fn EnvironmentInfoCard(
                                 </div>
                             </div>
                         </div>
-                    </Card>
+                        </Card>
 
-                    // Create Branch Environment Modal
-                    <CreateBranchEnvironmentModal
-                        open=create_branch_modal_open
-                        create_branch_action
-                        branch_name
-                    />
+                        // Create Branch Environment Modal
+                        <CreateBranchEnvironmentModal
+                            open=create_branch_modal_open
+                            create_branch_action
+                            branch_name
+                        />
+                    </div>
                 }
             }
         </Show>

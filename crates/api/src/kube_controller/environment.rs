@@ -54,6 +54,10 @@ impl KubeController {
             .filter_map(|(env, catalog, cluster, base_environment_name)| {
                 let catalog = catalog?;
                 let cluster = cluster?;
+                let catalog_sync_version = env.catalog_sync_version;
+                let last_catalog_synced_at = env.last_catalog_synced_at.map(|dt| dt.to_string());
+                let catalog_update_available = catalog.sync_version > catalog_sync_version;
+
                 Some(KubeEnvironment {
                     id: env.id,
                     name: env.name,
@@ -68,8 +72,9 @@ impl KubeController {
                     is_shared: env.is_shared,
                     base_environment_id: env.base_environment_id,
                     base_environment_name,
-                    catalog_sync_version: env.catalog_sync_version,
-                    last_catalog_synced_at: env.last_catalog_synced_at.map(|dt| dt.to_string()),
+                    catalog_sync_version,
+                    last_catalog_synced_at,
+                    catalog_update_available,
                 })
             })
             .collect();
@@ -137,6 +142,8 @@ impl KubeController {
             None
         };
 
+        let catalog_update_available = catalog.sync_version > environment.catalog_sync_version;
+
         Ok(KubeEnvironment {
             id: environment.id,
             user_id: environment.user_id,
@@ -156,6 +163,7 @@ impl KubeController {
             base_environment_name,
             catalog_sync_version: environment.catalog_sync_version,
             last_catalog_synced_at: environment.last_catalog_synced_at.map(|dt| dt.to_string()),
+            catalog_update_available,
         })
     }
 
@@ -485,6 +493,7 @@ impl KubeController {
             base_environment_name: None, // Regular environments have no base environment
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
+            catalog_update_available: false,
         })
     }
 
@@ -715,6 +724,7 @@ impl KubeController {
             base_environment_name: Some(base_environment.name), // Branch environments have the base environment name
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
+            catalog_update_available: false,
         })
     }
 

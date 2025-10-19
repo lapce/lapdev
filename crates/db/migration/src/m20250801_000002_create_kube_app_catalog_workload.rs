@@ -72,6 +72,12 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(""),
                     )
+                    .col(
+                        ColumnDef::new(KubeAppCatalogWorkload::CatalogSyncVersion)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(
@@ -153,4 +159,5 @@ pub enum KubeAppCatalogWorkload {
     Containers,
     Ports,
     WorkloadYaml,
+    CatalogSyncVersion,
 }

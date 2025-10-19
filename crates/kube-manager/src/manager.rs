@@ -3675,6 +3675,7 @@ impl KubeManager {
             containers,
             ports: Vec::new(), // Ports will be fetched from services during YAML retrieval
             workload_yaml: None,
+            catalog_sync_version: 0,
         };
 
         // Step 2: Get the current workload YAML with all its resources
@@ -3759,6 +3760,7 @@ impl KubeManager {
             containers: containers.clone(), // Use the customized containers for the branch
             ports: Vec::new(), // Ports will be fetched from services during YAML retrieval
             workload_yaml: None,
+            catalog_sync_version: 0,
         };
 
         // Step 2: Get the base workload YAML with all its resources

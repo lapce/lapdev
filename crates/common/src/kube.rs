@@ -199,6 +199,7 @@ pub struct KubeAppCatalogWorkload {
     pub containers: Vec<KubeContainerInfo>,
     pub ports: Vec<KubeServicePort>,
     pub workload_yaml: Option<String>,
+    pub catalog_sync_version: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +219,7 @@ pub struct KubeEnvironmentWorkload {
     pub kind: String,
     pub containers: Vec<KubeContainerInfo>,
     pub ports: Vec<KubeServicePort>,
+    pub catalog_sync_version: i64,
 }
 
 impl KubeEnvironmentWorkload {

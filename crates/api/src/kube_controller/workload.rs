@@ -129,6 +129,7 @@ impl KubeController {
                 kind: updated_db_model.kind.clone(),
                 containers,
                 ports,
+                catalog_sync_version: updated_db_model.catalog_sync_version,
             }
         };
 

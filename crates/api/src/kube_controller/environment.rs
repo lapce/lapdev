@@ -448,6 +448,7 @@ impl KubeController {
                 namespace.clone(),
                 "Pending".to_string(),
                 is_shared,
+                app_catalog.sync_version,
                 None, // No base environment for regular environments
                 workload_details,
                 services_map,
@@ -653,6 +654,7 @@ impl KubeController {
                 namespace.clone(),
                 "Pending".to_string(),
                 false, // Branch environments are always personal (not shared)
+                base_environment.catalog_sync_version,
                 Some(base_environment_id), // Set the base environment reference
                 workload_details,
                 services_map,
@@ -875,6 +877,7 @@ impl KubeController {
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
+                catalog_sync_version: ActiveValue::Set(catalog.sync_version),
             }
             .insert(&txn)
             .await

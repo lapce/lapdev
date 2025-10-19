@@ -15,6 +15,7 @@ pub struct Model {
     pub kind: String,
     pub containers: Json,
     pub ports: Json,
+    pub catalog_sync_version: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

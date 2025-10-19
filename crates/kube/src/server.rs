@@ -262,7 +262,7 @@ impl KubeClusterServer {
             return Ok(());
         }
 
-        let mut touched_catalogs = HashSet::new();
+        let mut workloads_by_catalog: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
 
         let matching_services = self
             .db
@@ -335,18 +335,31 @@ impl KubeClusterServer {
                 "Updated catalog workload containers from cluster event"
             );
 
-            touched_catalogs.insert(workload.app_catalog_id);
+            workloads_by_catalog
+                .entry(workload.app_catalog_id)
+                .or_default()
+                .push(workload.id);
         }
 
-        if !touched_catalogs.is_empty() {
+        if !workloads_by_catalog.is_empty() {
             let synced_at: DateTimeWithTimeZone = event.timestamp.into();
-            for catalog_id in touched_catalogs {
-                self.db
+            for (catalog_id, workload_ids) in workloads_by_catalog {
+                let new_version = self
+                    .db
                     .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
                     .await
                     .with_context(|| {
                         format!(
                             "failed to bump sync version for catalog {} after workload update",
+                            catalog_id
+                        )
+                    })?;
+                self.db
+                    .update_catalog_workload_versions(&workload_ids, new_version)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to update workload sync version for catalog {}",
                             catalog_id
                         )
                     })?;
@@ -490,7 +503,7 @@ impl KubeClusterServer {
                 },
             );
 
-        let mut touched_catalogs = HashSet::new();
+        let mut workloads_by_catalog: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
 
         for workload in workloads {
             let labels = label_rows.get(&workload.id).cloned().unwrap_or_default();
@@ -512,19 +525,32 @@ impl KubeClusterServer {
                     format!("failed to update workload ports for {}", workload.id)
                 })?;
 
-                touched_catalogs.insert(workload.app_catalog_id);
+                workloads_by_catalog
+                    .entry(workload.app_catalog_id)
+                    .or_default()
+                    .push(workload.id);
             }
         }
 
-        if !touched_catalogs.is_empty() {
+        if !workloads_by_catalog.is_empty() {
             let synced_at: DateTimeWithTimeZone = event.timestamp.into();
-            for catalog_id in touched_catalogs {
-                self.db
+            for (catalog_id, workload_ids) in workloads_by_catalog {
+                let new_version = self
+                    .db
                     .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
                     .await
                     .with_context(|| {
                         format!(
                             "failed to bump sync version for catalog {} after service update",
+                            catalog_id
+                        )
+                    })?;
+                self.db
+                    .update_catalog_workload_versions(&workload_ids, new_version)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to update workload sync version for catalog {}",
                             catalog_id
                         )
                     })?;

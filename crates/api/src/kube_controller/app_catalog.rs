@@ -264,10 +264,13 @@ impl KubeController {
             .await
             .map_err(ApiError::from)?;
 
-        self.db
+        let _ = self
+            .db
             .bump_app_catalog_sync_version(workload.app_catalog_id, Utc::now().into())
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        Ok(())
     }
 
     pub async fn update_app_catalog_workload(
@@ -305,8 +308,14 @@ impl KubeController {
             .await
             .map_err(ApiError::from)?;
 
-        self.db
+        let new_version = self
+            .db
             .bump_app_catalog_sync_version(catalog.id, Utc::now().into())
+            .await
+            .map_err(ApiError::from)?;
+
+        self.db
+            .update_catalog_workload_versions(&[workload.id], new_version)
             .await
             .map_err(ApiError::from)
     }
@@ -339,7 +348,7 @@ impl KubeController {
         let txn = self.db.conn.begin().await.map_err(ApiError::from)?;
         let now = chrono::Utc::now().into();
 
-        match self
+        let inserted_ids = match self
             .db
             .insert_enriched_workloads_to_catalog(
                 &txn,
@@ -350,27 +359,33 @@ impl KubeController {
             )
             .await
         {
-            Ok(_) => {
-                txn.commit().await.map_err(ApiError::from)?;
-                self.db
-                    .bump_app_catalog_sync_version(catalog.id, Utc::now().into())
-                    .await
-                    .map_err(ApiError::from)
-            }
+            Ok(ids) => ids,
             Err(db_err) => {
                 txn.rollback().await.map_err(ApiError::from)?;
-                // Check if this is a unique constraint violation using SeaORM's sql_err() method
                 if matches!(
                     db_err.sql_err(),
                     Some(sea_orm::SqlErr::UniqueConstraintViolation(_))
                 ) {
-                    Err(ApiError::InvalidRequest(
+                    return Err(ApiError::InvalidRequest(
                         "One or more selected workloads already exist in this catalog".to_string(),
-                    ))
+                    ));
                 } else {
-                    Err(ApiError::from(anyhow::Error::from(db_err)))
+                    return Err(ApiError::from(anyhow::Error::from(db_err)));
                 }
             }
-        }
+        };
+
+        txn.commit().await.map_err(ApiError::from)?;
+
+        let new_version = self
+            .db
+            .bump_app_catalog_sync_version(catalog.id, Utc::now().into())
+            .await
+            .map_err(ApiError::from)?;
+
+        self.db
+            .update_catalog_workload_versions(&inserted_ids, new_version)
+            .await
+            .map_err(ApiError::from)
     }
 }

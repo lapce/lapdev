@@ -1206,14 +1206,15 @@ impl DbApi {
         .await?;
 
         // Insert enriched workloads
-        self.insert_enriched_workloads_to_catalog(
-            &txn,
-            catalog_id,
-            cluster_id,
-            enriched_workloads,
-            now,
-        )
-        .await?;
+        let _ = self
+            .insert_enriched_workloads_to_catalog(
+                &txn,
+                catalog_id,
+                cluster_id,
+                enriched_workloads,
+                now,
+            )
+            .await?;
 
         txn.commit().await?;
         Ok(catalog_id)
@@ -1327,6 +1328,7 @@ impl DbApi {
                     } else {
                         Some(w.workload_yaml.clone())
                     },
+                    catalog_sync_version: w.catalog_sync_version,
                 })
             })
             .collect())
@@ -1359,7 +1361,7 @@ impl DbApi {
         &self,
         catalog_id: Uuid,
         synced_at: DateTimeWithTimeZone,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let updated = lapdev_db_entities::kube_app_catalog::Entity::update_many()
             .filter(lapdev_db_entities::kube_app_catalog::Column::Id.eq(catalog_id))
             .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
@@ -1374,14 +1376,14 @@ impl DbApi {
             .exec_with_returning(&self.conn)
             .await?;
 
-        if updated.is_empty() {
-            return Err(anyhow!(
+        if let Some(model) = updated.into_iter().next() {
+            Ok(model.sync_version)
+        } else {
+            Err(anyhow!(
                 "App catalog {} not found or already deleted",
                 catalog_id
-            ));
+            ))
         }
-
-        Ok(())
     }
 
     pub async fn update_app_catalog_workload(
@@ -1784,6 +1786,7 @@ impl DbApi {
                 containers: ActiveValue::Set(Json::from(serde_json::json!([]))),
                 ports: ActiveValue::Set(Json::from(serde_json::json!([]))),
                 workload_yaml: ActiveValue::Set(String::new()),
+                catalog_sync_version: ActiveValue::Set(0),
             }
             .insert(txn)
             .await?;
@@ -1798,7 +1801,8 @@ impl DbApi {
         cluster_id: Uuid,
         enriched_workloads: Vec<KubeWorkloadDetails>,
         created_at: sea_orm::prelude::DateTimeWithTimeZone,
-    ) -> Result<(), sea_orm::DbErr> {
+    ) -> Result<Vec<Uuid>, sea_orm::DbErr> {
+        let mut inserted_ids = Vec::new();
         for workload in enriched_workloads {
             let KubeWorkloadDetails {
                 name,
@@ -1832,6 +1836,7 @@ impl DbApi {
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
                 workload_yaml: ActiveValue::Set(workload_yaml),
+                catalog_sync_version: ActiveValue::Set(0),
             }
             .insert(txn)
             .await?;
@@ -1846,8 +1851,10 @@ impl DbApi {
                 created_at,
             )
             .await?;
+
+            inserted_ids.push(workload_id);
         }
-        Ok(())
+        Ok(inserted_ids)
     }
 
     pub async fn replace_workload_labels_txn(
@@ -2020,6 +2027,30 @@ impl DbApi {
         Ok(results)
     }
 
+    pub async fn update_catalog_workload_versions(
+        &self,
+        workload_ids: &[Uuid],
+        version: i64,
+    ) -> Result<()> {
+        if workload_ids.is_empty() {
+            return Ok(());
+        }
+
+        lapdev_db_entities::kube_app_catalog_workload::Entity::update_many()
+            .filter(
+                lapdev_db_entities::kube_app_catalog_workload::Column::Id
+                    .is_in(workload_ids.iter().cloned().collect::<Vec<_>>()),
+            )
+            .col_expr(
+                lapdev_db_entities::kube_app_catalog_workload::Column::CatalogSyncVersion,
+                Expr::value(version),
+            )
+            .exec(&self.conn)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn replace_service_selectors(
         &self,
         service_id: Uuid,
@@ -2080,6 +2111,7 @@ impl DbApi {
                 kind: workload.kind,
                 containers,
                 ports,
+                catalog_sync_version: workload.catalog_sync_version,
             });
         }
         Ok(result)
@@ -2119,6 +2151,7 @@ impl DbApi {
                 kind: workload.kind,
                 containers,
                 ports,
+                catalog_sync_version: workload.catalog_sync_version,
             }))
         } else {
             Ok(None)
@@ -2164,6 +2197,7 @@ impl DbApi {
         namespace: String,
         status: String,
         is_shared: bool,
+        catalog_sync_version: i64,
         base_environment_id: Option<Uuid>,
         workloads: Vec<KubeWorkloadDetails>,
         services: std::collections::HashMap<String, lapdev_common::kube::KubeServiceWithYaml>,
@@ -2189,8 +2223,8 @@ impl DbApi {
             namespace: ActiveValue::Set(namespace.clone()),
             status: ActiveValue::Set(status),
             is_shared: ActiveValue::Set(is_shared),
-            catalog_sync_version: ActiveValue::Set(0),
-            last_catalog_synced_at: ActiveValue::Set(None),
+            catalog_sync_version: ActiveValue::Set(catalog_sync_version),
+            last_catalog_synced_at: ActiveValue::Set(Some(created_at)),
             sync_status: ActiveValue::Set("idle".to_string()),
             base_environment_id: ActiveValue::Set(base_environment_id),
             auth_token: ActiveValue::Set(auth_token),
@@ -2220,6 +2254,7 @@ impl DbApi {
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
+                catalog_sync_version: ActiveValue::Set(catalog_sync_version),
             }
             .insert(&txn)
             .await?;

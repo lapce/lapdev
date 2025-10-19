@@ -28,7 +28,7 @@ use serde::Deserialize;
 use serde_json;
 use serde_yaml::Value;
 use sqlx::PgPool;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use uuid::Uuid;
 
@@ -1946,6 +1946,78 @@ impl DbApi {
             .await?;
 
         Ok(workloads)
+    }
+
+    pub async fn get_matching_cluster_services(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+        labels: &BTreeMap<String, String>,
+    ) -> Result<Vec<CachedClusterService>> {
+        if labels.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let selector_rows = kube_cluster_service_selector::Entity::find()
+            .filter(kube_cluster_service_selector::Column::ClusterId.eq(cluster_id))
+            .filter(kube_cluster_service_selector::Column::Namespace.eq(namespace))
+            .filter(kube_cluster_service_selector::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        let mut grouped: HashMap<Uuid, Vec<(String, String)>> = HashMap::new();
+        for row in selector_rows {
+            grouped
+                .entry(row.service_id)
+                .or_default()
+                .push((row.label_key, row.label_value));
+        }
+
+        let matching_ids: Vec<Uuid> = grouped
+            .into_iter()
+            .filter_map(|(service_id, selectors)| {
+                if selectors.iter().all(|(key, value)| {
+                    labels
+                        .get(key)
+                        .map(|existing| existing == value)
+                        .unwrap_or(false)
+                }) {
+                    Some(service_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if matching_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let services = kube_cluster_service::Entity::find()
+            .filter(kube_cluster_service::Column::Id.is_in(matching_ids))
+            .filter(kube_cluster_service::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        let mut results = Vec::with_capacity(services.len());
+        for svc in services {
+            let selector: BTreeMap<String, String> =
+                serde_json::from_value(svc.selector.clone()).unwrap_or_default();
+            let ports_raw: Vec<StoredServicePort> =
+                serde_json::from_value(svc.ports.clone()).unwrap_or_default();
+            let ports = ports_raw
+                .into_iter()
+                .filter_map(StoredServicePort::into_service_port)
+                .collect();
+
+            results.push(CachedClusterService {
+                name: svc.name,
+                selector,
+                ports,
+            });
+        }
+
+        Ok(results)
     }
 
     pub async fn replace_service_selectors(

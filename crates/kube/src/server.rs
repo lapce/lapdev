@@ -239,11 +239,6 @@ impl KubeClusterServer {
             return Ok(());
         }
 
-        let cached_services = self
-            .db
-            .get_active_cluster_services(self.cluster_id, &event.namespace)
-            .await?;
-
         let workloads = CatalogWorkloadEntity::find()
             .filter(kube_app_catalog_workload::Column::Name.eq(event.resource_name.clone()))
             .filter(kube_app_catalog_workload::Column::Namespace.eq(event.namespace.clone()))
@@ -269,6 +264,11 @@ impl KubeClusterServer {
 
         let mut touched_catalogs = HashSet::new();
 
+        let matching_services = self
+            .db
+            .get_matching_cluster_services(self.cluster_id, &event.namespace, &workload_labels)
+            .await?;
+
         for workload in workloads {
             // Ensure the stored kind matches; if not, skip but log.
             if let Ok(stored_kind) = workload.kind.parse::<KubeWorkloadKind>() {
@@ -291,7 +291,7 @@ impl KubeClusterServer {
                         workload.id
                     )
                 })?;
-            let service_ports = ports_from_cached_services(&workload_labels, &cached_services);
+            let service_ports = ports_from_cached_services(&workload_labels, &matching_services);
 
             let containers_json = serde_json::to_value(&merged_containers)
                 .context("failed to serialize merged container definition")?;
@@ -472,11 +472,6 @@ impl KubeClusterServer {
             return Ok(());
         }
 
-        let cached_services = self
-            .db
-            .get_active_cluster_services(self.cluster_id, &event.namespace)
-            .await?;
-
         let label_rows = kube_app_catalog_workload_label::Entity::find()
             .filter(
                 kube_app_catalog_workload_label::Column::WorkloadId.is_in(matching_workload_ids),
@@ -499,7 +494,11 @@ impl KubeClusterServer {
 
         for workload in workloads {
             let labels = label_rows.get(&workload.id).cloned().unwrap_or_default();
-            let service_ports = ports_from_cached_services(&labels, &cached_services);
+            let matching_services = self
+                .db
+                .get_matching_cluster_services(self.cluster_id, &event.namespace, &labels)
+                .await?;
+            let service_ports = ports_from_cached_services(&labels, &matching_services);
             let ports_json = Json::from(serde_json::to_value(&service_ports)?);
 
             if ports_json != workload.ports {

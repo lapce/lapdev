@@ -81,6 +81,7 @@ impl KubeController {
                     catalog_sync_version,
                     last_catalog_synced_at,
                     catalog_update_available,
+                    catalog_last_sync_actor_id: catalog.last_sync_actor_id,
                     sync_status: KubeEnvironmentSyncStatus::from_str(&env.sync_status)
                         .unwrap_or(KubeEnvironmentSyncStatus::Idle),
                 })

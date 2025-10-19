@@ -373,6 +373,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
             .map(|env| env.catalog_sync_version)
             .unwrap_or(0)
     });
+    let env_catalog_version_for_filter = environment_catalog_version.clone();
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
     let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
     let all_preview_urls = Signal::derive(move || preview_urls_result.get().unwrap_or_default());
@@ -380,7 +381,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
 
     // Filter workloads based on search query
     let filtered_workloads = Signal::derive(move || {
-        let env_version = environment_catalog_version.get();
+        let env_version = env_catalog_version_for_filter.get();
         let workloads = all_workloads.get();
         let search_term = debounced_search.get().to_lowercase();
 
@@ -498,6 +499,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     all_intercepts
                     active_session
                     update_counter
+                    environment_catalog_version
                 />
             </Show>
 
@@ -546,8 +548,8 @@ pub fn EnvironmentInfoCard(
                 let cluster_id = environment.cluster_id;
                 let cluster_name = environment.cluster_name.clone();
                 let catalog_update_available = environment.catalog_update_available;
-                let last_catalog_synced_at = environment.last_catalog_synced_at.clone();
                 let catalog_last_sync_actor_id = environment.catalog_last_sync_actor_id;
+                let last_catalog_synced_at = environment.last_catalog_synced_at.clone();
                 let sync_status = environment.sync_status;
                 let last_sync_message = last_catalog_synced_at
                     .clone()
@@ -563,7 +565,6 @@ pub fn EnvironmentInfoCard(
                 } else {
                     "New catalog changes are ready to apply. Sync the environment to pull the latest workloads."
                 };
-
                 let status_variant = match env_status.as_str() {
                     "Running" => BadgeVariant::Secondary,
                     "Pending" => BadgeVariant::Outline,
@@ -902,6 +903,7 @@ pub fn EnvironmentResourcesTabs(
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
+    environment_catalog_version: Signal<i64>,
 ) -> impl IntoView {
     view! {
         <Tabs default_value=RwSignal::new(ResourceTab::Workloads) class="gap-4">
@@ -936,6 +938,7 @@ pub fn EnvironmentResourcesTabs(
                     all_intercepts
                     active_session
                     update_counter
+                    environment_catalog_version=environment_catalog_version.clone()
                 />
             </TabsContent>
 
@@ -969,7 +972,10 @@ pub fn EnvironmentWorkloadsContent(
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
+    environment_catalog_version: Signal<i64>,
 ) -> impl IntoView {
+    let env_catalog_version_signal = environment_catalog_version.clone();
+
     view! {
             <div class="flex flex-col gap-4">
                 <div class="relative max-w-sm">
@@ -1003,7 +1009,8 @@ pub fn EnvironmentWorkloadsContent(
                                 each=move || filtered_workloads.get()
                                 key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
                             children=move |workload| {
-                                    view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts active_session update_counter env_catalog_version=environment_catalog_version.clone() /> }
+                                let env_catalog_version = env_catalog_version_signal.clone();
+                                view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts active_session update_counter env_catalog_version=env_catalog_version /> }
                                 }
                             />
                         </TableBody>
@@ -1074,9 +1081,9 @@ pub fn EnvironmentWorkloadItem(
     let workload_catalog_version = workload.catalog_sync_version;
     let row_class = Signal::derive(move || {
         if env_catalog_version.get() < workload_catalog_version {
-            "bg-amber-50/70 dark:bg-amber-900/20 border-l-4 border-amber-500"
+            "bg-amber-50/70 dark:bg-amber-900/20 border-l-4 border-amber-500".to_string()
         } else {
-            ""
+            String::new()
         }
     });
 
@@ -1138,7 +1145,7 @@ pub fn EnvironmentWorkloadItem(
                     <a href=format!("/kubernetes/environments/{}/workloads/{}", environment_id, workload.id)>
                         <Button variant=ButtonVariant::Link class="p-0">
                             <span class="font-medium">{workload.name}</span>
-                            {if workload.catalog_sync_version > environment_catalog_version.get_untracked() {
+                            {if workload.catalog_sync_version > env_catalog_version.get_untracked() {
                                 view! {
                                     <Badge variant=BadgeVariant::Destructive class="ml-2 text-[10px] uppercase tracking-wide">
                                         "Update"

@@ -9,6 +9,7 @@ pub mod kube_app_catalog_workload;
 pub mod kube_app_catalog_workload_label;
 pub mod kube_cluster;
 pub mod kube_cluster_service;
+pub mod kube_cluster_service_selector;
 pub mod kube_cluster_token;
 pub mod kube_devbox_session;
 pub mod kube_devbox_workload_intercept;

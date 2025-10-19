@@ -7,6 +7,7 @@ pub use super::kube_app_catalog_workload::Entity as KubeAppCatalogWorkload;
 pub use super::kube_app_catalog_workload_label::Entity as KubeAppCatalogWorkloadLabel;
 pub use super::kube_cluster::Entity as KubeCluster;
 pub use super::kube_cluster_service::Entity as KubeClusterService;
+pub use super::kube_cluster_service_selector::Entity as KubeClusterServiceSelector;
 pub use super::kube_cluster_token::Entity as KubeClusterToken;
 pub use super::kube_devbox_session::Entity as KubeDevboxSession;
 pub use super::kube_devbox_workload_intercept::Entity as KubeDevboxWorkloadIntercept;

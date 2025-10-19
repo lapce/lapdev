@@ -10,7 +10,7 @@ use lapdev_common::{
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
 };
-use lapdev_db_entities::kube_cluster_service;
+use lapdev_db_entities::{kube_cluster_service, kube_cluster_service_selector};
 use lapdev_db_migration::Migrator;
 use pasetors::{
     keys::{Generate, SymmetricKey},
@@ -1041,6 +1041,8 @@ impl DbApi {
         observed_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Uuid> {
         let observed = observed_at.into();
+        let selector_map: BTreeMap<String, String> =
+            serde_json::from_value(selector.clone()).unwrap_or_default();
         let selector_json = Json::from(selector);
         let ports_json = Json::from(ports);
 
@@ -1067,6 +1069,14 @@ impl DbApi {
             active.deleted_at = ActiveValue::Set(None);
 
             let updated = active.update(&self.conn).await?;
+            self.replace_service_selectors(
+                updated.id,
+                cluster_id,
+                namespace,
+                &selector_map,
+                observed,
+            )
+            .await?;
             Ok(updated.id)
         } else {
             let new_id = Uuid::new_v4();
@@ -1088,6 +1098,8 @@ impl DbApi {
             };
 
             active.insert(&self.conn).await?;
+            self.replace_service_selectors(new_id, cluster_id, namespace, &selector_map, observed)
+                .await?;
             Ok(new_id)
         }
     }
@@ -1111,11 +1123,14 @@ impl DbApi {
         };
 
         let observed = observed_at.into();
+        let service_id = model.id;
         let mut active: kube_cluster_service::ActiveModel = model.into();
         active.deleted_at = ActiveValue::Set(Some(observed));
         active.updated_at = ActiveValue::Set(chrono::Utc::now().into());
         active.last_observed_at = ActiveValue::Set(observed);
         active.update(&self.conn).await?;
+        self.mark_service_selectors_deleted(service_id, observed)
+            .await?;
         Ok(())
     }
 
@@ -1931,6 +1946,28 @@ impl DbApi {
             .await?;
 
         Ok(workloads)
+    }
+
+    pub async fn replace_service_selectors(
+        &self,
+        service_id: Uuid,
+        cluster_id: Uuid,
+        namespace: &str,
+        selectors: &BTreeMap<String, String>,
+        timestamp: DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        replace_service_selectors_with_conn(
+            &self.conn, service_id, cluster_id, namespace, selectors, timestamp,
+        )
+        .await
+    }
+
+    pub async fn mark_service_selectors_deleted(
+        &self,
+        service_id: Uuid,
+        timestamp: DateTimeWithTimeZone,
+    ) -> Result<(), sea_orm::DbErr> {
+        mark_service_selectors_deleted_with_conn(&self.conn, service_id, timestamp).await
     }
 
     pub async fn get_environment_workloads(
@@ -2875,5 +2912,64 @@ where
         .await?;
     }
 
+    Ok(())
+}
+
+async fn replace_service_selectors_with_conn<C>(
+    conn: &C,
+    service_id: Uuid,
+    cluster_id: Uuid,
+    namespace: &str,
+    selectors: &BTreeMap<String, String>,
+    timestamp: DateTimeWithTimeZone,
+) -> Result<(), sea_orm::DbErr>
+where
+    C: ConnectionTrait + Send + Sync,
+{
+    kube_cluster_service_selector::Entity::update_many()
+        .filter(kube_cluster_service_selector::Column::ServiceId.eq(service_id))
+        .filter(kube_cluster_service_selector::Column::DeletedAt.is_null())
+        .col_expr(
+            kube_cluster_service_selector::Column::DeletedAt,
+            Expr::value(timestamp),
+        )
+        .exec(conn)
+        .await?;
+
+    for (key, value) in selectors {
+        kube_cluster_service_selector::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            created_at: ActiveValue::Set(timestamp),
+            deleted_at: ActiveValue::Set(None),
+            cluster_id: ActiveValue::Set(cluster_id),
+            namespace: ActiveValue::Set(namespace.to_owned()),
+            service_id: ActiveValue::Set(service_id),
+            label_key: ActiveValue::Set(key.clone()),
+            label_value: ActiveValue::Set(value.clone()),
+        }
+        .insert(conn)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn mark_service_selectors_deleted_with_conn<C>(
+    conn: &C,
+    service_id: Uuid,
+    timestamp: DateTimeWithTimeZone,
+) -> Result<(), sea_orm::DbErr>
+where
+    C: ConnectionTrait + Send + Sync,
+{
+    kube_cluster_service_selector::Entity::update_many()
+        .filter(kube_cluster_service_selector::Column::ServiceId.eq(service_id))
+        .filter(kube_cluster_service_selector::Column::DeletedAt.is_null())
+        .col_expr(
+            kube_cluster_service_selector::Column::DeletedAt,
+            Expr::value(timestamp),
+        )
+        .exec(conn)
+        .await?;
     Ok(())
 }

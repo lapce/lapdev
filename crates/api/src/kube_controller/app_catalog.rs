@@ -1,10 +1,11 @@
 use lapdev_common::kube::{
-    KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, PagePaginationParams,
-    PaginatedInfo, PaginatedResult,
+    KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeServiceDetails,
+    KubeServiceWithYaml, PagePaginationParams, PaginatedInfo, PaginatedResult,
 };
 use lapdev_db::api::CachedClusterService;
+use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
 use lapdev_rpc::error::ApiError;
-use sea_orm::TransactionTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -74,6 +75,100 @@ impl KubeController {
         }
 
         Ok(results)
+    }
+
+    /// Build KubeWorkloadsWithResources from database-cached catalog data.
+    /// This retrieves workload YAML and services from the database cache instead of querying Kubernetes.
+    /// Much faster and doesn't require connectivity to the source cluster.
+    pub(super) async fn get_catalog_workloads_with_yaml_from_db(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+        workloads: Vec<KubeAppCatalogWorkload>,
+    ) -> Result<KubeWorkloadsWithResources, ApiError> {
+        // Build workload YAMLs from database
+        let mut workload_yamls = Vec::new();
+        for workload in &workloads {
+            let yaml = workload.workload_yaml.clone().ok_or_else(|| {
+                ApiError::InvalidRequest(format!(
+                    "Workload '{}' has no cached YAML in database",
+                    workload.name
+                ))
+            })?;
+
+            let workload_yaml_only = match workload.kind {
+                lapdev_common::kube::KubeWorkloadKind::Deployment => {
+                    KubeWorkloadYamlOnly::Deployment(yaml)
+                }
+                lapdev_common::kube::KubeWorkloadKind::StatefulSet => {
+                    KubeWorkloadYamlOnly::StatefulSet(yaml)
+                }
+                lapdev_common::kube::KubeWorkloadKind::DaemonSet => {
+                    KubeWorkloadYamlOnly::DaemonSet(yaml)
+                }
+                lapdev_common::kube::KubeWorkloadKind::ReplicaSet => {
+                    KubeWorkloadYamlOnly::ReplicaSet(yaml)
+                }
+                lapdev_common::kube::KubeWorkloadKind::Pod => {
+                    KubeWorkloadYamlOnly::Pod(yaml)
+                }
+                lapdev_common::kube::KubeWorkloadKind::Job => {
+                    KubeWorkloadYamlOnly::Job(yaml)
+                }
+                lapdev_common::kube::KubeWorkloadKind::CronJob => {
+                    KubeWorkloadYamlOnly::CronJob(yaml)
+                }
+            };
+
+            workload_yamls.push(workload_yaml_only);
+        }
+
+        // Get services from database cache
+        let services = lapdev_db_entities::kube_cluster_service::Entity::find()
+            .filter(lapdev_db_entities::kube_cluster_service::Column::ClusterId.eq(cluster_id))
+            .filter(lapdev_db_entities::kube_cluster_service::Column::Namespace.eq(namespace))
+            .filter(lapdev_db_entities::kube_cluster_service::Column::DeletedAt.is_null())
+            .all(&self.db.conn)
+            .await
+            .map_err(ApiError::from)?;
+
+        let mut services_map = HashMap::new();
+        for service in services {
+            let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                serde_json::from_value(service.ports.clone()).unwrap_or_default();
+            let selector_btree: std::collections::BTreeMap<String, String> =
+                serde_json::from_value(service.selector.clone()).unwrap_or_default();
+            let selector: HashMap<String, String> = selector_btree.into_iter().collect();
+
+            services_map.insert(
+                service.name.clone(),
+                KubeServiceWithYaml {
+                    yaml: service.service_yaml,
+                    details: KubeServiceDetails {
+                        name: service.name,
+                        ports,
+                        selector,
+                    },
+                },
+            );
+        }
+
+        tracing::info!(
+            "Built catalog workload resources from DB: {} workloads, {} services (cluster: {}, namespace: {})",
+            workload_yamls.len(),
+            services_map.len(),
+            cluster_id,
+            namespace
+        );
+
+        Ok(KubeWorkloadsWithResources {
+            workloads: workload_yamls,
+            services: services_map,
+            // ConfigMaps and Secrets aren't cached in DB yet, but the workload YAML
+            // should already reference them, so they'll be deployed as part of the workload
+            configmaps: HashMap::new(),
+            secrets: HashMap::new(),
+        })
     }
 
     pub async fn create_app_catalog(

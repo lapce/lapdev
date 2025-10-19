@@ -177,13 +177,81 @@ impl KubeController {
         })
     }
 
-    pub async fn delete_kube_environment(
+    /// Prepare workload details for environment creation by copying from catalog workloads
+    fn prepare_workload_details_from_catalog(
+        workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkload>,
+        namespace: &str,
+    ) -> Vec<KubeWorkloadDetails> {
+        workloads
+            .into_iter()
+            .map(|workload| {
+                let mut containers = workload.containers;
+                for container in &mut containers {
+                    // Preserve the original environment variables
+                    container.original_env_vars = container.env_vars.clone();
+                    container.env_vars.clear();
+
+                    // If the app catalog has a customized image, use it as the original_image
+                    // for the new environment (so the environment starts from the customized state)
+                    match &container.image {
+                        KubeContainerImage::Custom(custom_image) => {
+                            container.original_image = custom_image.clone();
+                            container.image = KubeContainerImage::FollowOriginal;
+                        }
+                        KubeContainerImage::FollowOriginal => {
+                            // Keep the current original_image and FollowOriginal setting
+                        }
+                    }
+                }
+                lapdev_common::kube::KubeWorkloadDetails {
+                    name: workload.name,
+                    namespace: namespace.to_string(),
+                    kind: workload.kind,
+                    containers,
+                    ports: workload.ports,
+                    workload_yaml: workload.workload_yaml.unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
+
+    /// Build KubeEnvironment response from database model
+    fn build_environment_response(
+        created_env: lapdev_db_entities::kube_environment::Model,
+        app_catalog_name: String,
+        cluster_name: String,
+        base_environment_name: Option<String>,
+    ) -> lapdev_common::kube::KubeEnvironment {
+        lapdev_common::kube::KubeEnvironment {
+            id: created_env.id,
+            user_id: created_env.user_id,
+            name: created_env.name,
+            namespace: created_env.namespace,
+            status: created_env.status,
+            is_shared: created_env.is_shared,
+            app_catalog_id: created_env.app_catalog_id,
+            app_catalog_name,
+            cluster_id: created_env.cluster_id,
+            cluster_name,
+            created_at: created_env.created_at.to_string(),
+            base_environment_id: created_env.base_environment_id,
+            base_environment_name,
+            catalog_sync_version: created_env.catalog_sync_version,
+            last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
+            catalog_update_available: false,
+            sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
+                .unwrap_or(KubeEnvironmentSyncStatus::Idle),
+        }
+    }
+
+    /// Authorize environment deletion
+    async fn authorize_environment_deletion(
         &self,
         org_id: Uuid,
         user_id: Uuid,
         environment_id: Uuid,
-    ) -> Result<(), ApiError> {
-        // First get the environment to check ownership
+    ) -> Result<lapdev_db_entities::kube_environment::Model, ApiError> {
+        // Get the environment to check ownership
         let environment = self
             .db
             .get_kube_environment(environment_id)
@@ -216,53 +284,56 @@ impl KubeController {
             }
         }
 
-        let rpc_client = self
-            .get_random_kube_cluster_server(environment.cluster_id)
-            .await
-            .ok_or_else(|| {
-                ApiError::InvalidRequest(
-                    "No connected KubeManager for this cluster; cannot delete environment"
-                        .to_string(),
-                )
-            })?
-            .rpc_client
-            .clone();
+        Ok(environment)
+    }
 
-        // If this is a branch environment, notify the base environment's devbox-proxy before deletion
-        if let Some(base_env_id) = environment.base_environment_id {
-            match rpc_client
-                .remove_branch_environment(tarpc::context::current(), base_env_id, environment_id)
-                .await
-            {
-                Ok(Ok(())) => {
-                    tracing::info!(
-                        "Successfully notified devbox-proxy about branch environment {} deletion",
-                        environment_id
-                    );
-                }
-                Ok(Err(e)) => {
-                    tracing::error!(
-                        "Failed to notify devbox-proxy about branch environment {} deletion: {}",
-                        environment_id,
-                        e
-                    );
-                    return Err(ApiError::InvalidRequest(format!(
-                        "Failed to notify devbox-proxy about branch environment deletion: {e}"
-                    )));
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "RPC call failed when notifying about branch environment {} deletion: {}",
-                        environment_id,
-                        e
-                    );
-                    return Err(ApiError::InvalidRequest(format!(
-                        "Connection error while notifying devbox-proxy: {e}"
-                    )));
-                }
+    /// Notify devbox-proxy about branch environment deletion
+    async fn notify_branch_environment_deletion(
+        &self,
+        rpc_client: &lapdev_kube_rpc::KubeManagerRpcClient,
+        base_env_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), ApiError> {
+        match rpc_client
+            .remove_branch_environment(tarpc::context::current(), base_env_id, environment_id)
+            .await
+        {
+            Ok(Ok(())) => {
+                tracing::info!(
+                    "Successfully notified devbox-proxy about branch environment {} deletion",
+                    environment_id
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                tracing::error!(
+                    "Failed to notify devbox-proxy about branch environment {} deletion: {}",
+                    environment_id,
+                    e
+                );
+                Err(ApiError::InvalidRequest(format!(
+                    "Failed to notify devbox-proxy about branch environment deletion: {e}"
+                )))
+            }
+            Err(e) => {
+                tracing::error!(
+                    "RPC call failed when notifying about branch environment {} deletion: {}",
+                    environment_id,
+                    e
+                );
+                Err(ApiError::InvalidRequest(format!(
+                    "Connection error while notifying devbox-proxy: {e}"
+                )))
             }
         }
+    }
 
+    /// Destroy environment resources via RPC
+    async fn destroy_environment_resources(
+        &self,
+        rpc_client: &lapdev_kube_rpc::KubeManagerRpcClient,
+        environment: &lapdev_db_entities::kube_environment::Model,
+    ) -> Result<(), ApiError> {
         match rpc_client
             .destroy_environment(
                 tarpc::context::current(),
@@ -277,6 +348,7 @@ impl KubeController {
                     environment.id,
                     environment.namespace
                 );
+                Ok(())
             }
             Ok(Err(e)) => {
                 tracing::error!(
@@ -284,9 +356,9 @@ impl KubeController {
                     environment.id,
                     e
                 );
-                return Err(ApiError::InvalidRequest(format!(
+                Err(ApiError::InvalidRequest(format!(
                     "Failed to delete environment resources: {e}"
-                )));
+                )))
             }
             Err(e) => {
                 tracing::error!(
@@ -294,11 +366,46 @@ impl KubeController {
                     environment.id,
                     e
                 );
-                return Err(ApiError::InvalidRequest(format!(
+                Err(ApiError::InvalidRequest(format!(
                     "Failed to communicate with KubeManager to delete environment: {e}"
-                )));
+                )))
             }
         }
+    }
+
+    pub async fn delete_kube_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), ApiError> {
+        // Authorize deletion
+        let environment = self
+            .authorize_environment_deletion(org_id, user_id, environment_id)
+            .await?;
+
+        // Get RPC client for cluster operations
+        let rpc_client = self
+            .get_random_kube_cluster_server(environment.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for this cluster; cannot delete environment"
+                        .to_string(),
+                )
+            })?
+            .rpc_client
+            .clone();
+
+        // If this is a branch environment, notify the base environment's devbox-proxy
+        if let Some(base_env_id) = environment.base_environment_id {
+            self.notify_branch_environment_deletion(&rpc_client, base_env_id, environment_id)
+                .await?;
+        }
+
+        // Destroy environment resources in Kubernetes
+        self.destroy_environment_resources(&rpc_client, &environment)
+            .await?;
 
         // Delete from database (soft delete)
         self.db
@@ -309,23 +416,20 @@ impl KubeController {
         Ok(())
     }
 
-    pub async fn create_kube_environment(
+    /// Validate and get app catalog and cluster for environment creation
+    async fn validate_environment_creation(
         &self,
         org_id: Uuid,
-        user_id: Uuid,
         app_catalog_id: Uuid,
         cluster_id: Uuid,
-        name: String,
         is_shared: bool,
-    ) -> Result<lapdev_common::kube::KubeEnvironment, ApiError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Environment name cannot be empty".to_string(),
-            ));
-        }
-        let name = name.to_string();
-
+    ) -> Result<
+        (
+            lapdev_db_entities::kube_app_catalog::Model,
+            lapdev_db_entities::kube_cluster::Model,
+        ),
+        ApiError,
+    > {
         // Verify app catalog belongs to the organization
         let app_catalog = self
             .db
@@ -363,7 +467,32 @@ impl KubeController {
             ));
         }
 
-        // Get a connected KubeClusterServer for this cluster
+        Ok((app_catalog, cluster))
+    }
+
+    pub async fn create_kube_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        name: String,
+        is_shared: bool,
+    ) -> Result<lapdev_common::kube::KubeEnvironment, ApiError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Environment name cannot be empty".to_string(),
+            ));
+        }
+        let name = name.to_string();
+
+        // Validate catalog and cluster
+        let (app_catalog, cluster) = self
+            .validate_environment_creation(org_id, app_catalog_id, cluster_id, is_shared)
+            .await?;
+
+        // Get a connected KubeClusterServer for deployment
         let server = self
             .get_random_kube_cluster_server(cluster_id)
             .await
@@ -373,6 +502,7 @@ impl KubeController {
                 )
             })?;
 
+        // Get workloads from catalog
         let workloads = self
             .db
             .get_app_catalog_workloads(app_catalog.id)
@@ -386,11 +516,12 @@ impl KubeController {
             )));
         }
 
-        // First, get workloads YAML before creating in database to validate success
+        // Get workloads YAML to validate before creating in database
         let workloads_with_resources = self
             .get_workloads_yaml_for_catalog(&app_catalog, workloads.clone())
             .await?;
 
+        // Generate unique namespace
         let namespace = self
             .generate_unique_namespace(
                 cluster_id,
@@ -404,39 +535,11 @@ impl KubeController {
 
         let services_map = workloads_with_resources.services.clone();
 
-        // Store the environment workloads in the database before deployment
-        let workload_details: Vec<KubeWorkloadDetails> = workloads
-            .into_iter()
-            .map(|workload| {
-                let mut containers = workload.containers;
-                for container in &mut containers {
-                    // Preserve the original environment variables
-                    container.original_env_vars = container.env_vars.clone();
-                    container.env_vars.clear();
+        // Prepare workload details for database
+        let workload_details =
+            Self::prepare_workload_details_from_catalog(workloads, &namespace);
 
-                    // If the app catalog has a customized image, use it as the original_image
-                    // for the new environment (so the environment starts from the customized state)
-                    match &container.image {
-                        KubeContainerImage::Custom(custom_image) => {
-                            container.original_image = custom_image.clone();
-                            container.image = KubeContainerImage::FollowOriginal;
-                        }
-                        KubeContainerImage::FollowOriginal => {
-                            // Keep the current original_image and FollowOriginal setting
-                        }
-                    }
-                }
-                lapdev_common::kube::KubeWorkloadDetails {
-                    name: workload.name,
-                    namespace: namespace.clone(),
-                    kind: workload.kind,
-                    containers,
-                    ports: workload.ports,
-                    workload_yaml: workload.workload_yaml.unwrap_or_default(),
-                }
-            })
-            .collect();
-
+        // Create environment in database
         let created_env = match self
             .db
             .create_kube_environment(
@@ -476,7 +579,7 @@ impl KubeController {
             }
         };
 
-        // Deploy the app catalog resources to the cluster using pre-fetched YAML
+        // Deploy resources to Kubernetes
         self.deploy_app_catalog_with_yaml(
             &server,
             &created_env.namespace,
@@ -487,44 +590,28 @@ impl KubeController {
         )
         .await?;
 
-        // Convert the database model to the API type
-        Ok(lapdev_common::kube::KubeEnvironment {
-            id: created_env.id,
-            user_id: created_env.user_id,
-            name: created_env.name,
-            namespace: created_env.namespace,
-            status: created_env.status,
-            is_shared: created_env.is_shared,
-            app_catalog_id: created_env.app_catalog_id,
-            app_catalog_name: app_catalog.name,
-            cluster_id: created_env.cluster_id,
-            cluster_name: cluster.name,
-            created_at: created_env.created_at.to_string(),
-            base_environment_id: created_env.base_environment_id,
-            base_environment_name: None, // Regular environments have no base environment
-            catalog_sync_version: created_env.catalog_sync_version,
-            last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
-            catalog_update_available: false,
-            sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
-                .unwrap_or(KubeEnvironmentSyncStatus::Idle),
-        })
+        // Build and return response
+        Ok(Self::build_environment_response(
+            created_env,
+            app_catalog.name,
+            cluster.name,
+            None,
+        ))
     }
 
-    pub async fn create_branch_environment(
+    /// Validate base environment for branch creation
+    async fn validate_base_environment(
         &self,
         org_id: Uuid,
-        user_id: Uuid,
         base_environment_id: Uuid,
-        name: String,
-    ) -> Result<lapdev_common::kube::KubeEnvironment, ApiError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Environment name cannot be empty".to_string(),
-            ));
-        }
-        let name = name.to_string();
-
+    ) -> Result<
+        (
+            lapdev_db_entities::kube_environment::Model,
+            lapdev_db_entities::kube_cluster::Model,
+            lapdev_db_entities::kube_app_catalog::Model,
+        ),
+        ApiError,
+    > {
         // Get the base environment
         let base_environment = self
             .db
@@ -552,7 +639,7 @@ impl KubeController {
             ));
         }
 
-        // Get the cluster to verify personal deployments are allowed
+        // Get the cluster
         let cluster = self
             .db
             .get_kube_cluster(base_environment.cluster_id)
@@ -560,47 +647,7 @@ impl KubeController {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
 
-        // Get workloads and services from the base environment
-        let base_workloads = self
-            .db
-            .get_environment_workloads(base_environment_id)
-            .await
-            .map_err(ApiError::from)?;
-
-        let base_services = self
-            .db
-            .get_environment_services(base_environment_id)
-            .await
-            .map_err(ApiError::from)?;
-
-        let namespace = self
-            .generate_unique_namespace(
-                base_environment.cluster_id,
-                EnvironmentNamespaceKind::Branch,
-            )
-            .await?;
-
-        let services_map: std::collections::HashMap<
-            String,
-            lapdev_common::kube::KubeServiceWithYaml,
-        > = base_services
-            .into_iter()
-            .map(|service| {
-                (
-                    service.name.clone(),
-                    lapdev_common::kube::KubeServiceWithYaml {
-                        yaml: service.yaml,
-                        details: lapdev_common::kube::KubeServiceDetails {
-                            name: service.name,
-                            ports: service.ports,
-                            selector: service.selector,
-                        },
-                    },
-                )
-            })
-            .collect();
-
-        // Get app catalog info for the response
+        // Get app catalog
         let app_catalog = self
             .db
             .get_app_catalog(base_environment.app_catalog_id)
@@ -608,8 +655,15 @@ impl KubeController {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
 
-        // Convert workloads to the format needed for database creation
-        let workload_details: Vec<KubeWorkloadDetails> = base_workloads
+        Ok((base_environment, cluster, app_catalog))
+    }
+
+    /// Prepare workload details from base environment workloads
+    fn prepare_workload_details_from_base(
+        base_workloads: Vec<lapdev_common::kube::KubeEnvironmentWorkload>,
+        namespace: &str,
+    ) -> Vec<KubeWorkloadDetails> {
+        base_workloads
             .into_iter()
             .filter_map(|workload| {
                 workload.kind.parse().ok().map(|kind| {
@@ -633,7 +687,7 @@ impl KubeController {
                     }
                     lapdev_common::kube::KubeWorkloadDetails {
                         name: workload.name,
-                        namespace: namespace.clone(),
+                        namespace: namespace.to_string(),
                         kind,
                         containers,
                         ports: workload.ports,
@@ -641,46 +695,17 @@ impl KubeController {
                     }
                 })
             })
-            .collect();
+            .collect()
+    }
 
-        let created_env = match self
-            .db
-            .create_kube_environment(
-                org_id,
-                user_id,
-                base_environment.app_catalog_id,
-                base_environment.cluster_id,
-                name.clone(),
-                namespace.clone(),
-                "Pending".to_string(),
-                false, // Branch environments are always personal (not shared)
-                base_environment.catalog_sync_version,
-                Some(base_environment_id), // Set the base environment reference
-                workload_details,
-                services_map,
-            )
-            .await
-        {
-            Ok(env) => env,
-            Err(db_err) => {
-                if let Some(sea_orm::SqlErr::UniqueConstraintViolation(constraint)) =
-                    db_err.sql_err()
-                {
-                    if constraint == "kube_environment_cluster_namespace_unique_idx" {
-                        return Err(ApiError::InternalError(
-                            "Namespace allocation conflict. Please retry branch environment creation.".to_string(),
-                        ));
-                    }
-                }
-                return Err(ApiError::from(anyhow::Error::from(db_err)));
-            }
-        };
-
-        // Notify kube-manager about the new branch environment via RPC
-        if let Some(server) = self
-            .get_random_kube_cluster_server(base_environment.cluster_id)
-            .await
-        {
+    /// Notify devbox-proxy about new branch environment
+    async fn notify_branch_environment_creation(
+        &self,
+        base_environment_id: Uuid,
+        cluster_id: Uuid,
+        created_env: &lapdev_db_entities::kube_environment::Model,
+    ) {
+        if let Some(server) = self.get_random_kube_cluster_server(cluster_id).await {
             let branch_info = lapdev_kube_rpc::BranchEnvironmentInfo {
                 environment_id: created_env.id,
                 auth_token: created_env.auth_token.clone(),
@@ -716,32 +741,127 @@ impl KubeController {
         } else {
             tracing::warn!(
                 "No connected KubeManager for cluster {} - branch environment {} not registered with devbox-proxy",
-                base_environment.cluster_id,
+                cluster_id,
                 created_env.id
             );
         }
+    }
 
-        // Convert the database model to the API type
-        Ok(lapdev_common::kube::KubeEnvironment {
-            id: created_env.id,
-            user_id: created_env.user_id,
-            name: created_env.name,
-            namespace: created_env.namespace,
-            status: created_env.status,
-            is_shared: created_env.is_shared,
-            app_catalog_id: created_env.app_catalog_id,
-            app_catalog_name: app_catalog.name,
-            cluster_id: created_env.cluster_id,
-            cluster_name: cluster.name,
-            created_at: created_env.created_at.to_string(),
-            base_environment_id: created_env.base_environment_id,
-            base_environment_name: Some(base_environment.name), // Branch environments have the base environment name
-            catalog_sync_version: created_env.catalog_sync_version,
-            last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
-            catalog_update_available: false,
-            sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
-                .unwrap_or(KubeEnvironmentSyncStatus::Idle),
-        })
+    pub async fn create_branch_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        base_environment_id: Uuid,
+        name: String,
+    ) -> Result<lapdev_common::kube::KubeEnvironment, ApiError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Environment name cannot be empty".to_string(),
+            ));
+        }
+        let name = name.to_string();
+
+        // Validate base environment
+        let (base_environment, cluster, app_catalog) = self
+            .validate_base_environment(org_id, base_environment_id)
+            .await?;
+
+        // Get workloads and services from the base environment
+        let base_workloads = self
+            .db
+            .get_environment_workloads(base_environment_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let base_services = self
+            .db
+            .get_environment_services(base_environment_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        // Generate unique namespace
+        let namespace = self
+            .generate_unique_namespace(
+                base_environment.cluster_id,
+                EnvironmentNamespaceKind::Branch,
+            )
+            .await?;
+
+        // Prepare services map
+        let services_map: std::collections::HashMap<
+            String,
+            lapdev_common::kube::KubeServiceWithYaml,
+        > = base_services
+            .into_iter()
+            .map(|service| {
+                (
+                    service.name.clone(),
+                    lapdev_common::kube::KubeServiceWithYaml {
+                        yaml: service.yaml,
+                        details: lapdev_common::kube::KubeServiceDetails {
+                            name: service.name,
+                            ports: service.ports,
+                            selector: service.selector,
+                        },
+                    },
+                )
+            })
+            .collect();
+
+        // Prepare workload details
+        let workload_details =
+            Self::prepare_workload_details_from_base(base_workloads, &namespace);
+
+        // Create environment in database
+        let created_env = match self
+            .db
+            .create_kube_environment(
+                org_id,
+                user_id,
+                base_environment.app_catalog_id,
+                base_environment.cluster_id,
+                name.clone(),
+                namespace.clone(),
+                "Pending".to_string(),
+                false, // Branch environments are always personal (not shared)
+                base_environment.catalog_sync_version,
+                Some(base_environment_id), // Set the base environment reference
+                workload_details,
+                services_map,
+            )
+            .await
+        {
+            Ok(env) => env,
+            Err(db_err) => {
+                if let Some(sea_orm::SqlErr::UniqueConstraintViolation(constraint)) =
+                    db_err.sql_err()
+                {
+                    if constraint == "kube_environment_cluster_namespace_unique_idx" {
+                        return Err(ApiError::InternalError(
+                            "Namespace allocation conflict. Please retry branch environment creation.".to_string(),
+                        ));
+                    }
+                }
+                return Err(ApiError::from(anyhow::Error::from(db_err)));
+            }
+        };
+
+        // Notify kube-manager about the new branch environment
+        self.notify_branch_environment_creation(
+            base_environment_id,
+            base_environment.cluster_id,
+            &created_env,
+        )
+        .await;
+
+        // Build and return response
+        Ok(Self::build_environment_response(
+            created_env,
+            app_catalog.name,
+            cluster.name,
+            Some(base_environment.name),
+        ))
     }
 
     /// Authorize and validate that the environment can be synced from catalog
@@ -884,7 +1004,7 @@ impl KubeController {
             .unwrap_or("");
 
         let workloads_with_resources = self
-            .get_workloads_yaml_from_db(
+            .get_catalog_workloads_with_yaml_from_db(
                 catalog.cluster_id,
                 catalog_namespace,
                 workloads_to_deploy.to_vec(),

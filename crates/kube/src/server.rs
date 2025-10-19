@@ -13,7 +13,7 @@ use lapdev_db_entities::kube_app_catalog_workload::{self, Entity as CatalogWorkl
 use lapdev_kube_rpc::{
     KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent, ResourceChangeType, ResourceType,
 };
-use sea_orm::prelude::Json;
+use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -264,6 +264,8 @@ impl KubeClusterServer {
             return Ok(());
         }
 
+        let mut touched_catalogs = HashSet::new();
+
         for workload in workloads {
             // Ensure the stored kind matches; if not, skip but log.
             if let Ok(stored_kind) = workload.kind.parse::<KubeWorkloadKind>() {
@@ -312,6 +314,23 @@ impl KubeClusterServer {
                 resource_name = %event.resource_name,
                 "Updated catalog workload containers from cluster event"
             );
+
+            touched_catalogs.insert(workload.app_catalog_id);
+        }
+
+        if !touched_catalogs.is_empty() {
+            let synced_at: DateTimeWithTimeZone = event.timestamp.into();
+            for catalog_id in touched_catalogs {
+                self.db
+                    .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to bump sync version for catalog {} after workload update",
+                            catalog_id
+                        )
+                    })?;
+            }
         }
 
         Ok(())

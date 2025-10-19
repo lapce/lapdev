@@ -48,10 +48,14 @@ struct KubeEnvironmentWithRelated {
     pub env_deleted_at: Option<DateTimeWithTimeZone>,
     pub env_base_environment_id: Option<Uuid>,
     pub env_auth_token: String,
+    pub env_catalog_sync_version: i64,
+    pub env_last_catalog_synced_at: Option<DateTimeWithTimeZone>,
 
     // App catalog fields
     pub catalog_name: Option<String>,
     pub catalog_description: Option<String>,
+    pub catalog_sync_version: Option<i64>,
+    pub catalog_last_synced_at: Option<DateTimeWithTimeZone>,
 
     // Cluster fields
     pub cluster_name: Option<String>,
@@ -1334,6 +1338,35 @@ impl DbApi {
         Ok(())
     }
 
+    pub async fn bump_app_catalog_sync_version(
+        &self,
+        catalog_id: Uuid,
+        synced_at: DateTimeWithTimeZone,
+    ) -> Result<()> {
+        let updated = lapdev_db_entities::kube_app_catalog::Entity::update_many()
+            .filter(lapdev_db_entities::kube_app_catalog::Column::Id.eq(catalog_id))
+            .filter(lapdev_db_entities::kube_app_catalog::Column::DeletedAt.is_null())
+            .col_expr(
+                lapdev_db_entities::kube_app_catalog::Column::SyncVersion,
+                Expr::col(lapdev_db_entities::kube_app_catalog::Column::SyncVersion).add(1),
+            )
+            .col_expr(
+                lapdev_db_entities::kube_app_catalog::Column::LastSyncedAt,
+                Expr::value(synced_at),
+            )
+            .exec_with_returning(&self.conn)
+            .await?;
+
+        if updated.is_empty() {
+            return Err(anyhow!(
+                "App catalog {} not found or already deleted",
+                catalog_id
+            ));
+        }
+
+        Ok(())
+    }
+
     pub async fn update_app_catalog_workload(
         &self,
         workload_id: Uuid,
@@ -1477,6 +1510,14 @@ impl DbApi {
                 "env_is_shared",
             )
             .column_as(
+                lapdev_db_entities::kube_environment::Column::CatalogSyncVersion,
+                "env_catalog_sync_version",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::LastCatalogSyncedAt,
+                "env_last_catalog_synced_at",
+            )
+            .column_as(
                 lapdev_db_entities::kube_environment::Column::OrganizationId,
                 "env_organization_id",
             )
@@ -1508,6 +1549,14 @@ impl DbApi {
             .column_as(
                 lapdev_db_entities::kube_app_catalog::Column::Description,
                 "catalog_description",
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::SyncVersion,
+                "catalog_sync_version",
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::LastSyncedAt,
+                "catalog_last_synced_at",
             )
             // Join and select cluster columns
             .join(
@@ -1551,6 +1600,8 @@ impl DbApi {
                     namespace: related.env_namespace,
                     status: related.env_status,
                     is_shared: related.env_is_shared,
+                    catalog_sync_version: related.env_catalog_sync_version,
+                    last_catalog_synced_at: related.env_last_catalog_synced_at,
                     base_environment_id: related.env_base_environment_id,
                     auth_token: related.env_auth_token,
                 };
@@ -1568,6 +1619,8 @@ impl DbApi {
                             created_by: related.env_user_id,
                             organization_id: related.env_organization_id,
                             deleted_at: None,
+                            sync_version: related.catalog_sync_version.unwrap_or(0),
+                            last_synced_at: related.catalog_last_synced_at,
                         });
 
                 let cluster =

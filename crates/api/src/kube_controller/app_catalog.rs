@@ -1,6 +1,3 @@
-use std::collections::{HashMap, HashSet};
-use uuid::Uuid;
-
 use lapdev_common::kube::{
     KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, PagePaginationParams,
     PaginatedInfo, PaginatedResult,
@@ -8,8 +5,11 @@ use lapdev_common::kube::{
 use lapdev_db::api::CachedClusterService;
 use lapdev_rpc::error::ApiError;
 use sea_orm::TransactionTrait;
+use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 use super::{yaml_parser::build_workload_details_from_yaml, KubeController};
+use chrono::Utc;
 
 impl KubeController {
     pub(super) async fn enrich_workloads_with_details(
@@ -262,6 +262,11 @@ impl KubeController {
         self.db
             .delete_app_catalog_workload(workload_id)
             .await
+            .map_err(ApiError::from)?;
+
+        self.db
+            .bump_app_catalog_sync_version(workload.app_catalog_id, Utc::now().into())
+            .await
             .map_err(ApiError::from)
     }
 
@@ -297,6 +302,11 @@ impl KubeController {
         // Update the workload containers
         self.db
             .update_app_catalog_workload(workload_id, containers)
+            .await
+            .map_err(ApiError::from)?;
+
+        self.db
+            .bump_app_catalog_sync_version(catalog.id, Utc::now().into())
             .await
             .map_err(ApiError::from)
     }
@@ -342,7 +352,10 @@ impl KubeController {
         {
             Ok(_) => {
                 txn.commit().await.map_err(ApiError::from)?;
-                Ok(())
+                self.db
+                    .bump_app_catalog_sync_version(catalog.id, Utc::now().into())
+                    .await
+                    .map_err(ApiError::from)
             }
             Err(db_err) => {
                 txn.rollback().await.map_err(ApiError::from)?;

@@ -60,6 +60,12 @@ impl MigrationTrait for Migration {
                         ColumnDef::new(KubeEnvironment::LastCatalogSyncedAt)
                             .timestamp_with_time_zone(),
                     )
+                    .col(
+                        ColumnDef::new(KubeEnvironment::SyncStatus)
+                            .string()
+                            .not_null()
+                            .default("idle"),
+                    )
                     .col(ColumnDef::new(KubeEnvironment::BaseEnvironmentId).uuid())
                     .col(
                         ColumnDef::new(KubeEnvironment::AuthToken)
@@ -185,6 +191,7 @@ pub enum KubeEnvironment {
     IsShared,
     CatalogSyncVersion,
     LastCatalogSyncedAt,
+    SyncStatus,
     BaseEnvironmentId,
     AuthToken,
 }

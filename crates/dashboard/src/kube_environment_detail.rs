@@ -10,7 +10,7 @@ use lapdev_common::{
     },
     kube::{
         KubeClusterInfo, KubeContainerInfo, KubeEnvironment, KubeEnvironmentService,
-        KubeEnvironmentWorkload,
+        KubeEnvironmentSyncStatus, KubeEnvironmentWorkload,
     },
 };
 use leptos::prelude::*;
@@ -540,10 +540,22 @@ pub fn EnvironmentInfoCard(
                 let cluster_name = environment.cluster_name.clone();
                 let catalog_update_available = environment.catalog_update_available;
                 let last_catalog_synced_at = environment.last_catalog_synced_at.clone();
+                let catalog_last_sync_actor_id = environment.catalog_last_sync_actor_id;
+                let sync_status = environment.sync_status;
                 let last_sync_message = last_catalog_synced_at
                     .clone()
                     .map(|ts| format!("Last synced at {ts}"))
                     .unwrap_or_else(|| "This environment has not been synced from the catalog yet.".to_string());
+
+                // Determine if this is a cluster auto-update or admin edit
+                let is_cluster_update = catalog_last_sync_actor_id.is_none();
+                let sync_source = if is_cluster_update { "cluster" } else { "catalog" };
+                let sync_button_text = if is_cluster_update { "Sync From Cluster" } else { "Sync From Catalog" };
+                let sync_description = if is_cluster_update {
+                    "New cluster changes are ready to apply. Sync the environment to pull the latest workloads from the production cluster."
+                } else {
+                    "New catalog changes are ready to apply. Sync the environment to pull the latest workloads."
+                };
 
                 let status_variant = match env_status.as_str() {
                     "Running" => BadgeVariant::Secondary,
@@ -562,25 +574,40 @@ pub fn EnvironmentInfoCard(
 
                 view! {
                     <div class="flex flex-col gap-4">
-                        {if catalog_update_available {
+                        {if catalog_update_available || sync_status == KubeEnvironmentSyncStatus::Syncing {
                             let sync_pending = sync_action.pending();
                             let sync_result = sync_action.value();
+                            let is_syncing = sync_status == KubeEnvironmentSyncStatus::Syncing || sync_pending.get();
 
                             view! {
                                 <Alert class="border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/40 text-amber-900 dark:text-amber-100">
                                     <lucide_leptos::TriangleAlert attr:class="h-5 w-5 text-amber-600 dark:text-amber-400" />
-                                    <AlertTitle>Catalog update available</AlertTitle>
+                                    <AlertTitle>{
+                                        if is_syncing {
+                                            "Sync in progress".to_string()
+                                        } else {
+                                            format!("Update available from {}", sync_source)
+                                        }
+                                    }</AlertTitle>
                                     <AlertDescription class="gap-3">
-                                        <span>"New catalog changes are ready to apply. Sync the environment to pull the latest workloads."</span>
-                                        <span class="text-xs text-amber-800 dark:text-amber-300">{last_sync_message.clone()}</span>
+                                        <span>{
+                                            if is_syncing {
+                                                "Syncing environment with latest changes..."
+                                            } else {
+                                                sync_description
+                                            }
+                                        }</span>
+                                        <Show when=move || !is_syncing>
+                                            <span class="text-xs text-amber-800 dark:text-amber-300">{last_sync_message.clone()}</span>
+                                        </Show>
                                         <Button
                                             variant=ButtonVariant::Outline
                                             size=ButtonSize::Sm
                                             on:click=move |_| { sync_action.dispatch(()); }
-                                            disabled=Signal::derive(move || sync_pending.get())
+                                            disabled=is_syncing
                                         >
-                                            <lucide_leptos::RefreshCcw />
-                                            {move || if sync_pending.get() { "Syncing..." } else { "Sync From Catalog" }}
+                                            <lucide_leptos::RefreshCcw attr:class=move || if is_syncing { "animate-spin" } else { "" } />
+                                            {move || if is_syncing { "Syncing..." } else { sync_button_text }}
                                         </Button>
                                         <Show when=move || matches!(sync_result.get(), Some(Err(_)))>
                                             <span class="text-xs text-red-800 dark:text-red-300">

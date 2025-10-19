@@ -1,11 +1,12 @@
 use chrono::Utc;
 use lapdev_common::{
     kube::{
-        KubeContainerImage, KubeEnvironment, KubeWorkloadDetails, PagePaginationParams,
-        PaginatedInfo, PaginatedResult,
+        KubeContainerImage, KubeEnvironment, KubeEnvironmentSyncStatus, KubeWorkloadDetails,
+        PagePaginationParams, PaginatedInfo, PaginatedResult,
     },
     utils::rand_string,
 };
+use std::str::FromStr;
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
     prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
@@ -80,6 +81,9 @@ impl KubeController {
                     catalog_sync_version,
                     last_catalog_synced_at,
                     catalog_update_available,
+                    catalog_last_sync_actor_id: catalog.last_sync_actor_id,
+                    sync_status: KubeEnvironmentSyncStatus::from_str(&env.sync_status)
+                        .unwrap_or(KubeEnvironmentSyncStatus::Idle),
                 })
             })
             .collect();
@@ -169,6 +173,9 @@ impl KubeController {
             catalog_sync_version: environment.catalog_sync_version,
             last_catalog_synced_at: environment.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available,
+            catalog_last_sync_actor_id: catalog.last_sync_actor_id,
+            sync_status: KubeEnvironmentSyncStatus::from_str(&environment.sync_status)
+                .unwrap_or(KubeEnvironmentSyncStatus::Idle),
         })
     }
 
@@ -499,6 +506,9 @@ impl KubeController {
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available: false,
+            catalog_last_sync_actor_id: None, // New environment, no sync yet
+            sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
+                .unwrap_or(KubeEnvironmentSyncStatus::Idle),
         })
     }
 
@@ -730,6 +740,9 @@ impl KubeController {
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available: false,
+            catalog_last_sync_actor_id: None, // New branch environment, no sync yet
+            sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
+                .unwrap_or(KubeEnvironmentSyncStatus::Idle),
         })
     }
 
@@ -770,34 +783,66 @@ impl KubeController {
             return Ok(());
         }
 
-        let target_server = self
-            .get_random_kube_cluster_server(environment.cluster_id)
-            .await
-            .ok_or_else(|| {
-                ApiError::InvalidRequest(
-                    "No connected KubeManager for the environment target cluster".to_string(),
-                )
-            })?;
+        // Set sync_status to "syncing" before starting
+        lapdev_db_entities::kube_environment::ActiveModel {
+            id: ActiveValue::Set(environment.id),
+            sync_status: ActiveValue::Set(KubeEnvironmentSyncStatus::Syncing.to_string()),
+            ..Default::default()
+        }
+        .update(&self.db.conn)
+        .await
+        .map_err(ApiError::from)?;
 
-        let catalog_workloads = self
-            .db
-            .get_app_catalog_workloads(catalog.id)
-            .await
-            .map_err(ApiError::from)?;
+        // Perform sync operations; reset status to idle on error
+        let sync_result = async {
+            let target_server = self
+                .get_random_kube_cluster_server(environment.cluster_id)
+                .await
+                .ok_or_else(|| {
+                    ApiError::InvalidRequest(
+                        "No connected KubeManager for the environment target cluster".to_string(),
+                    )
+                })?;
 
-        let workloads_with_resources = self
-            .get_workloads_yaml_for_catalog(&catalog, catalog_workloads.clone())
+            let catalog_workloads = self
+                .db
+                .get_app_catalog_workloads(catalog.id)
+                .await
+                .map_err(ApiError::from)?;
+
+            let workloads_with_resources = self
+                .get_workloads_yaml_for_catalog(&catalog, catalog_workloads.clone())
+                .await?;
+
+            self.deploy_app_catalog_with_yaml(
+                &target_server,
+                &environment.namespace,
+                &environment.name,
+                environment.id,
+                Some(environment.auth_token.clone()),
+                workloads_with_resources,
+            )
             .await?;
 
-        self.deploy_app_catalog_with_yaml(
-            &target_server,
-            &environment.namespace,
-            &environment.name,
-            environment.id,
-            Some(environment.auth_token.clone()),
-            workloads_with_resources,
-        )
-        .await?;
+            Ok::<_, ApiError>(catalog_workloads)
+        }
+        .await;
+
+        // If sync failed, reset status to idle and return error
+        let catalog_workloads = match sync_result {
+            Ok(workloads) => workloads,
+            Err(e) => {
+                // Reset sync_status to idle on failure
+                let _ = lapdev_db_entities::kube_environment::ActiveModel {
+                    id: ActiveValue::Set(environment.id),
+                    sync_status: ActiveValue::Set(KubeEnvironmentSyncStatus::Idle.to_string()),
+                    ..Default::default()
+                }
+                .update(&self.db.conn)
+                .await;
+                return Err(e);
+            }
+        };
 
         let now = Utc::now().into();
         let txn = self.db.conn.begin().await.map_err(ApiError::from)?;
@@ -844,6 +889,7 @@ impl KubeController {
             id: ActiveValue::Set(environment.id),
             catalog_sync_version: ActiveValue::Set(catalog.sync_version),
             last_catalog_synced_at: ActiveValue::Set(Some(now)),
+            sync_status: ActiveValue::Set(KubeEnvironmentSyncStatus::Idle.to_string()),
             ..Default::default()
         }
         .update(&txn)

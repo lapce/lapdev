@@ -685,6 +685,19 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn sync_environment_from_catalog(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .sync_environment_from_catalog(org_id, user.id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn delete_app_catalog(
         &self,
         headers: &axum::http::HeaderMap,

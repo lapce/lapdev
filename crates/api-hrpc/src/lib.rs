@@ -198,6 +198,12 @@ pub trait HrpcService {
         environment_id: Uuid,
     ) -> Result<(), HrpcError>;
 
+    async fn sync_environment_from_catalog(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError>;
+
     // Kube Environment Workload operations
     async fn get_environment_workloads(
         &self,

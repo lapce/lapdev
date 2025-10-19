@@ -194,6 +194,20 @@ async fn create_branch_environment(
     Ok(env)
 }
 
+async fn sync_environment_from_catalog(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .sync_environment_from_catalog(org.id, environment_id)
+        .await??;
+
+    Ok(())
+}
+
 async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     let response = client.devbox_session_list_sessions().await??;
@@ -424,6 +438,18 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
+    let sync_action = Action::new_local(move |_| async move {
+        match sync_environment_from_catalog(org, environment_id).await {
+            Ok(_) => {
+                // Refresh environment data and resources
+                environment_result.refetch();
+                update_counter.update(|c| *c += 1);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    });
+
     view! {
         <div class="flex flex-col gap-6">
             // Loading State
@@ -445,6 +471,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     create_branch_modal_open
                     create_branch_action
                     branch_name
+                    sync_action
                 />
             </Show>
 
@@ -493,6 +520,7 @@ pub fn EnvironmentInfoCard(
     create_branch_modal_open: RwSignal<bool>,
     create_branch_action: Action<(), Result<(), ErrorResponse>>,
     branch_name: RwSignal<String>,
+    sync_action: Action<(), Result<(), ErrorResponse>>,
 ) -> impl IntoView {
     view! {
         <Show when=move || environment_info.get().is_some() fallback=|| view! { <div></div> }>
@@ -535,6 +563,9 @@ pub fn EnvironmentInfoCard(
                 view! {
                     <div class="flex flex-col gap-4">
                         {if catalog_update_available {
+                            let sync_pending = sync_action.pending();
+                            let sync_result = sync_action.value();
+
                             view! {
                                 <Alert class="border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/40 text-amber-900 dark:text-amber-100">
                                     <lucide_leptos::TriangleAlert attr:class="h-5 w-5 text-amber-600 dark:text-amber-400" />
@@ -542,10 +573,26 @@ pub fn EnvironmentInfoCard(
                                     <AlertDescription class="gap-3">
                                         <span>"New catalog changes are ready to apply. Sync the environment to pull the latest workloads."</span>
                                         <span class="text-xs text-amber-800 dark:text-amber-300">{last_sync_message.clone()}</span>
-                                        <Button variant=ButtonVariant::Outline size=ButtonSize::Sm class="pointer-events-none opacity-60" disabled>
+                                        <Button
+                                            variant=ButtonVariant::Outline
+                                            size=ButtonSize::Sm
+                                            on:click=move |_| { sync_action.dispatch(()); }
+                                            disabled=Signal::derive(move || sync_pending.get())
+                                        >
                                             <lucide_leptos::RefreshCcw />
-                                            "Sync From Catalog"
+                                            {move || if sync_pending.get() { "Syncing..." } else { "Sync From Catalog" }}
                                         </Button>
+                                        <Show when=move || matches!(sync_result.get(), Some(Err(_)))>
+                                            <span class="text-xs text-red-800 dark:text-red-300">
+                                                {move || {
+                                                    sync_result
+                                                        .get()
+                                                        .and_then(|res| res.err())
+                                                        .map(|err| err.error)
+                                                        .unwrap_or_default()
+                                                }}
+                                            </span>
+                                        </Show>
                                     </AlertDescription>
                                 </Alert>
                             }.into_any()

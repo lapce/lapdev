@@ -1,12 +1,17 @@
-use uuid::Uuid;
-
+use chrono::Utc;
 use lapdev_common::{
     kube::{
-        KubeContainerImage, KubeEnvironment, PagePaginationParams, PaginatedInfo, PaginatedResult,
+        KubeContainerImage, KubeEnvironment, KubeWorkloadDetails, PagePaginationParams,
+        PaginatedInfo, PaginatedResult,
     },
     utils::rand_string,
 };
 use lapdev_rpc::error::ApiError;
+use sea_orm::{
+    prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
+    QueryFilter, TransactionTrait,
+};
+use uuid::Uuid;
 
 use super::{EnvironmentNamespaceKind, KubeController};
 
@@ -726,6 +731,128 @@ impl KubeController {
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available: false,
         })
+    }
+
+    pub async fn sync_environment_from_catalog(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        if !environment.is_shared && environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        let catalog = self
+            .db
+            .get_app_catalog(environment.app_catalog_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("App catalog not found".to_string()))?;
+
+        if catalog.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        if catalog.sync_version == environment.catalog_sync_version {
+            // Already up to date; nothing to do
+            return Ok(());
+        }
+
+        let target_server = self
+            .get_random_kube_cluster_server(environment.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for the environment target cluster".to_string(),
+                )
+            })?;
+
+        let catalog_workloads = self
+            .db
+            .get_app_catalog_workloads(catalog.id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let workloads_with_resources = self
+            .get_workloads_yaml_for_catalog(&catalog, catalog_workloads.clone())
+            .await?;
+
+        self.deploy_app_catalog_with_yaml(
+            &target_server,
+            &environment.namespace,
+            &environment.name,
+            environment.id,
+            Some(environment.auth_token.clone()),
+            workloads_with_resources,
+        )
+        .await?;
+
+        let now = Utc::now().into();
+        let txn = self.db.conn.begin().await.map_err(ApiError::from)?;
+
+        lapdev_db_entities::kube_environment_workload::Entity::update_many()
+            .filter(
+                lapdev_db_entities::kube_environment_workload::Column::EnvironmentId
+                    .eq(environment.id),
+            )
+            .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
+            .col_expr(
+                lapdev_db_entities::kube_environment_workload::Column::DeletedAt,
+                Expr::value(now),
+            )
+            .exec(&txn)
+            .await
+            .map_err(ApiError::from)?;
+
+        for workload in &catalog_workloads {
+            let containers_json = serde_json::to_value(&workload.containers)
+                .map(Json::from)
+                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+            let ports_json = serde_json::to_value(&workload.ports)
+                .map(Json::from)
+                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
+            lapdev_db_entities::kube_environment_workload::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                created_at: ActiveValue::Set(now),
+                deleted_at: ActiveValue::Set(None),
+                environment_id: ActiveValue::Set(environment.id),
+                name: ActiveValue::Set(workload.name.clone()),
+                namespace: ActiveValue::Set(environment.namespace.clone()),
+                kind: ActiveValue::Set(workload.kind.to_string()),
+                containers: ActiveValue::Set(containers_json),
+                ports: ActiveValue::Set(ports_json),
+            }
+            .insert(&txn)
+            .await
+            .map_err(ApiError::from)?;
+        }
+
+        lapdev_db_entities::kube_environment::ActiveModel {
+            id: ActiveValue::Set(environment.id),
+            catalog_sync_version: ActiveValue::Set(catalog.sync_version),
+            last_catalog_synced_at: ActiveValue::Set(Some(now)),
+            ..Default::default()
+        }
+        .update(&txn)
+        .await
+        .map_err(ApiError::from)?;
+
+        txn.commit().await.map_err(ApiError::from)?;
+
+        Ok(())
     }
 
     // Kube Namespace operations

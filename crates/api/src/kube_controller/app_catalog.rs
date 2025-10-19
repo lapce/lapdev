@@ -80,10 +80,10 @@ impl KubeController {
     /// Build KubeWorkloadsWithResources from database-cached catalog data.
     /// This retrieves workload YAML and services from the database cache instead of querying Kubernetes.
     /// Much faster and doesn't require connectivity to the source cluster.
+    /// Uses workload label and service selector tables to find only services that select the workloads' pods.
     pub(super) async fn get_catalog_workloads_with_yaml_from_db(
         &self,
         cluster_id: Uuid,
-        namespace: &str,
         workloads: Vec<KubeAppCatalogWorkload>,
     ) -> Result<KubeWorkloadsWithResources, ApiError> {
         // Build workload YAMLs from database
@@ -109,12 +109,8 @@ impl KubeController {
                 lapdev_common::kube::KubeWorkloadKind::ReplicaSet => {
                     KubeWorkloadYamlOnly::ReplicaSet(yaml)
                 }
-                lapdev_common::kube::KubeWorkloadKind::Pod => {
-                    KubeWorkloadYamlOnly::Pod(yaml)
-                }
-                lapdev_common::kube::KubeWorkloadKind::Job => {
-                    KubeWorkloadYamlOnly::Job(yaml)
-                }
+                lapdev_common::kube::KubeWorkloadKind::Pod => KubeWorkloadYamlOnly::Pod(yaml),
+                lapdev_common::kube::KubeWorkloadKind::Job => KubeWorkloadYamlOnly::Job(yaml),
                 lapdev_common::kube::KubeWorkloadKind::CronJob => {
                     KubeWorkloadYamlOnly::CronJob(yaml)
                 }
@@ -123,29 +119,43 @@ impl KubeController {
             workload_yamls.push(workload_yaml_only);
         }
 
-        // Get services from database cache
-        let services = lapdev_db_entities::kube_cluster_service::Entity::find()
-            .filter(lapdev_db_entities::kube_cluster_service::Column::ClusterId.eq(cluster_id))
-            .filter(lapdev_db_entities::kube_cluster_service::Column::Namespace.eq(namespace))
-            .filter(lapdev_db_entities::kube_cluster_service::Column::DeletedAt.is_null())
-            .all(&self.db.conn)
+        // Get services that select these workloads using the label and selector tables
+        let workload_ids: Vec<Uuid> = workloads.iter().map(|w| w.id).collect();
+        let cached_services = self
+            .db
+            .get_services_for_catalog_workloads(cluster_id, &workload_ids)
             .await
             .map_err(ApiError::from)?;
 
+        // Convert CachedClusterService to KubeServiceWithYaml format
+        // Note: We need to fetch the service YAML from the database
+        let service_names: Vec<String> = cached_services.iter().map(|s| s.name.clone()).collect();
+        let service_entities = if !service_names.is_empty() {
+            lapdev_db_entities::kube_cluster_service::Entity::find()
+                .filter(lapdev_db_entities::kube_cluster_service::Column::ClusterId.eq(cluster_id))
+                .filter(lapdev_db_entities::kube_cluster_service::Column::Name.is_in(service_names))
+                .filter(lapdev_db_entities::kube_cluster_service::Column::DeletedAt.is_null())
+                .all(&self.db.conn)
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            Vec::new()
+        };
+
         let mut services_map = HashMap::new();
-        for service in services {
+        for service_entity in service_entities {
             let ports: Vec<lapdev_common::kube::KubeServicePort> =
-                serde_json::from_value(service.ports.clone()).unwrap_or_default();
+                serde_json::from_value(service_entity.ports.clone()).unwrap_or_default();
             let selector_btree: std::collections::BTreeMap<String, String> =
-                serde_json::from_value(service.selector.clone()).unwrap_or_default();
+                serde_json::from_value(service_entity.selector.clone()).unwrap_or_default();
             let selector: HashMap<String, String> = selector_btree.into_iter().collect();
 
             services_map.insert(
-                service.name.clone(),
+                service_entity.name.clone(),
                 KubeServiceWithYaml {
-                    yaml: service.service_yaml,
+                    yaml: service_entity.service_yaml,
                     details: KubeServiceDetails {
-                        name: service.name,
+                        name: service_entity.name,
                         ports,
                         selector,
                     },
@@ -154,11 +164,10 @@ impl KubeController {
         }
 
         tracing::info!(
-            "Built catalog workload resources from DB: {} workloads, {} services (cluster: {}, namespace: {})",
+            "Built catalog workload resources from DB: {} workloads, {} matching services (cluster: {})",
             workload_yamls.len(),
             services_map.len(),
             cluster_id,
-            namespace
         );
 
         Ok(KubeWorkloadsWithResources {

@@ -11,7 +11,8 @@ use lapdev_common::{
     LAPDEV_ISOLATE_CONTAINER,
 };
 use lapdev_db_entities::{
-    kube_app_catalog_workload_dependency, kube_cluster_service, kube_cluster_service_selector,
+    kube_app_catalog_workload_dependency, kube_app_catalog_workload_label, kube_cluster_service,
+    kube_cluster_service_selector,
 };
 use lapdev_db_migration::Migrator;
 use pasetors::{
@@ -30,7 +31,7 @@ use serde::Deserialize;
 use serde_json;
 use serde_yaml::Value;
 use sqlx::PgPool;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use uuid::Uuid;
 
@@ -1106,6 +1107,28 @@ impl DbApi {
         }
     }
 
+    pub async fn get_service_selector_map(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<BTreeMap<String, String>>> {
+        let Some(model) = kube_cluster_service::Entity::find()
+            .filter(kube_cluster_service::Column::ClusterId.eq(cluster_id))
+            .filter(kube_cluster_service::Column::Namespace.eq(namespace))
+            .filter(kube_cluster_service::Column::Name.eq(name))
+            .one(&self.conn)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let selector: BTreeMap<String, String> =
+            serde_json::from_value(model.selector.clone()).unwrap_or_default();
+
+        Ok(Some(selector))
+    }
+
     pub async fn mark_cluster_service_deleted(
         &self,
         cluster_id: Uuid,
@@ -2065,6 +2088,185 @@ impl DbApi {
 
         let services = kube_cluster_service::Entity::find()
             .filter(kube_cluster_service::Column::Id.is_in(matching_ids))
+            .filter(kube_cluster_service::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        let mut results = Vec::with_capacity(services.len());
+        for svc in services {
+            let selector: BTreeMap<String, String> =
+                serde_json::from_value(svc.selector.clone()).unwrap_or_default();
+            let ports_raw: Vec<StoredServicePort> =
+                serde_json::from_value(svc.ports.clone()).unwrap_or_default();
+            let ports = ports_raw
+                .into_iter()
+                .filter_map(StoredServicePort::into_service_port)
+                .collect();
+
+            results.push(CachedClusterService {
+                name: svc.name,
+                selector,
+                ports,
+            });
+        }
+
+        Ok(results)
+    }
+
+    /// Get services that select the given catalog workloads based on their pod labels.
+    /// Uses the workload label table and service selector table for efficient matching.
+    /// Processes each workload individually and queries service selectors by namespace and label pairs.
+    pub async fn get_services_for_catalog_workloads(
+        &self,
+        cluster_id: Uuid,
+        workload_ids: &[Uuid],
+    ) -> Result<Vec<CachedClusterService>> {
+        if workload_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let workload_ids_vec: Vec<Uuid> = workload_ids.to_vec();
+
+        let label_rows = kube_app_catalog_workload_label::Entity::find()
+            .filter(
+                kube_app_catalog_workload_label::Column::WorkloadId.is_in(workload_ids_vec.clone()),
+            )
+            .filter(kube_app_catalog_workload_label::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        if label_rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut workload_labels: HashMap<Uuid, BTreeMap<String, String>> = HashMap::new();
+        let mut workload_namespaces: HashMap<Uuid, String> = HashMap::new();
+
+        for row in label_rows {
+            workload_labels
+                .entry(row.workload_id)
+                .or_default()
+                .insert(row.label_key.clone(), row.label_value.clone());
+            workload_namespaces
+                .entry(row.workload_id)
+                .or_insert(row.namespace);
+        }
+
+        let mut workloads_by_namespace: HashMap<String, Vec<Uuid>> = HashMap::new();
+        for workload_id in workload_ids_vec.iter().copied() {
+            if let (Some(labels), Some(namespace)) = (
+                workload_labels.get(&workload_id),
+                workload_namespaces.get(&workload_id),
+            ) {
+                if !labels.is_empty() {
+                    workloads_by_namespace
+                        .entry(namespace.clone())
+                        .or_default()
+                        .push(workload_id);
+                }
+            }
+        }
+
+        if workloads_by_namespace.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut all_matching_service_ids: HashSet<Uuid> = HashSet::new();
+
+        for (namespace, workloads_in_namespace) in workloads_by_namespace {
+            let mut label_pairs: BTreeSet<(String, String)> = BTreeSet::new();
+            for workload_id in &workloads_in_namespace {
+                if let Some(labels) = workload_labels.get(workload_id) {
+                    for (key, value) in labels {
+                        label_pairs.insert((key.clone(), value.clone()));
+                    }
+                }
+            }
+
+            if label_pairs.is_empty() {
+                continue;
+            }
+
+            let mut label_condition = Condition::any();
+            for (key, value) in &label_pairs {
+                label_condition = label_condition.add(
+                    Condition::all()
+                        .add(kube_cluster_service_selector::Column::LabelKey.eq(key.clone()))
+                        .add(kube_cluster_service_selector::Column::LabelValue.eq(value.clone())),
+                );
+            }
+
+            let selector_rows = kube_cluster_service_selector::Entity::find()
+                .filter(kube_cluster_service_selector::Column::ClusterId.eq(cluster_id))
+                .filter(kube_cluster_service_selector::Column::Namespace.eq(namespace.clone()))
+                .filter(kube_cluster_service_selector::Column::DeletedAt.is_null())
+                .filter(label_condition)
+                .all(&self.conn)
+                .await?;
+
+            if selector_rows.is_empty() {
+                continue;
+            }
+
+            let candidate_service_ids: HashSet<Uuid> =
+                selector_rows.iter().map(|row| row.service_id).collect();
+
+            if candidate_service_ids.is_empty() {
+                continue;
+            }
+
+            let candidate_service_ids_vec: Vec<Uuid> =
+                candidate_service_ids.iter().copied().collect();
+
+            let selector_rows_full = kube_cluster_service_selector::Entity::find()
+                .filter(kube_cluster_service_selector::Column::ClusterId.eq(cluster_id))
+                .filter(kube_cluster_service_selector::Column::Namespace.eq(namespace.clone()))
+                .filter(kube_cluster_service_selector::Column::DeletedAt.is_null())
+                .filter(
+                    kube_cluster_service_selector::Column::ServiceId
+                        .is_in(candidate_service_ids_vec),
+                )
+                .all(&self.conn)
+                .await?;
+
+            if selector_rows_full.is_empty() {
+                continue;
+            }
+
+            let mut selectors_by_service: HashMap<Uuid, Vec<(String, String)>> = HashMap::new();
+            for row in selector_rows_full {
+                selectors_by_service
+                    .entry(row.service_id)
+                    .or_default()
+                    .push((row.label_key, row.label_value));
+            }
+
+            for workload_id in workloads_in_namespace {
+                if let Some(labels) = workload_labels.get(&workload_id) {
+                    for (service_id, selectors) in &selectors_by_service {
+                        if selectors.iter().all(|(key, value)| {
+                            labels
+                                .get(key)
+                                .map(|existing| existing == value)
+                                .unwrap_or(false)
+                        }) {
+                            all_matching_service_ids.insert(*service_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if all_matching_service_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fetch the actual service records
+        let services = kube_cluster_service::Entity::find()
+            .filter(
+                kube_cluster_service::Column::Id
+                    .is_in(all_matching_service_ids.into_iter().collect::<Vec<_>>()),
+            )
             .filter(kube_cluster_service::Column::DeletedAt.is_null())
             .all(&self.conn)
             .await?;

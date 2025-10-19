@@ -1,49 +1,11 @@
 use uuid::Uuid;
 
-use lapdev_common::kube::KubeAppCatalogWorkload;
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_rpc::error::ApiError;
 
 use super::KubeController;
 
 impl KubeController {
-    /// Legacy method that queries Kubernetes via RPC for workload YAML.
-    /// Consider using get_catalog_workloads_with_yaml_from_db in app_catalog.rs instead for better performance.
-    pub(super) async fn get_workloads_yaml_for_catalog(
-        &self,
-        app_catalog: &lapdev_db_entities::kube_app_catalog::Model,
-        workloads: Vec<KubeAppCatalogWorkload>,
-    ) -> Result<lapdev_kube_rpc::KubeWorkloadsWithResources, ApiError> {
-        let source_server = self
-            .get_random_kube_cluster_server(app_catalog.cluster_id)
-            .await
-            .ok_or_else(|| {
-                ApiError::InvalidRequest(
-                    "No connected KubeManager for the app catalog's source cluster".to_string(),
-                )
-            })?;
-
-        match source_server
-            .rpc_client
-            .get_workloads_yaml(tarpc::context::current(), workloads)
-            .await
-        {
-            Ok(Ok(workloads_with_resources)) => Ok(workloads_with_resources),
-            Ok(Err(e)) => {
-                tracing::error!(
-                    "Failed to get YAML for workloads from source cluster: {}",
-                    e
-                );
-                Err(ApiError::InvalidRequest(format!(
-                    "Failed to get YAML for workloads from source cluster: {e}"
-                )))
-            }
-            Err(e) => Err(ApiError::InvalidRequest(format!(
-                "Connection error to source cluster: {e}"
-            ))),
-        }
-    }
-
     pub(super) async fn deploy_app_catalog_with_yaml(
         &self,
         target_server: &KubeClusterServer,

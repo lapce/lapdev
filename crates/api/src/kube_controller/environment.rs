@@ -518,7 +518,7 @@ impl KubeController {
 
         // Get workloads YAML to validate before creating in database
         let workloads_with_resources = self
-            .get_workloads_yaml_for_catalog(&app_catalog, workloads.clone())
+            .get_catalog_workloads_with_yaml_from_db(app_catalog.cluster_id, workloads.clone())
             .await?;
 
         // Generate unique namespace
@@ -536,8 +536,7 @@ impl KubeController {
         let services_map = workloads_with_resources.services.clone();
 
         // Prepare workload details for database
-        let workload_details =
-            Self::prepare_workload_details_from_catalog(workloads, &namespace);
+        let workload_details = Self::prepare_workload_details_from_catalog(workloads, &namespace);
 
         // Create environment in database
         let created_env = match self
@@ -810,8 +809,7 @@ impl KubeController {
             .collect();
 
         // Prepare workload details
-        let workload_details =
-            Self::prepare_workload_details_from_base(base_workloads, &namespace);
+        let workload_details = Self::prepare_workload_details_from_base(base_workloads, &namespace);
 
         // Create environment in database
         let created_env = match self
@@ -950,7 +948,8 @@ impl KubeController {
                 match existing_workloads_map.get(&catalog_workload.name) {
                     Some(existing_workload) => {
                         // Workload needs update if catalog version is newer
-                        catalog_workload.catalog_sync_version > existing_workload.catalog_sync_version
+                        catalog_workload.catalog_sync_version
+                            > existing_workload.catalog_sync_version
                     }
                     None => {
                         // New workload, needs to be deployed
@@ -997,25 +996,16 @@ impl KubeController {
             })?;
 
         // Get workload YAML from database cache instead of querying Kubernetes
-        // Use the first workload's namespace (all catalog workloads should be in the same namespace)
-        let catalog_namespace = workloads_to_deploy
-            .first()
-            .map(|w| w.namespace.as_str())
-            .unwrap_or("");
-
+        // Handles workloads from multiple namespaces
         let workloads_with_resources = self
             .get_catalog_workloads_with_yaml_from_db(
                 catalog.cluster_id,
-                catalog_namespace,
                 workloads_to_deploy.to_vec(),
             )
             .await?;
 
-        let service_names: HashSet<String> = workloads_with_resources
-            .services
-            .keys()
-            .cloned()
-            .collect();
+        let service_names: HashSet<String> =
+            workloads_with_resources.services.keys().cloned().collect();
 
         self.deploy_app_catalog_with_yaml(
             &target_server,
@@ -1044,10 +1034,8 @@ impl KubeController {
         let txn = self.db.conn.begin().await.map_err(ApiError::from)?;
 
         // Build a set of catalog workload names for efficient lookup
-        let catalog_workload_names: HashSet<String> = catalog_workloads
-            .iter()
-            .map(|w| w.name.clone())
-            .collect();
+        let catalog_workload_names: HashSet<String> =
+            catalog_workloads.iter().map(|w| w.name.clone()).collect();
 
         // Only soft-delete workloads that no longer exist in the catalog
         let deleted_workloads = lapdev_db_entities::kube_environment_workload::Entity::find()
@@ -1081,9 +1069,7 @@ impl KubeController {
                     lapdev_db_entities::kube_environment_service::Column::EnvironmentId
                         .eq(environment_id),
                 )
-                .filter(
-                    lapdev_db_entities::kube_environment_service::Column::DeletedAt.is_null(),
-                );
+                .filter(lapdev_db_entities::kube_environment_service::Column::DeletedAt.is_null());
 
         if !service_names.is_empty() {
             let existing: Vec<String> = service_names.into_iter().collect();
@@ -1120,9 +1106,7 @@ impl KubeController {
                     lapdev_db_entities::kube_environment_workload::Column::Name
                         .eq(workload.name.clone()),
                 )
-                .filter(
-                    lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null(),
-                )
+                .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
                 .col_expr(
                     lapdev_db_entities::kube_environment_workload::Column::DeletedAt,
                     Expr::value(now),

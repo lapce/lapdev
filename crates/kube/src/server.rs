@@ -393,6 +393,10 @@ impl KubeClusterServer {
 
     async fn handle_service_change(&self, event: &ResourceChangeEvent) -> AnyResult<()> {
         if matches!(event.change_type, ResourceChangeType::Deleted) {
+            let selector_map = self
+                .db
+                .get_service_selector_map(self.cluster_id, &event.namespace, &event.resource_name)
+                .await?;
             self.db
                 .mark_cluster_service_deleted(
                     self.cluster_id,
@@ -401,6 +405,15 @@ impl KubeClusterServer {
                     event.timestamp,
                 )
                 .await?;
+            if let Some(selector_map) = selector_map {
+                self.reconcile_workloads_for_selector(
+                    &event.namespace,
+                    &event.resource_name,
+                    &selector_map,
+                    event.timestamp,
+                )
+                .await?;
+            }
             return Ok(());
         }
 
@@ -472,18 +485,34 @@ impl KubeClusterServer {
             )
             .await?;
 
+        self.reconcile_workloads_for_selector(
+            &event.namespace,
+            &event.resource_name,
+            &selector_map,
+            event.timestamp,
+        )
+        .await
+    }
+
+    async fn reconcile_workloads_for_selector(
+        &self,
+        namespace: &str,
+        resource_name: &str,
+        selector_map: &BTreeMap<String, String>,
+        observed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AnyResult<()> {
         if selector_map.is_empty() {
             return Ok(());
         }
 
         let matching_workload_ids = self
             .db
-            .find_workloads_matching_selector(self.cluster_id, &event.namespace, &selector_map)
+            .find_workloads_matching_selector(self.cluster_id, namespace, selector_map)
             .await
             .with_context(|| {
                 format!(
                     "failed to resolve workloads matching service selector for {}",
-                    event.resource_name
+                    resource_name
                 )
             })?;
 
@@ -499,7 +528,7 @@ impl KubeClusterServer {
             .with_context(|| {
                 format!(
                     "failed querying catalog workloads for service selector {}/{}",
-                    event.namespace, event.resource_name
+                    namespace, resource_name
                 )
             })?;
 
@@ -531,7 +560,7 @@ impl KubeClusterServer {
             let labels = label_rows.get(&workload.id).cloned().unwrap_or_default();
             let matching_services = self
                 .db
-                .get_matching_cluster_services(self.cluster_id, &event.namespace, &labels)
+                .get_matching_cluster_services(self.cluster_id, namespace, &labels)
                 .await?;
             let service_ports = ports_from_cached_services(&labels, &matching_services);
             let ports_json = Json::from(serde_json::to_value(&service_ports)?);
@@ -555,7 +584,7 @@ impl KubeClusterServer {
         }
 
         if !workloads_by_catalog.is_empty() {
-            let synced_at: DateTimeWithTimeZone = event.timestamp.into();
+            let synced_at: DateTimeWithTimeZone = observed_at.into();
             for (catalog_id, workload_ids) in workloads_by_catalog {
                 let new_version = self
                     .db

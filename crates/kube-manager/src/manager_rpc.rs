@@ -196,6 +196,28 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         }
     }
 
+    async fn refresh_branch_service_routes(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+    ) -> Result<(), String> {
+        match self
+            .manager
+            .refresh_branch_service_routes(environment_id)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to refresh branch service routes for environment {}: {}",
+                    environment_id,
+                    e
+                );
+                Err(format!("Failed to refresh branch service routes: {}", e))
+            }
+        }
+    }
+
     async fn update_workload_containers(
         self,
         _context: ::tarpc::context::Context,
@@ -245,57 +267,6 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                     e
                 );
                 Err(format!("Failed to update workload containers: {}", e))
-            }
-        }
-    }
-
-    async fn create_branch_workload(
-        self,
-        _context: ::tarpc::context::Context,
-        base_workload_id: uuid::Uuid,
-        base_workload_name: String,
-        branch_environment_id: uuid::Uuid,
-        branch_environment_auth_token: String,
-        namespace: String,
-        kind: lapdev_common::kube::KubeWorkloadKind,
-        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-        labels: std::collections::HashMap<String, String>,
-    ) -> Result<(), String> {
-        tracing::info!(
-            "Creating branch deployment for environment '{}' based on '{}' in namespace '{}' (base id: {})",
-            branch_environment_id, base_workload_name, namespace, base_workload_id
-        );
-
-        match self
-            .manager
-            .create_branch_workload_atomic(
-                base_workload_id,
-                base_workload_name.clone(),
-                branch_environment_id,
-                branch_environment_auth_token,
-                namespace.clone(),
-                kind,
-                containers,
-                labels,
-            )
-            .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    "Successfully created branch deployment for environment '{}' based on '{}/{}' (id: {})",
-                    branch_environment_id, namespace, base_workload_name, base_workload_id
-                );
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to create branch deployment for environment '{}' based on '{}/{}': {}",
-                    branch_environment_id,
-                    namespace,
-                    base_workload_name,
-                    e
-                );
-                Err(format!("Failed to create branch deployment: {}", e))
             }
         }
     }

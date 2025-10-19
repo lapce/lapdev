@@ -1,8 +1,14 @@
 use uuid::Uuid;
 
+use std::collections::HashMap;
+
+use lapdev_common::kube::{KubeAppCatalogWorkload, KubeServiceWithYaml};
 use lapdev_rpc::error::ApiError;
 
-use super::KubeController;
+use super::{
+    resources::{rename_service_yaml, rename_workload_yaml},
+    KubeController,
+};
 
 impl KubeController {
     pub async fn get_environment_workloads(
@@ -151,54 +157,15 @@ impl KubeController {
         environment_labels.insert("lapdev.environment".to_string(), environment.name.clone());
         environment_labels.insert("lapdev.managed-by".to_string(), "lapdev".to_string());
 
-        // Check if this is a branch environment - if so, create a new deployment
         if environment.base_environment_id.is_some() {
-            tracing::info!(
-                "Creating branch deployment for workload '{}' in branch environment '{}' (namespace '{}')",
-                updated_workload.name,
-                environment.name,
-                environment.namespace
-            );
-
-            // For branch environments, we need to get the base workload name and create a branch deployment
-            // The base workload name is the original workload name without branch suffix
-            let base_workload_name = updated_workload.name.clone();
-            let branch_environment_id = environment.id;
-
-            match cluster_server
-                .rpc_client
-                .create_branch_workload(
-                    tarpc::context::current(),
-                    updated_workload.id,
-                    base_workload_name.clone(),
-                    branch_environment_id,
-                    environment.auth_token.clone(),
-                    updated_workload.namespace.clone(),
-                    workload_kind,
-                    updated_workload.containers,
-                    environment_labels,
-                )
-                .await
-            {
-                Ok(Ok(())) => {
-                    tracing::info!(
-                        "Successfully created branch deployment for workload '{}' in branch environment '{}' (namespace '{}')",
-                        updated_workload.name,
-                        environment.name,
-                        environment.namespace
-                    );
-                    Ok(())
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("Failed to create branch deployment: {}", e);
-                    Err(ApiError::InvalidRequest(format!(
-                        "Failed to create branch deployment: {e}"
-                    )))
-                }
-                Err(e) => Err(ApiError::InvalidRequest(format!(
-                    "Connection error during branch deployment creation: {e}"
-                ))),
-            }
+            self.deploy_branch_workload(
+                &cluster_server,
+                &environment,
+                &updated_workload.name,
+                updated_workload.containers,
+                environment_labels,
+            )
+            .await
         } else {
             // For regular environments, update the existing workload containers
             tracing::info!(
@@ -243,5 +210,125 @@ impl KubeController {
                 ))),
             }
         }
+    }
+
+    async fn deploy_branch_workload(
+        &self,
+        cluster_server: &lapdev_kube::server::KubeClusterServer,
+        environment: &lapdev_db_entities::kube_environment::Model,
+        base_workload_name: &str,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+        mut environment_labels: HashMap<String, String>,
+    ) -> Result<(), ApiError> {
+        tracing::info!(
+            "Creating branch deployment for workload '{}' in branch environment '{}' (namespace '{}')",
+            base_workload_name,
+            environment.name,
+            environment.namespace
+        );
+
+        let app_workloads = self
+            .db
+            .get_app_catalog_workloads(environment.app_catalog_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let base_catalog_workload = app_workloads
+            .into_iter()
+            .find(|w| w.name == base_workload_name)
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(format!(
+                    "Base workload '{}' not found in app catalog",
+                    base_workload_name
+                ))
+            })?;
+
+        let branch_workload = KubeAppCatalogWorkload {
+            containers,
+            ..base_catalog_workload
+        };
+
+        let mut workloads_with_resources = self
+            .get_catalog_workloads_with_yaml_from_db(
+                environment.cluster_id,
+                vec![branch_workload.clone()],
+            )
+            .await?;
+
+        let branch_deployment_name = format!("{}-{}", base_workload_name, environment.id);
+        for workload_yaml in &mut workloads_with_resources.workloads {
+            rename_workload_yaml(workload_yaml, &branch_deployment_name)
+                .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
+        }
+
+        let mut updated_services = HashMap::new();
+        for (service_name, service_with_yaml) in workloads_with_resources.services.into_iter() {
+            let branch_service_name = format!("{}-{}", service_name, environment.id);
+            let updated_yaml = rename_service_yaml(
+                &service_with_yaml.yaml,
+                &branch_service_name,
+                &branch_deployment_name,
+            )
+            .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
+
+            let mut details = service_with_yaml.details.clone();
+            details.name = branch_service_name.clone();
+
+            updated_services.insert(
+                branch_service_name,
+                KubeServiceWithYaml {
+                    yaml: updated_yaml,
+                    details,
+                },
+            );
+        }
+        workloads_with_resources.services = updated_services;
+        workloads_with_resources.configmaps.clear();
+        workloads_with_resources.secrets.clear();
+
+        environment_labels.insert(
+            "lapdev.branch-environment".to_string(),
+            environment.id.to_string(),
+        );
+        environment_labels.insert(
+            "lapdev.base-workload".to_string(),
+            base_workload_name.to_string(),
+        );
+        environment_labels.insert(
+            "lapdev.io/branch-environment-id".to_string(),
+            environment.id.to_string(),
+        );
+        environment_labels.insert(
+            "lapdev.io/routing-key".to_string(),
+            format!("branch-{}", environment.id),
+        );
+        environment_labels.insert(
+            "lapdev.io/proxy-target-port".to_string(),
+            "8080".to_string(),
+        );
+
+        self.deploy_environment_resources(
+            cluster_server,
+            &environment.namespace,
+            &environment.name,
+            environment.id,
+            Some(environment.auth_token.clone()),
+            workloads_with_resources,
+        )
+        .await?;
+
+        if let Err(err) = cluster_server
+            .rpc_client
+            .refresh_branch_service_routes(tarpc::context::current(), environment.id)
+            .await
+        {
+            tracing::warn!(
+                "Failed to refresh branch service routes for environment {}: {}",
+                environment.id,
+                err
+            );
+        }
+
+        Ok(())
     }
 }

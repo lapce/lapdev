@@ -412,22 +412,13 @@ pub trait KubeManagerRpc {
         requests: Vec<NamespacedResourceRequest>,
     ) -> Result<Vec<NamespacedResourceResponse>, String>;
 
+    async fn refresh_branch_service_routes(environment_id: Uuid) -> Result<(), String>;
+
     async fn update_workload_containers(
         environment_id: Uuid,
         environment_auth_token: String,
         workload_id: Uuid,
         name: String,
-        namespace: String,
-        kind: KubeWorkloadKind,
-        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-        labels: std::collections::HashMap<String, String>,
-    ) -> Result<(), String>;
-
-    async fn create_branch_workload(
-        base_workload_id: uuid::Uuid,
-        base_workload_name: String,
-        branch_environment_id: uuid::Uuid,
-        branch_environment_auth_token: String,
         namespace: String,
         kind: KubeWorkloadKind,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,

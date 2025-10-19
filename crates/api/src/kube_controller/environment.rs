@@ -579,7 +579,7 @@ impl KubeController {
         };
 
         // Deploy resources to Kubernetes
-        self.deploy_app_catalog_with_yaml(
+        self.deploy_environment_resources(
             &server,
             &created_env.namespace,
             &name,
@@ -1007,7 +1007,7 @@ impl KubeController {
         let service_names: HashSet<String> =
             workloads_with_resources.services.keys().cloned().collect();
 
-        self.deploy_app_catalog_with_yaml(
+        self.deploy_environment_resources(
             &target_server,
             &environment.namespace,
             &environment.name,

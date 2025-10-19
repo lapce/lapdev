@@ -6,7 +6,7 @@ use lapdev_rpc::error::ApiError;
 use super::KubeController;
 
 impl KubeController {
-    pub(super) async fn deploy_app_catalog_with_yaml(
+    pub(super) async fn deploy_environment_resources(
         &self,
         target_server: &KubeClusterServer,
         namespace: &str,
@@ -16,7 +16,7 @@ impl KubeController {
         workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
     ) -> Result<(), ApiError> {
         tracing::info!(
-            "Deploying app catalog resources for environment '{}' in namespace '{}'",
+            "Deploying environment resources for '{}' in namespace '{}'",
             environment_name,
             namespace
         );

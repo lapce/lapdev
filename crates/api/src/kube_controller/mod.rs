@@ -15,6 +15,7 @@ mod preview_url;
 mod service;
 pub mod validation;
 mod workload;
+mod workload_yaml_cleaner;
 pub mod yaml_parser;
 
 // Re-exports

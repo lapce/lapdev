@@ -9,7 +9,10 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-use super::{yaml_parser::build_workload_details_from_yaml, KubeController};
+use super::{
+    workload_yaml_cleaner::rebuild_workload_yaml, yaml_parser::build_workload_details_from_yaml,
+    KubeController,
+};
 use chrono::Utc;
 
 impl KubeController {
@@ -89,30 +92,44 @@ impl KubeController {
         // Build workload YAMLs from database
         let mut workload_yamls = Vec::new();
         for workload in &workloads {
-            let yaml = workload.workload_yaml.clone().ok_or_else(|| {
+            let raw_yaml = workload.workload_yaml.clone().ok_or_else(|| {
                 ApiError::InvalidRequest(format!(
                     "Workload '{}' has no cached YAML in database",
                     workload.name
                 ))
             })?;
 
+            let rebuilt_yaml =
+                rebuild_workload_yaml(&workload.kind, &raw_yaml, &workload.containers).map_err(
+                    |err| {
+                        ApiError::InvalidRequest(format!(
+                            "Failed to reconstruct workload YAML for '{}': {}",
+                            workload.name, err
+                        ))
+                    },
+                )?;
+
             let workload_yaml_only = match workload.kind {
                 lapdev_common::kube::KubeWorkloadKind::Deployment => {
-                    KubeWorkloadYamlOnly::Deployment(yaml)
+                    KubeWorkloadYamlOnly::Deployment(rebuilt_yaml)
                 }
                 lapdev_common::kube::KubeWorkloadKind::StatefulSet => {
-                    KubeWorkloadYamlOnly::StatefulSet(yaml)
+                    KubeWorkloadYamlOnly::StatefulSet(rebuilt_yaml)
                 }
                 lapdev_common::kube::KubeWorkloadKind::DaemonSet => {
-                    KubeWorkloadYamlOnly::DaemonSet(yaml)
+                    KubeWorkloadYamlOnly::DaemonSet(rebuilt_yaml)
                 }
                 lapdev_common::kube::KubeWorkloadKind::ReplicaSet => {
-                    KubeWorkloadYamlOnly::ReplicaSet(yaml)
+                    KubeWorkloadYamlOnly::ReplicaSet(rebuilt_yaml)
                 }
-                lapdev_common::kube::KubeWorkloadKind::Pod => KubeWorkloadYamlOnly::Pod(yaml),
-                lapdev_common::kube::KubeWorkloadKind::Job => KubeWorkloadYamlOnly::Job(yaml),
+                lapdev_common::kube::KubeWorkloadKind::Pod => {
+                    KubeWorkloadYamlOnly::Pod(rebuilt_yaml)
+                }
+                lapdev_common::kube::KubeWorkloadKind::Job => {
+                    KubeWorkloadYamlOnly::Job(rebuilt_yaml)
+                }
                 lapdev_common::kube::KubeWorkloadKind::CronJob => {
-                    KubeWorkloadYamlOnly::CronJob(yaml)
+                    KubeWorkloadYamlOnly::CronJob(rebuilt_yaml)
                 }
             };
 

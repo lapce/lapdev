@@ -5,9 +5,10 @@ use k8s_openapi::api::{
     core::v1::{PodSpec, Service},
 };
 use lapdev_common::kube::{
-    KubeClusterInfo, KubeContainerImage, KubeContainerInfo, KubeContainerPort, KubeWorkloadKind,
+    KubeClusterInfo, KubeContainerImage, KubeContainerInfo, KubeContainerPort, KubeServicePort,
+    KubeWorkloadKind,
 };
-use lapdev_db::api::DbApi;
+use lapdev_db::api::{CachedClusterService, DbApi};
 use lapdev_db_entities::kube_app_catalog_workload::{self, Entity as CatalogWorkloadEntity};
 use lapdev_kube_rpc::{
     KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent, ResourceChangeType, ResourceType,
@@ -15,7 +16,7 @@ use lapdev_kube_rpc::{
 use sea_orm::prelude::Json;
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -216,13 +217,15 @@ impl KubeClusterServer {
             .as_ref()
             .context("workload event missing resource YAML")?;
 
-        let new_containers =
-            extract_containers_from_yaml(event.resource_type, yaml).with_context(|| {
+        let extracted =
+            extract_workload_from_yaml(event.resource_type, yaml).with_context(|| {
                 format!(
                     "failed to parse workload YAML for {}/{} ({:?})",
                     event.namespace, event.resource_name, event.resource_type
                 )
             })?;
+        let new_containers = extracted.containers;
+        let workload_labels = extracted.labels;
 
         if new_containers.is_empty() {
             tracing::warn!(
@@ -232,6 +235,11 @@ impl KubeClusterServer {
             );
             return Ok(());
         }
+
+        let cached_services = self
+            .db
+            .get_active_cluster_services(self.cluster_id, &event.namespace)
+            .await?;
 
         let workloads = CatalogWorkloadEntity::find()
             .filter(kube_app_catalog_workload::Column::Name.eq(event.resource_name.clone()))
@@ -278,13 +286,17 @@ impl KubeClusterServer {
                         workload.id
                     )
                 })?;
+            let service_ports = ports_from_cached_services(&workload_labels, &cached_services);
 
             let containers_json = serde_json::to_value(&merged_containers)
                 .context("failed to serialize merged container definition")?;
+            let ports_json = serde_json::to_value(&service_ports)
+                .context("failed to serialize workload ports definition")?;
 
             let active_model = kube_app_catalog_workload::ActiveModel {
                 id: ActiveValue::Set(workload.id),
                 containers: ActiveValue::Set(Json::from(containers_json)),
+                ports: ActiveValue::Set(Json::from(ports_json)),
                 ..Default::default()
             };
 
@@ -394,10 +406,15 @@ fn workload_kind_for(resource_type: ResourceType) -> Option<KubeWorkloadKind> {
     }
 }
 
-fn extract_containers_from_yaml(
+struct ExtractedWorkload {
+    containers: Vec<KubeContainerInfo>,
+    labels: BTreeMap<String, String>,
+}
+
+fn extract_workload_from_yaml(
     resource_type: ResourceType,
     yaml: &str,
-) -> AnyResult<Vec<KubeContainerInfo>> {
+) -> AnyResult<ExtractedWorkload> {
     match resource_type {
         ResourceType::Deployment => {
             let deployment: Deployment = serde_yaml::from_str(yaml)?;
@@ -406,7 +423,14 @@ fn extract_containers_from_yaml(
                 .as_ref()
                 .and_then(|s| s.template.spec.as_ref())
                 .context("deployment missing pod spec")?;
-            extract_pod_spec_containers(pod_spec)
+            let labels = deployment
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.metadata.as_ref())
+                .and_then(|m| m.labels.clone())
+                .unwrap_or_default();
+            let containers = extract_pod_spec_containers(pod_spec)?;
+            Ok(ExtractedWorkload { containers, labels })
         }
         ResourceType::StatefulSet => {
             let statefulset: StatefulSet = serde_yaml::from_str(yaml)?;
@@ -415,7 +439,14 @@ fn extract_containers_from_yaml(
                 .as_ref()
                 .and_then(|s| s.template.spec.as_ref())
                 .context("statefulset missing pod spec")?;
-            extract_pod_spec_containers(pod_spec)
+            let labels = statefulset
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.metadata.as_ref())
+                .and_then(|m| m.labels.clone())
+                .unwrap_or_default();
+            let containers = extract_pod_spec_containers(pod_spec)?;
+            Ok(ExtractedWorkload { containers, labels })
         }
         ResourceType::DaemonSet => {
             let daemonset: DaemonSet = serde_yaml::from_str(yaml)?;
@@ -424,7 +455,14 @@ fn extract_containers_from_yaml(
                 .as_ref()
                 .and_then(|s| s.template.spec.as_ref())
                 .context("daemonset missing pod spec")?;
-            extract_pod_spec_containers(pod_spec)
+            let labels = daemonset
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.metadata.as_ref())
+                .and_then(|m| m.labels.clone())
+                .unwrap_or_default();
+            let containers = extract_pod_spec_containers(pod_spec)?;
+            Ok(ExtractedWorkload { containers, labels })
         }
         ResourceType::ReplicaSet => {
             let replicaset: ReplicaSet = serde_yaml::from_str(yaml)?;
@@ -434,7 +472,15 @@ fn extract_containers_from_yaml(
                 .and_then(|s| s.template.as_ref())
                 .and_then(|t| t.spec.as_ref())
                 .context("replicaset missing pod spec")?;
-            extract_pod_spec_containers(pod_spec)
+            let labels = replicaset
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.as_ref())
+                .and_then(|t| t.metadata.as_ref())
+                .and_then(|m| m.labels.clone())
+                .unwrap_or_default();
+            let containers = extract_pod_spec_containers(pod_spec)?;
+            Ok(ExtractedWorkload { containers, labels })
         }
         ResourceType::Job => {
             let job: Job = serde_yaml::from_str(yaml)?;
@@ -443,7 +489,14 @@ fn extract_containers_from_yaml(
                 .as_ref()
                 .and_then(|s| s.template.spec.as_ref())
                 .context("job missing pod spec")?;
-            extract_pod_spec_containers(pod_spec)
+            let labels = job
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.metadata.as_ref())
+                .and_then(|m| m.labels.clone())
+                .unwrap_or_default();
+            let containers = extract_pod_spec_containers(pod_spec)?;
+            Ok(ExtractedWorkload { containers, labels })
         }
         ResourceType::CronJob => {
             let cron_job: CronJob = serde_yaml::from_str(yaml)?;
@@ -453,9 +506,21 @@ fn extract_containers_from_yaml(
                 .and_then(|s| s.job_template.spec.as_ref())
                 .and_then(|s| s.template.spec.as_ref())
                 .context("cronjob missing pod spec")?;
-            extract_pod_spec_containers(pod_spec)
+            let labels = cron_job
+                .spec
+                .as_ref()
+                .and_then(|s| s.job_template.metadata.as_ref())
+                .and_then(|m| m.labels.clone())
+                .unwrap_or_default();
+            let containers = extract_pod_spec_containers(pod_spec)?;
+            Ok(ExtractedWorkload { containers, labels })
         }
-        ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => Ok(Vec::new()),
+        ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => {
+            Ok(ExtractedWorkload {
+                containers: Vec::new(),
+                labels: BTreeMap::new(),
+            })
+        }
     }
 }
 
@@ -562,4 +627,40 @@ fn merge_containers(
     }
 
     Ok(merged)
+}
+
+fn ports_from_cached_services(
+    workload_labels: &BTreeMap<String, String>,
+    services: &[CachedClusterService],
+) -> Vec<KubeServicePort> {
+    if services.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ports = Vec::new();
+    let mut seen = HashSet::new();
+
+    for service in services {
+        if service.selector.is_empty() {
+            continue;
+        }
+
+        let matches = service
+            .selector
+            .iter()
+            .all(|(key, value)| workload_labels.get(key).map_or(false, |v| v == value));
+
+        if !matches {
+            continue;
+        }
+
+        for port in &service.ports {
+            let key = (port.port, port.target_port, port.protocol.clone());
+            if seen.insert(key) {
+                ports.push(port.clone());
+            }
+        }
+    }
+
+    ports
 }

@@ -4,8 +4,8 @@ use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED,
     kube::{
-        KubeAppCatalogWorkload, KubeContainerInfo, KubeEnvironmentWorkload, KubeWorkloadDetails,
-        PagePaginationParams,
+        KubeAppCatalogWorkload, KubeContainerInfo, KubeEnvironmentWorkload, KubeServicePort,
+        KubeWorkloadDetails, PagePaginationParams,
     },
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
@@ -24,8 +24,11 @@ use sea_orm::{
     RelationTrait, TransactionTrait,
 };
 use sea_orm_migration::MigratorTrait;
+use serde::Deserialize;
 use serde_json;
 use sqlx::PgPool;
+use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use uuid::Uuid;
 
 // Custom result structure for multi-table join
@@ -68,6 +71,42 @@ const LAPDEV_USER_CREATION_WEBHOOK: &str = "lapdev-user-creation-webhook";
 pub struct DbApi {
     pub conn: DatabaseConnection,
     pub pool: Option<PgPool>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CachedClusterService {
+    pub name: String,
+    pub selector: BTreeMap<String, String>,
+    pub ports: Vec<KubeServicePort>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredServicePort {
+    pub name: Option<String>,
+    pub port: i32,
+    #[serde(default)]
+    pub target_port: Option<serde_json::Value>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub node_port: Option<i32>,
+}
+
+impl StoredServicePort {
+    fn into_service_port(self) -> Option<KubeServicePort> {
+        let target_port = self
+            .target_port
+            .and_then(|value| value.as_i64())
+            .and_then(|v| i32::try_from(v).ok());
+
+        Some(KubeServicePort {
+            name: self.name,
+            port: self.port,
+            target_port,
+            protocol: self.protocol,
+            node_port: self.node_port,
+        })
+    }
 }
 
 async fn connect_db(conn_url: &str) -> Result<sqlx::PgPool> {
@@ -947,6 +986,39 @@ impl DbApi {
         };
         let updated = active_model.update(&self.conn).await?;
         Ok(updated)
+    }
+
+    pub async fn get_active_cluster_services(
+        &self,
+        cluster_id: Uuid,
+        namespace: &str,
+    ) -> Result<Vec<CachedClusterService>> {
+        let services = kube_cluster_service::Entity::find()
+            .filter(kube_cluster_service::Column::ClusterId.eq(cluster_id))
+            .filter(kube_cluster_service::Column::Namespace.eq(namespace))
+            .filter(kube_cluster_service::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+
+        let mut results = Vec::with_capacity(services.len());
+        for svc in services {
+            let selector: BTreeMap<String, String> =
+                serde_json::from_value(svc.selector.clone()).unwrap_or_default();
+            let ports_raw: Vec<StoredServicePort> =
+                serde_json::from_value(svc.ports.clone()).unwrap_or_default();
+            let ports = ports_raw
+                .into_iter()
+                .filter_map(StoredServicePort::into_service_port)
+                .collect();
+
+            results.push(CachedClusterService {
+                name: svc.name,
+                selector,
+                ports,
+            });
+        }
+
+        Ok(results)
     }
 
     pub async fn upsert_cluster_service(

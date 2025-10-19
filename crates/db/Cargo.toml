@@ -18,6 +18,7 @@ sqlx.workspace = true
 sea-orm.workspace = true
 sea-orm-migration.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 lapdev-db-migration.workspace = true
 lapdev-db-entities.workspace = true
 lapdev-common.workspace = true

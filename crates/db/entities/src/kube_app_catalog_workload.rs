@@ -16,6 +16,8 @@ pub struct Model {
     pub kind: String,
     pub containers: Json,
     pub ports: Json,
+    #[sea_orm(column_type = "Text")]
+    pub workload_yaml: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

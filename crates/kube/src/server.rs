@@ -297,6 +297,7 @@ impl KubeClusterServer {
                 id: ActiveValue::Set(workload.id),
                 containers: ActiveValue::Set(Json::from(containers_json)),
                 ports: ActiveValue::Set(Json::from(ports_json)),
+                workload_yaml: ActiveValue::Set(yaml.clone()),
                 ..Default::default()
             };
 

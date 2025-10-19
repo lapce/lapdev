@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -29,6 +29,7 @@ use lapdev_kube_rpc::{
     KubeWorkloadYamlOnly, KubeWorkloadsWithResources, TunnelStatus,
 };
 use lapdev_rpc::spawn_twoway;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tarpc::server::{BaseChannel, Channel};
 use tokio::time::{sleep, Duration};
@@ -1778,6 +1779,44 @@ impl KubeManager {
         })
     }
 
+    async fn load_cached_workload<T, F>(
+        &self,
+        cached_yaml: Option<&str>,
+        fetch_future: F,
+        namespace: &str,
+        name: &str,
+        kind: &'static str,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+        F: Future<Output = Result<T, kube::Error>>,
+    {
+        if let Some(yaml_str) = cached_yaml {
+            match serde_yaml::from_str::<T>(yaml_str) {
+                Ok(obj) => return Ok(obj),
+                Err(err) => {
+                    tracing::warn!(
+                        namespace = namespace,
+                        workload = name,
+                        kind,
+                        error = ?err,
+                        "Failed to parse cached workload YAML; refetching from cluster"
+                    );
+                }
+            }
+        }
+
+        fetch_future.await.map_err(|e| {
+            anyhow!(
+                "Failed to fetch {} {}/{} from cluster: {}",
+                kind,
+                namespace,
+                name,
+                e
+            )
+        })
+    }
+
     async fn retrieve_single_workload_with_resources(
         &self,
         client: &kube::Client,
@@ -1788,7 +1827,15 @@ impl KubeManager {
             KubeWorkloadKind::Deployment => {
                 let api: kube::Api<Deployment> =
                     kube::Api::namespaced((*client).clone(), &workload.namespace);
-                let deployment = api.get(&workload.name).await?;
+                let deployment = self
+                    .load_cached_workload(
+                        workload.workload_yaml.as_deref(),
+                        api.get(&workload.name),
+                        &workload.namespace,
+                        &workload.name,
+                        "Deployment",
+                    )
+                    .await?;
 
                 // Get labels for service matching
                 let workload_labels = deployment
@@ -1823,7 +1870,15 @@ impl KubeManager {
             KubeWorkloadKind::StatefulSet => {
                 let api: kube::Api<StatefulSet> =
                     kube::Api::namespaced((*client).clone(), &workload.namespace);
-                let statefulset = api.get(&workload.name).await?;
+                let statefulset = self
+                    .load_cached_workload(
+                        workload.workload_yaml.as_deref(),
+                        api.get(&workload.name),
+                        &workload.namespace,
+                        &workload.name,
+                        "StatefulSet",
+                    )
+                    .await?;
 
                 let workload_labels = statefulset
                     .spec
@@ -1855,7 +1910,15 @@ impl KubeManager {
             KubeWorkloadKind::DaemonSet => {
                 let api: kube::Api<DaemonSet> =
                     kube::Api::namespaced((*client).clone(), &workload.namespace);
-                let daemonset = api.get(&workload.name).await?;
+                let daemonset = self
+                    .load_cached_workload(
+                        workload.workload_yaml.as_deref(),
+                        api.get(&workload.name),
+                        &workload.namespace,
+                        &workload.name,
+                        "DaemonSet",
+                    )
+                    .await?;
 
                 let workload_labels = daemonset
                     .spec
@@ -1887,7 +1950,15 @@ impl KubeManager {
             KubeWorkloadKind::Pod => {
                 let api: kube::Api<Pod> =
                     kube::Api::namespaced((*client).clone(), &workload.namespace);
-                let pod = api.get(&workload.name).await?;
+                let pod = self
+                    .load_cached_workload(
+                        workload.workload_yaml.as_deref(),
+                        api.get(&workload.name),
+                        &workload.namespace,
+                        &workload.name,
+                        "Pod",
+                    )
+                    .await?;
 
                 let workload_labels = pod.metadata.labels.as_ref().cloned().unwrap_or_default();
                 let services =
@@ -1912,7 +1983,15 @@ impl KubeManager {
             KubeWorkloadKind::Job => {
                 let api: kube::Api<Job> =
                     kube::Api::namespaced((*client).clone(), &workload.namespace);
-                let job = api.get(&workload.name).await?;
+                let job = self
+                    .load_cached_workload(
+                        workload.workload_yaml.as_deref(),
+                        api.get(&workload.name),
+                        &workload.namespace,
+                        &workload.name,
+                        "Job",
+                    )
+                    .await?;
 
                 let workload_labels = job
                     .spec
@@ -1944,7 +2023,15 @@ impl KubeManager {
             KubeWorkloadKind::CronJob => {
                 let api: kube::Api<CronJob> =
                     kube::Api::namespaced((*client).clone(), &workload.namespace);
-                let cronjob = api.get(&workload.name).await?;
+                let cronjob = self
+                    .load_cached_workload(
+                        workload.workload_yaml.as_deref(),
+                        api.get(&workload.name),
+                        &workload.namespace,
+                        &workload.name,
+                        "CronJob",
+                    )
+                    .await?;
 
                 let workload_labels = cronjob
                     .spec
@@ -1977,7 +2064,15 @@ impl KubeManager {
             KubeWorkloadKind::ReplicaSet => {
                 let api: kube::Api<ReplicaSet> =
                     kube::Api::namespaced((*client).clone(), &workload.namespace);
-                let replicaset = api.get(&workload.name).await?;
+                let replicaset = self
+                    .load_cached_workload(
+                        workload.workload_yaml.as_deref(),
+                        api.get(&workload.name),
+                        &workload.namespace,
+                        &workload.name,
+                        "ReplicaSet",
+                    )
+                    .await?;
 
                 let workload_labels = replicaset
                     .spec
@@ -3257,7 +3352,7 @@ impl KubeManager {
         namespace: &str,
         kind: &KubeWorkloadKind,
         all_services: &[Service],
-    ) -> Result<(Vec<KubeContainerInfo>, Vec<KubeServicePort>)> {
+    ) -> Result<(Vec<KubeContainerInfo>, Vec<KubeServicePort>, String)> {
         let client = &self.kube_client;
 
         match kind {
@@ -3279,7 +3374,9 @@ impl KubeManager {
                     if let Some(spec) = &deployment.spec {
                         if let Some(pod_spec) = &spec.template.spec {
                             let containers = self.extract_pod_resource_info(pod_spec)?;
-                            return Ok((containers, ports));
+                            let clean = self.clean_deployment(deployment, &containers);
+                            let workload_yaml = serde_yaml::to_string(&clean)?;
+                            return Ok((containers, ports, workload_yaml));
                         }
                     }
                 }
@@ -3302,7 +3399,9 @@ impl KubeManager {
                     if let Some(spec) = &statefulset.spec {
                         if let Some(pod_spec) = &spec.template.spec {
                             let containers = self.extract_pod_resource_info(pod_spec)?;
-                            return Ok((containers, ports));
+                            let clean = self.clean_statefulset(statefulset, &containers);
+                            let workload_yaml = serde_yaml::to_string(&clean)?;
+                            return Ok((containers, ports, workload_yaml));
                         }
                     }
                 }
@@ -3325,7 +3424,9 @@ impl KubeManager {
                     if let Some(spec) = &daemonset.spec {
                         if let Some(pod_spec) = &spec.template.spec {
                             let containers = self.extract_pod_resource_info(pod_spec)?;
-                            return Ok((containers, ports));
+                            let clean = self.clean_daemonset(daemonset, &containers);
+                            let workload_yaml = serde_yaml::to_string(&clean)?;
+                            return Ok((containers, ports, workload_yaml));
                         }
                     }
                 }
@@ -3340,7 +3441,9 @@ impl KubeManager {
 
                     if let Some(spec) = &pod.spec {
                         let containers = self.extract_pod_resource_info(spec)?;
-                        return Ok((containers, ports));
+                        let clean = self.clean_pod(pod, &containers);
+                        let workload_yaml = serde_yaml::to_string(&clean)?;
+                        return Ok((containers, ports, workload_yaml));
                     }
                 }
             }
@@ -3361,7 +3464,9 @@ impl KubeManager {
                     if let Some(spec) = &job.spec {
                         if let Some(pod_spec) = &spec.template.spec {
                             let containers = self.extract_pod_resource_info(pod_spec)?;
-                            return Ok((containers, ports));
+                            let clean = self.clean_job(job, &containers);
+                            let workload_yaml = serde_yaml::to_string(&clean)?;
+                            return Ok((containers, ports, workload_yaml));
                         }
                     }
                 }
@@ -3385,7 +3490,9 @@ impl KubeManager {
                         if let Some(job_template) = &spec.job_template.spec {
                             if let Some(pod_spec) = &job_template.template.spec {
                                 let containers = self.extract_pod_resource_info(pod_spec)?;
-                                return Ok((containers, ports));
+                                let clean = self.clean_cronjob(cronjob, &containers);
+                                let workload_yaml = serde_yaml::to_string(&clean)?;
+                                return Ok((containers, ports, workload_yaml));
                             }
                         }
                     }
@@ -3394,7 +3501,7 @@ impl KubeManager {
             _ => {}
         }
 
-        Ok((Vec::new(), Vec::new()))
+        Ok((Vec::new(), Vec::new(), String::new()))
     }
 
     fn extract_pod_resource_info(
@@ -3517,6 +3624,7 @@ impl KubeManager {
             kind,
             containers,
             ports: Vec::new(), // Ports will be fetched from services during YAML retrieval
+            workload_yaml: None,
         };
 
         // Step 2: Get the current workload YAML with all its resources
@@ -3600,6 +3708,7 @@ impl KubeManager {
             kind,
             containers: containers.clone(), // Use the customized containers for the branch
             ports: Vec::new(), // Ports will be fetched from services during YAML retrieval
+            workload_yaml: None,
         };
 
         // Step 2: Get the base workload YAML with all its resources

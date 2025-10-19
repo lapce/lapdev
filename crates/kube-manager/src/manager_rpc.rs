@@ -244,13 +244,14 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                 )
                 .await
             {
-                Ok((containers, ports)) => {
+                Ok((containers, ports, workload_yaml)) => {
                     details.push(lapdev_common::kube::KubeWorkloadDetails {
                         name: workload.name,
                         namespace: workload.namespace,
                         kind: workload.kind,
                         containers,
                         ports,
+                        workload_yaml,
                     });
                 }
                 Err(e) => {

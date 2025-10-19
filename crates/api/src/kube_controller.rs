@@ -1145,6 +1145,7 @@ impl KubeController {
                     kind: workload.kind,
                     containers,
                     ports: workload.ports,
+                    workload_yaml: workload.workload_yaml.unwrap_or_default(),
                 }
             })
             .collect();
@@ -1343,6 +1344,7 @@ impl KubeController {
                         kind,
                         containers,
                         ports: workload.ports,
+                        workload_yaml: String::new(),
                     }
                 })
             })

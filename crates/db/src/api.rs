@@ -1297,6 +1297,11 @@ impl DbApi {
                         .unwrap_or(lapdev_common::kube::KubeWorkloadKind::Deployment),
                     containers,
                     ports,
+                    workload_yaml: if w.workload_yaml.is_empty() {
+                        None
+                    } else {
+                        Some(w.workload_yaml.clone())
+                    },
                 })
             })
             .collect())
@@ -1697,8 +1702,9 @@ impl DbApi {
                 name: ActiveValue::Set(workload.name.clone()),
                 namespace: ActiveValue::Set(workload.namespace.clone()),
                 kind: ActiveValue::Set(workload.kind.to_string()),
-                containers: ActiveValue::Set(serde_json::json!([])),
-                ports: ActiveValue::Set(serde_json::json!([])),
+                containers: ActiveValue::Set(Json::from(serde_json::json!([]))),
+                ports: ActiveValue::Set(Json::from(serde_json::json!([]))),
+                workload_yaml: ActiveValue::Set(String::new()),
             }
             .insert(txn)
             .await?;
@@ -1735,6 +1741,7 @@ impl DbApi {
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
+                workload_yaml: ActiveValue::Set(workload.workload_yaml),
             }
             .insert(txn)
             .await?;

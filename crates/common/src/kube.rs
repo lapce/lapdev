@@ -190,6 +190,7 @@ pub struct KubeAppCatalogWorkload {
     pub kind: KubeWorkloadKind,
     pub containers: Vec<KubeContainerInfo>,
     pub ports: Vec<KubeServicePort>,
+    pub workload_yaml: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +271,7 @@ pub struct KubeWorkloadDetails {
     pub kind: KubeWorkloadKind,
     pub containers: Vec<KubeContainerInfo>,
     pub ports: Vec<KubeServicePort>,
+    pub workload_yaml: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

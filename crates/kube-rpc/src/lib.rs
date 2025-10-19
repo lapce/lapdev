@@ -341,6 +341,14 @@ pub struct KubeWorkloadsWithResources {
     pub secrets: HashMap<String, String>,               // name -> YAML content
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeRawWorkloadYaml {
+    pub name: String,
+    pub namespace: String,
+    pub kind: KubeWorkloadKind,
+    pub workload_yaml: String,
+}
+
 #[tarpc::service]
 pub trait KubeClusterRpc {
     async fn report_cluster_info(cluster_info: KubeClusterInfo) -> Result<(), String>;
@@ -393,6 +401,10 @@ pub trait KubeManagerRpc {
     async fn get_workloads_details(
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeWorkloadDetails>, String>;
+
+    async fn get_workloads_raw_yaml(
+        workloads: Vec<WorkloadIdentifier>,
+    ) -> Result<Vec<KubeRawWorkloadYaml>, String>;
 
     async fn configure_watches(namespaces: Vec<String>) -> Result<(), String>;
 

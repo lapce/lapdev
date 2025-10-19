@@ -3504,6 +3504,56 @@ impl KubeManager {
         Ok((Vec::new(), Vec::new(), String::new()))
     }
 
+    pub(crate) async fn get_raw_workload_yaml(
+        &self,
+        name: &str,
+        namespace: &str,
+        kind: &KubeWorkloadKind,
+    ) -> Result<String> {
+        let client = &self.kube_client;
+        match kind {
+            KubeWorkloadKind::Deployment => {
+                let api: kube::Api<Deployment> =
+                    kube::Api::namespaced((**client).clone(), namespace);
+                let deployment = api.get(name).await?;
+                Ok(serde_yaml::to_string(&deployment)?)
+            }
+            KubeWorkloadKind::StatefulSet => {
+                let api: kube::Api<StatefulSet> =
+                    kube::Api::namespaced((**client).clone(), namespace);
+                let statefulset = api.get(name).await?;
+                Ok(serde_yaml::to_string(&statefulset)?)
+            }
+            KubeWorkloadKind::DaemonSet => {
+                let api: kube::Api<DaemonSet> =
+                    kube::Api::namespaced((**client).clone(), namespace);
+                let daemonset = api.get(name).await?;
+                Ok(serde_yaml::to_string(&daemonset)?)
+            }
+            KubeWorkloadKind::ReplicaSet => {
+                let api: kube::Api<ReplicaSet> =
+                    kube::Api::namespaced((**client).clone(), namespace);
+                let replicaset = api.get(name).await?;
+                Ok(serde_yaml::to_string(&replicaset)?)
+            }
+            KubeWorkloadKind::Pod => {
+                let api: kube::Api<Pod> = kube::Api::namespaced((**client).clone(), namespace);
+                let pod = api.get(name).await?;
+                Ok(serde_yaml::to_string(&pod)?)
+            }
+            KubeWorkloadKind::Job => {
+                let api: kube::Api<Job> = kube::Api::namespaced((**client).clone(), namespace);
+                let job = api.get(name).await?;
+                Ok(serde_yaml::to_string(&job)?)
+            }
+            KubeWorkloadKind::CronJob => {
+                let api: kube::Api<CronJob> = kube::Api::namespaced((**client).clone(), namespace);
+                let cronjob = api.get(name).await?;
+                Ok(serde_yaml::to_string(&cronjob)?)
+            }
+        }
+    }
+
     fn extract_pod_resource_info(
         &self,
         pod_spec: &k8s_openapi::api::core::v1::PodSpec,

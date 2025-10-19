@@ -4,8 +4,8 @@ use lapdev_common::kube::{
     PaginationParams,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadsWithResources, TunnelStatus,
-    WorkloadIdentifier,
+    KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml, KubeWorkloadsWithResources,
+    TunnelStatus, WorkloadIdentifier,
 };
 use uuid::Uuid;
 
@@ -274,6 +274,41 @@ impl KubeManagerRpc for KubeManagerRpcServer {
             details.len()
         );
         Ok(details)
+    }
+
+    async fn get_workloads_raw_yaml(
+        self,
+        _context: ::tarpc::context::Context,
+        workloads: Vec<WorkloadIdentifier>,
+    ) -> Result<Vec<KubeRawWorkloadYaml>, String> {
+        let mut result = Vec::with_capacity(workloads.len());
+
+        for workload in workloads {
+            match self
+                .manager
+                .get_raw_workload_yaml(&workload.name, &workload.namespace, &workload.kind)
+                .await
+            {
+                Ok(yaml) => {
+                    result.push(KubeRawWorkloadYaml {
+                        name: workload.name,
+                        namespace: workload.namespace,
+                        kind: workload.kind,
+                        workload_yaml: yaml,
+                    });
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "Failed to fetch raw YAML for {}/{}: {e}",
+                        workload.namespace, workload.name
+                    );
+                    tracing::error!("{}", msg);
+                    return Err(msg);
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     async fn update_workload_containers(

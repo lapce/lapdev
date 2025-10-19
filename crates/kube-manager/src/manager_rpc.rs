@@ -1,7 +1,6 @@
 use anyhow::Result;
 use lapdev_common::kube::{
-    KubeAppCatalogWorkload, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-    PaginationParams,
+    KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml, KubeWorkloadsWithResources,
@@ -117,63 +116,6 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         }
     }
 
-    async fn get_workloads_yaml(
-        self,
-        _context: ::tarpc::context::Context,
-        workloads: Vec<KubeAppCatalogWorkload>,
-    ) -> Result<KubeWorkloadsWithResources, String> {
-        match self
-            .manager
-            .retrieve_workloads_yaml(workloads.clone())
-            .await
-        {
-            Ok(workloads_with_resources) => {
-                tracing::info!(
-                    "Successfully retrieved {} workloads with {} services, {} configmaps, {} secrets",
-                    workloads_with_resources.workloads.len(),
-                    workloads_with_resources.services.len(),
-                    workloads_with_resources.configmaps.len(),
-                    workloads_with_resources.secrets.len()
-                );
-                Ok(workloads_with_resources)
-            }
-            Err(e) => {
-                tracing::error!("Failed to retrieve workloads YAML: {}", e);
-                Err(format!("Failed to retrieve workloads YAML: {}", e))
-            }
-        }
-    }
-
-    async fn get_workload_yaml(
-        self,
-        _context: ::tarpc::context::Context,
-        workload: KubeAppCatalogWorkload,
-    ) -> Result<lapdev_kube_rpc::KubeWorkloadYaml, String> {
-        match self
-            .manager
-            .retrieve_single_workload_yaml(workload.clone())
-            .await
-        {
-            Ok(workload_yaml) => {
-                tracing::info!(
-                    "Successfully retrieved workload YAML for {}/{}",
-                    workload.namespace,
-                    workload.name
-                );
-                Ok(workload_yaml)
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to retrieve workload YAML for {}/{}: {}",
-                    workload.namespace,
-                    workload.name,
-                    e
-                );
-                Err(format!("Failed to retrieve workload YAML: {}", e))
-            }
-        }
-    }
-
     async fn deploy_workload_yaml(
         self,
         _context: ::tarpc::context::Context,
@@ -203,77 +145,6 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                 Err(format!("Failed to deploy workloads: {e}"))
             }
         }
-    }
-
-    async fn get_workloads_details(
-        self,
-        _context: ::tarpc::context::Context,
-        workloads: Vec<WorkloadIdentifier>,
-    ) -> Result<Vec<lapdev_common::kube::KubeWorkloadDetails>, String> {
-        let mut details = Vec::new();
-
-        // Fetch all services once before the loop
-        let all_services = if !workloads.is_empty() {
-            let first_namespace = &workloads[0].namespace;
-            let service_api: kube::Api<k8s_openapi::api::core::v1::Service> =
-                kube::Api::namespaced((*self.manager.kube_client).clone(), first_namespace);
-
-            match service_api.list(&Default::default()).await {
-                Ok(service_list) => service_list.items,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to list services in namespace {}: {}",
-                        first_namespace,
-                        e
-                    );
-                    Vec::new()
-                }
-            }
-        } else {
-            Vec::new()
-        };
-
-        for workload in workloads {
-            match self
-                .manager
-                .get_workload_resource_details(
-                    &workload.name,
-                    &workload.namespace,
-                    &workload.kind,
-                    &all_services,
-                )
-                .await
-            {
-                Ok((containers, ports, workload_yaml)) => {
-                    details.push(lapdev_common::kube::KubeWorkloadDetails {
-                        name: workload.name,
-                        namespace: workload.namespace,
-                        kind: workload.kind,
-                        containers,
-                        ports,
-                        workload_yaml,
-                    });
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to get workload details for {}/{}: {}",
-                        workload.namespace,
-                        workload.name,
-                        e
-                    );
-                    return Err(format!(
-                        "Failed to get workload details for {}/{}: {}",
-                        workload.namespace, workload.name, e
-                    ));
-                }
-            }
-        }
-
-        tracing::info!(
-            "Successfully retrieved details for {} workloads",
-            details.len()
-        );
-        Ok(details)
     }
 
     async fn get_workloads_raw_yaml(
@@ -425,33 +296,6 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                     e
                 );
                 Err(format!("Failed to create branch deployment: {}", e))
-            }
-        }
-    }
-
-    async fn configure_watches(
-        self,
-        _context: ::tarpc::context::Context,
-        namespaces: Vec<String>,
-    ) -> Result<(), String> {
-        tracing::info!(
-            "Configuring namespace watches for {} namespaces",
-            namespaces.len()
-        );
-
-        match self
-            .manager
-            .watch_manager
-            .configure_watches(namespaces)
-            .await
-        {
-            Ok(_) => {
-                tracing::info!("Successfully configured namespace watches");
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("Failed to configure namespace watches: {e}");
-                Err(format!("Failed to configure namespace watches: {e}"))
             }
         }
     }

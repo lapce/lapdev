@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use lapdev_common::kube::{
-    KubeAppCatalogWorkload, KubeClusterInfo, KubeNamespaceInfo, KubeServiceWithYaml,
-    KubeWorkloadDetails, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
+    KubeClusterInfo, KubeNamespaceInfo, KubeServiceWithYaml, KubeWorkloadKind, KubeWorkloadList,
+    PaginationParams,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -396,14 +396,6 @@ pub trait KubeManagerRpc {
 
     async fn get_namespaces() -> Result<Vec<KubeNamespaceInfo>, String>;
 
-    async fn get_workloads_yaml(
-        workloads: Vec<KubeAppCatalogWorkload>,
-    ) -> Result<KubeWorkloadsWithResources, String>;
-
-    async fn get_workload_yaml(
-        workload: KubeAppCatalogWorkload,
-    ) -> Result<KubeWorkloadYaml, String>;
-
     async fn deploy_workload_yaml(
         environment_id: uuid::Uuid,
         environment_auth_token: String,
@@ -412,10 +404,6 @@ pub trait KubeManagerRpc {
         labels: std::collections::HashMap<String, String>,
     ) -> Result<(), String>;
 
-    async fn get_workloads_details(
-        workloads: Vec<WorkloadIdentifier>,
-    ) -> Result<Vec<KubeWorkloadDetails>, String>;
-
     async fn get_workloads_raw_yaml(
         workloads: Vec<WorkloadIdentifier>,
     ) -> Result<Vec<KubeRawWorkloadYaml>, String>;
@@ -423,8 +411,6 @@ pub trait KubeManagerRpc {
     async fn get_namespaced_resources(
         requests: Vec<NamespacedResourceRequest>,
     ) -> Result<Vec<NamespacedResourceResponse>, String>;
-
-    async fn configure_watches(namespaces: Vec<String>) -> Result<(), String>;
 
     async fn update_workload_containers(
         environment_id: Uuid,

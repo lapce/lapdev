@@ -367,6 +367,7 @@ impl KubeController {
                     created_by: catalog.created_by,
                     cluster_id: catalog.cluster_id,
                     cluster_name: cluster.name,
+                    last_sync_actor_id: catalog.last_sync_actor_id,
                 })
             })
             .collect();
@@ -411,6 +412,7 @@ impl KubeController {
             created_by: catalog.created_by,
             cluster_id: catalog.cluster_id,
             cluster_name: cluster.name,
+            last_sync_actor_id: catalog.last_sync_actor_id,
         })
     }
 

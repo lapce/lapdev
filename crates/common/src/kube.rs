@@ -188,6 +188,7 @@ pub struct KubeAppCatalog {
     pub created_by: Uuid,
     pub cluster_id: Uuid,
     pub cluster_name: String,
+    pub last_sync_actor_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,8 @@
 use sea_orm_migration::prelude::*;
 
-use crate::m20250729_082625_create_kube_cluster::KubeCluster;
+use crate::{
+    m20231106_100019_create_user_table::User, m20250729_082625_create_kube_cluster::KubeCluster,
+};
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -42,10 +44,18 @@ impl MigrationTrait for Migration {
                             .default(0),
                     )
                     .col(ColumnDef::new(KubeAppCatalog::LastSyncedAt).timestamp_with_time_zone())
+                    .col(ColumnDef::new(KubeAppCatalog::LastSyncActorId).uuid())
                     .foreign_key(
                         ForeignKey::create()
                             .from(KubeAppCatalog::Table, KubeAppCatalog::ClusterId)
                             .to(KubeCluster::Table, KubeCluster::Id),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(KubeAppCatalog::Table, KubeAppCatalog::LastSyncActorId)
+                            .to(User::Table, User::Id)
+                            .on_delete(ForeignKeyAction::SetNull)
+                            .on_update(ForeignKeyAction::Cascade),
                     )
                     .to_owned(),
             )
@@ -115,4 +125,5 @@ pub enum KubeAppCatalog {
     ClusterId,
     SyncVersion,
     LastSyncedAt,
+    LastSyncActorId,
 }

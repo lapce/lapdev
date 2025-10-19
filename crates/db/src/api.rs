@@ -61,6 +61,7 @@ struct KubeEnvironmentWithRelated {
     pub catalog_description: Option<String>,
     pub catalog_sync_version: Option<i64>,
     pub catalog_last_synced_at: Option<DateTimeWithTimeZone>,
+    pub catalog_last_sync_actor_id: Option<Uuid>,
 
     // Cluster fields
     pub cluster_name: Option<String>,
@@ -1187,6 +1188,7 @@ impl DbApi {
             deleted_at: ActiveValue::Set(None),
             sync_version: ActiveValue::Set(0),
             last_synced_at: ActiveValue::Set(None),
+            last_sync_actor_id: ActiveValue::Set(None),
         }
         .insert(&txn)
         .await?;
@@ -1226,6 +1228,7 @@ impl DbApi {
             deleted_at: ActiveValue::Set(None),
             sync_version: ActiveValue::Set(0),
             last_synced_at: ActiveValue::Set(None),
+            last_sync_actor_id: ActiveValue::Set(Some(user_id)),
         }
         .insert(&txn)
         .await?;
@@ -1606,6 +1609,10 @@ impl DbApi {
                 lapdev_db_entities::kube_app_catalog::Column::LastSyncedAt,
                 "catalog_last_synced_at",
             )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::LastSyncActorId,
+                "catalog_last_sync_actor_id",
+            )
             // Join and select cluster columns
             .join(
                 JoinType::LeftJoin,
@@ -1670,6 +1677,7 @@ impl DbApi {
                             deleted_at: None,
                             sync_version: related.catalog_sync_version.unwrap_or(0),
                             last_synced_at: related.catalog_last_synced_at,
+                            last_sync_actor_id: related.catalog_last_sync_actor_id,
                         });
 
                 let cluster =

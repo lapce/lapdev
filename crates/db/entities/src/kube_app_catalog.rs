@@ -19,6 +19,7 @@ pub struct Model {
     pub cluster_id: Uuid,
     pub sync_version: i64,
     pub last_synced_at: Option<DateTimeWithTimeZone>,
+    pub last_sync_actor_id: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -218,59 +218,6 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         }
     }
 
-    async fn update_workload_containers(
-        self,
-        _context: ::tarpc::context::Context,
-        environment_id: Uuid,
-        environment_auth_token: String,
-        workload_id: uuid::Uuid,
-        name: String,
-        namespace: String,
-        kind: lapdev_common::kube::KubeWorkloadKind,
-        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-        labels: std::collections::HashMap<String, String>,
-    ) -> Result<(), String> {
-        tracing::info!(
-            "Starting atomic update for workload {}/{} (id: {})",
-            namespace,
-            name,
-            workload_id
-        );
-
-        match self
-            .manager
-            .update_workload_containers_atomic(
-                environment_id,
-                environment_auth_token,
-                workload_id,
-                name.clone(),
-                namespace.clone(),
-                kind,
-                containers,
-                labels,
-            )
-            .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    "Successfully updated workload containers for {}/{}",
-                    namespace,
-                    name
-                );
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to update workload containers for {}/{}: {}",
-                    namespace,
-                    name,
-                    e
-                );
-                Err(format!("Failed to update workload containers: {}", e))
-            }
-        }
-    }
-
     async fn destroy_environment(
         self,
         _context: ::tarpc::context::Context,

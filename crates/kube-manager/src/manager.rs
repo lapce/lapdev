@@ -1635,6 +1635,7 @@ impl KubeManager {
         Ok(all_services)
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn retrieve_single_workload_yaml(
         &self,
         catalog_workload: KubeAppCatalogWorkload,
@@ -1651,6 +1652,7 @@ impl KubeManager {
             .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn retrieve_workloads_yaml(
         &self,
         catalog_workloads: Vec<KubeAppCatalogWorkload>,
@@ -2130,6 +2132,7 @@ impl KubeManager {
         Ok(matching_service_names)
     }
 
+    #[allow(dead_code)]
     fn get_ports_from_matching_services(
         &self,
         workload_labels: &std::collections::BTreeMap<String, String>,
@@ -2613,6 +2616,7 @@ impl KubeManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn apply_services(
         &self,
         client: &kube::Client,
@@ -2661,6 +2665,7 @@ impl KubeManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn apply_configmaps(
         &self,
         client: &kube::Client,
@@ -2711,6 +2716,7 @@ impl KubeManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn apply_secrets(
         &self,
         client: &kube::Client,
@@ -3399,6 +3405,7 @@ impl KubeManager {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn get_workload_resource_details(
         &self,
         name: &str,
@@ -3607,6 +3614,7 @@ impl KubeManager {
         }
     }
 
+    #[allow(dead_code)]
     fn extract_pod_resource_info(
         &self,
         pod_spec: &k8s_openapi::api::core::v1::PodSpec,
@@ -3677,110 +3685,6 @@ impl KubeManager {
                 })
             })
             .collect()
-    }
-
-    fn format_memory_bytes(bytes: u64) -> String {
-        const KI: u64 = 1024;
-        const MI: u64 = KI * 1024;
-        const GI: u64 = MI * 1024;
-
-        if bytes >= GI {
-            format!("{}Gi", bytes / GI)
-        } else if bytes >= MI {
-            format!("{}Mi", bytes / MI)
-        } else if bytes >= KI {
-            format!("{}Ki", bytes / KI)
-        } else {
-            format!("{}B", bytes)
-        }
-    }
-
-    /// Atomically updates a workload's containers by:
-    /// 1. Retrieving the current workload YAML
-    /// 2. Applying the updated container information
-    /// 3. Deploying the updated YAML
-    /// This combines get_workloads_yaml + deploy_workload_yaml into one atomic operation
-    pub(crate) async fn update_workload_containers_atomic(
-        &self,
-        environment_id: Uuid,
-        environment_auth_token: String,
-        workload_id: Uuid,
-        name: String,
-        namespace: String,
-        kind: lapdev_common::kube::KubeWorkloadKind,
-        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-        labels: std::collections::HashMap<String, String>,
-    ) -> Result<()> {
-        tracing::info!(
-            "Starting atomic workload update for {}/{} (id: {}) with {} containers",
-            namespace,
-            name,
-            workload_id,
-            containers.len()
-        );
-
-        // Step 1: Create KubeAppCatalogWorkload for the workload we want to update
-        let catalog_workload = lapdev_common::kube::KubeAppCatalogWorkload {
-            id: workload_id,
-            name: name.clone(),
-            namespace: namespace.clone(),
-            kind,
-            containers,
-            ports: Vec::new(), // Ports will be fetched from services during YAML retrieval
-            workload_yaml: None,
-            catalog_sync_version: 0,
-        };
-
-        // Step 2: Get the current workload YAML with all its resources
-        let workloads_with_resources = self
-            .retrieve_workloads_yaml(vec![catalog_workload])
-            .await
-            .map_err(|e| {
-            tracing::error!(
-                "Failed to retrieve workload YAML for {}/{}: {}",
-                namespace,
-                name,
-                e
-            );
-            anyhow::anyhow!("Failed to retrieve workload YAML: {}", e)
-        })?;
-
-        tracing::info!(
-            "Retrieved workload YAML for {}/{}: {} workloads, {} services, {} configmaps, {} secrets",
-            namespace, name,
-            workloads_with_resources.workloads.len(),
-            workloads_with_resources.services.len(),
-            workloads_with_resources.configmaps.len(),
-            workloads_with_resources.secrets.len()
-        );
-
-        // Step 3: Apply the updated workload with resources atomically
-        self.apply_workloads_with_resources(
-            Some(environment_id),
-            environment_auth_token,
-            namespace.clone(),
-            workloads_with_resources,
-            labels,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                "Failed to apply updated workload {}/{}: {}",
-                namespace,
-                name,
-                e
-            );
-            anyhow::anyhow!("Failed to apply updated workload: {}", e)
-        })?;
-
-        tracing::info!(
-            "Successfully completed atomic update for workload {}/{} (id: {})",
-            namespace,
-            name,
-            workload_id
-        );
-
-        Ok(())
     }
 
     pub async fn get_tunnel_status(&self) -> Result<TunnelStatus> {

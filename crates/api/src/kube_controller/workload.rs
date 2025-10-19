@@ -147,11 +147,6 @@ impl KubeController {
                 ApiError::InvalidRequest("No connected KubeManager for this cluster".to_string())
             })?;
 
-        // Convert to proper workload kind
-        let workload_kind = updated_workload.kind.parse().map_err(|_| {
-            ApiError::InvalidRequest(format!("Invalid workload kind: {}", updated_workload.kind))
-        })?;
-
         // Prepare environment-specific labels
         let mut environment_labels = std::collections::HashMap::new();
         environment_labels.insert("lapdev.environment".to_string(), environment.name.clone());
@@ -167,48 +162,13 @@ impl KubeController {
             )
             .await
         } else {
-            // For regular environments, update the existing workload containers
-            tracing::info!(
-                "Updating workload containers for '{}' in regular environment '{}' (namespace '{}')",
-                updated_workload.name,
-                environment.name,
-                environment.namespace
-            );
-
-            match cluster_server
-                .rpc_client
-                .update_workload_containers(
-                    tarpc::context::current(),
-                    environment.id,
-                    environment.auth_token.clone(),
-                    updated_workload.id,
-                    updated_workload.name.clone(),
-                    updated_workload.namespace.clone(),
-                    workload_kind,
-                    updated_workload.containers,
-                    environment_labels,
-                )
-                .await
-            {
-                Ok(Ok(())) => {
-                    tracing::info!(
-                        "Successfully updated workload containers for '{}' in environment '{}' (namespace '{}')",
-                        updated_workload.name,
-                        environment.name,
-                        environment.namespace
-                    );
-                    Ok(())
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("Failed to atomically update workload containers: {}", e);
-                    Err(ApiError::InvalidRequest(format!(
-                        "Failed to update workload containers: {e}"
-                    )))
-                }
-                Err(e) => Err(ApiError::InvalidRequest(format!(
-                    "Connection error during atomic workload update: {e}"
-                ))),
-            }
+            self.update_regular_workload(
+                &cluster_server,
+                &environment,
+                &updated_workload.name,
+                updated_workload.containers,
+            )
+            .await
         }
     }
 
@@ -330,5 +290,83 @@ impl KubeController {
         }
 
         Ok(())
+    }
+
+    async fn update_regular_workload(
+        &self,
+        cluster_server: &lapdev_kube::server::KubeClusterServer,
+        environment: &lapdev_db_entities::kube_environment::Model,
+        base_workload_name: &str,
+        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+    ) -> Result<(), ApiError> {
+        tracing::info!(
+            "Updating workload containers for '{}' in regular environment '{}' (namespace '{}')",
+            base_workload_name,
+            environment.name,
+            environment.namespace
+        );
+
+        let app_workloads = self
+            .db
+            .get_app_catalog_workloads(environment.app_catalog_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let base_catalog_workload = app_workloads
+            .into_iter()
+            .find(|w| w.name == base_workload_name)
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(format!(
+                    "Base workload '{}' not found in app catalog",
+                    base_workload_name
+                ))
+            })?;
+
+        let regular_workload = KubeAppCatalogWorkload {
+            containers,
+            ..base_catalog_workload
+        };
+
+        let mut workloads_with_resources = self
+            .get_catalog_workloads_with_yaml_from_db(
+                environment.cluster_id,
+                vec![regular_workload.clone()],
+            )
+            .await?;
+
+        let deployment_name = base_workload_name.to_string();
+        for workload_yaml in &mut workloads_with_resources.workloads {
+            rename_workload_yaml(workload_yaml, &deployment_name)
+                .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
+        }
+
+        let mut updated_services = HashMap::new();
+        for (service_name, service_with_yaml) in workloads_with_resources.services.into_iter() {
+            let updated_yaml =
+                rename_service_yaml(&service_with_yaml.yaml, &service_name, &deployment_name)
+                    .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
+
+            updated_services.insert(
+                service_name.clone(),
+                KubeServiceWithYaml {
+                    yaml: updated_yaml,
+                    details: service_with_yaml.details,
+                },
+            );
+        }
+        workloads_with_resources.services = updated_services;
+
+        workloads_with_resources.configmaps.clear();
+        workloads_with_resources.secrets.clear();
+
+        self.deploy_environment_resources(
+            cluster_server,
+            &environment.namespace,
+            &environment.name,
+            environment.id,
+            Some(environment.auth_token.clone()),
+            workloads_with_resources,
+        )
+        .await
     }
 }

@@ -172,6 +172,7 @@ impl KubeController {
             base_environment_name,
             catalog_sync_version: environment.catalog_sync_version,
             last_catalog_synced_at: environment.last_catalog_synced_at.map(|dt| dt.to_string()),
+            catalog_last_sync_actor_id: catalog.last_sync_actor_id,
             catalog_update_available,
             sync_status: KubeEnvironmentSyncStatus::from_str(&environment.sync_status)
                 .unwrap_or(KubeEnvironmentSyncStatus::Idle),
@@ -240,6 +241,7 @@ impl KubeController {
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
             catalog_update_available: false,
+            catalog_last_sync_actor_id: None,
             sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
                 .unwrap_or(KubeEnvironmentSyncStatus::Idle),
         }

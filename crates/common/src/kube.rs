@@ -78,8 +78,8 @@ pub enum KubeEnvironmentStatus {
     Error,
     Pausing,
     Paused,
-    Resuming,
     PauseFailed,
+    Resuming,
     ResumeFailed,
 }
 

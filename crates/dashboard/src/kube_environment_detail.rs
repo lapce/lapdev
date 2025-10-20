@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
+use futures::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
@@ -13,7 +15,7 @@ use lapdev_common::{
         KubeEnvironmentStatus, KubeEnvironmentSyncStatus, KubeEnvironmentWorkload,
     },
 };
-use leptos::prelude::*;
+use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use leptos_router::hooks::use_params_map;
 use uuid::Uuid;
 
@@ -297,6 +299,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     let update_counter = RwSignal::new(0usize);
+    let sse_started = StoredValue::new(false);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -394,6 +397,54 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let active_session =
         LocalResource::new(move || async move { get_active_devbox_session().await.ok().flatten() });
 
+    Effect::new(move |_| {
+        if sse_started.get_value() {
+            return;
+        }
+
+        if let Some(org) = org.get() {
+            sse_started.set_value(true);
+            let org_id = org.id;
+            spawn_local_scoped_with_cancellation({
+                async move {
+                    let url = format!(
+                        "/api/v1/organizations/{}/kube/environments/{}/events",
+                        org_id, environment_id
+                    );
+
+                    match EventSource::new(&url) {
+                        Ok(mut event_source) => {
+                            match event_source.subscribe("environment") {
+                                Ok(mut stream) => {
+                                    while let Some(event) = stream.next().await {
+                                        if event.is_ok() {
+                                            environment_result.refetch();
+                                            update_counter.update(|c| *c += 1);
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    web_sys::console::error_1(
+                                        &format!(
+                                            "Failed to subscribe to environment events: {err}"
+                                        )
+                                        .into(),
+                                    );
+                                }
+                            }
+                            event_source.close();
+                        }
+                        Err(err) => {
+                            web_sys::console::error_1(
+                                &format!("Failed to connect to environment events: {err}").into(),
+                            );
+                        }
+                    }
+                }
+            });
+        }
+    });
+
     let environment_info = Signal::derive(move || environment_result.get().flatten());
     let environment_catalog_version = Signal::derive(move || {
         environment_info
@@ -401,6 +452,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
             .map(|env| env.catalog_sync_version)
             .unwrap_or(0)
     });
+
     let env_catalog_version_for_filter = environment_catalog_version.clone();
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
     let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
@@ -486,52 +538,27 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
-    let pause_action = {
-        let org = org.clone();
-        let environment_result = environment_result.clone();
-        let update_counter = update_counter.clone();
-        Action::new_local(move |_| {
-            let org = org.clone();
-            let environment_result = environment_result.clone();
-            let update_counter = update_counter.clone();
-            async move {
-                match pause_environment(org, environment_id).await {
-                    Ok(_) => {
-                        environment_result.refetch();
-                        update_counter.update(|c| *c += 1);
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+    let pause_action = Action::new_local(move |_| async move {
+        match pause_environment(org, environment_id).await {
+            Ok(_) => {
+                environment_result.refetch();
+                update_counter.update(|c| *c += 1);
+                Ok(())
             }
-        })
-    };
+            Err(e) => Err(e),
+        }
+    });
 
-    let resume_action = {
-        let org = org.clone();
-        let environment_result = environment_result.clone();
-        let update_counter = update_counter.clone();
-        Action::new_local(move |_| {
-            let org = org.clone();
-            let environment_result = environment_result.clone();
-            let update_counter = update_counter.clone();
-            async move {
-                match resume_environment(org, environment_id).await {
-                    Ok(_) => {
-                        environment_result.refetch();
-                        update_counter.update(|c| *c += 1);
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+    let resume_action = Action::new_local(move |_| async move {
+        match resume_environment(org, environment_id).await {
+            Ok(_) => {
+                environment_result.refetch();
+                update_counter.update(|c| *c += 1);
+                Ok(())
             }
-        })
-    };
-
-    let pause_pending = pause_action.pending();
-    let resume_pending = resume_action.pending();
-    let pause_result = pause_action.value();
-    let resume_result = resume_action.value();
+            Err(e) => Err(e),
+        }
+    });
 
     view! {
         <div class="flex flex-col gap-6">
@@ -555,6 +582,8 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     create_branch_action
                     branch_name
                     sync_action
+                    pause_action
+                    resume_action
                 />
             </Show>
 
@@ -605,7 +634,14 @@ pub fn EnvironmentInfoCard(
     create_branch_action: Action<(), Result<(), ErrorResponse>>,
     branch_name: RwSignal<String>,
     sync_action: Action<(), Result<(), ErrorResponse>>,
+    pause_action: Action<(), Result<(), ErrorResponse>>,
+    resume_action: Action<(), Result<(), ErrorResponse>>,
 ) -> impl IntoView {
+    let pause_pending = pause_action.pending();
+    let resume_pending = resume_action.pending();
+    let pause_result = pause_action.value();
+    let resume_result = resume_action.value();
+
     view! {
         <Show when=move || environment_info.get().is_some() fallback=|| view! { <div></div> }>
            {
@@ -763,7 +799,7 @@ pub fn EnvironmentInfoCard(
                                                 <>
                                                     <Button
                                                         variant=ButtonVariant::Outline
-                                                        on:click=move |_| pause_action.dispatch(())
+                                                        on:click=move |_| { pause_action.dispatch(()); }
                                                         disabled=!can_pause || pause_pending.get()
                                                     >
                                                         <lucide_leptos::Pause />
@@ -771,7 +807,7 @@ pub fn EnvironmentInfoCard(
                                                     </Button>
                                                     <Button
                                                         variant=ButtonVariant::Outline
-                                                        on:click=move |_| resume_action.dispatch(())
+                                                        on:click=move |_| { resume_action.dispatch(()); }
                                                         disabled=!can_resume || resume_pending.get()
                                                     >
                                                         <lucide_leptos::Play />
@@ -1437,7 +1473,6 @@ fn WorkloadInterceptCard(
     let error_message = RwSignal::new(None::<String>);
     let edit_modal_open = RwSignal::new(false);
     let stop_action = Action::new_local({
-        let error_message = error_message;
         move |_| {
             let error_message = error_message;
             async move {

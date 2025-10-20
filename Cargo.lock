@@ -3190,6 +3190,7 @@ dependencies = [
  "tarpc",
  "tokio",
  "tokio-rustls 0.25.0",
+ "tokio-stream",
  "tokio-util",
  "toml 0.8.23",
  "tower",
@@ -7049,6 +7050,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

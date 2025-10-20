@@ -33,6 +33,7 @@ tower.workspace = true
 tower-http.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+tokio-stream = { version = "0.1.15", features = ["sync"] }
 futures.workspace = true
 futures-util.workspace = true
 serde.workspace = true

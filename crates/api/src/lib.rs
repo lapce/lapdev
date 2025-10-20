@@ -5,6 +5,7 @@ pub mod cert;
 pub mod cli_auth;
 pub mod devbox;
 pub mod devbox_auth;
+pub mod environment_events;
 pub mod github;
 pub mod gitlab;
 pub mod hrpc_service;

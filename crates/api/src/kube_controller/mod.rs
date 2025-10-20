@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
+use crate::environment_events::EnvironmentLifecycleEvent;
 use lapdev_db::api::DbApi;
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube::tunnel::TunnelRegistry;
@@ -36,14 +37,20 @@ pub struct KubeController {
     pub tunnel_registry: Arc<TunnelRegistry>,
     // Database API
     pub db: DbApi,
+    // Broadcast channel for environment lifecycle events
+    pub environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
 }
 
 impl KubeController {
-    pub fn new(db: DbApi) -> Self {
+    pub fn new(
+        db: DbApi,
+        environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
+    ) -> Self {
         Self {
             kube_cluster_servers: Arc::new(RwLock::new(HashMap::new())),
             tunnel_registry: Arc::new(TunnelRegistry::new()),
             db,
+            environment_events,
         }
     }
 

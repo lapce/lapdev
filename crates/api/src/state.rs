@@ -23,7 +23,7 @@ use pasetors::{
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Deserialize;
 use sqlx::postgres::PgNotification;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio_rustls::rustls::sign::CertifiedKey;
 use uuid::Uuid;
 
@@ -35,6 +35,8 @@ use crate::{
     session::OAUTH_STATE_COOKIE,
     tunnel_broker::TunnelBroker,
 };
+
+use crate::environment_events::EnvironmentLifecycleEvent;
 
 pub const TOKEN_COOKIE_NAME: &str = "token";
 pub const LAPDEV_CERTS: &str = "lapdev-certs";
@@ -95,6 +97,8 @@ pub struct CoreState {
     pub pending_cli_auth: Arc<RwLock<HashMap<Uuid, PendingCliAuth>>>,
     // Active devbox sessions (user_id -> DevboxSessionHandle)
     pub active_devbox_sessions: Arc<RwLock<HashMap<Uuid, DevboxSessionHandle>>>,
+    // Lifecycle notifications for kube environments
+    pub environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
 }
 
 /// Handle for an active devbox session
@@ -128,6 +132,7 @@ impl CoreState {
                 .build(HttpConnector::new());
 
         let db = conductor.db.clone();
+        let (environment_events, _) = broadcast::channel(128);
         let state = Self {
             db: db.clone(),
             conductor,
@@ -139,10 +144,11 @@ impl CoreState {
             ssh_proxy_display_port,
             hyper_client: Arc::new(hyper_client),
             static_dir: Arc::new(static_dir),
-            kube_controller: KubeController::new(db),
+            kube_controller: KubeController::new(db, environment_events.clone()),
             tunnel_broker: Arc::new(TunnelBroker::new()),
             pending_cli_auth: Arc::new(RwLock::new(HashMap::new())),
             active_devbox_sessions: Arc::new(RwLock::new(HashMap::new())),
+            environment_events,
         };
 
         {
@@ -158,6 +164,15 @@ impl CoreState {
             let state = state.clone();
             tokio::spawn(async move {
                 state.cleanup_pending_cli_auth_loop().await;
+            });
+        }
+
+        {
+            let state = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = state.monitor_environment_events().await {
+                    tracing::error!("api monitor environment events error: {e:#}");
+                }
             });
         }
 
@@ -221,6 +236,31 @@ impl CoreState {
             let removed = pending.len();
             if removed > 0 {
                 tracing::debug!("Cleaned up {} expired CLI auth tokens", removed);
+            }
+        }
+    }
+
+    async fn monitor_environment_events(&self) -> Result<()> {
+        let pool = self
+            .db
+            .pool
+            .clone()
+            .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
+        let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
+        listener.listen("environment_lifecycle").await?;
+        loop {
+            let notification = listener.recv().await?;
+            match serde_json::from_str::<EnvironmentLifecycleEvent>(notification.payload()) {
+                Ok(event) => {
+                    let _ = self.environment_events.send(event);
+                }
+                Err(err) => {
+                    tracing::error!(
+                        payload = notification.payload(),
+                        error = ?err,
+                        "failed to deserialize environment lifecycle notification"
+                    );
+                }
             }
         }
     }

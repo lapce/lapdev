@@ -20,6 +20,8 @@ use std::{
 use tracing::{error, warn};
 use uuid::Uuid;
 
+use crate::environment_events::EnvironmentLifecycleEvent;
+
 use super::{
     resources::{set_cronjob_suspend, set_daemonset_paused, set_workload_replicas},
     EnvironmentNamespaceKind, KubeController,
@@ -1562,6 +1564,45 @@ impl KubeController {
         .update(&self.db.conn)
         .await
         .map_err(ApiError::from)?;
+
+        if let Ok(Some(environment)) = self.db.get_kube_environment(environment_id).await {
+            let event = EnvironmentLifecycleEvent {
+                organization_id: environment.organization_id,
+                environment_id,
+                status: status.clone(),
+                paused_at: environment.paused_at.map(|dt| dt.to_string()),
+                resumed_at: environment.resumed_at.map(|dt| dt.to_string()),
+                updated_at: Utc::now(),
+            };
+
+            match serde_json::to_string(&event) {
+                Ok(payload) => {
+                    if let Some(pool) = self.db.pool.clone() {
+                        if let Err(err) = sqlx::query("SELECT pg_notify($1, $2)")
+                            .bind("environment_lifecycle")
+                            .bind(payload)
+                            .execute(&pool)
+                            .await
+                        {
+                            warn!(
+                                error = %err,
+                                "failed to publish environment lifecycle event via pg_notify"
+                            );
+                            let _ = self.environment_events.send(event);
+                        }
+                    } else {
+                        warn!("pg pool unavailable; broadcasting environment event locally");
+                        let _ = self.environment_events.send(event);
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "failed to serialize environment lifecycle event"
+                    );
+                }
+            }
+        }
 
         Ok(())
     }

@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Body,
     debug_handler,
-    extract::{FromRequestParts, Path, Request, State, WebSocketUpgrade},
-    http::{HeaderMap, Method, Uri},
+    extract::{FromRequestParts, Request, State, WebSocketUpgrade},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, delete, get, post, put},
@@ -24,6 +22,7 @@ use crate::{
         devbox_client_tunnel_websocket, devbox_intercept_tunnel_websocket, devbox_rpc_websocket,
         devbox_whoami,
     },
+    environment_events,
     kube::{
         devbox_proxy_tunnel_websocket, kube_cluster_rpc_websocket, kube_data_plane_websocket,
         sidecar_tunnel_websocket,
@@ -141,6 +140,10 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
         .route(
             "/organizations/{org_id}/quota",
             put(organization::update_organization_quota),
+        )
+        .route(
+            "/organizations/{org_id}/kube/environments/{environment_id}/events",
+            get(environment_events::stream_environment_events),
         )
         .route(
             "/organizations/{org_id}/projects",

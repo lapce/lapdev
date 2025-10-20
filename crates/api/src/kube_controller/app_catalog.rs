@@ -97,12 +97,13 @@ impl KubeController {
         // Build workload YAMLs from database
         let mut workload_yamls = Vec::new();
         for workload in &workloads {
-            let raw_yaml = workload.workload_yaml.clone().ok_or_else(|| {
-                ApiError::InvalidRequest(format!(
+            if workload.workload_yaml.trim().is_empty() {
+                return Err(ApiError::InvalidRequest(format!(
                     "Workload '{}' has no cached YAML in database",
                     workload.name
-                ))
-            })?;
+                )));
+            }
+            let raw_yaml = workload.workload_yaml.clone();
 
             let rebuilt_yaml =
                 rebuild_workload_yaml(&workload.kind, &raw_yaml, &workload.containers).map_err(

@@ -54,6 +54,8 @@ struct KubeEnvironmentWithRelated {
     pub env_auth_token: String,
     pub env_catalog_sync_version: i64,
     pub env_last_catalog_synced_at: Option<DateTimeWithTimeZone>,
+    pub env_paused_at: Option<DateTimeWithTimeZone>,
+    pub env_resumed_at: Option<DateTimeWithTimeZone>,
     pub env_sync_status: String,
 
     // App catalog fields
@@ -1336,7 +1338,10 @@ impl DbApi {
         Ok(workloads
             .into_iter()
             .filter_map(|w| {
-                // Deserialize containers from JSON, skip if invalid
+                if w.workload_yaml.is_empty() {
+                    return None;
+                }
+
                 let containers = serde_json::from_value(w.containers.clone()).ok()?;
                 let ports: Vec<lapdev_common::kube::KubeServicePort> =
                     serde_json::from_value(w.ports.clone()).unwrap_or_default();
@@ -1351,11 +1356,7 @@ impl DbApi {
                         .unwrap_or(lapdev_common::kube::KubeWorkloadKind::Deployment),
                     containers,
                     ports,
-                    workload_yaml: if w.workload_yaml.is_empty() {
-                        None
-                    } else {
-                        Some(w.workload_yaml.clone())
-                    },
+                    workload_yaml: w.workload_yaml,
                     catalog_sync_version: w.catalog_sync_version,
                 })
             })
@@ -1565,6 +1566,14 @@ impl DbApi {
                 "env_last_catalog_synced_at",
             )
             .column_as(
+                lapdev_db_entities::kube_environment::Column::PausedAt,
+                "env_paused_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::ResumedAt,
+                "env_resumed_at",
+            )
+            .column_as(
                 lapdev_db_entities::kube_environment::Column::OrganizationId,
                 "env_organization_id",
             )
@@ -1657,6 +1666,8 @@ impl DbApi {
                     is_shared: related.env_is_shared,
                     catalog_sync_version: related.env_catalog_sync_version,
                     last_catalog_synced_at: related.env_last_catalog_synced_at,
+                    paused_at: related.env_paused_at,
+                    resumed_at: related.env_resumed_at,
                     sync_status: related.env_sync_status.clone(),
                     base_environment_id: related.env_base_environment_id,
                     auth_token: related.env_auth_token,
@@ -2407,6 +2418,7 @@ impl DbApi {
                 kind: workload.kind,
                 containers,
                 ports,
+                workload_yaml: workload.workload_yaml,
                 catalog_sync_version: workload.catalog_sync_version,
             });
         }
@@ -2447,6 +2459,7 @@ impl DbApi {
                 kind: workload.kind,
                 containers,
                 ports,
+                workload_yaml: workload.workload_yaml,
                 catalog_sync_version: workload.catalog_sync_version,
             }))
         } else {
@@ -2469,11 +2482,13 @@ impl DbApi {
         &self,
         workload_id: Uuid,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
+        workload_yaml: String,
     ) -> Result<lapdev_db_entities::kube_environment_workload::Model> {
         let containers_json = serde_json::to_value(containers)?;
         let updated_model = lapdev_db_entities::kube_environment_workload::ActiveModel {
             id: ActiveValue::Set(workload_id),
             containers: ActiveValue::Set(containers_json),
+            workload_yaml: ActiveValue::Set(workload_yaml),
             ..Default::default()
         }
         .update(&self.conn)
@@ -2521,6 +2536,8 @@ impl DbApi {
             is_shared: ActiveValue::Set(is_shared),
             catalog_sync_version: ActiveValue::Set(catalog_sync_version),
             last_catalog_synced_at: ActiveValue::Set(Some(created_at)),
+            paused_at: ActiveValue::Set(None),
+            resumed_at: ActiveValue::Set(None),
             sync_status: ActiveValue::Set("idle".to_string()),
             base_environment_id: ActiveValue::Set(base_environment_id),
             auth_token: ActiveValue::Set(auth_token),
@@ -2550,6 +2567,7 @@ impl DbApi {
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
+                workload_yaml: ActiveValue::Set(workload.workload_yaml.clone()),
                 catalog_sync_version: ActiveValue::Set(catalog_sync_version),
             }
             .insert(&txn)

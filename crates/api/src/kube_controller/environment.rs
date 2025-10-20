@@ -1,20 +1,29 @@
 use chrono::Utc;
 use lapdev_common::{
     kube::{
-        KubeContainerImage, KubeEnvironment, KubeEnvironmentSyncStatus, KubeWorkloadDetails,
-        PagePaginationParams, PaginatedInfo, PaginatedResult,
+        KubeContainerImage, KubeEnvironment, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
+        KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams, PaginatedInfo,
+        PaginatedResult,
     },
     utils::rand_string,
 };
+use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
     prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
     QueryFilter, TransactionTrait,
 };
-use std::{collections::HashSet, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
+use tracing::{error, warn};
 use uuid::Uuid;
 
-use super::{EnvironmentNamespaceKind, KubeController};
+use super::{
+    resources::{set_cronjob_suspend, set_daemonset_paused, set_workload_replicas},
+    EnvironmentNamespaceKind, KubeController,
+};
 
 impl KubeController {
     pub(super) async fn generate_unique_namespace(
@@ -61,7 +70,11 @@ impl KubeController {
                 let catalog = catalog?;
                 let cluster = cluster?;
                 let catalog_sync_version = env.catalog_sync_version;
+                let status = KubeEnvironmentStatus::from_str(&env.status)
+                    .unwrap_or(KubeEnvironmentStatus::Pending);
                 let last_catalog_synced_at = env.last_catalog_synced_at.map(|dt| dt.to_string());
+                let paused_at = env.paused_at.map(|dt| dt.to_string());
+                let resumed_at = env.resumed_at.map(|dt| dt.to_string());
                 let catalog_update_available = catalog.sync_version > catalog_sync_version;
 
                 Some(KubeEnvironment {
@@ -72,7 +85,7 @@ impl KubeController {
                     app_catalog_name: catalog.name,
                     cluster_id: env.cluster_id,
                     cluster_name: cluster.name,
-                    status: env.status,
+                    status,
                     created_at: env.created_at.to_string(),
                     user_id: env.user_id,
                     is_shared: env.is_shared,
@@ -80,6 +93,8 @@ impl KubeController {
                     base_environment_name,
                     catalog_sync_version,
                     last_catalog_synced_at,
+                    paused_at,
+                    resumed_at,
                     catalog_update_available,
                     catalog_last_sync_actor_id: catalog.last_sync_actor_id,
                     sync_status: KubeEnvironmentSyncStatus::from_str(&env.sync_status)
@@ -153,6 +168,9 @@ impl KubeController {
 
         let catalog_update_available = catalog.sync_version > environment.catalog_sync_version;
 
+        let status = KubeEnvironmentStatus::from_str(&environment.status)
+            .unwrap_or(KubeEnvironmentStatus::Pending);
+
         Ok(KubeEnvironment {
             id: environment.id,
             user_id: environment.user_id,
@@ -162,7 +180,7 @@ impl KubeController {
             app_catalog_name: catalog.name,
             cluster_id: environment.cluster_id,
             cluster_name: cluster.name,
-            status: environment.status,
+            status,
             created_at: environment
                 .created_at
                 .format("%Y-%m-%d %H:%M:%S%.f %z")
@@ -172,6 +190,8 @@ impl KubeController {
             base_environment_name,
             catalog_sync_version: environment.catalog_sync_version,
             last_catalog_synced_at: environment.last_catalog_synced_at.map(|dt| dt.to_string()),
+            paused_at: environment.paused_at.map(|dt| dt.to_string()),
+            resumed_at: environment.resumed_at.map(|dt| dt.to_string()),
             catalog_last_sync_actor_id: catalog.last_sync_actor_id,
             catalog_update_available,
             sync_status: KubeEnvironmentSyncStatus::from_str(&environment.sync_status)
@@ -183,10 +203,17 @@ impl KubeController {
     fn prepare_workload_details_from_catalog(
         workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkload>,
         namespace: &str,
-    ) -> Vec<KubeWorkloadDetails> {
+    ) -> Result<Vec<KubeWorkloadDetails>, ApiError> {
         workloads
             .into_iter()
             .map(|workload| {
+                if workload.workload_yaml.trim().is_empty() {
+                    return Err(ApiError::InvalidRequest(format!(
+                        "Workload {} from catalog is missing YAML",
+                        workload.name
+                    )));
+                }
+                let workload_yaml = workload.workload_yaml.clone();
                 let mut containers = workload.containers;
                 for container in &mut containers {
                     // Preserve the original environment variables
@@ -205,16 +232,63 @@ impl KubeController {
                         }
                     }
                 }
-                lapdev_common::kube::KubeWorkloadDetails {
+                Ok(lapdev_common::kube::KubeWorkloadDetails {
                     name: workload.name,
                     namespace: namespace.to_string(),
                     kind: workload.kind,
                     containers,
                     ports: workload.ports,
-                    workload_yaml: workload.workload_yaml.unwrap_or_default(),
-                }
+                    workload_yaml,
+                })
             })
             .collect()
+    }
+
+    /// Build the manifest set used for pause/resume.
+    ///
+    /// We snapshot workload YAML when the environment is created or synced. This method:
+    /// 1. Pulls that stored manifest from the DB (fails if missing—we require it for new feature).
+    /// 2. Wraps each YAML string into the appropriate `KubeWorkloadYamlOnly` variant.
+    /// 3. Loads stored service YAML so we redeploy exactly what was saved.
+    ///
+    /// No catalog fallback: avoiding divergence and ensuring pause/resume replay the original manifest.
+    async fn assemble_environment_workloads(
+        &self,
+        environment: &lapdev_db_entities::kube_environment::Model,
+    ) -> Result<KubeWorkloadsWithResources, ApiError> {
+        let stored_workloads = self
+            .db
+            .get_environment_workloads(environment.id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if stored_workloads.is_empty()
+            || stored_workloads
+                .iter()
+                .any(|w| w.workload_yaml.trim().is_empty())
+        {
+            return Err(ApiError::InvalidRequest(
+                "Environment workloads are missing stored manifests".to_string(),
+            ));
+        }
+
+        let mut workloads = Vec::new();
+        for workload in stored_workloads {
+            let kind = KubeWorkloadKind::from_str(&workload.kind).map_err(|_| {
+                ApiError::InvalidRequest(format!(
+                    "Invalid workload kind {} for environment {}",
+                    workload.kind, environment.id
+                ))
+            })?;
+            workloads.push(Self::wrap_workload_yaml(kind, workload.workload_yaml));
+        }
+
+        Ok(KubeWorkloadsWithResources {
+            workloads,
+            services: HashMap::new(),
+            configmaps: HashMap::new(),
+            secrets: HashMap::new(),
+        })
     }
 
     /// Build KubeEnvironment response from database model
@@ -224,12 +298,14 @@ impl KubeController {
         cluster_name: String,
         base_environment_name: Option<String>,
     ) -> lapdev_common::kube::KubeEnvironment {
+        let status = KubeEnvironmentStatus::from_str(&created_env.status)
+            .unwrap_or(KubeEnvironmentStatus::Pending);
         lapdev_common::kube::KubeEnvironment {
             id: created_env.id,
             user_id: created_env.user_id,
             name: created_env.name,
             namespace: created_env.namespace,
-            status: created_env.status,
+            status,
             is_shared: created_env.is_shared,
             app_catalog_id: created_env.app_catalog_id,
             app_catalog_name,
@@ -240,10 +316,24 @@ impl KubeController {
             base_environment_name,
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
+            paused_at: created_env.paused_at.map(|dt| dt.to_string()),
+            resumed_at: created_env.resumed_at.map(|dt| dt.to_string()),
             catalog_update_available: false,
             catalog_last_sync_actor_id: None,
             sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
                 .unwrap_or(KubeEnvironmentSyncStatus::Idle),
+        }
+    }
+
+    fn wrap_workload_yaml(kind: KubeWorkloadKind, yaml: String) -> KubeWorkloadYamlOnly {
+        match kind {
+            KubeWorkloadKind::Deployment => KubeWorkloadYamlOnly::Deployment(yaml),
+            KubeWorkloadKind::StatefulSet => KubeWorkloadYamlOnly::StatefulSet(yaml),
+            KubeWorkloadKind::DaemonSet => KubeWorkloadYamlOnly::DaemonSet(yaml),
+            KubeWorkloadKind::ReplicaSet => KubeWorkloadYamlOnly::ReplicaSet(yaml),
+            KubeWorkloadKind::Pod => KubeWorkloadYamlOnly::Pod(yaml),
+            KubeWorkloadKind::Job => KubeWorkloadYamlOnly::Job(yaml),
+            KubeWorkloadKind::CronJob => KubeWorkloadYamlOnly::CronJob(yaml),
         }
     }
 
@@ -419,6 +509,148 @@ impl KubeController {
         Ok(())
     }
 
+    pub async fn pause_kube_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        if environment.is_shared {
+            return Err(ApiError::InvalidRequest(
+                "Pause is not yet supported for shared environments".to_string(),
+            ));
+        }
+
+        if environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        let status = KubeEnvironmentStatus::from_str(&environment.status)
+            .unwrap_or(KubeEnvironmentStatus::Pending);
+
+        match status {
+            KubeEnvironmentStatus::Running | KubeEnvironmentStatus::PauseFailed => {} // allowed transitions
+            KubeEnvironmentStatus::Paused => {
+                return Err(ApiError::InvalidRequest(
+                    "Environment is already paused".to_string(),
+                ))
+            }
+            _ => {
+                return Err(ApiError::InvalidRequest(format!(
+                    "Environment cannot be paused while it is in status {}",
+                    status
+                )))
+            }
+        }
+
+        self.update_environment_status(environment.id, KubeEnvironmentStatus::Pausing, None, None)
+            .await?;
+
+        let controller = self.clone();
+        tokio::spawn(async move {
+            if let Err(err) = controller.run_pause_environment(environment.id).await {
+                error!(
+                    environment_id = %environment.id,
+                    error = ?err,
+                    "Pause environment orchestration failed"
+                );
+                let _ = controller
+                    .update_environment_status(
+                        environment.id,
+                        KubeEnvironmentStatus::PauseFailed,
+                        None,
+                        None,
+                    )
+                    .await;
+            }
+        });
+
+        Ok(())
+    }
+
+    pub async fn resume_kube_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        if environment.is_shared {
+            return Err(ApiError::InvalidRequest(
+                "Resume is not yet supported for shared environments".to_string(),
+            ));
+        }
+
+        if environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        let status = KubeEnvironmentStatus::from_str(&environment.status)
+            .unwrap_or(KubeEnvironmentStatus::Pending);
+
+        match status {
+            KubeEnvironmentStatus::Paused
+            | KubeEnvironmentStatus::PauseFailed
+            | KubeEnvironmentStatus::ResumeFailed => {}
+            KubeEnvironmentStatus::Running => {
+                return Err(ApiError::InvalidRequest(
+                    "Environment is already running".to_string(),
+                ))
+            }
+            _ => {
+                return Err(ApiError::InvalidRequest(format!(
+                    "Environment cannot be resumed while it is in status {}",
+                    status
+                )))
+            }
+        }
+
+        self.update_environment_status(environment.id, KubeEnvironmentStatus::Resuming, None, None)
+            .await?;
+
+        let controller = self.clone();
+        tokio::spawn(async move {
+            if let Err(err) = controller.run_resume_environment(environment.id).await {
+                error!(
+                    environment_id = %environment.id,
+                    error = ?err,
+                    "Resume environment orchestration failed"
+                );
+                let _ = controller
+                    .update_environment_status(
+                        environment.id,
+                        KubeEnvironmentStatus::ResumeFailed,
+                        None,
+                        None,
+                    )
+                    .await;
+            }
+        });
+
+        Ok(())
+    }
+
     /// Validate and get app catalog and cluster for environment creation
     async fn validate_environment_creation(
         &self,
@@ -539,7 +771,7 @@ impl KubeController {
         let services_map = workloads_with_resources.services.clone();
 
         // Prepare workload details for database
-        let workload_details = Self::prepare_workload_details_from_catalog(workloads, &namespace);
+        let workload_details = Self::prepare_workload_details_from_catalog(workloads, &namespace)?;
 
         // Create environment in database
         let created_env = match self
@@ -551,7 +783,7 @@ impl KubeController {
                 cluster_id,
                 name.clone(),
                 namespace.clone(),
-                "Pending".to_string(),
+                KubeEnvironmentStatus::Pending.to_string(),
                 is_shared,
                 app_catalog.sync_version,
                 None, // No base environment for regular environments
@@ -582,15 +814,8 @@ impl KubeController {
         };
 
         // Deploy resources to Kubernetes
-        self.deploy_environment_resources(
-            &server,
-            &created_env.namespace,
-            &name,
-            created_env.id,
-            Some(created_env.auth_token.clone()),
-            workloads_with_resources,
-        )
-        .await?;
+        self.deploy_environment_resources(&server, &created_env, workloads_with_resources, None)
+            .await?;
 
         // Build and return response
         Ok(Self::build_environment_response(
@@ -664,37 +889,47 @@ impl KubeController {
     fn prepare_workload_details_from_base(
         base_workloads: Vec<lapdev_common::kube::KubeEnvironmentWorkload>,
         namespace: &str,
-    ) -> Vec<KubeWorkloadDetails> {
+    ) -> Result<Vec<KubeWorkloadDetails>, ApiError> {
         base_workloads
             .into_iter()
-            .filter_map(|workload| {
-                workload.kind.parse().ok().map(|kind| {
-                    let mut containers = workload.containers;
-                    for container in &mut containers {
-                        // Preserve the original environment variables
-                        container.original_env_vars = container.env_vars.clone();
-                        container.env_vars.clear();
+            .map(|workload| {
+                let kind = workload.kind.parse().map_err(|_| {
+                    ApiError::InvalidRequest(format!(
+                        "Invalid workload kind {} in base environment",
+                        workload.kind
+                    ))
+                })?;
+                if workload.workload_yaml.trim().is_empty() {
+                    return Err(ApiError::InvalidRequest(format!(
+                        "Base workload {} is missing YAML",
+                        workload.name
+                    )));
+                }
+                let mut containers = workload.containers;
+                for container in &mut containers {
+                    // Preserve the original environment variables
+                    container.original_env_vars = container.env_vars.clone();
+                    container.env_vars.clear();
 
-                        // If the base environment has a customized image, use it as the original_image
-                        // for the new branch environment (so the branch starts from the customized state)
-                        match &container.image {
-                            KubeContainerImage::Custom(custom_image) => {
-                                container.original_image = custom_image.clone();
-                                container.image = KubeContainerImage::FollowOriginal;
-                            }
-                            KubeContainerImage::FollowOriginal => {
-                                // Keep the current original_image and FollowOriginal setting
-                            }
+                    // If the base environment has a customized image, use it as the original_image
+                    // for the new branch environment (so the branch starts from the customized state)
+                    match &container.image {
+                        KubeContainerImage::Custom(custom_image) => {
+                            container.original_image = custom_image.clone();
+                            container.image = KubeContainerImage::FollowOriginal;
+                        }
+                        KubeContainerImage::FollowOriginal => {
+                            // Keep the current original_image and FollowOriginal setting
                         }
                     }
-                    lapdev_common::kube::KubeWorkloadDetails {
-                        name: workload.name,
-                        namespace: namespace.to_string(),
-                        kind,
-                        containers,
-                        ports: workload.ports,
-                        workload_yaml: String::new(),
-                    }
+                }
+                Ok(lapdev_common::kube::KubeWorkloadDetails {
+                    name: workload.name,
+                    namespace: namespace.to_string(),
+                    kind,
+                    containers,
+                    ports: workload.ports,
+                    workload_yaml: workload.workload_yaml,
                 })
             })
             .collect()
@@ -812,7 +1047,8 @@ impl KubeController {
             .collect();
 
         // Prepare workload details
-        let workload_details = Self::prepare_workload_details_from_base(base_workloads, &namespace);
+        let workload_details =
+            Self::prepare_workload_details_from_base(base_workloads, &namespace)?;
 
         // Create environment in database
         let created_env = match self
@@ -824,7 +1060,7 @@ impl KubeController {
                 base_environment.cluster_id,
                 name.clone(),
                 namespace.clone(),
-                "Pending".to_string(),
+                KubeEnvironmentStatus::Pending.to_string(),
                 false, // Branch environments are always personal (not shared)
                 base_environment.catalog_sync_version,
                 Some(base_environment_id), // Set the base environment reference
@@ -1012,11 +1248,9 @@ impl KubeController {
 
         self.deploy_environment_resources(
             &target_server,
-            &environment.namespace,
-            &environment.name,
-            environment.id,
-            Some(environment.auth_token.clone()),
+            &environment,
             workloads_with_resources,
+            None,
         )
         .await?;
 
@@ -1098,6 +1332,7 @@ impl KubeController {
             let ports_json = serde_json::to_value(&workload.ports)
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+            let workload_yaml = workload.workload_yaml.clone();
 
             // First, soft-delete any existing workload with the same name
             lapdev_db_entities::kube_environment_workload::Entity::update_many()
@@ -1129,6 +1364,7 @@ impl KubeController {
                 kind: ActiveValue::Set(workload.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
+                workload_yaml: ActiveValue::Set(workload_yaml),
                 catalog_sync_version: ActiveValue::Set(new_catalog_sync_version),
             }
             .insert(&txn)
@@ -1295,5 +1531,168 @@ impl KubeController {
             .map_err(ApiError::from)?;
 
         Ok(())
+    }
+
+    async fn update_environment_status(
+        &self,
+        environment_id: Uuid,
+        status: KubeEnvironmentStatus,
+        paused_at: Option<Option<chrono::DateTime<Utc>>>,
+        resumed_at: Option<Option<chrono::DateTime<Utc>>>,
+    ) -> Result<(), ApiError> {
+        let paused_value = match paused_at {
+            Some(Some(dt)) => ActiveValue::Set(Some(dt.into())),
+            Some(None) => ActiveValue::Set(None),
+            None => ActiveValue::NotSet,
+        };
+
+        let resumed_value = match resumed_at {
+            Some(Some(dt)) => ActiveValue::Set(Some(dt.into())),
+            Some(None) => ActiveValue::Set(None),
+            None => ActiveValue::NotSet,
+        };
+
+        lapdev_db_entities::kube_environment::ActiveModel {
+            id: ActiveValue::Set(environment_id),
+            status: ActiveValue::Set(status.to_string()),
+            paused_at: paused_value,
+            resumed_at: resumed_value,
+            ..Default::default()
+        }
+        .update(&self.db.conn)
+        .await
+        .map_err(ApiError::from)?;
+
+        Ok(())
+    }
+
+    async fn run_pause_environment(&self, environment_id: Uuid) -> Result<(), ApiError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        let server = self
+            .get_random_kube_cluster_server(environment.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for the environment target cluster".to_string(),
+                )
+            })?;
+
+        let mut workloads_with_resources =
+            self.assemble_environment_workloads(&environment).await?;
+
+        for workload in &mut workloads_with_resources.workloads {
+            let result = match workload {
+                KubeWorkloadYamlOnly::CronJob(_) => set_cronjob_suspend(workload, true),
+                KubeWorkloadYamlOnly::Deployment(_)
+                | KubeWorkloadYamlOnly::StatefulSet(_)
+                | KubeWorkloadYamlOnly::ReplicaSet(_) => set_workload_replicas(workload, 0),
+                KubeWorkloadYamlOnly::DaemonSet(_) => set_daemonset_paused(workload, true),
+                KubeWorkloadYamlOnly::Pod(_) => {
+                    warn!(
+                        environment_id = %environment.id,
+                        "Pod workloads cannot be gracefully paused; they will continue running"
+                    );
+                    Ok(())
+                }
+                _ => Ok(()),
+            };
+            if let Err(err) = result {
+                warn!(
+                    environment_id = %environment.id,
+                    error = ?err,
+                    "Failed to update workload YAML while pausing environment"
+                );
+            }
+        }
+
+        self.deploy_environment_resources(&server, &environment, workloads_with_resources, None)
+            .await?;
+
+        if let Some(base_env_id) = environment.base_environment_id {
+            if let Err(err) = self
+                .notify_branch_environment_deletion(&server.rpc_client, base_env_id, environment.id)
+                .await
+            {
+                warn!(
+                    environment_id = %environment.id,
+                    error = ?err,
+                    "Failed to notify devbox proxy about branch environment pause"
+                );
+            }
+        }
+
+        self.update_environment_status(
+            environment.id,
+            KubeEnvironmentStatus::Paused,
+            Some(Some(Utc::now())),
+            Some(None),
+        )
+        .await
+    }
+
+    async fn run_resume_environment(&self, environment_id: Uuid) -> Result<(), ApiError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        let server = self
+            .get_random_kube_cluster_server(environment.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for the environment target cluster".to_string(),
+                )
+            })?;
+
+        let mut workloads_with_resources =
+            self.assemble_environment_workloads(&environment).await?;
+
+        for workload in &mut workloads_with_resources.workloads {
+            let result = match workload {
+                KubeWorkloadYamlOnly::CronJob(_) => set_cronjob_suspend(workload, false),
+                KubeWorkloadYamlOnly::Deployment(_)
+                | KubeWorkloadYamlOnly::StatefulSet(_)
+                | KubeWorkloadYamlOnly::ReplicaSet(_) => set_workload_replicas(workload, 1),
+                KubeWorkloadYamlOnly::DaemonSet(_) => set_daemonset_paused(workload, false),
+                KubeWorkloadYamlOnly::Pod(_) => Ok(()),
+                _ => Ok(()),
+            };
+            if let Err(err) = result {
+                warn!(
+                    environment_id = %environment.id,
+                    error = ?err,
+                    "Failed to update workload YAML while resuming environment"
+                );
+            }
+        }
+
+        self.deploy_environment_resources(&server, &environment, workloads_with_resources, None)
+            .await?;
+
+        if let Some(base_env_id) = environment.base_environment_id {
+            self.notify_branch_environment_creation(
+                base_env_id,
+                environment.cluster_id,
+                &environment,
+            )
+            .await;
+        }
+
+        self.update_environment_status(
+            environment.id,
+            KubeEnvironmentStatus::Running,
+            None,
+            Some(Some(Utc::now())),
+        )
+        .await
     }
 }

@@ -10,7 +10,7 @@ use lapdev_common::{
     },
     kube::{
         KubeClusterInfo, KubeContainerInfo, KubeEnvironment, KubeEnvironmentService,
-        KubeEnvironmentSyncStatus, KubeEnvironmentWorkload,
+        KubeEnvironmentStatus, KubeEnvironmentSyncStatus, KubeEnvironmentWorkload,
     },
 };
 use leptos::prelude::*;
@@ -172,6 +172,34 @@ async fn delete_environment(
         .await??;
 
     delete_modal_open.set(false);
+
+    Ok(())
+}
+
+async fn pause_environment(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .pause_kube_environment(org.id, environment_id)
+        .await??;
+
+    Ok(())
+}
+
+async fn resume_environment(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .resume_kube_environment(org.id, environment_id)
+        .await??;
 
     Ok(())
 }
@@ -458,6 +486,53 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
+    let pause_action = {
+        let org = org.clone();
+        let environment_result = environment_result.clone();
+        let update_counter = update_counter.clone();
+        Action::new_local(move |_| {
+            let org = org.clone();
+            let environment_result = environment_result.clone();
+            let update_counter = update_counter.clone();
+            async move {
+                match pause_environment(org, environment_id).await {
+                    Ok(_) => {
+                        environment_result.refetch();
+                        update_counter.update(|c| *c += 1);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        })
+    };
+
+    let resume_action = {
+        let org = org.clone();
+        let environment_result = environment_result.clone();
+        let update_counter = update_counter.clone();
+        Action::new_local(move |_| {
+            let org = org.clone();
+            let environment_result = environment_result.clone();
+            let update_counter = update_counter.clone();
+            async move {
+                match resume_environment(org, environment_id).await {
+                    Ok(_) => {
+                        environment_result.refetch();
+                        update_counter.update(|c| *c += 1);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        })
+    };
+
+    let pause_pending = pause_action.pending();
+    let resume_pending = resume_action.pending();
+    let pause_result = pause_action.value();
+    let resume_result = resume_action.value();
+
     view! {
         <div class="flex flex-col gap-6">
             // Loading State
@@ -539,7 +614,7 @@ pub fn EnvironmentInfoCard(
                 let env_namespace = environment.namespace.clone();
                 let env_namespace2 = environment.namespace.clone();
                 let env_status = environment.status.clone();
-                let env_status2 = environment.status.clone();
+                let status_text = env_status.to_string();
                 let created_at_str = environment.created_at.clone();
                 let is_shared = environment.is_shared;
                 let is_branch = environment.base_environment_id.is_some();
@@ -565,11 +640,16 @@ pub fn EnvironmentInfoCard(
                 } else {
                     "New catalog changes are ready to apply. Sync the environment to pull the latest workloads."
                 };
-                let status_variant = match env_status.as_str() {
-                    "Running" => BadgeVariant::Secondary,
-                    "Pending" => BadgeVariant::Outline,
-                    "Failed" | "Error" => BadgeVariant::Destructive,
-                    _ => BadgeVariant::Outline,
+                let status_variant = match env_status {
+                    KubeEnvironmentStatus::Running => BadgeVariant::Secondary,
+                    KubeEnvironmentStatus::Pending
+                    | KubeEnvironmentStatus::Pausing
+                    | KubeEnvironmentStatus::Resuming
+                    | KubeEnvironmentStatus::Paused => BadgeVariant::Outline,
+                    KubeEnvironmentStatus::Failed
+                    | KubeEnvironmentStatus::Error
+                    | KubeEnvironmentStatus::PauseFailed
+                    | KubeEnvironmentStatus::ResumeFailed => BadgeVariant::Destructive,
                 };
 
                 let (type_label, type_description) = if is_branch {
@@ -656,23 +736,80 @@ pub fn EnvironmentInfoCard(
                                         </Badge>
                                     </div>
                                 </div>
-                                <div class="flex items-center gap-2">
-                                    <Show when=move || is_shared>
+                                <div class="flex flex-col items-end gap-2">
+                                    <div class="flex items-center gap-2">
+                                        <Show when=move || is_shared>
+                                            <Button
+                                                variant=ButtonVariant::Outline
+                                                on:click=move |_| create_branch_modal_open.set(true)
+                                            >
+                                                <lucide_leptos::GitBranch />
+                                                Create Branch
+                                            </Button>
+                                        </Show>
+                                        <Show when=move || !is_shared>
+                                            {let can_pause = matches!(
+                                                env_status,
+                                                KubeEnvironmentStatus::Running
+                                                    | KubeEnvironmentStatus::PauseFailed
+                                            );
+                                            let can_resume = matches!(
+                                                env_status,
+                                                KubeEnvironmentStatus::Paused
+                                                    | KubeEnvironmentStatus::PauseFailed
+                                                    | KubeEnvironmentStatus::ResumeFailed,
+                                            );
+                                            view! {
+                                                <>
+                                                    <Button
+                                                        variant=ButtonVariant::Outline
+                                                        on:click=move |_| pause_action.dispatch(())
+                                                        disabled=!can_pause || pause_pending.get()
+                                                    >
+                                                        <lucide_leptos::Pause />
+                                                        {move || if pause_pending.get() { "Pausing...".to_string() } else { "Pause".to_string() }}
+                                                    </Button>
+                                                    <Button
+                                                        variant=ButtonVariant::Outline
+                                                        on:click=move |_| resume_action.dispatch(())
+                                                        disabled=!can_resume || resume_pending.get()
+                                                    >
+                                                        <lucide_leptos::Play />
+                                                        {move || if resume_pending.get() { "Resuming...".to_string() } else { "Resume".to_string() }}
+                                                    </Button>
+                                                </>
+                                            }.into_any()}
+                                        </Show>
                                         <Button
-                                            variant=ButtonVariant::Outline
-                                            on:click=move |_| create_branch_modal_open.set(true)
+                                            variant=ButtonVariant::Destructive
+                                            on:click=move |_| delete_modal_open.set(true)
                                         >
-                                            <lucide_leptos::GitBranch />
-                                            Create Branch
+                                            <lucide_leptos::Trash2 />
+                                            Delete Environment
                                         </Button>
+                                    </div>
+                                    <Show when=move || matches!(pause_result.get(), Some(Err(_)))>
+                                        <span class="text-xs text-red-600 dark:text-red-400">
+                                            {move || {
+                                                pause_result
+                                                    .get()
+                                                    .and_then(|res| res.err())
+                                                    .map(|err| err.error)
+                                                    .unwrap_or_default()
+                                            }}
+                                        </span>
                                     </Show>
-                                    <Button
-                                        variant=ButtonVariant::Destructive
-                                        on:click=move |_| delete_modal_open.set(true)
-                                    >
-                                        <lucide_leptos::Trash2 />
-                                        Delete Environment
-                                    </Button>
+                                    <Show when=move || matches!(resume_result.get(), Some(Err(_)))>
+                                        <span class="text-xs text-red-600 dark:text-red-400">
+                                            {move || {
+                                                resume_result
+                                                    .get()
+                                                    .and_then(|res| res.err())
+                                                    .map(|err| err.error)
+                                                    .unwrap_or_default()
+                                            }}
+                                        </span>
+                                    </Show>
                                 </div>
                             </div>
 
@@ -781,7 +918,7 @@ pub fn EnvironmentInfoCard(
                                 </div>
                                 <div>
                                     <Badge variant=status_variant class="text-sm">
-                                        {env_status2}
+                                        {status_text.clone()}
                                     </Badge>
                                 </div>
                             </div>

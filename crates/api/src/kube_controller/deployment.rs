@@ -1,4 +1,4 @@
-use uuid::Uuid;
+use std::collections::HashMap;
 
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_rpc::error::ApiError;
@@ -9,12 +9,13 @@ impl KubeController {
     pub(super) async fn deploy_environment_resources(
         &self,
         target_server: &KubeClusterServer,
-        namespace: &str,
-        environment_name: &str,
-        environment_id: Uuid,
-        environment_auth_token: Option<String>,
+        environment: &lapdev_db_entities::kube_environment::Model,
         workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
+        extra_labels: Option<HashMap<String, String>>,
     ) -> Result<(), ApiError> {
+        let namespace = &environment.namespace;
+        let environment_name = &environment.name;
+
         tracing::info!(
             "Deploying environment resources for '{}' in namespace '{}'",
             environment_name,
@@ -39,21 +40,35 @@ impl KubeController {
             environment_name.to_string(),
         );
         environment_labels.insert("lapdev.managed-by".to_string(), "lapdev".to_string());
+        if environment.base_environment_id.is_some() {
+            environment_labels.insert(
+                "lapdev.io/branch-environment-id".to_string(),
+                environment.id.to_string(),
+            );
+        }
+        if let Some(extra) = extra_labels {
+            for (key, value) in extra {
+                environment_labels.insert(key, value);
+            }
+        }
 
         // Deploy all workloads and resources in a single call
-        let auth_token = environment_auth_token.ok_or_else(|| {
-            ApiError::InvalidRequest("Environment auth token is required".to_string())
-        })?;
+        if environment.auth_token.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Environment auth token is required".to_string(),
+            ));
+        }
+        let auth_token = environment.auth_token.clone();
 
         match target_server
             .rpc_client
             .deploy_workload_yaml(
                 tarpc::context::current(),
-                environment_id,
+                environment.id,
                 auth_token,
                 namespace.to_string(),
                 workloads_with_resources,
-                environment_labels.clone(),
+                environment_labels,
             )
             .await
         {

@@ -445,106 +445,65 @@ fn merge_single_container(
     new_container
 }
 
-pub fn rename_workload_yaml(workload: &mut KubeWorkloadYamlOnly, new_name: &str) -> Result<()> {
+pub fn set_workload_replicas(workload: &mut KubeWorkloadYamlOnly, replicas: i32) -> Result<()> {
     match workload {
-        KubeWorkloadYamlOnly::Deployment(yaml) => *yaml = rename_deployment_yaml(yaml, new_name)?,
-        KubeWorkloadYamlOnly::StatefulSet(yaml) => *yaml = rename_statefulset_yaml(yaml, new_name)?,
-        KubeWorkloadYamlOnly::DaemonSet(yaml) => *yaml = rename_daemonset_yaml(yaml, new_name)?,
-        KubeWorkloadYamlOnly::ReplicaSet(yaml) => *yaml = rename_replicaset_yaml(yaml, new_name)?,
+        KubeWorkloadYamlOnly::Deployment(yaml) => {
+            let mut deployment: Deployment = serde_yaml::from_str(yaml)?;
+            if let Some(spec) = deployment.spec.as_mut() {
+                spec.replicas = Some(replicas);
+            }
+            *yaml = serde_yaml::to_string(&deployment)?;
+        }
+        KubeWorkloadYamlOnly::StatefulSet(yaml) => {
+            let mut statefulset: StatefulSet = serde_yaml::from_str(yaml)?;
+            if let Some(spec) = statefulset.spec.as_mut() {
+                spec.replicas = Some(replicas);
+            }
+            *yaml = serde_yaml::to_string(&statefulset)?;
+        }
+        KubeWorkloadYamlOnly::ReplicaSet(yaml) => {
+            let mut replicaset: ReplicaSet = serde_yaml::from_str(yaml)?;
+            if let Some(spec) = replicaset.spec.as_mut() {
+                spec.replicas = Some(replicas);
+            }
+            *yaml = serde_yaml::to_string(&replicaset)?;
+        }
         _ => {}
     }
     Ok(())
 }
 
-pub fn rename_service_yaml(
-    yaml: &str,
-    new_service_name: &str,
-    new_workload_name: &str,
-) -> Result<String> {
-    use k8s_openapi::api::core::v1::Service;
-
-    let mut service: Service = serde_yaml::from_str(yaml)?;
-    service.metadata.name = Some(new_service_name.to_string());
-
-    if let Some(ref mut spec) = service.spec {
-        if let Some(ref mut selector) = spec.selector {
-            selector.insert("app".to_string(), new_workload_name.to_string());
+pub fn set_cronjob_suspend(workload: &mut KubeWorkloadYamlOnly, suspend: bool) -> Result<()> {
+    if let KubeWorkloadYamlOnly::CronJob(yaml) = workload {
+        let mut cronjob: CronJob = serde_yaml::from_str(yaml)?;
+        if let Some(spec) = cronjob.spec.as_mut() {
+            spec.suspend = Some(suspend);
         }
+        *yaml = serde_yaml::to_string(&cronjob)?;
     }
 
-    Ok(serde_yaml::to_string(&service)?)
+    Ok(())
 }
 
-fn rename_deployment_yaml(yaml: &str, new_name: &str) -> Result<String> {
-    let mut deployment: Deployment = serde_yaml::from_str(yaml)?;
-    deployment.metadata.name = Some(new_name.to_string());
+pub fn set_daemonset_paused(workload: &mut KubeWorkloadYamlOnly, paused: bool) -> Result<()> {
+    if let KubeWorkloadYamlOnly::DaemonSet(yaml) = workload {
+        let mut daemonset: DaemonSet = serde_yaml::from_str(yaml)?;
+        if let Some(spec) = daemonset.spec.as_mut() {
+            if let Some(template) = spec.template.spec.as_mut() {
+                let selector = template.node_selector.get_or_insert_with(Default::default);
 
-    if let Some(ref mut spec) = deployment.spec {
-        if let Some(ref mut selector) = spec.selector.match_labels {
-            selector.insert("app".to_string(), new_name.to_string());
-        }
-        if let Some(ref mut metadata) = &mut spec.template.metadata {
-            if let Some(ref mut labels) = &mut metadata.labels {
-                labels.insert("app".to_string(), new_name.to_string());
-            }
-        }
-    }
-
-    Ok(serde_yaml::to_string(&deployment)?)
-}
-
-fn rename_statefulset_yaml(yaml: &str, new_name: &str) -> Result<String> {
-    let mut statefulset: StatefulSet = serde_yaml::from_str(yaml)?;
-    statefulset.metadata.name = Some(new_name.to_string());
-
-    if let Some(ref mut spec) = statefulset.spec {
-        if let Some(ref mut selector) = spec.selector.match_labels {
-            selector.insert("app".to_string(), new_name.to_string());
-        }
-        if let Some(ref mut metadata) = &mut spec.template.metadata {
-            if let Some(ref mut labels) = &mut metadata.labels {
-                labels.insert("app".to_string(), new_name.to_string());
-            }
-        }
-    }
-
-    Ok(serde_yaml::to_string(&statefulset)?)
-}
-
-fn rename_daemonset_yaml(yaml: &str, new_name: &str) -> Result<String> {
-    let mut daemonset: DaemonSet = serde_yaml::from_str(yaml)?;
-    daemonset.metadata.name = Some(new_name.to_string());
-
-    if let Some(ref mut spec) = daemonset.spec {
-        if let Some(ref mut selector) = spec.selector.match_labels {
-            selector.insert("app".to_string(), new_name.to_string());
-        }
-        if let Some(ref mut metadata) = &mut spec.template.metadata {
-            if let Some(ref mut labels) = &mut metadata.labels {
-                labels.insert("app".to_string(), new_name.to_string());
-            }
-        }
-    }
-
-    Ok(serde_yaml::to_string(&daemonset)?)
-}
-
-fn rename_replicaset_yaml(yaml: &str, new_name: &str) -> Result<String> {
-    let mut replicaset: ReplicaSet = serde_yaml::from_str(yaml)?;
-    replicaset.metadata.name = Some(new_name.to_string());
-
-    if let Some(ref mut spec) = replicaset.spec {
-        if let Some(ref mut selector) = spec.selector.match_labels {
-            selector.insert("app".to_string(), new_name.to_string());
-        }
-        if let Some(ref mut template) = &mut spec.template {
-            if let Some(ref mut metadata) = &mut template.metadata {
-                if let Some(ref mut labels) = &mut metadata.labels {
-                    labels.insert("app".to_string(), new_name.to_string());
+                if paused {
+                    selector.insert("lapdev.io/paused".to_string(), "true".to_string());
+                } else if let Some(selector) = template.node_selector.as_mut() {
+                    selector.remove("lapdev.io/paused");
+                    if selector.is_empty() {
+                        template.node_selector = None;
+                    }
                 }
             }
         }
+        *yaml = serde_yaml::to_string(&daemonset)?;
     }
 
-    Ok(serde_yaml::to_string(&replicaset)?)
+    Ok(())
 }

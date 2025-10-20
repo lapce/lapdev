@@ -47,11 +47,40 @@ pub enum KubeClusterStatus {
 }
 
 #[derive(
-    Debug, Clone, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display, PartialEq,
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    PartialEq,
+    Eq,
 )]
 pub enum KubeEnvironmentSyncStatus {
     Idle,
     Syncing,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    PartialEq,
+    Eq,
+)]
+pub enum KubeEnvironmentStatus {
+    Running,
+    Pending,
+    Failed,
+    Error,
+    Pausing,
+    Paused,
+    Resuming,
+    PauseFailed,
+    ResumeFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +228,7 @@ pub struct KubeAppCatalogWorkload {
     pub kind: KubeWorkloadKind,
     pub containers: Vec<KubeContainerInfo>,
     pub ports: Vec<KubeServicePort>,
-    pub workload_yaml: Option<String>,
+    pub workload_yaml: String,
     pub catalog_sync_version: i64,
 }
 
@@ -220,6 +249,7 @@ pub struct KubeEnvironmentWorkload {
     pub kind: String,
     pub containers: Vec<KubeContainerInfo>,
     pub ports: Vec<KubeServicePort>,
+    pub workload_yaml: String,
     pub catalog_sync_version: i64,
 }
 
@@ -295,13 +325,15 @@ pub struct KubeEnvironment {
     pub app_catalog_name: String,
     pub cluster_id: Uuid,
     pub cluster_name: String,
-    pub status: String,
+    pub status: KubeEnvironmentStatus,
     pub created_at: String,
     pub is_shared: bool,
     pub base_environment_id: Option<Uuid>,
     pub base_environment_name: Option<String>,
     pub catalog_sync_version: i64,
     pub last_catalog_synced_at: Option<String>,
+    pub paused_at: Option<String>,
+    pub resumed_at: Option<String>,
     pub catalog_update_available: bool,
     pub catalog_last_sync_actor_id: Option<Uuid>,
     pub sync_status: KubeEnvironmentSyncStatus,

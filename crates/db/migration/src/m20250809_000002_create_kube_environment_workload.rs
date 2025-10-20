@@ -59,6 +59,11 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(
+                        ColumnDef::new(KubeEnvironmentWorkload::WorkloadYaml)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
                         ColumnDef::new(KubeEnvironmentWorkload::CatalogSyncVersion)
                             .big_integer()
                             .not_null()
@@ -121,5 +126,6 @@ pub enum KubeEnvironmentWorkload {
     Kind,
     Containers,
     Ports,
+    WorkloadYaml,
     CatalogSyncVersion,
 }

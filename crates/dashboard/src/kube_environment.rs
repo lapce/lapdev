@@ -2,7 +2,9 @@ use anyhow::{anyhow, Result};
 use chrono::DateTime;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
-use lapdev_common::kube::{KubeEnvironment, PagePaginationParams, PaginatedInfo, PaginatedResult};
+use lapdev_common::kube::{
+    KubeEnvironment, KubeEnvironmentStatus, PagePaginationParams, PaginatedInfo, PaginatedResult,
+};
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
 
@@ -368,11 +370,16 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
     //     leptos::logging::log!("Delete environment: {}", env_name_for_delete);
     // };
 
-    let status_variant = match environment.status.as_str() {
-        "Running" => BadgeVariant::Secondary,
-        "Pending" => BadgeVariant::Outline,
-        "Failed" | "Error" => BadgeVariant::Destructive,
-        _ => BadgeVariant::Outline,
+    let status_variant = match environment.status {
+        KubeEnvironmentStatus::Running => BadgeVariant::Secondary,
+        KubeEnvironmentStatus::Pending
+        | KubeEnvironmentStatus::Pausing
+        | KubeEnvironmentStatus::Resuming
+        | KubeEnvironmentStatus::Paused => BadgeVariant::Outline,
+        KubeEnvironmentStatus::Failed
+        | KubeEnvironmentStatus::Error
+        | KubeEnvironmentStatus::PauseFailed
+        | KubeEnvironmentStatus::ResumeFailed => BadgeVariant::Destructive,
     };
 
     let dropdown_expanded = RwSignal::new(false);
@@ -469,7 +476,7 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
             </TableCell>
             <TableCell>
                 <Badge variant=status_variant>
-                    {environment.status.clone()}
+                    {environment.status.to_string()}
                 </Badge>
             </TableCell>
             <TableCell>

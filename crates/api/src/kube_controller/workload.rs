@@ -1,14 +1,21 @@
 use uuid::Uuid;
 
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+};
 
-use lapdev_common::kube::{KubeAppCatalogWorkload, KubeServiceWithYaml};
+use k8s_openapi::api::{
+    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
+    batch::v1::{CronJob, Job},
+    core::v1::{Pod, Service},
+};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use lapdev_common::kube::{KubeServiceDetails, KubeServiceWithYaml, KubeWorkloadKind};
+use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
 use lapdev_rpc::error::ApiError;
 
-use super::{
-    resources::{rename_service_yaml, rename_workload_yaml},
-    KubeController,
-};
+use super::{resources::rebuild_workload_yaml, KubeController};
 
 impl KubeController {
     pub async fn get_environment_workloads(
@@ -111,35 +118,40 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
-        // Update the workload containers in database
-        let updated_db_model = self
+        let existing_workload = self
             .db
-            .update_environment_workload(workload_id, containers)
+            .get_environment_workload(workload_id)
             .await
-            .map_err(ApiError::from)?;
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
 
-        // Convert database model to API type
-        let updated_workload = {
-            let containers: Vec<lapdev_common::kube::KubeContainerInfo> =
-                serde_json::from_value(updated_db_model.containers.clone()).unwrap_or_default();
+        let kind = KubeWorkloadKind::from_str(&existing_workload.kind).map_err(|_| {
+            ApiError::InvalidRequest(format!(
+                "Invalid workload kind {} for environment {}",
+                existing_workload.kind, existing_workload.environment_id
+            ))
+        })?;
 
-            let ports: Vec<lapdev_common::kube::KubeServicePort> =
-                serde_json::from_value(updated_db_model.ports.clone()).unwrap_or_default();
+        let (workloads_with_resources, persisted_yaml, extra_labels) =
+            if environment.base_environment_id.is_some() {
+                let (manifest, yaml, labels) = self
+                    .build_branch_workload_manifest(
+                        &environment,
+                        &existing_workload,
+                        kind.clone(),
+                        &containers,
+                    )
+                    .await?;
+                (manifest, yaml, Some(labels))
+            } else {
+                let (manifest, yaml) = Self::build_standard_workload_manifest(
+                    kind,
+                    &existing_workload.workload_yaml,
+                    &containers,
+                )?;
+                (manifest, yaml, None)
+            };
 
-            lapdev_common::kube::KubeEnvironmentWorkload {
-                id: updated_db_model.id,
-                created_at: updated_db_model.created_at,
-                environment_id: updated_db_model.environment_id,
-                name: updated_db_model.name.clone(),
-                namespace: updated_db_model.namespace.clone(),
-                kind: updated_db_model.kind.clone(),
-                containers,
-                ports,
-                catalog_sync_version: updated_db_model.catalog_sync_version,
-            }
-        };
-
-        // After successful database update, deploy the workload to the cluster
         let cluster_server = self
             .get_random_kube_cluster_server(environment.cluster_id)
             .await
@@ -147,226 +159,530 @@ impl KubeController {
                 ApiError::InvalidRequest("No connected KubeManager for this cluster".to_string())
             })?;
 
-        // Prepare environment-specific labels
-        let mut environment_labels = std::collections::HashMap::new();
-        environment_labels.insert("lapdev.environment".to_string(), environment.name.clone());
-        environment_labels.insert("lapdev.managed-by".to_string(), "lapdev".to_string());
-
-        if environment.base_environment_id.is_some() {
-            self.deploy_branch_workload(
-                &cluster_server,
-                &environment,
-                &updated_workload.name,
-                updated_workload.containers,
-                environment_labels,
-            )
-            .await
-        } else {
-            self.update_regular_workload(
-                &cluster_server,
-                &environment,
-                &updated_workload.name,
-                updated_workload.containers,
-            )
-            .await
-        }
-    }
-
-    async fn deploy_branch_workload(
-        &self,
-        cluster_server: &lapdev_kube::server::KubeClusterServer,
-        environment: &lapdev_db_entities::kube_environment::Model,
-        base_workload_name: &str,
-        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-        mut environment_labels: HashMap<String, String>,
-    ) -> Result<(), ApiError> {
-        tracing::info!(
-            "Creating branch deployment for workload '{}' in branch environment '{}' (namespace '{}')",
-            base_workload_name,
-            environment.name,
-            environment.namespace
-        );
-
-        let app_workloads = self
-            .db
-            .get_app_catalog_workloads(environment.app_catalog_id)
-            .await
-            .map_err(ApiError::from)?;
-
-        let base_catalog_workload = app_workloads
-            .into_iter()
-            .find(|w| w.name == base_workload_name)
-            .ok_or_else(|| {
-                ApiError::InvalidRequest(format!(
-                    "Base workload '{}' not found in app catalog",
-                    base_workload_name
-                ))
-            })?;
-
-        let branch_workload = KubeAppCatalogWorkload {
-            containers,
-            ..base_catalog_workload
-        };
-
-        let mut workloads_with_resources = self
-            .get_catalog_workloads_with_yaml_from_db(
-                environment.cluster_id,
-                vec![branch_workload.clone()],
-            )
-            .await?;
-
-        let branch_deployment_name = format!("{}-{}", base_workload_name, environment.id);
-        for workload_yaml in &mut workloads_with_resources.workloads {
-            rename_workload_yaml(workload_yaml, &branch_deployment_name)
-                .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
-        }
-
-        let mut updated_services = HashMap::new();
-        for (service_name, service_with_yaml) in workloads_with_resources.services.into_iter() {
-            let branch_service_name = format!("{}-{}", service_name, environment.id);
-            let updated_yaml = rename_service_yaml(
-                &service_with_yaml.yaml,
-                &branch_service_name,
-                &branch_deployment_name,
-            )
-            .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
-
-            let mut details = service_with_yaml.details.clone();
-            details.name = branch_service_name.clone();
-
-            updated_services.insert(
-                branch_service_name,
-                KubeServiceWithYaml {
-                    yaml: updated_yaml,
-                    details,
-                },
-            );
-        }
-        workloads_with_resources.services = updated_services;
-        workloads_with_resources.configmaps.clear();
-        workloads_with_resources.secrets.clear();
-
-        environment_labels.insert(
-            "lapdev.branch-environment".to_string(),
-            environment.id.to_string(),
-        );
-        environment_labels.insert(
-            "lapdev.base-workload".to_string(),
-            base_workload_name.to_string(),
-        );
-        environment_labels.insert(
-            "lapdev.io/branch-environment-id".to_string(),
-            environment.id.to_string(),
-        );
-        environment_labels.insert(
-            "lapdev.io/routing-key".to_string(),
-            format!("branch-{}", environment.id),
-        );
-        environment_labels.insert(
-            "lapdev.io/proxy-target-port".to_string(),
-            "8080".to_string(),
-        );
-
         self.deploy_environment_resources(
-            cluster_server,
-            &environment.namespace,
-            &environment.name,
-            environment.id,
-            Some(environment.auth_token.clone()),
+            &cluster_server,
+            &environment,
             workloads_with_resources,
+            extra_labels,
         )
         .await?;
 
-        if let Err(err) = cluster_server
-            .rpc_client
-            .refresh_branch_service_routes(tarpc::context::current(), environment.id)
-            .await
-        {
-            tracing::warn!(
-                "Failed to refresh branch service routes for environment {}: {}",
-                environment.id,
-                err
-            );
+        if environment.base_environment_id.is_some() {
+            if let Err(err) = cluster_server
+                .rpc_client
+                .refresh_branch_service_routes(tarpc::context::current(), environment.id)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to refresh branch service routes for environment {}: {}",
+                    environment.id,
+                    err
+                );
+            }
         }
+
+        self.db
+            .update_environment_workload(workload_id, containers, persisted_yaml)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(())
     }
 
-    async fn update_regular_workload(
+    async fn build_branch_workload_manifest(
         &self,
-        cluster_server: &lapdev_kube::server::KubeClusterServer,
         environment: &lapdev_db_entities::kube_environment::Model,
-        base_workload_name: &str,
-        containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-    ) -> Result<(), ApiError> {
-        tracing::info!(
-            "Updating workload containers for '{}' in regular environment '{}' (namespace '{}')",
-            base_workload_name,
-            environment.name,
-            environment.namespace
-        );
+        existing_workload: &lapdev_common::kube::KubeEnvironmentWorkload,
+        kind: KubeWorkloadKind,
+        containers: &[lapdev_common::kube::KubeContainerInfo],
+    ) -> Result<(KubeWorkloadsWithResources, String, HashMap<String, String>), ApiError> {
+        let base_workload_name = existing_workload.name.clone();
+        let env_suffix = environment.id.to_string();
+        let branch_workload_name = if base_workload_name.ends_with(&env_suffix) {
+            base_workload_name.clone()
+        } else {
+            format!("{}-{}", base_workload_name, environment.id)
+        };
 
-        let app_workloads = self
+        let (mut workloads_with_resources, _) = Self::build_standard_workload_manifest(
+            kind,
+            &existing_workload.workload_yaml,
+            containers,
+        )?;
+
+        for workload_yaml in &mut workloads_with_resources.workloads {
+            rename_workload_yaml(workload_yaml, &base_workload_name, &branch_workload_name)?;
+        }
+
+        let environment_services = self
             .db
-            .get_app_catalog_workloads(environment.app_catalog_id)
+            .get_environment_services(environment.id)
             .await
             .map_err(ApiError::from)?;
 
-        let base_catalog_workload = app_workloads
-            .into_iter()
-            .find(|w| w.name == base_workload_name)
-            .ok_or_else(|| {
-                ApiError::InvalidRequest(format!(
-                    "Base workload '{}' not found in app catalog",
-                    base_workload_name
-                ))
-            })?;
+        let mut updated_services: HashMap<String, KubeServiceWithYaml> = HashMap::new();
+        for service in environment_services {
+            let mut matches_workload =
+                service.name == base_workload_name || service.name == branch_workload_name;
+            if !matches_workload {
+                matches_workload = service
+                    .selector
+                    .values()
+                    .any(|value| value == &base_workload_name || value == &branch_workload_name);
+            }
+            if !matches_workload {
+                continue;
+            }
 
-        let regular_workload = KubeAppCatalogWorkload {
-            containers,
-            ..base_catalog_workload
-        };
+            if service.yaml.trim().is_empty() {
+                tracing::warn!(
+                    environment_id = %environment.id,
+                    workload = %existing_workload.name,
+                    service = %service.name,
+                    "Branch workload service YAML is empty; skipping service deployment"
+                );
+                continue;
+            }
 
-        let mut workloads_with_resources = self
-            .get_catalog_workloads_with_yaml_from_db(
-                environment.cluster_id,
-                vec![regular_workload.clone()],
-            )
-            .await?;
+            let branch_service_name = if service.name.ends_with(&env_suffix) {
+                service.name.clone()
+            } else {
+                format!("{}-{}", service.name, environment.id)
+            };
+            let renamed_yaml = rename_service_yaml(
+                &service.yaml,
+                &service.name,
+                &branch_service_name,
+                &base_workload_name,
+                &branch_workload_name,
+            )?;
 
-        let deployment_name = base_workload_name.to_string();
-        for workload_yaml in &mut workloads_with_resources.workloads {
-            rename_workload_yaml(workload_yaml, &deployment_name)
-                .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
-        }
-
-        let mut updated_services = HashMap::new();
-        for (service_name, service_with_yaml) in workloads_with_resources.services.into_iter() {
-            let updated_yaml =
-                rename_service_yaml(&service_with_yaml.yaml, &service_name, &deployment_name)
-                    .map_err(|e| ApiError::InvalidRequest(e.to_string()))?;
+            let mut selector = service.selector.clone();
+            for value in selector.values_mut() {
+                if value == &base_workload_name || value == &branch_workload_name {
+                    *value = branch_workload_name.clone();
+                }
+            }
+            selector
+                .entry("app".to_string())
+                .or_insert_with(|| branch_workload_name.clone());
+            selector
+                .entry("lapdev.workload".to_string())
+                .or_insert_with(|| branch_workload_name.clone());
 
             updated_services.insert(
-                service_name.clone(),
+                branch_service_name.clone(),
                 KubeServiceWithYaml {
-                    yaml: updated_yaml,
-                    details: service_with_yaml.details,
+                    yaml: renamed_yaml,
+                    details: KubeServiceDetails {
+                        name: branch_service_name,
+                        ports: service.ports.clone(),
+                        selector,
+                    },
                 },
             );
         }
         workloads_with_resources.services = updated_services;
-
         workloads_with_resources.configmaps.clear();
         workloads_with_resources.secrets.clear();
 
-        self.deploy_environment_resources(
-            cluster_server,
-            &environment.namespace,
-            &environment.name,
-            environment.id,
-            Some(environment.auth_token.clone()),
-            workloads_with_resources,
-        )
-        .await
+        let persisted_yaml = extract_workload_yaml(&workloads_with_resources.workloads)?;
+
+        let mut extra_labels = HashMap::new();
+        extra_labels.insert(
+            "lapdev.branch-environment".to_string(),
+            environment.id.to_string(),
+        );
+        extra_labels.insert(
+            "lapdev.base-workload".to_string(),
+            existing_workload.name.clone(),
+        );
+        extra_labels.insert(
+            "lapdev.io/routing-key".to_string(),
+            format!("branch-{}", environment.id),
+        );
+        extra_labels.insert(
+            "lapdev.io/proxy-target-port".to_string(),
+            "8080".to_string(),
+        );
+
+        Ok((workloads_with_resources, persisted_yaml, extra_labels))
+    }
+
+    fn build_standard_workload_manifest(
+        kind: KubeWorkloadKind,
+        original_yaml: &str,
+        containers: &[lapdev_common::kube::KubeContainerInfo],
+    ) -> Result<(KubeWorkloadsWithResources, String), ApiError> {
+        let rebuilt_yaml =
+            rebuild_workload_yaml(&kind, original_yaml, containers).map_err(|err| {
+                ApiError::InvalidRequest(format!("Failed to rebuild workload manifest: {}", err))
+            })?;
+
+        let workload = match kind {
+            KubeWorkloadKind::Deployment => KubeWorkloadYamlOnly::Deployment(rebuilt_yaml.clone()),
+            KubeWorkloadKind::StatefulSet => {
+                KubeWorkloadYamlOnly::StatefulSet(rebuilt_yaml.clone())
+            }
+            KubeWorkloadKind::DaemonSet => KubeWorkloadYamlOnly::DaemonSet(rebuilt_yaml.clone()),
+            KubeWorkloadKind::ReplicaSet => KubeWorkloadYamlOnly::ReplicaSet(rebuilt_yaml.clone()),
+            KubeWorkloadKind::Pod => KubeWorkloadYamlOnly::Pod(rebuilt_yaml.clone()),
+            KubeWorkloadKind::Job => KubeWorkloadYamlOnly::Job(rebuilt_yaml.clone()),
+            KubeWorkloadKind::CronJob => KubeWorkloadYamlOnly::CronJob(rebuilt_yaml.clone()),
+        };
+
+        Ok((
+            KubeWorkloadsWithResources {
+                workloads: vec![workload],
+                services: HashMap::new(),
+                configmaps: HashMap::new(),
+                secrets: HashMap::new(),
+            },
+            rebuilt_yaml,
+        ))
+    }
+}
+
+fn extract_workload_yaml(workloads: &[KubeWorkloadYamlOnly]) -> Result<String, ApiError> {
+    let workload = workloads.first().ok_or_else(|| {
+        ApiError::InvalidRequest("No workload manifest generated for deployment".to_string())
+    })?;
+
+    let yaml = match workload {
+        KubeWorkloadYamlOnly::Deployment(yaml)
+        | KubeWorkloadYamlOnly::StatefulSet(yaml)
+        | KubeWorkloadYamlOnly::DaemonSet(yaml)
+        | KubeWorkloadYamlOnly::ReplicaSet(yaml)
+        | KubeWorkloadYamlOnly::Pod(yaml)
+        | KubeWorkloadYamlOnly::Job(yaml)
+        | KubeWorkloadYamlOnly::CronJob(yaml) => yaml.clone(),
+    };
+
+    Ok(yaml)
+}
+
+fn rename_workload_yaml(
+    workload: &mut KubeWorkloadYamlOnly,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), ApiError> {
+    match workload {
+        KubeWorkloadYamlOnly::Deployment(yaml) => rename_deployment_yaml(yaml, old_name, new_name),
+        KubeWorkloadYamlOnly::StatefulSet(yaml) => {
+            rename_statefulset_yaml(yaml, old_name, new_name)
+        }
+        KubeWorkloadYamlOnly::DaemonSet(yaml) => rename_daemonset_yaml(yaml, old_name, new_name),
+        KubeWorkloadYamlOnly::ReplicaSet(yaml) => rename_replicaset_yaml(yaml, old_name, new_name),
+        KubeWorkloadYamlOnly::Pod(yaml) => rename_pod_yaml(yaml, old_name, new_name),
+        KubeWorkloadYamlOnly::Job(yaml) => rename_job_yaml(yaml, old_name, new_name),
+        KubeWorkloadYamlOnly::CronJob(yaml) => rename_cronjob_yaml(yaml, old_name, new_name),
+    }
+}
+
+fn rename_service_yaml(
+    yaml: &str,
+    old_service_name: &str,
+    new_service_name: &str,
+    old_selector_value: &str,
+    new_selector_value: &str,
+) -> Result<String, ApiError> {
+    let mut service: Service = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to parse service YAML for rename: {}", err))
+    })?;
+
+    update_object_meta(&mut service.metadata, old_service_name, new_service_name);
+    ensure_label(&mut service.metadata.labels, "app", new_service_name);
+
+    if let Some(spec) = service.spec.as_mut() {
+        if let Some(selector) = spec.selector.as_mut() {
+            for value in selector.values_mut() {
+                if value == old_selector_value || value == old_service_name {
+                    *value = new_selector_value.to_string();
+                }
+            }
+            selector
+                .entry("app".to_string())
+                .or_insert_with(|| new_selector_value.to_string());
+            selector
+                .entry("lapdev.workload".to_string())
+                .or_insert_with(|| new_selector_value.to_string());
+        } else {
+            let mut selector = BTreeMap::new();
+            selector.insert("app".to_string(), new_selector_value.to_string());
+            selector.insert(
+                "lapdev.workload".to_string(),
+                new_selector_value.to_string(),
+            );
+            spec.selector = Some(selector);
+        }
+    }
+
+    serde_yaml::to_string(&service).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to serialize renamed service YAML: {}", err))
+    })
+}
+
+fn rename_deployment_yaml(
+    yaml: &mut String,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), ApiError> {
+    let mut deployment: Deployment = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to parse deployment YAML for rename: {}",
+            err
+        ))
+    })?;
+
+    update_object_meta(&mut deployment.metadata, old_name, new_name);
+    ensure_label(&mut deployment.metadata.labels, "app", new_name);
+    ensure_label(&mut deployment.metadata.labels, "lapdev.workload", new_name);
+
+    if let Some(spec) = deployment.spec.as_mut() {
+        update_selector_labels(&mut spec.selector, old_name, new_name);
+        if let Some(template) = spec.template.metadata.as_mut() {
+            update_object_meta(template, old_name, new_name);
+            ensure_label(&mut template.labels, "app", new_name);
+            ensure_label(&mut template.labels, "lapdev.workload", new_name);
+        } else {
+            let mut metadata = ObjectMeta::default();
+            ensure_label(&mut metadata.labels, "app", new_name);
+            ensure_label(&mut metadata.labels, "lapdev.workload", new_name);
+            spec.template.metadata = Some(metadata);
+        }
+    }
+
+    *yaml = serde_yaml::to_string(&deployment).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to serialize renamed deployment YAML: {}",
+            err
+        ))
+    })?;
+    Ok(())
+}
+
+fn rename_statefulset_yaml(
+    yaml: &mut String,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), ApiError> {
+    let mut statefulset: StatefulSet = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to parse statefulset YAML for rename: {}",
+            err
+        ))
+    })?;
+
+    update_object_meta(&mut statefulset.metadata, old_name, new_name);
+    ensure_label(&mut statefulset.metadata.labels, "app", new_name);
+    ensure_label(
+        &mut statefulset.metadata.labels,
+        "lapdev.workload",
+        new_name,
+    );
+
+    if let Some(spec) = statefulset.spec.as_mut() {
+        update_selector_labels(&mut spec.selector, old_name, new_name);
+        if let Some(template) = spec.template.metadata.as_mut() {
+            update_object_meta(template, old_name, new_name);
+            ensure_label(&mut template.labels, "app", new_name);
+            ensure_label(&mut template.labels, "lapdev.workload", new_name);
+        }
+    }
+
+    *yaml = serde_yaml::to_string(&statefulset).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to serialize renamed statefulset YAML: {}",
+            err
+        ))
+    })?;
+    Ok(())
+}
+
+fn rename_daemonset_yaml(
+    yaml: &mut String,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), ApiError> {
+    let mut daemonset: DaemonSet = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to parse daemonset YAML for rename: {}",
+            err
+        ))
+    })?;
+
+    update_object_meta(&mut daemonset.metadata, old_name, new_name);
+    ensure_label(&mut daemonset.metadata.labels, "app", new_name);
+    ensure_label(&mut daemonset.metadata.labels, "lapdev.workload", new_name);
+
+    if let Some(spec) = daemonset.spec.as_mut() {
+        update_selector_labels(&mut spec.selector, old_name, new_name);
+        if let Some(template) = spec.template.metadata.as_mut() {
+            update_object_meta(template, old_name, new_name);
+            ensure_label(&mut template.labels, "app", new_name);
+            ensure_label(&mut template.labels, "lapdev.workload", new_name);
+        }
+    }
+
+    *yaml = serde_yaml::to_string(&daemonset).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to serialize renamed daemonset YAML: {}",
+            err
+        ))
+    })?;
+    Ok(())
+}
+
+fn rename_replicaset_yaml(
+    yaml: &mut String,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), ApiError> {
+    let mut replicaset: ReplicaSet = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to parse replicaset YAML for rename: {}",
+            err
+        ))
+    })?;
+
+    update_object_meta(&mut replicaset.metadata, old_name, new_name);
+    ensure_label(&mut replicaset.metadata.labels, "app", new_name);
+    ensure_label(&mut replicaset.metadata.labels, "lapdev.workload", new_name);
+
+    if let Some(spec) = replicaset.spec.as_mut() {
+        update_selector_labels(&mut spec.selector, old_name, new_name);
+        if let Some(template) = spec.template.as_mut() {
+            if let Some(metadata) = template.metadata.as_mut() {
+                update_object_meta(metadata, old_name, new_name);
+                ensure_label(&mut metadata.labels, "app", new_name);
+                ensure_label(&mut metadata.labels, "lapdev.workload", new_name);
+            }
+        }
+    }
+
+    *yaml = serde_yaml::to_string(&replicaset).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to serialize renamed replicaset YAML: {}",
+            err
+        ))
+    })?;
+    Ok(())
+}
+
+fn rename_pod_yaml(yaml: &mut String, old_name: &str, new_name: &str) -> Result<(), ApiError> {
+    let mut pod: Pod = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to parse pod YAML for rename: {}", err))
+    })?;
+
+    update_object_meta(&mut pod.metadata, old_name, new_name);
+    ensure_label(&mut pod.metadata.labels, "app", new_name);
+    ensure_label(&mut pod.metadata.labels, "lapdev.workload", new_name);
+
+    *yaml = serde_yaml::to_string(&pod).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to serialize renamed pod YAML: {}", err))
+    })?;
+    Ok(())
+}
+
+fn rename_job_yaml(yaml: &mut String, old_name: &str, new_name: &str) -> Result<(), ApiError> {
+    let mut job: Job = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to parse job YAML for rename: {}", err))
+    })?;
+
+    update_object_meta(&mut job.metadata, old_name, new_name);
+    ensure_label(&mut job.metadata.labels, "app", new_name);
+    ensure_label(&mut job.metadata.labels, "lapdev.workload", new_name);
+
+    if let Some(spec) = job.spec.as_mut() {
+        update_optional_selector_labels(&mut spec.selector, old_name, new_name);
+        if let Some(template) = spec.template.metadata.as_mut() {
+            update_object_meta(template, old_name, new_name);
+            ensure_label(&mut template.labels, "app", new_name);
+            ensure_label(&mut template.labels, "lapdev.workload", new_name);
+        }
+    }
+
+    *yaml = serde_yaml::to_string(&job).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to serialize renamed job YAML: {}", err))
+    })?;
+    Ok(())
+}
+
+fn rename_cronjob_yaml(yaml: &mut String, old_name: &str, new_name: &str) -> Result<(), ApiError> {
+    let mut cronjob: CronJob = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to parse cronjob YAML for rename: {}", err))
+    })?;
+
+    update_object_meta(&mut cronjob.metadata, old_name, new_name);
+    ensure_label(&mut cronjob.metadata.labels, "app", new_name);
+    ensure_label(&mut cronjob.metadata.labels, "lapdev.workload", new_name);
+
+    if let Some(spec) = cronjob.spec.as_mut() {
+        let job_template = &mut spec.job_template;
+        if let Some(job_spec) = job_template.spec.as_mut() {
+            update_optional_selector_labels(&mut job_spec.selector, old_name, new_name);
+            if let Some(template) = job_spec.template.metadata.as_mut() {
+                update_object_meta(template, old_name, new_name);
+                ensure_label(&mut template.labels, "app", new_name);
+                ensure_label(&mut template.labels, "lapdev.workload", new_name);
+            }
+        }
+    }
+
+    *yaml = serde_yaml::to_string(&cronjob).map_err(|err| {
+        ApiError::InvalidRequest(format!("Failed to serialize renamed cronjob YAML: {}", err))
+    })?;
+    Ok(())
+}
+
+fn update_object_meta(metadata: &mut ObjectMeta, old_value: &str, new_value: &str) {
+    metadata.name = Some(new_value.to_string());
+    if let Some(labels) = metadata.labels.as_mut() {
+        for value in labels.values_mut() {
+            if value == old_value {
+                *value = new_value.to_string();
+            }
+        }
+    }
+}
+
+fn ensure_label(labels: &mut Option<BTreeMap<String, String>>, key: &str, value: &str) {
+    let map = labels.get_or_insert_with(BTreeMap::new);
+    map.insert(key.to_string(), value.to_string());
+}
+
+fn update_selector_labels(selector: &mut LabelSelector, old_value: &str, new_value: &str) {
+    if let Some(match_labels) = selector.match_labels.as_mut() {
+        for value in match_labels.values_mut() {
+            if value == old_value {
+                *value = new_value.to_string();
+            }
+        }
+        match_labels
+            .entry("app".to_string())
+            .or_insert_with(|| new_value.to_string());
+        match_labels
+            .entry("lapdev.workload".to_string())
+            .or_insert_with(|| new_value.to_string());
+    } else {
+        let mut map = BTreeMap::new();
+        map.insert("app".to_string(), new_value.to_string());
+        map.insert("lapdev.workload".to_string(), new_value.to_string());
+        selector.match_labels = Some(map);
+    }
+}
+
+fn update_optional_selector_labels(
+    selector: &mut Option<LabelSelector>,
+    old_value: &str,
+    new_value: &str,
+) {
+    match selector {
+        Some(existing) => update_selector_labels(existing, old_value, new_value),
+        None => {
+            let mut new_selector = LabelSelector::default();
+            update_selector_labels(&mut new_selector, old_value, new_value);
+            *selector = Some(new_selector);
+        }
     }
 }

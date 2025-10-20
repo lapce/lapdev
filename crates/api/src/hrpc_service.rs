@@ -685,6 +685,32 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn pause_kube_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .pause_kube_environment(org_id, user.id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn resume_kube_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .resume_kube_environment(org_id, user.id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn sync_environment_from_catalog(
         &self,
         headers: &axum::http::HeaderMap,

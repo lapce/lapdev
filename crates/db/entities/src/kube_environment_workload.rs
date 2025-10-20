@@ -15,6 +15,7 @@ pub struct Model {
     pub kind: String,
     pub containers: Json,
     pub ports: Json,
+    pub workload_yaml: String,
     pub catalog_sync_version: i64,
 }
 

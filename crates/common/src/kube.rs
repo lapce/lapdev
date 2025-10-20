@@ -64,6 +64,7 @@ pub enum KubeEnvironmentSyncStatus {
 #[derive(
     Debug,
     Clone,
+    Copy,
     Serialize,
     Deserialize,
     strum_macros::EnumString,
@@ -72,8 +73,8 @@ pub enum KubeEnvironmentSyncStatus {
     Eq,
 )]
 pub enum KubeEnvironmentStatus {
+    Creating,
     Running,
-    Pending,
     Failed,
     Error,
     Pausing,
@@ -81,6 +82,7 @@ pub enum KubeEnvironmentStatus {
     PauseFailed,
     Resuming,
     ResumeFailed,
+    Deleting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

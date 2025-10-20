@@ -372,10 +372,11 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
 
     let status_variant = match environment.status {
         KubeEnvironmentStatus::Running => BadgeVariant::Secondary,
-        KubeEnvironmentStatus::Pending
+        KubeEnvironmentStatus::Creating
         | KubeEnvironmentStatus::Pausing
         | KubeEnvironmentStatus::Resuming
-        | KubeEnvironmentStatus::Paused => BadgeVariant::Outline,
+        | KubeEnvironmentStatus::Paused
+        | KubeEnvironmentStatus::Deleting => BadgeVariant::Outline,
         KubeEnvironmentStatus::Failed
         | KubeEnvironmentStatus::Error
         | KubeEnvironmentStatus::PauseFailed

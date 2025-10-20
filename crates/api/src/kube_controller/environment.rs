@@ -73,7 +73,7 @@ impl KubeController {
                 let cluster = cluster?;
                 let catalog_sync_version = env.catalog_sync_version;
                 let status = KubeEnvironmentStatus::from_str(&env.status)
-                    .unwrap_or(KubeEnvironmentStatus::Pending);
+                    .unwrap_or(KubeEnvironmentStatus::Creating);
                 let last_catalog_synced_at = env.last_catalog_synced_at.map(|dt| dt.to_string());
                 let paused_at = env.paused_at.map(|dt| dt.to_string());
                 let resumed_at = env.resumed_at.map(|dt| dt.to_string());
@@ -171,7 +171,7 @@ impl KubeController {
         let catalog_update_available = catalog.sync_version > environment.catalog_sync_version;
 
         let status = KubeEnvironmentStatus::from_str(&environment.status)
-            .unwrap_or(KubeEnvironmentStatus::Pending);
+            .unwrap_or(KubeEnvironmentStatus::Creating);
 
         Ok(KubeEnvironment {
             id: environment.id,
@@ -301,7 +301,7 @@ impl KubeController {
         base_environment_name: Option<String>,
     ) -> lapdev_common::kube::KubeEnvironment {
         let status = KubeEnvironmentStatus::from_str(&created_env.status)
-            .unwrap_or(KubeEnvironmentStatus::Pending);
+            .unwrap_or(KubeEnvironmentStatus::Creating);
         lapdev_common::kube::KubeEnvironment {
             id: created_env.id,
             user_id: created_env.user_id,
@@ -498,15 +498,55 @@ impl KubeController {
                 .await?;
         }
 
-        // Destroy environment resources in Kubernetes
-        self.destroy_environment_resources(&rpc_client, &environment)
+        // Mark as deleting immediately
+        self.update_environment_status(environment_id, KubeEnvironmentStatus::Deleting, None, None)
             .await?;
 
-        // Delete from database (soft delete)
-        self.db
-            .delete_kube_environment(environment_id)
-            .await
-            .map_err(ApiError::from)?;
+        // Destroy environment resources in Kubernetes asynchronously
+        let controller = self.clone();
+        let environment_clone = environment.clone();
+        let rpc_client_clone = rpc_client.clone();
+
+        tokio::spawn(async move {
+            let env_id = environment_clone.id;
+            match controller
+                .destroy_environment_resources(&rpc_client_clone, &environment_clone)
+                .await
+            {
+                Ok(_) => {
+                    if let Err(err) = controller
+                        .db
+                        .delete_kube_environment(env_id)
+                        .await
+                        .map_err(ApiError::from)
+                    {
+                        error!(
+                            environment_id = %env_id,
+                            error = ?err,
+                            "failed to delete environment record after resource cleanup"
+                        );
+                        let _ = controller
+                            .update_environment_status(
+                                env_id,
+                                KubeEnvironmentStatus::Error,
+                                None,
+                                None,
+                            )
+                            .await;
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        environment_id = %env_id,
+                        error = ?err,
+                        "failed to cleanup environment resources"
+                    );
+                    let _ = controller
+                        .update_environment_status(env_id, KubeEnvironmentStatus::Error, None, None)
+                        .await;
+                }
+            }
+        });
 
         Ok(())
     }
@@ -539,7 +579,7 @@ impl KubeController {
         }
 
         let status = KubeEnvironmentStatus::from_str(&environment.status)
-            .unwrap_or(KubeEnvironmentStatus::Pending);
+            .unwrap_or(KubeEnvironmentStatus::Creating);
 
         match status {
             KubeEnvironmentStatus::Running | KubeEnvironmentStatus::PauseFailed => {} // allowed transitions
@@ -609,7 +649,7 @@ impl KubeController {
         }
 
         let status = KubeEnvironmentStatus::from_str(&environment.status)
-            .unwrap_or(KubeEnvironmentStatus::Pending);
+            .unwrap_or(KubeEnvironmentStatus::Creating);
 
         match status {
             KubeEnvironmentStatus::Paused
@@ -785,7 +825,7 @@ impl KubeController {
                 cluster_id,
                 name.clone(),
                 namespace.clone(),
-                KubeEnvironmentStatus::Pending.to_string(),
+                KubeEnvironmentStatus::Creating.to_string(),
                 is_shared,
                 app_catalog.sync_version,
                 None, // No base environment for regular environments
@@ -815,11 +855,62 @@ impl KubeController {
             }
         };
 
-        // Deploy resources to Kubernetes
-        self.deploy_environment_resources(&server, &created_env, workloads_with_resources, None)
-            .await?;
+        let controller = self.clone();
+        let server_clone = server.clone();
+        let env_for_task = created_env.clone();
 
-        // Build and return response
+        tokio::spawn(async move {
+            match controller
+                .deploy_environment_resources(
+                    &server_clone,
+                    &env_for_task,
+                    workloads_with_resources,
+                    None,
+                )
+                .await
+            {
+                Ok(_) => {
+                    if let Err(err) = controller
+                        .update_environment_status(
+                            env_for_task.id,
+                            KubeEnvironmentStatus::Running,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        error!(
+                            environment_id = %env_for_task.id,
+                            error = ?err,
+                            "failed to mark environment as running after creation"
+                        );
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        environment_id = %env_for_task.id,
+                        error = ?err,
+                        "environment creation deployment failed"
+                    );
+                    if let Err(status_err) = controller
+                        .update_environment_status(
+                            env_for_task.id,
+                            KubeEnvironmentStatus::Error,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        error!(
+                            environment_id = %env_for_task.id,
+                            error = ?status_err,
+                            "failed to mark environment as errored after deployment failure"
+                        );
+                    }
+                }
+            }
+        });
+
         Ok(Self::build_environment_response(
             created_env,
             app_catalog.name,
@@ -1053,7 +1144,7 @@ impl KubeController {
             Self::prepare_workload_details_from_base(base_workloads, &namespace)?;
 
         // Create environment in database
-        let created_env = match self
+        let mut created_env = match self
             .db
             .create_kube_environment(
                 org_id,
@@ -1062,7 +1153,7 @@ impl KubeController {
                 base_environment.cluster_id,
                 name.clone(),
                 namespace.clone(),
-                KubeEnvironmentStatus::Pending.to_string(),
+                KubeEnvironmentStatus::Creating.to_string(),
                 false, // Branch environments are always personal (not shared)
                 base_environment.catalog_sync_version,
                 Some(base_environment_id), // Set the base environment reference
@@ -1093,6 +1184,10 @@ impl KubeController {
             &created_env,
         )
         .await;
+
+        self.update_environment_status(created_env.id, KubeEnvironmentStatus::Running, None, None)
+            .await?;
+        created_env.status = KubeEnvironmentStatus::Running.to_string();
 
         // Build and return response
         Ok(Self::build_environment_response(

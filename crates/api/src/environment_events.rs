@@ -49,7 +49,7 @@ pub async fn stream_environment_events(
     }
 
     let status = KubeEnvironmentStatus::from_str(&environment.status)
-        .unwrap_or(KubeEnvironmentStatus::Pending);
+        .unwrap_or(KubeEnvironmentStatus::Creating);
     let initial_event = EnvironmentLifecycleEvent {
         organization_id: environment.organization_id,
         environment_id,

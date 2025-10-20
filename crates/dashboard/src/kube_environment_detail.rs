@@ -678,10 +678,11 @@ pub fn EnvironmentInfoCard(
                 };
                 let status_variant = match env_status {
                     KubeEnvironmentStatus::Running => BadgeVariant::Secondary,
-                    KubeEnvironmentStatus::Pending
+                    KubeEnvironmentStatus::Creating
                     | KubeEnvironmentStatus::Pausing
                     | KubeEnvironmentStatus::Resuming
-                    | KubeEnvironmentStatus::Paused => BadgeVariant::Outline,
+                    | KubeEnvironmentStatus::Paused
+                    | KubeEnvironmentStatus::Deleting => BadgeVariant::Outline,
                     KubeEnvironmentStatus::Failed
                     | KubeEnvironmentStatus::Error
                     | KubeEnvironmentStatus::PauseFailed
@@ -816,13 +817,17 @@ pub fn EnvironmentInfoCard(
                                                 </>
                                             }.into_any()}
                                         </Show>
-                                        <Button
-                                            variant=ButtonVariant::Destructive
-                                            on:click=move |_| delete_modal_open.set(true)
-                                        >
-                                            <lucide_leptos::Trash2 />
-                                            Delete Environment
-                                        </Button>
+                                        {let is_deleting = matches!(env_status, KubeEnvironmentStatus::Deleting);
+                                        view! {
+                                            <Button
+                                                variant=ButtonVariant::Destructive
+                                                on:click=move |_| delete_modal_open.set(true)
+                                                disabled=is_deleting
+                                            >
+                                                <lucide_leptos::Trash2 />
+                                                {if is_deleting { "Deleting...".to_string() } else { "Delete Environment".to_string() }}
+                                            </Button>
+                                        }.into_any()}
                                     </div>
                                     <Show when=move || matches!(pause_result.get(), Some(Err(_)))>
                                         <span class="text-xs text-red-600 dark:text-red-400">

@@ -66,11 +66,7 @@ pub enum RouteTarget {
     Address(SocketAddr),
 
     /// Kubernetes service
-    Service {
-        name: String,
-        namespace: Option<String>,
-        port: u16,
-    },
+    Service { name: String, port: u16 },
 
     /// Load balance across multiple targets
     LoadBalance(Vec<RouteTarget>),

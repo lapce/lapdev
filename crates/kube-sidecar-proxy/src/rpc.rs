@@ -75,7 +75,6 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
                 path: route.path.clone(),
                 target: RouteTarget::Service {
                     name: route.service_name.clone(),
-                    namespace: Some(route.namespace.clone()),
                     port: route.port,
                 },
                 branch_environment_id: route.branch_environment_id,

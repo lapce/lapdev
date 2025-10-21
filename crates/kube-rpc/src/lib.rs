@@ -483,7 +483,6 @@ pub struct DevboxRouteConfig {
 pub struct ProxyRouteConfig {
     pub path: String,
     pub service_name: String,
-    pub namespace: String,
     pub port: u16,
     pub branch_environment_id: Option<Uuid>,
 }

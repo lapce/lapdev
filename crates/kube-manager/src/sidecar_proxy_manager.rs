@@ -114,12 +114,6 @@ impl SidecarProxyManager {
                 continue;
             }
 
-            let namespace = svc
-                .metadata
-                .namespace
-                .clone()
-                .unwrap_or_else(|| registration.namespace.clone());
-
             let branch_env_id = svc
                 .metadata
                 .labels
@@ -136,7 +130,6 @@ impl SidecarProxyManager {
                         routes.push(ProxyRouteConfig {
                             path: format!("/{}/*", svc_name),
                             service_name: svc_name.clone(),
-                            namespace: namespace.clone(),
                             port: port_number,
                             branch_environment_id: branch_env_id,
                         });

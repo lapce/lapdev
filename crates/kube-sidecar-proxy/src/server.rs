@@ -19,7 +19,7 @@ use std::{collections::HashMap, io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     io::copy_bidirectional,
-    net::{lookup_host, TcpListener, TcpStream},
+    net::{TcpListener, TcpStream},
     sync::{mpsc, oneshot, RwLock},
 };
 use tokio_tungstenite::connect_async;
@@ -374,48 +374,28 @@ async fn handle_http_proxy(
     let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
 
     if let Some(environment_id) = routing_context.lapdev_environment_id {
-        if let Some((service_name, namespace, branch_port)) =
+        if let Some((service_name, branch_port)) =
             find_branch_route(&config, &environment_id, original_dest.port()).await
         {
-            match resolve_service_addresses(&service_name, &namespace, branch_port).await {
-                Ok(addresses) => {
-                    if let Some(branch_addr) = addresses.into_iter().next() {
-                        info!(
-                            "HTTP {} {} routed to branch {} service {}.{} via {}",
-                            http_request.method,
-                            http_request.path,
-                            environment_id,
-                            service_name,
-                            namespace,
-                            branch_addr
-                        );
+            info!(
+                "HTTP {} {} routing to branch {} service {}:{}",
+                http_request.method, http_request.path, environment_id, service_name, branch_port
+            );
 
-                        match proxy_stream(&mut inbound_stream, branch_addr, &initial_data).await {
-                            Ok(()) => return Ok(()),
-                            Err(err) => {
-                                warn!(
-                                    "Branch route {} ({}.{}) for env {} failed: {}. Falling back to shared target",
-                                    branch_addr,
-                                    service_name,
-                                    namespace,
-                                    environment_id,
-                                    err
-                                );
-                            }
-                        }
-                    } else {
-                        warn!(
-                            "No DNS addresses resolved for branch service {}.{} (env {})",
-                            service_name, namespace, environment_id
-                        );
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        "Failed to resolve branch service {}.{} for env {}: {}",
-                        service_name, namespace, environment_id, err
-                    );
-                }
+            if let Err(err) = proxy_branch_stream(
+                &mut inbound_stream,
+                service_name.as_str(),
+                branch_port,
+                &initial_data,
+            )
+            .await
+            {
+                warn!(
+                    "Branch route {}:{} for env {} failed: {}; falling back to shared target",
+                    service_name, branch_port, environment_id, err
+                );
+            } else {
+                return Ok(());
             }
         }
     }
@@ -460,69 +440,58 @@ async fn proxy_stream(
     Ok(())
 }
 
+async fn proxy_branch_stream(
+    inbound_stream: &mut TcpStream,
+    service_name: &str,
+    port: u16,
+    initial_data: &[u8],
+) -> io::Result<()> {
+    let mut outbound_stream = TcpStream::connect((service_name, port)).await?;
+
+    if !initial_data.is_empty() {
+        tokio::io::AsyncWriteExt::write_all(&mut outbound_stream, initial_data).await?;
+    }
+
+    match copy_bidirectional(inbound_stream, &mut outbound_stream).await {
+        Ok((bytes_tx, bytes_rx)) => {
+            debug!(
+                "HTTP connection completed via branch service {}:{}: {} bytes tx, {} bytes rx",
+                service_name, port, bytes_tx, bytes_rx
+            );
+        }
+        Err(e) => {
+            debug!(
+                "HTTP connection via branch service {}:{} ended: {}",
+                service_name, port, e
+            );
+        }
+    }
+
+    Ok(())
+}
+
 async fn find_branch_route(
     config: &Arc<RwLock<ProxyConfig>>,
     environment_id: &Uuid,
     port: u16,
-) -> Option<(String, String, u16)> {
+) -> Option<(String, u16)> {
     let config = config.read().await;
 
     for route in &config.routes {
         if route.branch_environment_id == Some(*environment_id) {
             if let RouteTarget::Service {
                 name,
-                namespace,
                 port: route_port,
             } = &route.target
             {
                 if *route_port == port {
-                    let ns = namespace
-                        .clone()
-                        .or_else(|| config.namespace.clone())
-                        .unwrap_or_else(|| "default".to_string());
-                    return Some((name.clone(), ns, *route_port));
+                    return Some((name.clone(), *route_port));
                 }
             }
         }
     }
 
     None
-}
-
-async fn resolve_service_addresses(
-    service_name: &str,
-    namespace: &str,
-    port: u16,
-) -> io::Result<Vec<SocketAddr>> {
-    let search_hosts = [
-        format!("{}.{}.svc.cluster.local", service_name, namespace),
-        format!("{}.{}.svc", service_name, namespace),
-        format!("{}.{}", service_name, namespace),
-    ];
-
-    let mut last_err: Option<io::Error> = None;
-
-    for host in &search_hosts {
-        match lookup_host((host.as_str(), port)).await {
-            Ok(addresses) => {
-                let collected: Vec<SocketAddr> = addresses.collect();
-                if !collected.is_empty() {
-                    return Ok(collected);
-                }
-            }
-            Err(err) => last_err = Some(err),
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Unable to resolve service {} in namespace {} on port {}",
-                service_name, namespace, port
-            ),
-        )
-    }))
 }
 
 /// Handle TCP proxying (raw byte forwarding)

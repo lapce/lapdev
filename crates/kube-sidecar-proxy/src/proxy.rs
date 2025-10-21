@@ -210,25 +210,13 @@ impl ProxyHandler {
     async fn resolve_target(&self, target: &RouteTarget) -> Result<SocketAddr> {
         match target {
             RouteTarget::Address(addr) => Ok(*addr),
-            RouteTarget::Service {
-                name,
-                namespace,
-                port,
-            } => {
-                self.resolve_service_target(name, namespace.as_deref(), *port)
-                    .await
-            }
+            RouteTarget::Service { name, port } => self.resolve_service_target(name, *port).await,
             RouteTarget::LoadBalance(targets) => {
                 for target in targets {
                     let attempt = match target {
                         RouteTarget::Address(addr) => Ok(*addr),
-                        RouteTarget::Service {
-                            name,
-                            namespace,
-                            port,
-                        } => {
-                            self.resolve_service_target(name, namespace.as_deref(), *port)
-                                .await
+                        RouteTarget::Service { name, port } => {
+                            self.resolve_service_target(name, *port).await
                         }
                         RouteTarget::LoadBalance(_) | RouteTarget::DevboxTunnel { .. } => continue,
                     };
@@ -248,20 +236,12 @@ impl ProxyHandler {
         }
     }
 
-    async fn resolve_service_target(
-        &self,
-        name: &str,
-        namespace: Option<&str>,
-        port: u16,
-    ) -> Result<SocketAddr> {
-        let ns = match namespace {
-            Some(ns) => ns.to_string(),
-            None => {
-                let cfg = self.config.read().await;
-                cfg.namespace
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string())
-            }
+    async fn resolve_service_target(&self, name: &str, port: u16) -> Result<SocketAddr> {
+        let ns = {
+            let cfg = self.config.read().await;
+            cfg.namespace
+                .clone()
+                .unwrap_or_else(|| "default".to_string())
         };
 
         let host = format!("{}.{}.svc.cluster.local", name, ns);

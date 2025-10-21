@@ -41,7 +41,7 @@ Each personal environment runs in its **own Kubernetes namespace**, so:
 
 Because every personal environment contains a **full set of workloads**, it guarantees total isolation — but that comes with higher resource usage.
 
-Lapdev helps mitigate this cost by allowing you to **start and stop environments on demand**, automatically scaling down resources when you’re not using them.
+Lapdev helps mitigate this cost by allowing you to **pause and resume environments on demand**, automatically scaling down resources when you’re not using them.
 
 **Best for:**\
 Developers who need full isolation or want to test complex changes safely.

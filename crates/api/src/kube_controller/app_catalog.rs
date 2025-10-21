@@ -471,7 +471,12 @@ impl KubeController {
         self.db
             .delete_app_catalog(catalog_id)
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        self.refresh_cluster_namespace_watches(catalog.cluster_id)
+            .await;
+
+        Ok(())
     }
 
     pub async fn delete_app_catalog_workload(
@@ -510,6 +515,9 @@ impl KubeController {
             .bump_app_catalog_sync_version(workload.app_catalog_id, Utc::now().into())
             .await
             .map_err(ApiError::from)?;
+
+        self.refresh_cluster_namespace_watches(workload.cluster_id)
+            .await;
 
         Ok(())
     }
@@ -627,6 +635,11 @@ impl KubeController {
         self.db
             .update_catalog_workload_versions(&inserted_ids, new_version)
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        self.refresh_cluster_namespace_watches(catalog.cluster_id)
+            .await;
+
+        Ok(())
     }
 }

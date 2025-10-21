@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use tokio::{
     io::{self, AsyncRead, AsyncWrite},
-    sync::{mpsc, oneshot, Mutex, Notify},
+    sync::{mpsc, oneshot, Notify},
     task::JoinHandle,
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -23,19 +23,89 @@ use crate::{
     util::spawn_detached,
 };
 
+enum InnerCommand {
+    InsertPending {
+        tunnel_id: String,
+        sender: oneshot::Sender<Result<(), TunnelError>>,
+    },
+    ResolvePending {
+        tunnel_id: String,
+        result: Result<(), TunnelError>,
+    },
+    RegisterStream {
+        tunnel_id: String,
+        sender: mpsc::UnboundedSender<Bytes>,
+    },
+    ForwardData {
+        tunnel_id: String,
+        payload: Vec<u8>,
+    },
+    CloseStream {
+        tunnel_id: String,
+    },
+    FailAll {
+        reason: String,
+    },
+}
+
 struct Inner {
     send: mpsc::UnboundedSender<WireMessage>,
-    pending: Mutex<HashMap<String, oneshot::Sender<Result<(), TunnelError>>>>,
-    streams: Mutex<HashMap<String, mpsc::UnboundedSender<Bytes>>>,
+    command_tx: mpsc::UnboundedSender<InnerCommand>,
 }
 
 impl Inner {
     fn new(send: mpsc::UnboundedSender<WireMessage>) -> Self {
-        Self {
-            send,
-            pending: Mutex::new(HashMap::new()),
-            streams: Mutex::new(HashMap::new()),
-        }
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut pending: HashMap<String, oneshot::Sender<Result<(), TunnelError>>> =
+                HashMap::new();
+            let mut streams: HashMap<String, mpsc::UnboundedSender<Bytes>> = HashMap::new();
+
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    InnerCommand::InsertPending { tunnel_id, sender } => {
+                        pending.insert(tunnel_id, sender);
+                    }
+                    InnerCommand::ResolvePending { tunnel_id, result } => {
+                        if let Some(sender) = pending.remove(&tunnel_id) {
+                            let _ = sender.send(result);
+                        }
+                    }
+                    InnerCommand::RegisterStream { tunnel_id, sender } => {
+                        streams.insert(tunnel_id, sender);
+                    }
+                    InnerCommand::ForwardData { tunnel_id, payload } => {
+                        match streams.get(&tunnel_id) {
+                            Some(sender) => {
+                                if sender.send(Bytes::from(payload)).is_err() {
+                                    debug!("Failed to forward data for tunnel {}", tunnel_id);
+                                }
+                            }
+                            None => {
+                                debug!("Received data for unknown tunnel {}", tunnel_id);
+                            }
+                        }
+                    }
+                    InnerCommand::CloseStream { tunnel_id } => {
+                        streams.remove(&tunnel_id);
+                    }
+                    InnerCommand::FailAll { reason } => {
+                        for (_, sender) in pending.drain() {
+                            let _ = sender.send(Err(TunnelError::Remote(reason.clone())));
+                        }
+                        streams.clear();
+                    }
+                }
+            }
+
+            for (_, sender) in pending.drain() {
+                let _ = sender.send(Err(TunnelError::ConnectionClosed));
+            }
+            streams.clear();
+        });
+
+        Self { send, command_tx }
     }
 
     fn send_message(&self, message: WireMessage) -> Result<(), TunnelError> {
@@ -49,44 +119,83 @@ impl Inner {
         tunnel_id: String,
         tx: oneshot::Sender<Result<(), TunnelError>>,
     ) {
-        self.pending.lock().await.insert(tunnel_id, tx);
+        if let Err(err) = self.command_tx.send(InnerCommand::InsertPending {
+            tunnel_id,
+            sender: tx,
+        }) {
+            if let InnerCommand::InsertPending { sender, .. } = err.0 {
+                let _ = sender.send(Err(TunnelError::ConnectionClosed));
+            }
+        }
     }
 
     async fn resolve_pending(&self, tunnel_id: &str, result: Result<(), TunnelError>) {
-        if let Some(sender) = self.pending.lock().await.remove(tunnel_id) {
-            let _ = sender.send(result);
+        if self
+            .command_tx
+            .send(InnerCommand::ResolvePending {
+                tunnel_id: tunnel_id.to_string(),
+                result,
+            })
+            .is_err()
+        {
+            debug!(
+                "Failed to resolve pending tunnel {}; manager dropped",
+                tunnel_id
+            );
         }
     }
 
     async fn register_stream(&self, tunnel_id: String, tx: mpsc::UnboundedSender<Bytes>) {
-        self.streams.lock().await.insert(tunnel_id, tx);
+        if self
+            .command_tx
+            .send(InnerCommand::RegisterStream {
+                tunnel_id,
+                sender: tx,
+            })
+            .is_err()
+        {
+            debug!("Failed to register stream; manager dropped");
+        }
     }
 
     async fn forward_data(&self, tunnel_id: &str, payload: Vec<u8>) {
-        let sender = self.streams.lock().await.get(tunnel_id).cloned();
-        if let Some(sender) = sender {
-            if sender.send(Bytes::from(payload)).is_err() {
-                debug!("Failed to forward data for tunnel {}", tunnel_id);
-            }
-        } else {
-            debug!("Received data for unknown tunnel {}", tunnel_id);
+        if self
+            .command_tx
+            .send(InnerCommand::ForwardData {
+                tunnel_id: tunnel_id.to_string(),
+                payload,
+            })
+            .is_err()
+        {
+            debug!(
+                "Failed to enqueue data for tunnel {}; manager dropped",
+                tunnel_id
+            );
         }
     }
 
     async fn close_stream(&self, tunnel_id: &str) {
-        self.streams.lock().await.remove(tunnel_id);
+        if self
+            .command_tx
+            .send(InnerCommand::CloseStream {
+                tunnel_id: tunnel_id.to_string(),
+            })
+            .is_err()
+        {
+            debug!("Failed to close stream {}; manager dropped", tunnel_id);
+        }
     }
 
     async fn fail_all(&self, reason: impl Into<String>) {
-        let reason = reason.into();
-
-        let mut pending = self.pending.lock().await;
-        for (_, sender) in pending.drain() {
-            let _ = sender.send(Err(TunnelError::Remote(reason.clone())));
+        if self
+            .command_tx
+            .send(InnerCommand::FailAll {
+                reason: reason.into(),
+            })
+            .is_err()
+        {
+            debug!("Failed to fail pending tunnels; manager dropped");
         }
-        drop(pending);
-
-        self.streams.lock().await.clear();
     }
 }
 

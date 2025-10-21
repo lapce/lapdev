@@ -416,10 +416,7 @@ pub trait KubeManagerRpc {
 
     async fn destroy_environment(environment_id: Uuid, namespace: String) -> Result<(), String>;
 
-    // Preview URL tunnel methods
-    async fn get_tunnel_status() -> Result<TunnelStatus, String>;
-
-    async fn close_tunnel_connection(tunnel_id: String) -> Result<(), String>;
+    async fn configure_watches(namespaces: Vec<String>) -> Result<(), String>;
 
     // Devbox-proxy management methods
     async fn add_branch_environment(
@@ -542,11 +539,6 @@ pub trait DevboxProxyRpc {
     /// - Personal environment: pass None to stop the base tunnel
     /// - Shared environment: pass Some(branch_environment_id) to stop a branch tunnel
     async fn stop_tunnel(environment_id: Option<Uuid>) -> Result<(), String>;
-
-    /// Get tunnel status
-    /// - Personal environment: pass None to check base tunnel status
-    /// - Shared environment: pass Some(branch_environment_id) to check branch tunnel status
-    async fn get_tunnel_status(environment_id: Option<Uuid>) -> Result<bool, String>;
 }
 
 #[tarpc::service]

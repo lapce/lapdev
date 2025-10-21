@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -6,7 +6,7 @@ use serde_json;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::{mpsc, watch, Mutex},
+    sync::{mpsc, watch},
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, error, warn};
@@ -17,12 +17,158 @@ use crate::{
     util::spawn_detached,
 };
 
-type Connections = Arc<Mutex<HashMap<String, ServerConnection>>>;
-
 #[derive(Clone)]
+struct ConnectionManager {
+    command_tx: mpsc::UnboundedSender<ConnectionCommand>,
+}
+
+#[derive(Debug)]
+enum ConnectionCommand {
+    Register {
+        tunnel_id: String,
+        connection: ServerConnection,
+    },
+    ForwardData {
+        tunnel_id: String,
+        payload: Vec<u8>,
+    },
+    Terminate {
+        tunnel_id: String,
+    },
+    ConnectionClosed {
+        tunnel_id: String,
+        reason: Option<String>,
+    },
+    Shutdown {
+        reason: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug)]
 struct ServerConnection {
     write_tx: mpsc::UnboundedSender<Bytes>,
     shutdown_tx: watch::Sender<bool>,
+}
+
+impl ConnectionManager {
+    fn new(send: mpsc::UnboundedSender<WireMessage>) -> Self {
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut connections: HashMap<String, ServerConnection> = HashMap::new();
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    ConnectionCommand::Register {
+                        tunnel_id,
+                        connection,
+                    } => {
+                        connections.insert(tunnel_id, connection);
+                    }
+                    ConnectionCommand::ForwardData { tunnel_id, payload } => {
+                        match connections.get(&tunnel_id) {
+                            Some(conn) => {
+                                if conn.write_tx.send(Bytes::from(payload)).is_err() {
+                                    if let Some(conn) = connections.remove(&tunnel_id) {
+                                        finalize_connection(
+                                            &send,
+                                            tunnel_id,
+                                            conn,
+                                            Some("connection writer dropped".to_string()),
+                                        );
+                                    }
+                                }
+                            }
+                            None => {
+                                debug!("Received data for unknown tunnel {}", tunnel_id);
+                            }
+                        }
+                    }
+                    ConnectionCommand::Terminate { tunnel_id } => {
+                        if let Some(conn) = connections.remove(&tunnel_id) {
+                            drop(conn.write_tx);
+                            let _ = conn.shutdown_tx.send(true);
+                        }
+                    }
+                    ConnectionCommand::ConnectionClosed { tunnel_id, reason } => {
+                        if let Some(conn) = connections.remove(&tunnel_id) {
+                            finalize_connection(&send, tunnel_id, conn, reason);
+                        }
+                    }
+                    ConnectionCommand::Shutdown { reason } => {
+                        let reason = reason.unwrap_or_else(|| "server shutdown".to_string());
+                        for (tunnel_id, conn) in connections.drain() {
+                            finalize_connection(&send, tunnel_id, conn, Some(reason.clone()));
+                        }
+                        break;
+                    }
+                }
+            }
+
+            for (tunnel_id, conn) in connections.drain() {
+                finalize_connection(&send, tunnel_id, conn, Some("server shutdown".to_string()));
+            }
+        });
+
+        Self { command_tx }
+    }
+
+    fn register(&self, tunnel_id: String, connection: ServerConnection) {
+        if self
+            .command_tx
+            .send(ConnectionCommand::Register {
+                tunnel_id,
+                connection,
+            })
+            .is_err()
+        {
+            debug!("Connection manager dropped register command");
+        }
+    }
+
+    fn forward_data(&self, tunnel_id: String, payload: Vec<u8>) {
+        if self
+            .command_tx
+            .send(ConnectionCommand::ForwardData { tunnel_id, payload })
+            .is_err()
+        {
+            debug!("Connection manager dropped data command");
+        }
+    }
+
+    fn terminate(&self, tunnel_id: String) {
+        if self
+            .command_tx
+            .send(ConnectionCommand::Terminate { tunnel_id })
+            .is_err()
+        {
+            debug!("Connection manager dropped terminate command");
+        }
+    }
+
+    fn connection_closed(&self, tunnel_id: String, reason: Option<String>) {
+        if self
+            .command_tx
+            .send(ConnectionCommand::ConnectionClosed { tunnel_id, reason })
+            .is_err()
+        {
+            debug!("Connection manager dropped close command");
+        }
+    }
+
+    fn shutdown(&self, reason: Option<String>) {
+        let _ = self.command_tx.send(ConnectionCommand::Shutdown { reason });
+    }
+}
+
+fn finalize_connection(
+    send: &mpsc::UnboundedSender<WireMessage>,
+    tunnel_id: String,
+    conn: ServerConnection,
+    reason: Option<String>,
+) {
+    drop(conn.write_tx);
+    let _ = conn.shutdown_tx.send(true);
+    let _ = send.send(WireMessage::Close { tunnel_id, reason });
 }
 
 /// Run a tunnel server on top of any async byte stream.
@@ -34,16 +180,17 @@ where
     let (mut writer, mut reader) = framed.split();
 
     let (send_tx, mut send_rx) = mpsc::unbounded_channel::<WireMessage>();
-    let connections: Connections = Arc::new(Mutex::new(HashMap::new()));
+    let manager = ConnectionManager::new(send_tx.clone());
 
     let writer_task = tokio::spawn({
-        let connections = connections.clone();
+        let manager = manager.clone();
         async move {
             while let Some(message) = send_rx.recv().await {
                 match serde_json::to_vec(&message) {
                     Ok(payload) => {
                         if let Err(err) = writer.send(Bytes::from(payload)).await {
                             error!("Failed to send tunnel frame: {}", err);
+                            manager.shutdown(Some(err.to_string()));
                             break;
                         }
                     }
@@ -53,20 +200,13 @@ where
                 }
             }
 
-            // Ensure all connections are torn down when writer exits.
-            let mut map = connections.lock().await;
-            for (tunnel_id, conn) in map.drain() {
-                drop(conn.write_tx);
-                let _ = conn.shutdown_tx.send(true);
-                let payload = serde_json::to_vec(&WireMessage::Close {
-                    tunnel_id,
-                    reason: Some("server shutdown".to_string()),
-                })
-                .unwrap_or_default();
-                let _ = writer.send(Bytes::from(payload)).await;
+            if let Err(err) = writer.flush().await {
+                debug!("Failed to flush tunnel writer: {}", err);
             }
         }
     });
+
+    let mut shutdown_reason: Option<String> = None;
 
     while let Some(frame) = reader.next().await {
         match frame {
@@ -76,13 +216,13 @@ where
                     protocol,
                     target,
                 }) => {
-                    handle_open(&send_tx, &connections, tunnel_id, protocol, target).await;
+                    handle_open(&send_tx, &manager, tunnel_id, protocol, target).await;
                 }
                 Ok(WireMessage::Data { tunnel_id, payload }) => {
-                    handle_data(&connections, tunnel_id, payload).await;
+                    handle_data(&manager, tunnel_id, payload);
                 }
                 Ok(WireMessage::Close { tunnel_id, .. }) => {
-                    terminate_connection(&connections, &tunnel_id).await;
+                    terminate_connection(&manager, &tunnel_id);
                 }
                 Ok(WireMessage::OpenResult { .. }) => {
                     warn!("Server received unexpected OpenResult message");
@@ -93,11 +233,14 @@ where
             },
             Err(err) => {
                 error!("Tunnel server receive error: {}", err);
+                shutdown_reason = Some(err.to_string());
                 break;
             }
         }
     }
 
+    let reason = shutdown_reason.unwrap_or_else(|| "server shutdown".to_string());
+    manager.shutdown(Some(reason));
     drop(send_tx);
     let _ = writer_task.await;
     Ok(())
@@ -105,7 +248,7 @@ where
 
 async fn handle_open(
     send: &mpsc::UnboundedSender<WireMessage>,
-    connections: &Connections,
+    manager: &ConnectionManager,
     tunnel_id: String,
     protocol: Protocol,
     target: Target,
@@ -119,16 +262,13 @@ async fn handle_open(
                     let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
                     let (shutdown_tx, _) = watch::channel(false);
 
-                    {
-                        let mut map = connections.lock().await;
-                        map.insert(
-                            tunnel_id.clone(),
-                            ServerConnection {
-                                write_tx: write_tx.clone(),
-                                shutdown_tx: shutdown_tx.clone(),
-                            },
-                        );
-                    }
+                    manager.register(
+                        tunnel_id.clone(),
+                        ServerConnection {
+                            write_tx: write_tx.clone(),
+                            shutdown_tx: shutdown_tx.clone(),
+                        },
+                    );
 
                     if send
                         .send(WireMessage::OpenResult {
@@ -145,9 +285,8 @@ async fn handle_open(
                         write_half,
                         write_rx,
                         shutdown_tx.subscribe(),
-                        send.clone(),
                         tunnel_id.clone(),
-                        connections.clone(),
+                        manager.clone(),
                     );
 
                     spawn_conn_reader(
@@ -155,7 +294,7 @@ async fn handle_open(
                         shutdown_tx.subscribe(),
                         send.clone(),
                         tunnel_id,
-                        connections.clone(),
+                        manager.clone(),
                     );
                 }
                 Err(err) => {
@@ -177,28 +316,16 @@ async fn handle_open(
     }
 }
 
-async fn handle_data(connections: &Connections, tunnel_id: String, payload: Vec<u8>) {
-    let write_tx = {
-        let map = connections.lock().await;
-        map.get(&tunnel_id).map(|conn| conn.write_tx.clone())
-    };
-
-    if let Some(tx) = write_tx {
-        if tx.send(Bytes::from(payload)).is_err() {
-            debug!("Failed to dispatch data to tunnel {}", tunnel_id);
-        }
-    } else {
-        debug!("Received data for unknown tunnel {}", tunnel_id);
-    }
+fn handle_data(manager: &ConnectionManager, tunnel_id: String, payload: Vec<u8>) {
+    manager.forward_data(tunnel_id, payload);
 }
 
 fn spawn_conn_writer(
     mut write_half: tokio::net::tcp::OwnedWriteHalf,
     mut data_rx: mpsc::UnboundedReceiver<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
-    send: mpsc::UnboundedSender<WireMessage>,
     tunnel_id: String,
-    connections: Connections,
+    manager: ConnectionManager,
 ) {
     spawn_detached(async move {
         let mut close_reason: Option<String> = None;
@@ -222,14 +349,7 @@ fn spawn_conn_writer(
         }
 
         if let Some(reason) = close_reason {
-            if let Some(conn) = remove_connection(&connections, &tunnel_id).await {
-                drop(conn.write_tx);
-                let _ = conn.shutdown_tx.send(true);
-            }
-            let _ = send.send(WireMessage::Close {
-                tunnel_id,
-                reason: Some(reason),
-            });
+            manager.connection_closed(tunnel_id, Some(reason));
         }
     });
 }
@@ -239,7 +359,7 @@ fn spawn_conn_reader(
     mut shutdown_rx: watch::Receiver<bool>,
     send: mpsc::UnboundedSender<WireMessage>,
     tunnel_id: String,
-    connections: Connections,
+    manager: ConnectionManager,
 ) {
     spawn_detached(async move {
         let mut buffer = vec![0u8; 8192];
@@ -276,26 +396,11 @@ fn spawn_conn_reader(
         }
 
         if send_close {
-            if let Some(conn) = remove_connection(&connections, &tunnel_id).await {
-                drop(conn.write_tx);
-                let _ = conn.shutdown_tx.send(true);
-            }
-            let _ = send.send(WireMessage::Close {
-                tunnel_id,
-                reason: close_reason,
-            });
+            manager.connection_closed(tunnel_id, close_reason);
         }
     });
 }
 
-async fn remove_connection(connections: &Connections, tunnel_id: &str) -> Option<ServerConnection> {
-    let mut map = connections.lock().await;
-    map.remove(tunnel_id)
-}
-
-async fn terminate_connection(connections: &Connections, tunnel_id: &str) {
-    if let Some(conn) = remove_connection(connections, tunnel_id).await {
-        drop(conn.write_tx);
-        let _ = conn.shutdown_tx.send(true);
-    }
+fn terminate_connection(manager: &ConnectionManager, tunnel_id: &str) {
+    manager.terminate(tunnel_id.to_string());
 }

@@ -4,7 +4,7 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml, KubeWorkloadsWithResources,
-    NamespacedResourceRequest, NamespacedResourceResponse, TunnelStatus, WorkloadIdentifier,
+    NamespacedResourceRequest, NamespacedResourceResponse, WorkloadIdentifier,
 };
 use uuid::Uuid;
 
@@ -248,27 +248,18 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         }
     }
 
-    async fn get_tunnel_status(
+    async fn configure_watches(
         self,
         _context: ::tarpc::context::Context,
-    ) -> Result<TunnelStatus, String> {
-        self.manager
-            .get_tunnel_status()
-            .await
-            .map_err(|e| format!("Failed to get tunnel status: {}", e))
-    }
-
-    async fn close_tunnel_connection(
-        self,
-        _context: ::tarpc::context::Context,
-        tunnel_id: String,
+        namespaces: Vec<String>,
     ) -> Result<(), String> {
-        tracing::info!("Closing tunnel connection: {}", tunnel_id);
-
         self.manager
-            .close_tunnel_connection(tunnel_id)
+            .configure_namespace_watches(namespaces)
             .await
-            .map_err(|e| format!("Failed to close tunnel connection: {}", e))
+            .map_err(|e| {
+                tracing::error!("Failed to configure namespace watches: {e}");
+                format!("Failed to configure namespace watches: {e}")
+            })
     }
 
     async fn add_branch_environment(

@@ -23,7 +23,7 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{
     KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadYamlOnly, KubeWorkloadsWithResources,
-    NamespacedResourceRequest, NamespacedResourceResponse, TunnelStatus,
+    NamespacedResourceRequest, NamespacedResourceResponse,
 };
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;
@@ -396,6 +396,14 @@ impl KubeManager {
         } else {
             0
         }
+    }
+
+    pub(crate) async fn configure_namespace_watches(&self, namespaces: Vec<String>) -> Result<()> {
+        tracing::info!(
+            namespace_count = namespaces.len(),
+            "Configuring namespace watches"
+        );
+        self.watch_manager.configure_watches(namespaces).await
     }
 
     fn parse_memory_resource(
@@ -1878,14 +1886,6 @@ impl KubeManager {
                 Ok(serde_yaml::to_string(&cronjob)?)
             }
         }
-    }
-
-    pub async fn get_tunnel_status(&self) -> Result<TunnelStatus> {
-        self.tunnel_manager.get_tunnel_status().await
-    }
-
-    pub async fn close_tunnel_connection(&self, tunnel_id: String) -> Result<()> {
-        self.tunnel_manager.close_tunnel_connection(tunnel_id).await
     }
 
     pub async fn refresh_branch_service_routes(&self, environment_id: Uuid) -> Result<()> {

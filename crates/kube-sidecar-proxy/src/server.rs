@@ -20,7 +20,7 @@ use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
-    sync::{Mutex, RwLock},
+    sync::{mpsc, oneshot, RwLock},
 };
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -479,15 +479,61 @@ async fn check_devbox_tunnel_route(
     None
 }
 
+#[derive(Clone)]
 struct DevboxTunnelManager {
-    clients: Mutex<HashMap<Uuid, Arc<TunnelClient>>>,
+    commands: mpsc::UnboundedSender<ManagerCommand>,
+}
+
+#[derive(Debug)]
+enum ManagerCommand {
+    GetClient {
+        session_id: Uuid,
+        respond: oneshot::Sender<Option<Arc<TunnelClient>>>,
+    },
+    InsertClient {
+        session_id: Uuid,
+        client: Arc<TunnelClient>,
+        respond: oneshot::Sender<Option<Arc<TunnelClient>>>,
+    },
+    RemoveClient {
+        session_id: Uuid,
+    },
 }
 
 impl DevboxTunnelManager {
     fn new() -> Self {
-        Self {
-            clients: Mutex::new(HashMap::new()),
-        }
+        let (commands, mut rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut clients: HashMap<Uuid, Arc<TunnelClient>> = HashMap::new();
+            while let Some(command) = rx.recv().await {
+                match command {
+                    ManagerCommand::GetClient {
+                        session_id,
+                        respond,
+                    } => {
+                        let _ = respond.send(clients.get(&session_id).cloned());
+                    }
+                    ManagerCommand::InsertClient {
+                        session_id,
+                        client,
+                        respond,
+                    } => {
+                        if let Some(existing) = clients.get(&session_id) {
+                            let _ = respond.send(Some(existing.clone()));
+                        } else {
+                            clients.insert(session_id, client);
+                            let _ = respond.send(None);
+                        }
+                    }
+                    ManagerCommand::RemoveClient { session_id } => {
+                        clients.remove(&session_id);
+                    }
+                }
+            }
+        });
+
+        Self { commands }
     }
 
     async fn connect_tcp_stream(
@@ -526,19 +572,15 @@ impl DevboxTunnelManager {
         websocket_url: &str,
         auth_token: &str,
     ) -> std::result::Result<Arc<TunnelClient>, TunnelError> {
-        if let Some(existing) = self.clients.lock().await.get(&session_id) {
-            return Ok(existing.clone());
+        if let Some(existing) = self.get_client(session_id).await {
+            return Ok(existing);
         }
 
         let new_client = Arc::new(self.create_client(websocket_url, auth_token).await?);
 
-        let mut clients = self.clients.lock().await;
-        match clients.entry(session_id) {
-            std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(new_client.clone());
-                Ok(new_client)
-            }
+        match self.insert_client(session_id, new_client.clone()).await {
+            Some(existing) => Ok(existing),
+            None => Ok(new_client),
         }
     }
 
@@ -565,8 +607,48 @@ impl DevboxTunnelManager {
     }
 
     async fn remove_client(&self, session_id: Uuid) {
-        let mut clients = self.clients.lock().await;
-        clients.remove(&session_id);
+        self.send_command(ManagerCommand::RemoveClient { session_id });
+    }
+
+    async fn get_client(&self, session_id: Uuid) -> Option<Arc<TunnelClient>> {
+        let (respond, receiver) = oneshot::channel();
+        if self
+            .commands
+            .send(ManagerCommand::GetClient {
+                session_id,
+                respond,
+            })
+            .is_err()
+        {
+            return None;
+        }
+        receiver.await.ok().flatten()
+    }
+
+    async fn insert_client(
+        &self,
+        session_id: Uuid,
+        client: Arc<TunnelClient>,
+    ) -> Option<Arc<TunnelClient>> {
+        let (respond, receiver) = oneshot::channel();
+        if self
+            .commands
+            .send(ManagerCommand::InsertClient {
+                session_id,
+                client,
+                respond,
+            })
+            .is_err()
+        {
+            return None;
+        }
+        receiver.await.ok().flatten()
+    }
+
+    fn send_command(&self, command: ManagerCommand) {
+        if self.commands.send(command).is_err() {
+            debug!("Devbox tunnel manager command channel closed");
+        }
     }
 }
 

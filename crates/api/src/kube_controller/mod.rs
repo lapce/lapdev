@@ -6,6 +6,7 @@ use crate::environment_events::EnvironmentLifecycleEvent;
 use lapdev_db::api::DbApi;
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube::tunnel::TunnelRegistry;
+use tracing::{debug, warn};
 
 // Submodules
 mod app_catalog;
@@ -60,5 +61,41 @@ impl KubeController {
     ) -> Option<KubeClusterServer> {
         let servers = self.kube_cluster_servers.read().await;
         servers.get(&cluster_id)?.last().cloned()
+    }
+
+    pub async fn refresh_cluster_namespace_watches(&self, cluster_id: Uuid) {
+        let namespaces = match self.db.get_cluster_catalog_namespaces(cluster_id).await {
+            Ok(namespaces) => namespaces,
+            Err(err) => {
+                warn!(
+                    cluster_id = %cluster_id,
+                    error = ?err,
+                    "Failed to load namespaces for watch configuration"
+                );
+                return;
+            }
+        };
+
+        let servers = self.kube_cluster_servers.read().await;
+        let Some(cluster_servers) = servers.get(&cluster_id) else {
+            debug!(
+                cluster_id = %cluster_id,
+                "No connected KubeManager instances; skipping namespace watch refresh"
+            );
+            return;
+        };
+
+        for server in cluster_servers {
+            if let Err(err) = server
+                .send_namespace_watch_configuration(namespaces.clone())
+                .await
+            {
+                warn!(
+                    cluster_id = %cluster_id,
+                    error = ?err,
+                    "Failed to send namespace watch configuration to KubeManager"
+                );
+            }
+        }
     }
 }

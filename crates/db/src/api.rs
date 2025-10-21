@@ -11,8 +11,8 @@ use lapdev_common::{
     LAPDEV_ISOLATE_CONTAINER,
 };
 use lapdev_db_entities::{
-    kube_app_catalog_workload_dependency, kube_app_catalog_workload_label, kube_cluster_service,
-    kube_cluster_service_selector,
+    kube_app_catalog_workload, kube_app_catalog_workload_dependency,
+    kube_app_catalog_workload_label, kube_cluster_service, kube_cluster_service_selector,
 };
 use lapdev_db_migration::Migrator;
 use pasetors::{
@@ -1373,6 +1373,20 @@ impl DbApi {
                 .one(&self.conn)
                 .await?;
         Ok(workload)
+    }
+
+    pub async fn get_cluster_catalog_namespaces(&self, cluster_id: Uuid) -> Result<Vec<String>> {
+        let namespaces = kube_app_catalog_workload::Entity::find()
+            .filter(kube_app_catalog_workload::Column::ClusterId.eq(cluster_id))
+            .filter(kube_app_catalog_workload::Column::DeletedAt.is_null())
+            .select_only()
+            .column(kube_app_catalog_workload::Column::Namespace)
+            .distinct()
+            .into_tuple::<String>()
+            .all(&self.conn)
+            .await?;
+
+        Ok(namespaces)
     }
 
     pub async fn delete_app_catalog_workload(&self, workload_id: Uuid) -> Result<()> {

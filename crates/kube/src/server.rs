@@ -59,15 +59,25 @@ impl KubeClusterServer {
     }
 
     pub async fn register(&self) {
-        let mut servers = self.kube_cluster_servers.write().await;
-        servers
-            .entry(self.cluster_id)
-            .or_insert_with(Vec::new)
-            .push(self.clone());
+        {
+            let mut servers = self.kube_cluster_servers.write().await;
+            servers
+                .entry(self.cluster_id)
+                .or_insert_with(Vec::new)
+                .push(self.clone());
+        }
         tracing::info!(
             "Registered KubeClusterServer for cluster {}",
             self.cluster_id
         );
+
+        if let Err(err) = self.sync_namespace_watches_from_db().await {
+            tracing::warn!(
+                cluster_id = %self.cluster_id,
+                error = ?err,
+                "Failed to send initial namespace watch configuration"
+            );
+        }
     }
 
     pub async fn unregister(&self) {
@@ -89,6 +99,42 @@ impl KubeClusterServer {
                 servers.remove(&self.cluster_id);
             }
         }
+    }
+
+    pub async fn send_namespace_watch_configuration(
+        &self,
+        namespaces: Vec<String>,
+    ) -> AnyResult<()> {
+        let namespace_count = namespaces.len();
+        tracing::info!(
+            cluster_id = %self.cluster_id,
+            namespace_count,
+            "Sending namespace watch configuration to KubeManager"
+        );
+
+        match self
+            .rpc_client
+            .configure_watches(tarpc::context::current(), namespaces)
+            .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(anyhow!(
+                "KubeManager rejected namespace watch configuration: {}",
+                err
+            )),
+            Err(err) => Err(anyhow!(
+                "Failed to send namespace watch configuration RPC: {}",
+                err
+            )),
+        }
+    }
+
+    pub async fn sync_namespace_watches_from_db(&self) -> AnyResult<()> {
+        let namespaces = self
+            .db
+            .get_cluster_catalog_namespaces(self.cluster_id)
+            .await?;
+        self.send_namespace_watch_configuration(namespaces).await
     }
 }
 

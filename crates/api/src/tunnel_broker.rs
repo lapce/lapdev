@@ -1,9 +1,9 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use axum::extract::ws::WebSocket;
 use tokio::{
     io,
-    sync::{oneshot, Mutex},
+    sync::{mpsc, oneshot},
 };
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -24,24 +24,17 @@ struct ProxyWaitingEntry {
 }
 
 struct PendingEndpoint {
-    socket: Option<WebSocket>,
-    notify: Option<oneshot::Sender<()>>,
+    socket: WebSocket,
+    notify: oneshot::Sender<()>,
 }
 
 impl PendingEndpoint {
     fn new(socket: WebSocket, notify: oneshot::Sender<()>) -> Self {
-        Self {
-            socket: Some(socket),
-            notify: Some(notify),
-        }
+        Self { socket, notify }
     }
 
-    fn take_socket(&mut self) -> Option<WebSocket> {
-        self.socket.take()
-    }
-
-    fn take_notify(&mut self) -> Option<oneshot::Sender<()>> {
-        self.notify.take()
+    fn split(self) -> (WebSocket, oneshot::Sender<()>) {
+        (self.socket, self.notify)
     }
 }
 
@@ -52,26 +45,114 @@ enum InterceptEndpointKind {
 }
 
 pub struct TunnelBroker {
-    intercept_sessions: Arc<Mutex<HashMap<Uuid, InterceptWaitingEntry>>>,
-    proxy_environments: Arc<Mutex<HashMap<Uuid, ProxyWaitingEntry>>>,
+    commands: mpsc::UnboundedSender<BrokerCommand>,
+}
+
+enum BrokerCommand {
+    RegisterIntercept {
+        session_id: Uuid,
+        kind: InterceptEndpointKind,
+        socket: WebSocket,
+        notify: oneshot::Sender<()>,
+    },
+    RegisterProxyClient {
+        environment_id: Uuid,
+        session_id: Uuid,
+        socket: WebSocket,
+        notify: oneshot::Sender<()>,
+    },
+    RegisterProxy {
+        environment_id: Uuid,
+        socket: WebSocket,
+        notify: oneshot::Sender<()>,
+    },
 }
 
 impl TunnelBroker {
     pub fn new() -> Self {
-        Self {
-            intercept_sessions: Arc::new(Mutex::new(HashMap::new())),
-            proxy_environments: Arc::new(Mutex::new(HashMap::new())),
-        }
+        let (commands, mut rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut intercept_sessions: HashMap<Uuid, InterceptWaitingEntry> = HashMap::new();
+            let mut proxy_environments: HashMap<Uuid, ProxyWaitingEntry> = HashMap::new();
+
+            while let Some(command) = rx.recv().await {
+                match command {
+                    BrokerCommand::RegisterIntercept {
+                        session_id,
+                        kind,
+                        socket,
+                        notify,
+                    } => Self::handle_register_intercept(
+                        &mut intercept_sessions,
+                        session_id,
+                        kind,
+                        socket,
+                        notify,
+                    ),
+                    BrokerCommand::RegisterProxyClient {
+                        environment_id,
+                        session_id,
+                        socket,
+                        notify,
+                    } => Self::handle_register_proxy_client(
+                        &mut proxy_environments,
+                        environment_id,
+                        session_id,
+                        socket,
+                        notify,
+                    ),
+                    BrokerCommand::RegisterProxy {
+                        environment_id,
+                        socket,
+                        notify,
+                    } => Self::handle_register_proxy(
+                        &mut proxy_environments,
+                        environment_id,
+                        socket,
+                        notify,
+                    ),
+                }
+            }
+        });
+
+        Self { commands }
     }
 
     pub async fn register_devbox(&self, session_id: Uuid, socket: WebSocket) {
-        self.register_intercept_endpoint(session_id, InterceptEndpointKind::Devbox, socket)
-            .await;
+        let (notify_tx, notify_rx) = oneshot::channel();
+        if self
+            .commands
+            .send(BrokerCommand::RegisterIntercept {
+                session_id,
+                kind: InterceptEndpointKind::Devbox,
+                socket,
+                notify: notify_tx,
+            })
+            .is_err()
+        {
+            warn!("Tunnel broker command channel closed while registering devbox endpoint");
+            return;
+        }
+        let _ = notify_rx.await;
     }
 
     pub async fn register_sidecar(&self, session_id: Uuid, socket: WebSocket) {
-        self.register_intercept_endpoint(session_id, InterceptEndpointKind::Sidecar, socket)
-            .await;
+        let (notify_tx, notify_rx) = oneshot::channel();
+        if self
+            .commands
+            .send(BrokerCommand::RegisterIntercept {
+                session_id,
+                kind: InterceptEndpointKind::Sidecar,
+                socket,
+                notify: notify_tx,
+            })
+            .is_err()
+        {
+            warn!("Tunnel broker command channel closed while registering sidecar endpoint");
+            return;
+        }
+        let _ = notify_rx.await;
     }
 
     pub async fn register_devbox_proxy_client(
@@ -81,241 +162,40 @@ impl TunnelBroker {
         socket: WebSocket,
     ) {
         let (notify_tx, notify_rx) = oneshot::channel();
-        let mut bridge_pair = None;
-
-        {
-            let mut environments = self.proxy_environments.lock().await;
-            let entry = environments.entry(environment_id).or_default();
-
-            if entry.devbox.is_some() {
-                warn!(
-                    "Duplicate devbox proxy client endpoint for environment {} (session {})",
-                    environment_id, session_id
-                );
-                let _ = notify_tx.send(());
-                return;
-            }
-
-            entry.session_id = Some(session_id);
-            entry.devbox = Some(PendingEndpoint::new(socket, notify_tx));
-
-            if entry.proxy.is_some() {
-                let mut entry = environments.remove(&environment_id).unwrap_or_default();
-                let mut devbox = entry.devbox.take().unwrap();
-                let mut proxy = entry.proxy.take().unwrap();
-                let devbox_socket = devbox.take_socket().unwrap();
-                let proxy_socket = proxy.take_socket().unwrap();
-                let devbox_notify = devbox.take_notify();
-                let proxy_notify = proxy.take_notify();
-                let session_id = entry.session_id.unwrap_or_else(|| {
-                    warn!(
-                        "Missing session id while bridging environment {}; defaulting to {}",
-                        environment_id, session_id
-                    );
-                    session_id
-                });
-                bridge_pair = Some((
-                    environment_id,
-                    session_id,
-                    devbox_socket,
-                    devbox_notify,
-                    proxy_socket,
-                    proxy_notify,
-                ));
-            }
-        }
-
-        if let Some((
-            environment_id,
-            session_id,
-            devbox_socket,
-            devbox_notify,
-            proxy_socket,
-            proxy_notify,
-        )) = bridge_pair
-        {
-            self.spawn_proxy_bridge(
+        if self
+            .commands
+            .send(BrokerCommand::RegisterProxyClient {
                 environment_id,
                 session_id,
-                devbox_socket,
-                devbox_notify,
-                proxy_socket,
-                proxy_notify,
-            );
+                socket,
+                notify: notify_tx,
+            })
+            .is_err()
+        {
+            warn!("Tunnel broker command channel closed while registering proxy client endpoint");
+            return;
         }
-
         let _ = notify_rx.await;
     }
 
     pub async fn register_devbox_proxy(&self, environment_id: Uuid, socket: WebSocket) {
         let (notify_tx, notify_rx) = oneshot::channel();
-        let mut bridge_pair = None;
-
-        {
-            let mut environments = self.proxy_environments.lock().await;
-            let entry = environments.entry(environment_id).or_default();
-
-            if entry.proxy.is_some() {
-                warn!(
-                    "Duplicate devbox proxy endpoint for environment {}",
-                    environment_id
-                );
-                let _ = notify_tx.send(());
-                return;
-            }
-
-            entry.proxy = Some(PendingEndpoint::new(socket, notify_tx));
-
-            if entry.devbox.is_some() {
-                let mut entry = environments.remove(&environment_id).unwrap_or_default();
-                let mut devbox = entry.devbox.take().unwrap();
-                let mut proxy = entry.proxy.take().unwrap();
-                let devbox_socket = devbox.take_socket().unwrap();
-                let proxy_socket = proxy.take_socket().unwrap();
-                let devbox_notify = devbox.take_notify();
-                let proxy_notify = proxy.take_notify();
-                let session_id = entry.session_id.unwrap_or_else(|| {
-                    warn!(
-                        "Missing session id while bridging environment {}; using zero UUID",
-                        environment_id
-                    );
-                    Uuid::nil()
-                });
-                bridge_pair = Some((
-                    environment_id,
-                    session_id,
-                    devbox_socket,
-                    devbox_notify,
-                    proxy_socket,
-                    proxy_notify,
-                ));
-            }
-        }
-
-        if let Some((
-            environment_id,
-            session_id,
-            devbox_socket,
-            devbox_notify,
-            proxy_socket,
-            proxy_notify,
-        )) = bridge_pair
-        {
-            self.spawn_proxy_bridge(
+        if self
+            .commands
+            .send(BrokerCommand::RegisterProxy {
                 environment_id,
-                session_id,
-                devbox_socket,
-                devbox_notify,
-                proxy_socket,
-                proxy_notify,
-            );
-        }
-
-        let _ = notify_rx.await;
-    }
-
-    async fn register_intercept_endpoint(
-        &self,
-        session_id: Uuid,
-        kind: InterceptEndpointKind,
-        socket: WebSocket,
-    ) {
-        let (notify_tx, notify_rx) = oneshot::channel();
-        let mut bridge_pair = None;
-
+                socket,
+                notify: notify_tx,
+            })
+            .is_err()
         {
-            let mut sessions = self.intercept_sessions.lock().await;
-            let entry = sessions.entry(session_id).or_default();
-
-            match kind {
-                InterceptEndpointKind::Devbox => {
-                    if entry.devbox.is_some() {
-                        warn!(
-                            "Duplicate devbox endpoint for session {} - cleaning up old connection",
-                            session_id
-                        );
-                        // Remove the old stale connection and replace with new one
-                        entry.devbox = None;
-                    }
-                    entry.devbox = Some(PendingEndpoint::new(socket, notify_tx));
-                }
-                InterceptEndpointKind::Sidecar => {
-                    if entry.sidecar.is_some() {
-                        warn!("Duplicate sidecar endpoint for session {} - cleaning up old connection", session_id);
-                        // Remove the old stale connection and replace with new one
-                        entry.sidecar = None;
-                    }
-                    entry.sidecar = Some(PendingEndpoint::new(socket, notify_tx));
-                }
-            }
-
-            if entry.devbox.is_some() && entry.sidecar.is_some() {
-                let mut entry = sessions.remove(&session_id).unwrap_or_default();
-                let mut devbox = entry.devbox.take().unwrap();
-                let mut sidecar = entry.sidecar.take().unwrap();
-                let devbox_socket = devbox.take_socket().unwrap();
-                let sidecar_socket = sidecar.take_socket().unwrap();
-                let devbox_notify = devbox.take_notify();
-                let sidecar_notify = sidecar.take_notify();
-                bridge_pair = Some((
-                    session_id,
-                    devbox_socket,
-                    devbox_notify,
-                    sidecar_socket,
-                    sidecar_notify,
-                ));
-            }
+            warn!("Tunnel broker command channel closed while registering proxy endpoint");
+            return;
         }
-
-        if let Some((session_id, devbox_socket, devbox_notify, sidecar_socket, sidecar_notify)) =
-            bridge_pair
-        {
-            self.spawn_intercept_bridge(
-                session_id,
-                devbox_socket,
-                devbox_notify,
-                sidecar_socket,
-                sidecar_notify,
-            );
-        }
-
-        // Wait for notification - either paired successfully or this connection closes
         let _ = notify_rx.await;
-
-        // Cleanup if we were waiting and the connection closed
-        // This handles the case where one endpoint connects but the other never does
-        // and the WebSocket times out or disconnects
-        let mut sessions = self.intercept_sessions.lock().await;
-        if let Some(entry) = sessions.get_mut(&session_id) {
-            match kind {
-                InterceptEndpointKind::Devbox => {
-                    if entry.devbox.is_some() {
-                        info!(
-                            "Cleaning up waiting devbox endpoint for session {}",
-                            session_id
-                        );
-                        entry.devbox = None;
-                    }
-                }
-                InterceptEndpointKind::Sidecar => {
-                    if entry.sidecar.is_some() {
-                        info!(
-                            "Cleaning up waiting sidecar endpoint for session {}",
-                            session_id
-                        );
-                        entry.sidecar = None;
-                    }
-                }
-            }
-            // Remove the entire entry if both endpoints are now None
-            if entry.devbox.is_none() && entry.sidecar.is_none() {
-                sessions.remove(&session_id);
-            }
-        }
     }
 
     fn spawn_intercept_bridge(
-        &self,
         session_id: Uuid,
         devbox_socket: WebSocket,
         devbox_notify: Option<oneshot::Sender<()>>,
@@ -349,7 +229,6 @@ impl TunnelBroker {
     }
 
     fn spawn_proxy_bridge(
-        &self,
         environment_id: Uuid,
         session_id: Uuid,
         devbox_socket: WebSocket,
@@ -387,5 +266,165 @@ impl TunnelBroker {
                 let _ = tx.send(());
             }
         });
+    }
+
+    fn handle_register_intercept(
+        sessions: &mut HashMap<Uuid, InterceptWaitingEntry>,
+        session_id: Uuid,
+        kind: InterceptEndpointKind,
+        socket: WebSocket,
+        notify: oneshot::Sender<()>,
+    ) {
+        let entry = sessions.entry(session_id).or_default();
+        match kind {
+            InterceptEndpointKind::Devbox => {
+                if entry
+                    .devbox
+                    .replace(PendingEndpoint::new(socket, notify))
+                    .is_some()
+                {
+                    warn!(
+                        "Duplicate devbox endpoint for session {} - replacing stale connection",
+                        session_id
+                    );
+                }
+            }
+            InterceptEndpointKind::Sidecar => {
+                if entry
+                    .sidecar
+                    .replace(PendingEndpoint::new(socket, notify))
+                    .is_some()
+                {
+                    warn!(
+                        "Duplicate sidecar endpoint for session {} - replacing stale connection",
+                        session_id
+                    );
+                }
+            }
+        }
+
+        let ready = entry.devbox.is_some() && entry.sidecar.is_some();
+        if !ready {
+            return;
+        }
+
+        if let Some(entry) = sessions.remove(&session_id) {
+            let InterceptWaitingEntry { devbox, sidecar } = entry;
+            if let (Some(devbox), Some(sidecar)) = (devbox, sidecar) {
+                let (devbox_socket, devbox_notify) = devbox.split();
+                let (sidecar_socket, sidecar_notify) = sidecar.split();
+                Self::spawn_intercept_bridge(
+                    session_id,
+                    devbox_socket,
+                    Some(devbox_notify),
+                    sidecar_socket,
+                    Some(sidecar_notify),
+                );
+            }
+        }
+    }
+
+    fn handle_register_proxy_client(
+        environments: &mut HashMap<Uuid, ProxyWaitingEntry>,
+        environment_id: Uuid,
+        session_id: Uuid,
+        socket: WebSocket,
+        notify: oneshot::Sender<()>,
+    ) {
+        let entry = environments.entry(environment_id).or_default();
+        entry.session_id = Some(session_id);
+        if entry
+            .devbox
+            .replace(PendingEndpoint::new(socket, notify))
+            .is_some()
+        {
+            warn!(
+                "Duplicate devbox proxy client endpoint for environment {} (session {})",
+                environment_id, session_id
+            );
+        }
+
+        if entry.proxy.is_none() {
+            return;
+        }
+
+        if let Some(entry) = environments.remove(&environment_id) {
+            let ProxyWaitingEntry {
+                devbox,
+                proxy,
+                session_id: stored_session,
+            } = entry;
+
+            if let (Some(devbox), Some(proxy)) = (devbox, proxy) {
+                let (devbox_socket, devbox_notify) = devbox.split();
+                let (proxy_socket, proxy_notify) = proxy.split();
+                let session_id = stored_session.unwrap_or_else(|| {
+                    warn!(
+                        "Missing session id while bridging environment {}; defaulting to {}",
+                        environment_id, session_id
+                    );
+                    session_id
+                });
+                Self::spawn_proxy_bridge(
+                    environment_id,
+                    session_id,
+                    devbox_socket,
+                    Some(devbox_notify),
+                    proxy_socket,
+                    Some(proxy_notify),
+                );
+            }
+        }
+    }
+
+    fn handle_register_proxy(
+        environments: &mut HashMap<Uuid, ProxyWaitingEntry>,
+        environment_id: Uuid,
+        socket: WebSocket,
+        notify: oneshot::Sender<()>,
+    ) {
+        let entry = environments.entry(environment_id).or_default();
+        if entry
+            .proxy
+            .replace(PendingEndpoint::new(socket, notify))
+            .is_some()
+        {
+            warn!(
+                "Duplicate devbox proxy endpoint for environment {}",
+                environment_id
+            );
+        }
+
+        if entry.devbox.is_none() {
+            return;
+        }
+
+        if let Some(entry) = environments.remove(&environment_id) {
+            let ProxyWaitingEntry {
+                devbox,
+                proxy,
+                session_id,
+            } = entry;
+
+            if let (Some(devbox), Some(proxy)) = (devbox, proxy) {
+                let (devbox_socket, devbox_notify) = devbox.split();
+                let (proxy_socket, proxy_notify) = proxy.split();
+                let session_id = session_id.unwrap_or_else(|| {
+                    warn!(
+                        "Missing session id while bridging environment {}; using zero UUID",
+                        environment_id
+                    );
+                    Uuid::nil()
+                });
+                Self::spawn_proxy_bridge(
+                    environment_id,
+                    session_id,
+                    devbox_socket,
+                    Some(devbox_notify),
+                    proxy_socket,
+                    Some(proxy_notify),
+                );
+            }
+        }
     }
 }

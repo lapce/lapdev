@@ -191,26 +191,6 @@ impl DevboxProxyRpc for DevboxProxyRpcServer {
             }
         }
     }
-
-    async fn get_tunnel_status(
-        self,
-        _context: ::tarpc::context::Context,
-        environment_id: Option<Uuid>,
-    ) -> Result<bool, String> {
-        match environment_id {
-            None => {
-                // Get base tunnel status for personal environment
-                let task_lock = self.base_tunnel_task.read().await;
-                Ok(task_lock.is_some())
-            }
-            Some(branch_env_id) => {
-                // Get branch tunnel status for shared environment
-                self.branch_config
-                    .get_branch_tunnel_status(branch_env_id)
-                    .await
-            }
-        }
-    }
 }
 
 impl DevboxProxyRpcServer {

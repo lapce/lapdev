@@ -187,6 +187,7 @@ impl ProxyHandler {
         Ok(RouteConfig {
             path: "/*".to_string(),
             target: RouteTarget::Address(config.default_target),
+            branch_environment_id: None,
             headers: std::collections::HashMap::new(),
             timeout_ms: None,
             requires_auth: true,

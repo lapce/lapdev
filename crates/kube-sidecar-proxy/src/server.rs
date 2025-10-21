@@ -1,5 +1,5 @@
 use crate::{
-    config::ProxyConfig,
+    config::{ProxyConfig, RouteTarget},
     error::Result,
     original_dest::get_original_destination,
     otel_routing::{determine_routing_target, extract_routing_context},
@@ -19,7 +19,7 @@ use std::{collections::HashMap, io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     io::copy_bidirectional,
-    net::{TcpListener, TcpStream},
+    net::{lookup_host, TcpListener, TcpStream},
     sync::{mpsc, oneshot, RwLock},
 };
 use tokio_tungstenite::connect_async;
@@ -324,12 +324,14 @@ async fn handle_connection(
     };
 
     match protocol_type {
-        ProtocolType::Http { method, path } => {
-            info!(
-                "Detected HTTP {} {} from {} -> {} (local: {})",
-                method, path, client_addr, original_dest, local_target
-            );
-            handle_http_proxy(inbound_stream, original_dest.port(), initial_data).await
+        ProtocolType::Http { .. } => {
+            handle_http_proxy(
+                inbound_stream,
+                original_dest,
+                initial_data,
+                Arc::clone(&config),
+            )
+            .await
         }
         ProtocolType::Tcp => {
             info!(
@@ -344,8 +346,9 @@ async fn handle_connection(
 /// Handle HTTP proxying with OpenTelemetry header parsing and intelligent routing
 async fn handle_http_proxy(
     mut inbound_stream: TcpStream,
-    original_port: u16,
+    original_dest: SocketAddr,
     mut initial_data: Vec<u8>,
+    config: Arc<RwLock<ProxyConfig>>,
 ) -> io::Result<()> {
     // Try to parse the HTTP request, reading more data if needed
     let (http_request, _body_start) = match http_parser::parse_complete_http_request(
@@ -360,52 +363,166 @@ async fn handle_http_proxy(
                 "Failed to parse HTTP request: {}, falling back to TCP proxy",
                 e
             );
-            let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_port);
-            return handle_tcp_proxy(inbound_stream, local_target, initial_data).await;
+            let fallback_target =
+                SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
+            return handle_tcp_proxy(inbound_stream, fallback_target, initial_data).await;
         }
     };
 
     // Extract OpenTelemetry and routing context from headers
     let routing_context = extract_routing_context(&http_request.headers);
+    let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
 
-    // Determine routing target based on headers
-    let routing_target = determine_routing_target(&routing_context, original_port);
+    if let Some(environment_id) = routing_context.lapdev_environment_id {
+        if let Some((service_name, namespace, branch_port)) =
+            find_branch_route(&config, &environment_id, original_dest.port()).await
+        {
+            match resolve_service_addresses(&service_name, &namespace, branch_port).await {
+                Ok(addresses) => {
+                    if let Some(branch_addr) = addresses.into_iter().next() {
+                        info!(
+                            "HTTP {} {} routed to branch {} service {}.{} via {}",
+                            http_request.method,
+                            http_request.path,
+                            environment_id,
+                            service_name,
+                            namespace,
+                            branch_addr
+                        );
 
-    // Get the actual target address
-    let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), routing_target.get_port());
+                        match proxy_stream(&mut inbound_stream, branch_addr, &initial_data).await {
+                            Ok(()) => return Ok(()),
+                            Err(err) => {
+                                warn!(
+                                    "Branch route {} ({}.{}) for env {} failed: {}. Falling back to shared target",
+                                    branch_addr,
+                                    service_name,
+                                    namespace,
+                                    environment_id,
+                                    err
+                                );
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "No DNS addresses resolved for branch service {}.{} (env {})",
+                            service_name, namespace, environment_id
+                        );
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        "Failed to resolve branch service {}.{} for env {}: {}",
+                        service_name, namespace, environment_id, err
+                    );
+                }
+            }
+        }
+    }
 
-    // Log the routing decision
+    // Determine routing target based on headers for fallback logging
+    let routing_target = determine_routing_target(&routing_context, original_dest.port());
     info!(
         "HTTP {} {} -> {} (routing: {}, trace_id: {:?})",
         http_request.method,
         http_request.path,
-        local_target,
+        fallback_target,
         routing_target.get_metadata(),
         routing_context.trace_context.trace_id
     );
 
-    // Connect to the local service
-    let mut outbound_stream = TcpStream::connect(&local_target).await?;
+    proxy_stream(&mut inbound_stream, fallback_target, &initial_data).await
+}
 
-    // Send the initial data we read for protocol detection
+async fn proxy_stream(
+    inbound_stream: &mut TcpStream,
+    target: SocketAddr,
+    initial_data: &[u8],
+) -> io::Result<()> {
+    let mut outbound_stream = TcpStream::connect(target).await?;
+
     if !initial_data.is_empty() {
-        tokio::io::AsyncWriteExt::write_all(&mut outbound_stream, &initial_data).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut outbound_stream, initial_data).await?;
     }
 
-    // Start bidirectional copying for the rest of the connection
-    match copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+    match copy_bidirectional(inbound_stream, &mut outbound_stream).await {
         Ok((bytes_tx, bytes_rx)) => {
             debug!(
-                "HTTP connection completed: {} bytes tx, {} bytes rx",
-                bytes_tx, bytes_rx
+                "HTTP connection completed via {}: {} bytes tx, {} bytes rx",
+                target, bytes_tx, bytes_rx
             );
         }
         Err(e) => {
-            debug!("HTTP connection ended: {}", e);
+            debug!("HTTP connection via {} ended: {}", target, e);
         }
     }
 
     Ok(())
+}
+
+async fn find_branch_route(
+    config: &Arc<RwLock<ProxyConfig>>,
+    environment_id: &Uuid,
+    port: u16,
+) -> Option<(String, String, u16)> {
+    let config = config.read().await;
+
+    for route in &config.routes {
+        if route.branch_environment_id == Some(*environment_id) {
+            if let RouteTarget::Service {
+                name,
+                namespace,
+                port: route_port,
+            } = &route.target
+            {
+                if *route_port == port {
+                    let ns = namespace
+                        .clone()
+                        .or_else(|| config.namespace.clone())
+                        .unwrap_or_else(|| "default".to_string());
+                    return Some((name.clone(), ns, *route_port));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+async fn resolve_service_addresses(
+    service_name: &str,
+    namespace: &str,
+    port: u16,
+) -> io::Result<Vec<SocketAddr>> {
+    let search_hosts = [
+        format!("{}.{}.svc.cluster.local", service_name, namespace),
+        format!("{}.{}.svc", service_name, namespace),
+        format!("{}.{}", service_name, namespace),
+    ];
+
+    let mut last_err: Option<io::Error> = None;
+
+    for host in &search_hosts {
+        match lookup_host((host.as_str(), port)).await {
+            Ok(addresses) => {
+                let collected: Vec<SocketAddr> = addresses.collect();
+                if !collected.is_empty() {
+                    return Ok(collected);
+                }
+            }
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "Unable to resolve service {} in namespace {} on port {}",
+                service_name, namespace, port
+            ),
+        )
+    }))
 }
 
 /// Handle TCP proxying (raw byte forwarding)

@@ -43,6 +43,9 @@ pub struct RouteConfig {
     /// Target service to route to
     pub target: RouteTarget,
 
+    /// Optional branch environment identifier this route applies to
+    pub branch_environment_id: Option<Uuid>,
+
     /// Optional headers to add/modify
     pub headers: HashMap<String, String>,
 

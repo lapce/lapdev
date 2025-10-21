@@ -149,7 +149,16 @@ impl KubeController {
                     &existing_workload.workload_yaml,
                     &containers,
                 )?;
-                (manifest, yaml, None)
+                let mut labels = HashMap::new();
+                labels.insert(
+                    "lapdev.base-workload".to_string(),
+                    existing_workload.name.clone(),
+                );
+                labels.insert(
+                    "lapdev.base-workload-id".to_string(),
+                    existing_workload.id.to_string(),
+                );
+                (manifest, yaml, Some(labels))
             };
 
         let cluster_server = self
@@ -304,6 +313,10 @@ impl KubeController {
         extra_labels.insert(
             "lapdev.io/proxy-target-port".to_string(),
             "8080".to_string(),
+        );
+        extra_labels.insert(
+            "lapdev.base-workload-id".to_string(),
+            existing_workload.id.to_string(),
         );
 
         Ok((workloads_with_resources, persisted_yaml, extra_labels))

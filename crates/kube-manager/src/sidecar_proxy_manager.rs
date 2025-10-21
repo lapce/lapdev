@@ -89,21 +89,43 @@ impl SidecarProxyManager {
             return Ok(());
         };
 
-        let services_api: Api<Service> =
-            Api::namespaced(self.kube_client.clone(), &registration.namespace);
+        let scoped_services = {
+            let selector = format!("lapdev.base-workload-id={}", registration.workload_id);
+            let services_api_all: Api<Service> = Api::all(self.kube_client.clone());
+            let listed = services_api_all
+                .list(&ListParams::default().labels(&selector))
+                .await?
+                .items;
 
-        let label_selector = format!("lapdev.io/branch-environment-id={}", environment_id);
-        let services = services_api
-            .list(&ListParams::default().labels(&label_selector))
-            .await?
-            .items;
+            if listed.is_empty() {
+                // Backward compatibility: fall back to namespace-scoped lookup
+                let services_api_ns: Api<Service> =
+                    Api::namespaced(self.kube_client.clone(), &registration.namespace);
+                services_api_ns.list(&ListParams::default()).await?.items
+            } else {
+                listed
+            }
+        };
 
         let mut routes = Vec::new();
-        for svc in services {
+        for svc in scoped_services {
             let svc_name = svc.metadata.name.unwrap_or_default();
             if svc_name.is_empty() {
                 continue;
             }
+
+            let namespace = svc
+                .metadata
+                .namespace
+                .clone()
+                .unwrap_or_else(|| registration.namespace.clone());
+
+            let branch_env_id = svc
+                .metadata
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("lapdev.io/branch-environment-id"))
+                .and_then(|value| Uuid::parse_str(value).ok());
 
             if let Some(spec) = svc.spec {
                 if let Some(ports) = spec.ports {
@@ -114,8 +136,9 @@ impl SidecarProxyManager {
                         routes.push(ProxyRouteConfig {
                             path: format!("/{}/*", svc_name),
                             service_name: svc_name.clone(),
-                            namespace: registration.namespace.clone(),
+                            namespace: namespace.clone(),
                             port: port_number,
+                            branch_environment_id: branch_env_id,
                         });
                     }
                 }

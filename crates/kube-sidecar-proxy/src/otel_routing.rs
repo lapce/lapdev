@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use tracing::{debug, warn};
+use uuid::Uuid;
 
 /// OpenTelemetry header names
 pub const TRACEPARENT_HEADER: &str = "traceparent";
@@ -25,6 +26,7 @@ pub struct TraceContext {
 #[derive(Debug, Clone)]
 pub struct RoutingContext {
     pub trace_context: TraceContext,
+    pub lapdev_environment_id: Option<Uuid>,
     pub routing_key: Option<String>,
     pub service_version: Option<String>,
     pub canary_deployment: Option<String>,
@@ -35,9 +37,11 @@ pub struct RoutingContext {
 /// Extract OpenTelemetry and routing context from parsed headers
 pub fn extract_routing_context(headers: &[(String, String)]) -> RoutingContext {
     let trace_context = extract_trace_context(headers);
+    let lapdev_environment_id = extract_lapdev_environment_id(trace_context.trace_state.as_ref());
 
     RoutingContext {
         trace_context,
+        lapdev_environment_id,
         routing_key: get_header_value(headers, X_ROUTING_KEY),
         service_version: get_header_value(headers, X_SERVICE_VERSION),
         canary_deployment: get_header_value(headers, X_CANARY_DEPLOYMENT),
@@ -132,6 +136,21 @@ fn extract_custom_headers(headers: &[(String, String)]) -> HashMap<String, Strin
     }
 
     custom_headers
+}
+
+fn extract_lapdev_environment_id(tracestate: Option<&String>) -> Option<Uuid> {
+    let tracestate = tracestate?;
+
+    tracestate.split(',').find_map(|entry| {
+        let entry = entry.trim();
+        let (key, value) = entry.split_once('=')?;
+
+        if key.trim().eq_ignore_ascii_case("lapdev-env-id") {
+            Uuid::parse_str(value.trim()).ok()
+        } else {
+            None
+        }
+    })
 }
 
 /// Determine routing target based on context
@@ -264,6 +283,7 @@ mod tests {
             context.trace_context.baggage.get("userId"),
             Some(&"alice".to_string())
         );
+        assert!(context.lapdev_environment_id.is_none());
     }
 
     #[test]
@@ -281,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_routing_target_determination() {
-        let mut context = RoutingContext {
+        let context = RoutingContext {
             trace_context: TraceContext {
                 trace_id: None,
                 span_id: None,
@@ -289,6 +309,7 @@ mod tests {
                 trace_state: None,
                 baggage: HashMap::new(),
             },
+            lapdev_environment_id: None,
             routing_key: None,
             service_version: None,
             canary_deployment: Some("true".to_string()),
@@ -304,5 +325,23 @@ mod tests {
             }
             _ => panic!("Expected canary routing"),
         }
+    }
+
+    #[test]
+    fn test_extract_lapdev_environment_id() {
+        let headers = create_test_headers(&[(
+            "tracestate",
+            "vendor=value,lapdev-env-id=123e4567-e89b-12d3-a456-426614174000",
+        )]);
+
+        let context = extract_routing_context(&headers);
+
+        assert_eq!(
+            context.lapdev_environment_id,
+            Some(
+                Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000")
+                    .expect("valid uuid literal")
+            )
+        );
     }
 }

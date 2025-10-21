@@ -378,6 +378,12 @@ pub trait KubeClusterRpc {
     ) -> Result<(), String>;
 
     async fn report_resource_change(event: ResourceChangeEvent) -> Result<(), String>;
+
+    /// Retrieve route configuration for branch-aware service routing
+    async fn list_branch_service_routes(
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<Vec<ProxyRouteConfig>, String>;
 }
 
 #[tarpc::service]

@@ -28,13 +28,12 @@ impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
         _context: ::tarpc::context::Context,
         workload_id: Uuid,
         environment_id: Uuid,
-        namespace: String,
+        _namespace: String,
     ) -> Result<(), String> {
         self.manager.sidecar_proxies.write().await.insert(
             environment_id,
             crate::sidecar_proxy_manager::SidecarProxyRegistration {
                 workload_id,
-                namespace: namespace.clone(),
                 rpc_client: self.rpc_client.clone(),
             },
         );

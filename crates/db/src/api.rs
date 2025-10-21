@@ -1741,6 +1741,21 @@ impl DbApi {
             .await
     }
 
+    pub async fn get_branch_environments(
+        &self,
+        base_environment_id: Uuid,
+    ) -> Result<Vec<lapdev_db_entities::kube_environment::Model>> {
+        let environments = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(
+                lapdev_db_entities::kube_environment::Column::BaseEnvironmentId
+                    .eq(base_environment_id),
+            )
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .all(&self.conn)
+            .await?;
+        Ok(environments)
+    }
+
     pub async fn delete_kube_environment(&self, environment_id: Uuid) -> Result<()> {
         lapdev_db_entities::kube_environment::ActiveModel {
             id: ActiveValue::Set(environment_id),

@@ -105,7 +105,7 @@ impl KubeManager {
             e
         })?);
 
-        let proxy_manager = Arc::new(SidecarProxyManager::new(kube_client.as_ref().clone()).await?);
+        let proxy_manager = Arc::new(SidecarProxyManager::new().await?);
         let devbox_proxy_manager = Arc::new(DevboxProxyManager::new().await?);
         let watch_manager = Arc::new(WatchManager::new(kube_client.clone()));
 
@@ -193,6 +193,9 @@ impl KubeManager {
             KubeClusterRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
         self.watch_manager.set_rpc_client(rpc_client.clone()).await;
+        self.proxy_manager
+            .set_cluster_rpc_client(rpc_client.clone())
+            .await;
 
         let rpc_server = KubeManagerRpcServer::new(self.clone(), rpc_client.clone());
 
@@ -228,6 +231,7 @@ impl KubeManager {
         let websocket_result = websocket_server_task.await;
 
         self.watch_manager.clear_rpc_client().await;
+        self.proxy_manager.clear_cluster_rpc_client().await;
 
         if let Err(e) = websocket_result {
             return Err(anyhow!("WebSocket RPC server task failed: {}", e));

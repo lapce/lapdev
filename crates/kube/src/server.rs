@@ -14,12 +14,15 @@ use lapdev_db_entities::{
     kube_app_catalog_workload_label,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpc, KubeManagerRpcClient, ResourceChangeEvent, ResourceChangeType, ResourceType,
+    KubeClusterRpc, KubeManagerRpcClient, ProxyRouteConfig, ResourceChangeEvent,
+    ResourceChangeType, ResourceType,
 };
 use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
+use serde_yaml::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::convert::TryFrom;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -245,6 +248,141 @@ impl KubeClusterRpc for KubeClusterServer {
 
         Ok(())
     }
+
+    async fn list_branch_service_routes(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<Vec<ProxyRouteConfig>, String> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch environment {}: {}", environment_id, e))?
+            .ok_or_else(|| format!("Environment {} not found", environment_id))?;
+
+        if environment.cluster_id != self.cluster_id {
+            return Err(format!(
+                "Environment {} does not belong to cluster {}",
+                environment_id, self.cluster_id
+            ));
+        }
+
+        let workload = self
+            .db
+            .get_environment_workload(workload_id)
+            .await
+            .map_err(|e| format!("Failed to fetch workload {}: {}", workload_id, e))?
+            .ok_or_else(|| format!("Workload {} not found", workload_id))?;
+
+        let base_env_id = environment.base_environment_id.unwrap_or(environment.id);
+        let base_workload_id =
+            extract_label_uuid(&workload.workload_yaml, "lapdev.base-workload-id")
+                .unwrap_or(workload.id);
+        let base_workload_name =
+            extract_label_string(&workload.workload_yaml, "lapdev.base-workload")
+                .unwrap_or_else(|| workload.name.clone());
+
+        let mut routes = Vec::new();
+
+        let mut target_environments = Vec::new();
+        target_environments.push(base_env_id);
+
+        let branch_environments =
+            self.db
+                .get_branch_environments(base_env_id)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to fetch branch environments for {}: {}",
+                        base_env_id, e
+                    )
+                })?;
+
+        for branch in branch_environments {
+            if branch.cluster_id == self.cluster_id {
+                target_environments.push(branch.id);
+            }
+        }
+
+        let base_workload_id_str = base_workload_id.to_string();
+
+        for env_id in target_environments {
+            let services = self
+                .db
+                .get_environment_services(env_id)
+                .await
+                .map_err(|e| {
+                    format!("Failed to fetch services for environment {}: {}", env_id, e)
+                })?;
+
+            for service in services {
+                if !service_matches_workload(
+                    &service.yaml,
+                    &base_workload_id_str,
+                    &base_workload_name,
+                    &service.selector,
+                ) {
+                    continue;
+                }
+
+                for port in service.ports {
+                    let Ok(port_number) = u16::try_from(port.port) else {
+                        continue;
+                    };
+
+                    routes.push(ProxyRouteConfig {
+                        path: format!("/{}/*", service.name),
+                        service_name: service.name.clone(),
+                        port: port_number,
+                        branch_environment_id: if env_id == base_env_id {
+                            None
+                        } else {
+                            Some(env_id)
+                        },
+                    });
+                }
+            }
+        }
+
+        Ok(routes)
+    }
+}
+
+fn extract_label_string(yaml: &str, key: &str) -> Option<String> {
+    let value: Value = serde_yaml::from_str(yaml).ok()?;
+    let metadata = value.get("metadata")?;
+    let labels = metadata.get("labels")?.as_mapping()?;
+    labels
+        .get(&Value::String(key.to_string()))?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+fn extract_label_uuid(yaml: &str, key: &str) -> Option<Uuid> {
+    extract_label_string(yaml, key).and_then(|s| Uuid::parse_str(&s).ok())
+}
+
+fn service_matches_workload(
+    service_yaml: &str,
+    base_workload_id: &str,
+    base_workload_name: &str,
+    selector: &HashMap<String, String>,
+) -> bool {
+    if let Some(label_id) = extract_label_string(service_yaml, "lapdev.base-workload-id") {
+        if label_id == base_workload_id {
+            return true;
+        }
+    }
+
+    if let Some(label_name) = extract_label_string(service_yaml, "lapdev.base-workload") {
+        if label_name == base_workload_name {
+            return true;
+        }
+    }
+
+    selector.values().any(|value| value == base_workload_name)
 }
 
 impl KubeClusterServer {

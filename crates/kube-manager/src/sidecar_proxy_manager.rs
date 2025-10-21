@@ -1,33 +1,32 @@
 use anyhow::Result;
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::Service;
-use kube::{api::ListParams, Api, Client as KubeClient};
 use lapdev_common::kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR};
-use lapdev_kube_rpc::{ProxyRouteConfig, SidecarProxyManagerRpc, SidecarProxyRpcClient};
+use lapdev_kube_rpc::{
+    KubeClusterRpcClient, SidecarProxyManagerRpc, SidecarProxyRpcClient,
+};
 use lapdev_rpc::spawn_twoway;
 use std::{collections::HashMap, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::sidecar_proxy_manager_rpc::SidecarProxyManagerRpcServer;
 
 #[derive(Clone)]
 pub struct SidecarProxyManager {
-    kube_client: KubeClient,
     pub(crate) sidecar_proxies: Arc<RwLock<HashMap<Uuid, SidecarProxyRegistration>>>,
+    kube_cluster_rpc_client: Arc<RwLock<Option<KubeClusterRpcClient>>>,
 }
 
 #[derive(Clone)]
 pub(crate) struct SidecarProxyRegistration {
     pub workload_id: Uuid,
-    pub namespace: String,
     pub rpc_client: SidecarProxyRpcClient,
 }
 
 impl SidecarProxyManager {
-    pub(crate) async fn new(kube_client: KubeClient) -> Result<Self> {
+    pub(crate) async fn new() -> Result<Self> {
         // Parse the URL to extract the port
         let port = std::env::var(SIDECAR_PROXY_MANAGER_PORT_ENV_VAR)
             .ok()
@@ -44,8 +43,8 @@ impl SidecarProxyManager {
         info!("TCP server listening on: {}", bind_addr);
 
         let m = Self {
-            kube_client,
             sidecar_proxies: Arc::new(RwLock::new(HashMap::new())),
+            kube_cluster_rpc_client: Arc::new(RwLock::new(None)),
         };
 
         {
@@ -89,54 +88,43 @@ impl SidecarProxyManager {
             return Ok(());
         };
 
-        let scoped_services = {
-            let selector = format!("lapdev.base-workload-id={}", registration.workload_id);
-            let services_api_all: Api<Service> = Api::all(self.kube_client.clone());
-            let listed = services_api_all
-                .list(&ListParams::default().labels(&selector))
-                .await?
-                .items;
-
-            if listed.is_empty() {
-                // Backward compatibility: fall back to namespace-scoped lookup
-                let services_api_ns: Api<Service> =
-                    Api::namespaced(self.kube_client.clone(), &registration.namespace);
-                services_api_ns.list(&ListParams::default()).await?.items
-            } else {
-                listed
-            }
+        let cluster_client = {
+            let guard = self.kube_cluster_rpc_client.read().await;
+            guard.clone()
         };
 
-        let mut routes = Vec::new();
-        for svc in scoped_services {
-            let svc_name = svc.metadata.name.unwrap_or_default();
-            if svc_name.is_empty() {
-                continue;
-            }
+        let Some(cluster_client) = cluster_client else {
+            warn!(
+                "Cluster RPC client unavailable; skipping route sync for environment {}",
+                environment_id
+            );
+            return Ok(());
+        };
 
-            let branch_env_id = svc
-                .metadata
-                .labels
-                .as_ref()
-                .and_then(|labels| labels.get("lapdev.io/branch-environment-id"))
-                .and_then(|value| Uuid::parse_str(value).ok());
-
-            if let Some(spec) = svc.spec {
-                if let Some(ports) = spec.ports {
-                    for port in ports {
-                        let Ok(port_number) = u16::try_from(port.port) else {
-                            continue;
-                        };
-                        routes.push(ProxyRouteConfig {
-                            path: format!("/{}/*", svc_name),
-                            service_name: svc_name.clone(),
-                            port: port_number,
-                            branch_environment_id: branch_env_id,
-                        });
-                    }
-                }
+        let routes = match cluster_client
+            .list_branch_service_routes(
+                tarpc::context::current(),
+                environment_id,
+                registration.workload_id,
+            )
+            .await
+        {
+            Ok(Ok(routes)) => routes,
+            Ok(Err(err)) => {
+                return Err(anyhow::anyhow!(
+                    "API rejected route request for environment {}: {}",
+                    environment_id,
+                    err
+                ));
             }
-        }
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to fetch routes for environment {}: {}",
+                    environment_id,
+                    err
+                ));
+            }
+        };
 
         if let Err(e) = registration
             .rpc_client
@@ -147,5 +135,15 @@ impl SidecarProxyManager {
         }
 
         Ok(())
+    }
+
+    pub async fn set_cluster_rpc_client(&self, client: KubeClusterRpcClient) {
+        let mut guard = self.kube_cluster_rpc_client.write().await;
+        *guard = Some(client);
+    }
+
+    pub async fn clear_cluster_rpc_client(&self) {
+        let mut guard = self.kube_cluster_rpc_client.write().await;
+        *guard = None;
     }
 }

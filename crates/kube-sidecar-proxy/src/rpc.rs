@@ -8,7 +8,10 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::config::{AccessLevel, BranchMode, BranchServiceRoute, DevboxRoute, RoutingTable};
+use crate::config::{
+    AccessLevel, BranchMode, BranchServiceRoute, DevboxConnection, DevboxRouteMetadata,
+    RoutingTable,
+};
 
 #[derive(Clone)]
 pub(crate) struct SidecarProxyRpcServer {
@@ -66,7 +69,7 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
     ) -> Result<(), String> {
         let mut routing_table = self.routing_table.write().await;
         let mut updates: Vec<(Uuid, BranchServiceRoute)> = Vec::new();
-        let mut devbox_overrides: Vec<(Uuid, DevboxRoute)> = Vec::new();
+        let mut devbox_overrides: Vec<(Uuid, Arc<DevboxConnection>)> = Vec::new();
 
         for route in routes {
             let branch_id = route.branch_environment_id;
@@ -83,7 +86,7 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             }
 
             if let Some(devbox) = route.devbox_route.clone() {
-                devbox_overrides.push((branch_id, devbox_route_from_config(devbox)));
+                devbox_overrides.push((branch_id, devbox_connection_from_config(devbox)));
             }
         }
 
@@ -117,10 +120,10 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         );
 
         let mut routing_table = self.routing_table.write().await;
-        let devbox_route = devbox_route_from_config(route.clone());
+        let devbox_connection = devbox_connection_from_config(route.clone());
 
         if let Some(branch_id) = route.branch_environment_id {
-            if routing_table.set_branch_devbox(&branch_id, devbox_route.clone()) {
+            if routing_table.set_branch_devbox(&branch_id, devbox_connection.clone()) {
                 info!(
                     "Attached devbox route to branch {} (intercept_id={})",
                     branch_id, route.intercept_id
@@ -133,7 +136,7 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
                 return Ok(false);
             }
         } else {
-            routing_table.set_default_devbox(devbox_route.clone());
+            routing_table.set_default_devbox(devbox_connection.clone());
             info!(
                 "Registered default devbox route (intercept_id={}, default_target_port={})",
                 route.intercept_id, route.target_port
@@ -183,13 +186,16 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         let routing_table = self.routing_table.read().await;
         let mut routes = Vec::new();
 
-        if let Some(route) = routing_table.default_devbox() {
-            routes.push(devbox_route_config_from_route(route, None));
+        if let Some(connection) = routing_table.default_devbox() {
+            routes.push(devbox_route_config_from_connection(&connection, None));
         }
 
         for (branch_id, branch_route) in &routing_table.branch_routes {
-            if let crate::config::BranchMode::Devbox(devbox) = &branch_route.mode {
-                routes.push(devbox_route_config_from_route(devbox, Some(*branch_id)));
+            if let crate::config::BranchMode::Devbox(connection) = &branch_route.mode {
+                routes.push(devbox_route_config_from_connection(
+                    connection,
+                    Some(*branch_id),
+                ));
             }
         }
 
@@ -198,8 +204,8 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
     }
 }
 
-fn devbox_route_from_config(route: DevboxRouteConfig) -> DevboxRoute {
-    DevboxRoute {
+fn devbox_connection_from_config(route: DevboxRouteConfig) -> Arc<DevboxConnection> {
+    Arc::new(DevboxConnection::new(DevboxRouteMetadata {
         intercept_id: route.intercept_id,
         session_id: route.session_id,
         target_port: route.target_port,
@@ -209,24 +215,25 @@ fn devbox_route_from_config(route: DevboxRouteConfig) -> DevboxRoute {
         port_mappings: route.port_mappings,
         created_at_epoch_seconds: route.created_at_epoch_seconds,
         expires_at_epoch_seconds: route.expires_at_epoch_seconds,
-    }
+    }))
 }
 
-fn devbox_route_config_from_route(
-    route: &DevboxRoute,
+fn devbox_route_config_from_connection(
+    connection: &DevboxConnection,
     branch_id: Option<Uuid>,
 ) -> DevboxRouteConfig {
+    let metadata = connection.metadata();
     DevboxRouteConfig {
-        intercept_id: route.intercept_id,
-        session_id: route.session_id,
-        target_port: route.target_port,
-        auth_token: route.auth_token.clone(),
-        websocket_url: route.websocket_url.clone(),
-        path_pattern: route.path_pattern.clone(),
+        intercept_id: metadata.intercept_id,
+        session_id: metadata.session_id,
+        target_port: metadata.target_port,
+        auth_token: metadata.auth_token.clone(),
+        websocket_url: metadata.websocket_url.clone(),
+        path_pattern: metadata.path_pattern.clone(),
         branch_environment_id: branch_id,
-        created_at_epoch_seconds: route.created_at_epoch_seconds,
-        expires_at_epoch_seconds: route.expires_at_epoch_seconds,
-        port_mappings: route.port_mappings.clone(),
+        created_at_epoch_seconds: metadata.created_at_epoch_seconds,
+        expires_at_epoch_seconds: metadata.expires_at_epoch_seconds,
+        port_mappings: metadata.port_mappings.clone(),
     }
 }
 

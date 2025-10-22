@@ -1,6 +1,12 @@
+use http::header::AUTHORIZATION;
+use lapdev_tunnel::{
+    TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
+};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
+use tokio::sync::Mutex;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
 
 /// Immutable settings for the sidecar proxy determined at boot time.
@@ -43,7 +49,6 @@ impl SidecarSettings {
 }
 
 /// Mutable routing state shared between RPC handlers and the proxy loop.
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingTable {
     pub branch_routes: HashMap<Uuid, BranchRoute>,
     pub default_route: DefaultRoute,
@@ -63,10 +68,10 @@ impl RoutingTable {
         if let Some(branch_id) = branch_id {
             if let Some(route) = self.branch_routes.get(&branch_id) {
                 match &route.mode {
-                    BranchMode::Devbox(devbox) => {
+                    BranchMode::Devbox(connection) => {
                         return RouteDecision::BranchDevbox {
-                            target_port: devbox.resolve_target_port(port),
-                            route: devbox.clone(),
+                            connection: connection.clone(),
+                            target_port: connection.resolve_target_port(port),
                         };
                     }
                     BranchMode::Service => {
@@ -78,10 +83,10 @@ impl RoutingTable {
             }
         }
 
-        if let DefaultRoute::Devbox(route) = &self.default_route {
+        if let DefaultRoute::Devbox(connection) = &self.default_route {
             return RouteDecision::DefaultDevbox {
-                target_port: route.resolve_target_port(port),
-                route: route.clone(),
+                connection: connection.clone(),
+                target_port: connection.resolve_target_port(port),
             };
         }
 
@@ -89,10 +94,10 @@ impl RoutingTable {
     }
 
     pub fn resolve_tcp(&self, port: u16) -> RouteDecision {
-        if let DefaultRoute::Devbox(route) = &self.default_route {
+        if let DefaultRoute::Devbox(connection) = &self.default_route {
             return RouteDecision::DefaultDevbox {
-                target_port: route.resolve_target_port(port),
-                route: route.clone(),
+                connection: connection.clone(),
+                target_port: connection.resolve_target_port(port),
             };
         }
 
@@ -108,7 +113,7 @@ impl RoutingTable {
         for (env_id, service_route) in routes {
             if let Some(existing) = self.branch_routes.get(&env_id) {
                 let mode = match &existing.mode {
-                    BranchMode::Devbox(devbox) => BranchMode::Devbox(devbox.clone()),
+                    BranchMode::Devbox(connection) => BranchMode::Devbox(connection.clone()),
                     BranchMode::Service => BranchMode::Service,
                 };
                 new_routes.insert(
@@ -132,19 +137,23 @@ impl RoutingTable {
         self.branch_routes = new_routes;
     }
 
-    pub fn set_branch_devbox(&mut self, branch_id: &Uuid, devbox: DevboxRoute) -> bool {
+    pub fn set_branch_devbox(
+        &mut self,
+        branch_id: &Uuid,
+        connection: Arc<DevboxConnection>,
+    ) -> bool {
         let Some(entry) = self.branch_routes.get_mut(branch_id) else {
             return false;
         };
 
-        entry.mode = BranchMode::Devbox(devbox);
+        entry.mode = BranchMode::Devbox(connection);
         true
     }
 
     pub fn remove_branch_devbox_by_intercept(&mut self, intercept_id: &Uuid) -> Option<Uuid> {
         for (branch_id, route) in self.branch_routes.iter_mut() {
-            if let BranchMode::Devbox(devbox) = &route.mode {
-                if devbox.intercept_id == *intercept_id {
+            if let BranchMode::Devbox(connection) = &route.mode {
+                if connection.metadata().intercept_id == *intercept_id {
                     route.mode = BranchMode::Service;
                     return Some(*branch_id);
                 }
@@ -153,24 +162,26 @@ impl RoutingTable {
         None
     }
 
-    pub fn set_default_devbox(&mut self, route: DevboxRoute) {
-        self.default_route = DefaultRoute::Devbox(route);
+    pub fn set_default_devbox(&mut self, connection: Arc<DevboxConnection>) {
+        self.default_route = DefaultRoute::Devbox(connection);
     }
 
     pub fn clear_default_devbox(&mut self) {
         self.default_route = DefaultRoute::Local;
     }
 
-    pub fn default_devbox(&self) -> Option<&DevboxRoute> {
+    pub fn default_devbox(&self) -> Option<Arc<DevboxConnection>> {
         match &self.default_route {
-            DefaultRoute::Devbox(route) => Some(route),
+            DefaultRoute::Devbox(connection) => Some(connection.clone()),
             DefaultRoute::Local => None,
         }
     }
 
     pub fn remove_default_devbox_by_intercept(&mut self, intercept_id: &Uuid) -> bool {
         match &self.default_route {
-            DefaultRoute::Devbox(route) if &route.intercept_id == intercept_id => {
+            DefaultRoute::Devbox(connection)
+                if connection.metadata().intercept_id == *intercept_id =>
+            {
                 self.default_route = DefaultRoute::Local;
                 true
             }
@@ -179,7 +190,7 @@ impl RoutingTable {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BranchRoute {
     pub service: BranchServiceRoute,
     pub mode: BranchMode,
@@ -206,14 +217,25 @@ impl BranchServiceRoute {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum BranchMode {
     Service,
-    Devbox(DevboxRoute),
+    Devbox(Arc<DevboxConnection>),
+}
+
+pub enum DefaultRoute {
+    Local,
+    Devbox(Arc<DevboxConnection>),
+}
+
+impl Default for DefaultRoute {
+    fn default() -> Self {
+        DefaultRoute::Local
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DevboxRoute {
+pub struct DevboxRouteMetadata {
     pub intercept_id: Uuid,
     pub session_id: Uuid,
     pub target_port: u16,
@@ -225,7 +247,7 @@ pub struct DevboxRoute {
     pub expires_at_epoch_seconds: Option<i64>,
 }
 
-impl DevboxRoute {
+impl DevboxRouteMetadata {
     pub fn resolve_target_port(&self, original_port: u16) -> u16 {
         self.port_mappings
             .get(&original_port)
@@ -234,15 +256,109 @@ impl DevboxRoute {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DefaultRoute {
-    Local,
-    Devbox(DevboxRoute),
+pub struct DevboxConnection {
+    metadata: DevboxRouteMetadata,
+    client: Arc<ClientHandle>,
 }
 
-impl Default for DefaultRoute {
-    fn default() -> Self {
-        DefaultRoute::Local
+impl DevboxConnection {
+    pub fn new(metadata: DevboxRouteMetadata) -> Self {
+        Self {
+            metadata,
+            client: Arc::new(ClientHandle::default()),
+        }
+    }
+
+    pub fn metadata(&self) -> &DevboxRouteMetadata {
+        &self.metadata
+    }
+
+    pub fn resolve_target_port(&self, original_port: u16) -> u16 {
+        self.metadata.resolve_target_port(original_port)
+    }
+
+    pub async fn connect_tcp_stream(
+        &self,
+        target_host: &str,
+        target_port: u16,
+    ) -> io::Result<TunnelTcpStream> {
+        let client = self.ensure_client().await.map_err(io::Error::from)?;
+
+        match client
+            .connect_tcp(target_host.to_string(), target_port)
+            .await
+        {
+            Ok(stream) => Ok(stream),
+            Err(TunnelError::ConnectionClosed) => {
+                self.client.clear().await;
+                let client = self.ensure_client().await.map_err(io::Error::from)?;
+                client
+                    .connect_tcp(target_host.to_string(), target_port)
+                    .await
+                    .map_err(io::Error::from)
+            }
+            Err(err) => Err(io::Error::from(err)),
+        }
+    }
+
+    pub async fn clear_client(&self) {
+        self.client.clear().await;
+    }
+
+    async fn ensure_client(&self) -> Result<Arc<TunnelClient>, TunnelError> {
+        if let Some(client) = self.client.get().await {
+            return Ok(client);
+        }
+
+        let new_client = Arc::new(self.create_client().await?);
+        Ok(self.client.set_if_empty(new_client).await)
+    }
+
+    async fn create_client(&self) -> Result<TunnelClient, TunnelError> {
+        let mut request = self
+            .metadata
+            .websocket_url
+            .clone()
+            .into_client_request()
+            .map_err(tunnel_transport_error)?;
+
+        let header_value = format!("Bearer {}", self.metadata.auth_token)
+            .parse()
+            .map_err(tunnel_transport_error)?;
+        request.headers_mut().insert(AUTHORIZATION, header_value);
+
+        let (stream, _) = connect_async(request)
+            .await
+            .map_err(tunnel_transport_error)?;
+
+        let transport = TunnelWebSocketTransport::new(stream);
+        Ok(TunnelClient::connect(transport))
+    }
+}
+
+#[derive(Default)]
+struct ClientHandle {
+    client: Mutex<Option<Arc<TunnelClient>>>,
+}
+
+impl ClientHandle {
+    async fn get(&self) -> Option<Arc<TunnelClient>> {
+        self.client.lock().await.clone()
+    }
+
+    async fn set_if_empty(&self, client: Arc<TunnelClient>) -> Arc<TunnelClient> {
+        let mut guard = self.client.lock().await;
+        if let Some(existing) = guard.as_ref() {
+            existing.clone()
+        } else {
+            *guard = Some(client.clone());
+            client
+        }
+    }
+
+    async fn clear(&self) {
+        let mut guard = self.client.lock().await;
+        *guard = None;
     }
 }
 
@@ -292,17 +408,16 @@ impl Default for MetricsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RouteDecision {
     BranchService {
         service: BranchServiceRoute,
     },
     BranchDevbox {
-        route: DevboxRoute,
+        connection: Arc<DevboxConnection>,
         target_port: u16,
     },
     DefaultDevbox {
-        route: DevboxRoute,
+        connection: Arc<DevboxConnection>,
         target_port: u16,
     },
     DefaultLocal,
@@ -332,4 +447,11 @@ impl ProxyAnnotations {
 
     /// Annotation for timeout in milliseconds
     pub const TIMEOUT_MS: &'static str = "lapdev.io/proxy-timeout-ms";
+}
+
+fn tunnel_transport_error<E>(err: E) -> TunnelError
+where
+    E: std::fmt::Display,
+{
+    TunnelError::Transport(io::Error::new(io::ErrorKind::Other, err.to_string()))
 }

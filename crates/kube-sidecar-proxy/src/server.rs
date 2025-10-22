@@ -1,5 +1,5 @@
 use crate::{
-    config::{BranchServiceRoute, DevboxRoute, RouteDecision, RoutingTable, SidecarSettings},
+    config::{BranchServiceRoute, DevboxConnection, RouteDecision, RoutingTable, SidecarSettings},
     error::Result,
     original_dest::get_original_destination,
     otel_routing::{determine_routing_target, extract_routing_context},
@@ -8,22 +8,16 @@ use crate::{
 };
 use anyhow::anyhow;
 use futures::StreamExt;
-use http::header::AUTHORIZATION;
 use lapdev_common::kube::{SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR};
 use lapdev_kube_rpc::{http_parser, SidecarProxyManagerRpcClient, SidecarProxyRpc};
 use lapdev_rpc::spawn_twoway;
-use lapdev_tunnel::{
-    TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
-};
-use std::{collections::HashMap, io, net::SocketAddr, str::FromStr, sync::Arc};
+use std::{io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot, RwLock},
+    sync::RwLock,
 };
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -36,7 +30,6 @@ pub struct SidecarProxyServer {
     routing_table: Arc<RwLock<RoutingTable>>,
     /// RPC client to kube-manager (None until connection established)
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
-    devbox_tunnel_manager: Arc<DevboxTunnelManager>,
 }
 
 impl SidecarProxyServer {
@@ -90,7 +83,6 @@ impl SidecarProxyServer {
             settings: Arc::new(settings),
             routing_table: Arc::new(RwLock::new(RoutingTable::default())),
             rpc_client: Arc::new(RwLock::new(None)),
-            devbox_tunnel_manager: Arc::new(DevboxTunnelManager::new()),
         };
 
         Ok(server)
@@ -117,7 +109,6 @@ impl SidecarProxyServer {
         // Handle connections
         let routing_table_for_server = Arc::clone(&self.routing_table);
         let rpc_client_for_server = Arc::clone(&self.rpc_client);
-        let tunnel_manager_for_server = Arc::clone(&self.devbox_tunnel_manager);
         let server = async move {
             loop {
                 match listener.accept().await {
@@ -125,7 +116,6 @@ impl SidecarProxyServer {
                         debug!("Accepted connection from {}", client_addr);
                         let routing_table = Arc::clone(&routing_table_for_server);
                         let rpc_client = Arc::clone(&rpc_client_for_server);
-                        let tunnel_manager = Arc::clone(&tunnel_manager_for_server);
 
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(
@@ -133,7 +123,6 @@ impl SidecarProxyServer {
                                 client_addr,
                                 routing_table,
                                 rpc_client,
-                                tunnel_manager,
                             )
                             .await
                             {
@@ -264,8 +253,7 @@ async fn handle_connection(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
     routing_table: Arc<RwLock<RoutingTable>>,
-    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
-    tunnel_manager: Arc<DevboxTunnelManager>,
+    _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
     // Extract the original destination from the iptables-redirected connection
     let original_dest = match get_original_destination(&inbound_stream) {
@@ -298,8 +286,7 @@ async fn handle_connection(
                 original_dest,
                 initial_data,
                 Arc::clone(&routing_table),
-                rpc_client,
-                tunnel_manager,
+                Arc::clone(&_rpc_client),
             )
             .await
         }
@@ -310,14 +297,21 @@ async fn handle_connection(
             };
 
             match decision {
-                RouteDecision::DefaultDevbox { route, target_port }
-                | RouteDecision::BranchDevbox { route, target_port } => {
+                RouteDecision::DefaultDevbox {
+                    connection,
+                    target_port,
+                }
+                | RouteDecision::BranchDevbox {
+                    connection,
+                    target_port,
+                } => {
+                    let metadata = connection.metadata();
                     info!(
                         "TCP {} -> {} intercepted by Devbox (intercept_id={}, session_id={}, target_port={})",
                         client_addr,
                         original_dest,
-                        route.intercept_id,
-                        route.session_id,
+                        metadata.intercept_id,
+                        metadata.session_id,
                         target_port
                     );
                     handle_devbox_tunnel(
@@ -325,10 +319,8 @@ async fn handle_connection(
                         client_addr,
                         original_dest,
                         initial_data,
+                        connection,
                         target_port,
-                        route,
-                        rpc_client,
-                        tunnel_manager,
                     )
                     .await
                 }
@@ -353,8 +345,7 @@ async fn handle_http_proxy(
     original_dest: SocketAddr,
     mut initial_data: Vec<u8>,
     routing_table: Arc<RwLock<RoutingTable>>,
-    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
-    tunnel_manager: Arc<DevboxTunnelManager>,
+    _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
     // Try to parse the HTTP request, reading more data if needed
     let (http_request, _body_start) = match http_parser::parse_complete_http_request(
@@ -413,14 +404,18 @@ async fn handle_http_proxy(
                 return Ok(());
             }
         }
-        RouteDecision::BranchDevbox { route, target_port } => {
+        RouteDecision::BranchDevbox {
+            connection,
+            target_port,
+        } => {
+            let metadata = connection.metadata();
             info!(
                 "HTTP {} {} intercepted by branch devbox (env {:?}, intercept_id={}, session_id={}, target_port={})",
                 http_request.method,
                 http_request.path,
                 branch_id,
-                route.intercept_id,
-                route.session_id,
+                metadata.intercept_id,
+                metadata.session_id,
                 target_port
             );
             return handle_devbox_tunnel(
@@ -428,21 +423,23 @@ async fn handle_http_proxy(
                 client_addr,
                 original_dest,
                 initial_data,
+                connection,
                 target_port,
-                route,
-                rpc_client,
-                tunnel_manager,
             )
             .await;
         }
-        RouteDecision::DefaultDevbox { route, target_port } => {
+        RouteDecision::DefaultDevbox {
+            connection,
+            target_port,
+        } => {
+            let metadata = connection.metadata();
             info!(
                 "HTTP {} {} intercepted by shared devbox (port {}, intercept_id={}, session_id={}, target_port={})",
                 http_request.method,
                 http_request.path,
                 original_dest.port(),
-                route.intercept_id,
-                route.session_id,
+                metadata.intercept_id,
+                metadata.session_id,
                 target_port
             );
             return handle_devbox_tunnel(
@@ -450,10 +447,8 @@ async fn handle_http_proxy(
                 client_addr,
                 original_dest,
                 initial_data,
+                connection,
                 target_port,
-                route,
-                rpc_client,
-                tunnel_manager,
             )
             .await;
         }
@@ -560,186 +555,6 @@ async fn handle_tcp_proxy(
     Ok(())
 }
 
-#[derive(Clone)]
-struct DevboxTunnelManager {
-    commands: mpsc::UnboundedSender<ManagerCommand>,
-}
-
-#[derive(Debug)]
-enum ManagerCommand {
-    GetClient {
-        session_id: Uuid,
-        respond: oneshot::Sender<Option<Arc<TunnelClient>>>,
-    },
-    InsertClient {
-        session_id: Uuid,
-        client: Arc<TunnelClient>,
-        respond: oneshot::Sender<Option<Arc<TunnelClient>>>,
-    },
-    RemoveClient {
-        session_id: Uuid,
-    },
-}
-
-impl DevboxTunnelManager {
-    fn new() -> Self {
-        let (commands, mut rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(async move {
-            let mut clients: HashMap<Uuid, Arc<TunnelClient>> = HashMap::new();
-            while let Some(command) = rx.recv().await {
-                match command {
-                    ManagerCommand::GetClient {
-                        session_id,
-                        respond,
-                    } => {
-                        let _ = respond.send(clients.get(&session_id).cloned());
-                    }
-                    ManagerCommand::InsertClient {
-                        session_id,
-                        client,
-                        respond,
-                    } => {
-                        if let Some(existing) = clients.get(&session_id) {
-                            let _ = respond.send(Some(existing.clone()));
-                        } else {
-                            clients.insert(session_id, client);
-                            let _ = respond.send(None);
-                        }
-                    }
-                    ManagerCommand::RemoveClient { session_id } => {
-                        clients.remove(&session_id);
-                    }
-                }
-            }
-        });
-
-        Self { commands }
-    }
-
-    async fn connect_tcp_stream(
-        &self,
-        session_id: Uuid,
-        websocket_url: &str,
-        auth_token: &str,
-        target_host: &str,
-        target_port: u16,
-    ) -> std::result::Result<TunnelTcpStream, TunnelError> {
-        let client = self
-            .ensure_client(session_id, websocket_url, auth_token)
-            .await?;
-
-        match client
-            .connect_tcp(target_host.to_string(), target_port)
-            .await
-        {
-            Ok(stream) => Ok(stream),
-            Err(TunnelError::ConnectionClosed) => {
-                self.remove_client(session_id).await;
-                let client = self
-                    .ensure_client(session_id, websocket_url, auth_token)
-                    .await?;
-                client
-                    .connect_tcp(target_host.to_string(), target_port)
-                    .await
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    async fn ensure_client(
-        &self,
-        session_id: Uuid,
-        websocket_url: &str,
-        auth_token: &str,
-    ) -> std::result::Result<Arc<TunnelClient>, TunnelError> {
-        if let Some(existing) = self.get_client(session_id).await {
-            return Ok(existing);
-        }
-
-        let new_client = Arc::new(self.create_client(websocket_url, auth_token).await?);
-
-        match self.insert_client(session_id, new_client.clone()).await {
-            Some(existing) => Ok(existing),
-            None => Ok(new_client),
-        }
-    }
-
-    async fn create_client(
-        &self,
-        websocket_url: &str,
-        auth_token: &str,
-    ) -> std::result::Result<TunnelClient, TunnelError> {
-        let mut request = websocket_url
-            .into_client_request()
-            .map_err(tunnel_transport_error)?;
-
-        let header = format!("Bearer {}", auth_token)
-            .parse()
-            .map_err(tunnel_transport_error)?;
-        request.headers_mut().insert(AUTHORIZATION, header);
-
-        let (stream, _) = connect_async(request)
-            .await
-            .map_err(tunnel_transport_error)?;
-
-        let transport = TunnelWebSocketTransport::new(stream);
-        Ok(TunnelClient::connect(transport))
-    }
-
-    async fn remove_client(&self, session_id: Uuid) {
-        self.send_command(ManagerCommand::RemoveClient { session_id });
-    }
-
-    async fn get_client(&self, session_id: Uuid) -> Option<Arc<TunnelClient>> {
-        let (respond, receiver) = oneshot::channel();
-        if self
-            .commands
-            .send(ManagerCommand::GetClient {
-                session_id,
-                respond,
-            })
-            .is_err()
-        {
-            return None;
-        }
-        receiver.await.ok().flatten()
-    }
-
-    async fn insert_client(
-        &self,
-        session_id: Uuid,
-        client: Arc<TunnelClient>,
-    ) -> Option<Arc<TunnelClient>> {
-        let (respond, receiver) = oneshot::channel();
-        if self
-            .commands
-            .send(ManagerCommand::InsertClient {
-                session_id,
-                client,
-                respond,
-            })
-            .is_err()
-        {
-            return None;
-        }
-        receiver.await.ok().flatten()
-    }
-
-    fn send_command(&self, command: ManagerCommand) {
-        if self.commands.send(command).is_err() {
-            debug!("Devbox tunnel manager command channel closed");
-        }
-    }
-}
-
-fn tunnel_transport_error<E>(err: E) -> TunnelError
-where
-    E: std::fmt::Display,
-{
-    TunnelError::Transport(io::Error::new(io::ErrorKind::Other, err.to_string()))
-}
-
 /// Handle a connection that should be routed through a devbox tunnel
 ///
 /// Architecture:
@@ -750,40 +565,33 @@ async fn handle_devbox_tunnel(
     client_addr: SocketAddr,
     original_dest: SocketAddr,
     mut initial_data: Vec<u8>,
+    connection: Arc<DevboxConnection>,
     target_port: u16,
-    devbox_route: DevboxRoute,
-    _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
-    tunnel_manager: Arc<DevboxTunnelManager>,
 ) -> io::Result<()> {
+    let metadata = connection.metadata();
+
     info!(
         "Routing {} -> {} through devbox tunnel (intercept_id={}, session_id={}, target_port={})",
-        client_addr, original_dest, devbox_route.intercept_id, devbox_route.session_id, target_port
+        client_addr, original_dest, metadata.intercept_id, metadata.session_id, target_port
     );
-
-    let websocket_url = devbox_route.websocket_url.clone();
 
     info!(
         "Connecting to devbox tunnel websocket for intercept_id={} at {}",
-        devbox_route.intercept_id, websocket_url
+        metadata.intercept_id, metadata.websocket_url
     );
 
-    let mut devbox_stream = match tunnel_manager
-        .connect_tcp_stream(
-            devbox_route.session_id,
-            &websocket_url,
-            &devbox_route.auth_token,
-            "127.0.0.1",
-            target_port,
-        )
+    let mut devbox_stream = match connection
+        .connect_tcp_stream("127.0.0.1", target_port)
         .await
     {
         Ok(stream) => stream,
         Err(err) => {
             error!(
                 "Failed to establish tunnel stream for intercept {}: {}",
-                devbox_route.intercept_id, err
+                metadata.intercept_id, err
             );
-            return Err(io::Error::from(err));
+            connection.clear_client().await;
+            return Err(err);
         }
     };
 
@@ -795,15 +603,15 @@ async fn handle_devbox_tunnel(
         Ok((bytes_tx, bytes_rx)) => {
             info!(
                 "Devbox tunnel completed: {} bytes sent, {} bytes received (intercept_id={})",
-                bytes_tx, bytes_rx, devbox_route.intercept_id
+                bytes_tx, bytes_rx, metadata.intercept_id
             );
         }
         Err(err) => {
             warn!(
                 "Devbox tunnel error for intercept_id={}: {}",
-                devbox_route.intercept_id, err
+                metadata.intercept_id, err
             );
-            tunnel_manager.remove_client(devbox_route.session_id).await;
+            connection.clear_client().await;
             return Err(err);
         }
     }

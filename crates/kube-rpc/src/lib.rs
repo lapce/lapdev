@@ -383,7 +383,7 @@ pub trait KubeClusterRpc {
     async fn list_branch_service_routes(
         environment_id: Uuid,
         workload_id: Uuid,
-    ) -> Result<Vec<ProxyRouteConfig>, String>;
+    ) -> Result<Vec<ProxyBranchRouteConfig>, String>;
 }
 
 #[tarpc::service]
@@ -481,16 +481,37 @@ pub struct DevboxRouteConfig {
     pub session_id: Uuid,
     pub target_port: u16,
     pub auth_token: String,
+    pub websocket_url: String,
     /// Path pattern for this route (e.g., "/*" for all traffic)
     pub path_pattern: String,
+    pub branch_environment_id: Option<Uuid>,
+    pub created_at_epoch_seconds: Option<i64>,
+    pub expires_at_epoch_seconds: Option<i64>,
+    pub port_mappings: HashMap<u16, u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProxyRouteConfig {
-    pub path: String,
-    pub service_name: String,
-    pub port: u16,
-    pub branch_environment_id: Option<Uuid>,
+pub struct ProxyBranchRouteConfig {
+    pub branch_environment_id: Uuid,
+    pub service_name: Option<String>,
+    pub headers: HashMap<String, String>,
+    pub requires_auth: bool,
+    pub access_level: ProxyRouteAccessLevel,
+    pub timeout_ms: Option<u64>,
+    pub devbox_route: Option<DevboxRouteConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProxyRouteAccessLevel {
+    Personal,
+    Shared,
+    Public,
+}
+
+impl Default for ProxyRouteAccessLevel {
+    fn default() -> Self {
+        ProxyRouteAccessLevel::Personal
+    }
 }
 
 #[tarpc::service]
@@ -498,7 +519,7 @@ pub trait SidecarProxyRpc {
     async fn heartbeat() -> Result<(), String>;
 
     /// Replace the service routes with the provided configuration
-    async fn set_service_routes(routes: Vec<ProxyRouteConfig>) -> Result<(), String>;
+    async fn set_service_routes(routes: Vec<ProxyBranchRouteConfig>) -> Result<(), String>;
 
     /// Add a DevboxTunnel route for service interception
     /// Returns true if route was added successfully

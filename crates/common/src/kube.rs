@@ -246,6 +246,7 @@ pub struct KubeEnvironmentWorkload {
     pub id: Uuid,
     pub created_at: DateTime<FixedOffset>,
     pub environment_id: Uuid,
+    pub base_workload_id: Option<Uuid>,
     pub name: String,
     pub namespace: String,
     pub kind: String,
@@ -315,6 +316,7 @@ pub struct KubeWorkloadDetails {
     pub containers: Vec<KubeContainerInfo>,
     pub ports: Vec<KubeServicePort>,
     pub workload_yaml: String,
+    pub base_workload_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -241,6 +241,7 @@ impl KubeController {
                     containers,
                     ports: workload.ports,
                     workload_yaml,
+                    base_workload_id: None,
                 })
             })
             .collect()
@@ -1023,6 +1024,7 @@ impl KubeController {
                     containers,
                     ports: workload.ports,
                     workload_yaml: workload.workload_yaml,
+                    base_workload_id: Some(workload.id),
                 })
             })
             .collect()
@@ -1463,6 +1465,7 @@ impl KubeController {
                 ports: ActiveValue::Set(ports_json),
                 workload_yaml: ActiveValue::Set(workload_yaml),
                 catalog_sync_version: ActiveValue::Set(new_catalog_sync_version),
+                base_workload_id: ActiveValue::Set(None),
             }
             .insert(&txn)
             .await

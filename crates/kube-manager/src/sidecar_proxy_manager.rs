@@ -1,9 +1,7 @@
 use anyhow::Result;
 use futures::StreamExt;
 use lapdev_common::kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR};
-use lapdev_kube_rpc::{
-    KubeClusterRpcClient, SidecarProxyManagerRpc, SidecarProxyRpcClient,
-};
+use lapdev_kube_rpc::{KubeClusterRpcClient, SidecarProxyManagerRpc, SidecarProxyRpcClient};
 use lapdev_rpc::spawn_twoway;
 use std::{collections::HashMap, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};

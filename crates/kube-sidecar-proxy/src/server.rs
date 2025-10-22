@@ -1,5 +1,5 @@
 use crate::{
-    config::{ProxyConfig, RouteTarget},
+    config::{BranchServiceRoute, DevboxRoute, RouteDecision, RoutingTable, SidecarSettings},
     error::Result,
     original_dest::get_original_destination,
     otel_routing::{determine_routing_target, extract_routing_context},
@@ -31,11 +31,9 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct SidecarProxyServer {
     workload_id: Uuid,
-    environment_id: Uuid,
-    namespace: Option<String>,
     sidecar_proxy_manager_addr: String,
-    listen_addr: SocketAddr,
-    config: Arc<RwLock<ProxyConfig>>,
+    settings: Arc<SidecarSettings>,
+    routing_table: Arc<RwLock<RoutingTable>>,
     /// RPC client to kube-manager (None until connection established)
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
     devbox_tunnel_manager: Arc<DevboxTunnelManager>,
@@ -45,7 +43,6 @@ impl SidecarProxyServer {
     /// Create a new sidecar proxy server
     pub async fn new(
         listen_addr: SocketAddr,
-        default_target: SocketAddr,
         namespace: Option<String>,
         pod_name: Option<String>,
         environment_id: String,
@@ -79,26 +76,19 @@ impl SidecarProxyServer {
         let env_id = Uuid::parse_str(&environment_id)
             .map_err(|e| anyhow!("Failed to parse environment_id as UUID: {}", e))?;
 
-        // Create initial configuration
-        let config = ProxyConfig {
+        let settings = SidecarSettings::new(
             listen_addr,
-            default_target,
-            namespace: namespace.clone(),
-            pod_name: pod_name.clone(),
-            environment_id: Some(env_id),
-            environment_auth_token: Some(environment_auth_token),
-            ..Default::default()
-        };
-
-        let config = Arc::new(RwLock::new(config));
+            namespace.clone(),
+            pod_name.clone(),
+            env_id,
+            environment_auth_token,
+        );
 
         let server = Self {
             workload_id,
-            environment_id: env_id,
-            namespace: namespace.clone(),
             sidecar_proxy_manager_addr,
-            listen_addr,
-            config,
+            settings: Arc::new(settings),
+            routing_table: Arc::new(RwLock::new(RoutingTable::default())),
             rpc_client: Arc::new(RwLock::new(None)),
             devbox_tunnel_manager: Arc::new(DevboxTunnelManager::new()),
         };
@@ -120,11 +110,12 @@ impl SidecarProxyServer {
         }
 
         // Create TCP listener for iptables-redirected connections
-        let listener = TcpListener::bind(&self.listen_addr).await?;
-        info!("Sidecar proxy listening on: {}", self.listen_addr);
+        let listen_addr = self.settings.as_ref().listen_addr;
+        let listener = TcpListener::bind(&listen_addr).await?;
+        info!("Sidecar proxy listening on: {}", listen_addr);
 
         // Handle connections
-        let config_for_server = Arc::clone(&self.config);
+        let routing_table_for_server = Arc::clone(&self.routing_table);
         let rpc_client_for_server = Arc::clone(&self.rpc_client);
         let tunnel_manager_for_server = Arc::clone(&self.devbox_tunnel_manager);
         let server = async move {
@@ -132,7 +123,7 @@ impl SidecarProxyServer {
                 match listener.accept().await {
                     Ok((inbound_stream, client_addr)) => {
                         debug!("Accepted connection from {}", client_addr);
-                        let config = Arc::clone(&config_for_server);
+                        let routing_table = Arc::clone(&routing_table_for_server);
                         let rpc_client = Arc::clone(&rpc_client_for_server);
                         let tunnel_manager = Arc::clone(&tunnel_manager_for_server);
 
@@ -140,7 +131,7 @@ impl SidecarProxyServer {
                             if let Err(e) = handle_connection(
                                 inbound_stream,
                                 client_addr,
-                                config,
+                                routing_table,
                                 rpc_client,
                                 tunnel_manager,
                             )
@@ -223,15 +214,17 @@ impl SidecarProxyServer {
         }
 
         let namespace = self
+            .settings
+            .as_ref()
             .namespace
             .clone()
             .unwrap_or_else(|| "default".to_string());
         let rpc_server = SidecarProxyRpcServer::new(
             self.workload_id,
-            self.environment_id,
+            self.settings.as_ref().environment_id,
             namespace,
             rpc_client,
-            Arc::clone(&self.config),
+            Arc::clone(&self.routing_table),
         );
         let rpc_server_clone = rpc_server.clone();
         let rpc_server_task = tokio::spawn(async move {
@@ -264,18 +257,13 @@ impl SidecarProxyServer {
         let shutdown_signal = std::future::pending::<()>();
         self.serve_with_graceful_shutdown(shutdown_signal).await
     }
-
-    /// Get the current configuration
-    pub async fn get_config(&self) -> ProxyConfig {
-        self.config.read().await.clone()
-    }
 }
 
 /// Handle a single TCP connection by extracting original destination and forwarding
 async fn handle_connection(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
-    config: Arc<RwLock<ProxyConfig>>,
+    routing_table: Arc<RwLock<RoutingTable>>,
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
     tunnel_manager: Arc<DevboxTunnelManager>,
 ) -> io::Result<()> {
@@ -293,27 +281,6 @@ async fn handle_connection(
 
     debug!("Original destination: {} -> {}", client_addr, original_dest);
 
-    // Check if there's a DevboxTunnel route for this destination
-    if let Some(devbox_route) = check_devbox_tunnel_route(&config, original_dest.port()).await {
-        info!(
-            "Devbox intercept detected for port {}: intercept_id={}, routing to devbox",
-            original_dest.port(),
-            devbox_route.intercept_id
-        );
-        return handle_devbox_tunnel(
-            inbound_stream,
-            client_addr,
-            original_dest,
-            devbox_route,
-            rpc_client,
-            tunnel_manager,
-        )
-        .await;
-    }
-
-    // Convert to local address (same port, localhost)
-    let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
-
     // Detect protocol by reading initial data
     let (protocol_type, initial_data) = match detect_protocol(&mut inbound_stream).await {
         Ok(result) => result,
@@ -327,18 +294,54 @@ async fn handle_connection(
         ProtocolType::Http { .. } => {
             handle_http_proxy(
                 inbound_stream,
+                client_addr,
                 original_dest,
                 initial_data,
-                Arc::clone(&config),
+                Arc::clone(&routing_table),
+                rpc_client,
+                tunnel_manager,
             )
             .await
         }
         ProtocolType::Tcp => {
-            info!(
-                "Proxying TCP from {} -> {} (local: {})",
-                client_addr, original_dest, local_target
-            );
-            handle_tcp_proxy(inbound_stream, local_target, initial_data).await
+            let decision = {
+                let table = routing_table.read().await;
+                table.resolve_tcp(original_dest.port())
+            };
+
+            match decision {
+                RouteDecision::DefaultDevbox { route, target_port }
+                | RouteDecision::BranchDevbox { route, target_port } => {
+                    info!(
+                        "TCP {} -> {} intercepted by Devbox (intercept_id={}, session_id={}, target_port={})",
+                        client_addr,
+                        original_dest,
+                        route.intercept_id,
+                        route.session_id,
+                        target_port
+                    );
+                    handle_devbox_tunnel(
+                        inbound_stream,
+                        client_addr,
+                        original_dest,
+                        initial_data,
+                        target_port,
+                        route,
+                        rpc_client,
+                        tunnel_manager,
+                    )
+                    .await
+                }
+                _ => {
+                    let local_target =
+                        SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
+                    info!(
+                        "Proxying TCP from {} -> {} (local: {})",
+                        client_addr, original_dest, local_target
+                    );
+                    handle_tcp_proxy(inbound_stream, local_target, initial_data).await
+                }
+            }
         }
     }
 }
@@ -346,9 +349,12 @@ async fn handle_connection(
 /// Handle HTTP proxying with OpenTelemetry header parsing and intelligent routing
 async fn handle_http_proxy(
     mut inbound_stream: TcpStream,
+    client_addr: SocketAddr,
     original_dest: SocketAddr,
     mut initial_data: Vec<u8>,
-    config: Arc<RwLock<ProxyConfig>>,
+    routing_table: Arc<RwLock<RoutingTable>>,
+    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+    tunnel_manager: Arc<DevboxTunnelManager>,
 ) -> io::Result<()> {
     // Try to parse the HTTP request, reading more data if needed
     let (http_request, _body_start) = match http_parser::parse_complete_http_request(
@@ -373,31 +379,85 @@ async fn handle_http_proxy(
     let routing_context = extract_routing_context(&http_request.headers);
     let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
 
-    if let Some(environment_id) = routing_context.lapdev_environment_id {
-        if let Some((service_name, branch_port)) =
-            find_branch_route(&config, &environment_id, original_dest.port()).await
-        {
+    let branch_id = routing_context.lapdev_environment_id;
+    let decision = {
+        let table = routing_table.read().await;
+        table.resolve_http(original_dest.port(), branch_id)
+    };
+
+    match decision {
+        RouteDecision::BranchService { service } => {
+            let service_name = &service.service_name;
             info!(
-                "HTTP {} {} routing to branch {} service {}:{}",
-                http_request.method, http_request.path, environment_id, service_name, branch_port
+                "HTTP {} {} routing to branch {:?} service {}:{}",
+                http_request.method,
+                http_request.path,
+                branch_id,
+                service_name,
+                original_dest.port()
             );
 
             if let Err(err) = proxy_branch_stream(
                 &mut inbound_stream,
                 service_name.as_str(),
-                branch_port,
+                original_dest.port(),
                 &initial_data,
             )
             .await
             {
                 warn!(
-                    "Branch route {}:{} for env {} failed: {}; falling back to shared target",
-                    service_name, branch_port, environment_id, err
+                    "Branch route {} for env {:?} failed: {}; falling back to shared target",
+                    service_name, branch_id, err
                 );
             } else {
                 return Ok(());
             }
         }
+        RouteDecision::BranchDevbox { route, target_port } => {
+            info!(
+                "HTTP {} {} intercepted by branch devbox (env {:?}, intercept_id={}, session_id={}, target_port={})",
+                http_request.method,
+                http_request.path,
+                branch_id,
+                route.intercept_id,
+                route.session_id,
+                target_port
+            );
+            return handle_devbox_tunnel(
+                inbound_stream,
+                client_addr,
+                original_dest,
+                initial_data,
+                target_port,
+                route,
+                rpc_client,
+                tunnel_manager,
+            )
+            .await;
+        }
+        RouteDecision::DefaultDevbox { route, target_port } => {
+            info!(
+                "HTTP {} {} intercepted by shared devbox (port {}, intercept_id={}, session_id={}, target_port={})",
+                http_request.method,
+                http_request.path,
+                original_dest.port(),
+                route.intercept_id,
+                route.session_id,
+                target_port
+            );
+            return handle_devbox_tunnel(
+                inbound_stream,
+                client_addr,
+                original_dest,
+                initial_data,
+                target_port,
+                route,
+                rpc_client,
+                tunnel_manager,
+            )
+            .await;
+        }
+        RouteDecision::DefaultLocal => {}
     }
 
     // Determine routing target based on headers for fallback logging
@@ -470,30 +530,6 @@ async fn proxy_branch_stream(
     Ok(())
 }
 
-async fn find_branch_route(
-    config: &Arc<RwLock<ProxyConfig>>,
-    environment_id: &Uuid,
-    port: u16,
-) -> Option<(String, u16)> {
-    let config = config.read().await;
-
-    for route in &config.routes {
-        if route.branch_environment_id == Some(*environment_id) {
-            if let RouteTarget::Service {
-                name,
-                port: route_port,
-            } = &route.target
-            {
-                if *route_port == port {
-                    return Some((name.clone(), *route_port));
-                }
-            }
-        }
-    }
-
-    None
-}
-
 /// Handle TCP proxying (raw byte forwarding)
 async fn handle_tcp_proxy(
     mut inbound_stream: TcpStream,
@@ -522,47 +558,6 @@ async fn handle_tcp_proxy(
     }
 
     Ok(())
-}
-
-/// DevboxTunnel route information
-#[derive(Debug, Clone)]
-struct DevboxRouteInfo {
-    intercept_id: Uuid,
-    session_id: Uuid,
-    target_port: u16,
-}
-
-/// Check if there's a DevboxTunnel route for the given port
-async fn check_devbox_tunnel_route(
-    config: &Arc<RwLock<ProxyConfig>>,
-    port: u16,
-) -> Option<DevboxRouteInfo> {
-    use crate::config::RouteTarget;
-
-    let config = config.read().await;
-
-    // Check all routes for DevboxTunnel targeting this port
-    for route in &config.routes {
-        if let RouteTarget::DevboxTunnel {
-            intercept_id,
-            session_id,
-            target_port,
-            auth_token: _,
-        } = &route.target
-        {
-            // Match if the original destination port corresponds to this intercept
-            // In a real implementation, you might also check the path pattern
-            if *target_port == port {
-                return Some(DevboxRouteInfo {
-                    intercept_id: *intercept_id,
-                    session_id: *session_id,
-                    target_port: *target_port,
-                });
-            }
-        }
-    }
-
-    None
 }
 
 #[derive(Clone)]
@@ -747,73 +742,38 @@ where
 
 /// Handle a connection that should be routed through a devbox tunnel
 ///
-/// Architecture: Hybrid control/data plane
-///   Control: Sidecar → Kube-Manager (RPC) → API (setup tunnel)
-///   Data:    Sidecar → API (WebSocket) ↔ Devbox (direct streaming)
+/// Architecture:
+///   Sidecar opens a websocket directly to the Lapdev API using the intercept session token,
+///   then proxies data between the cluster workload and the developer's machine over that tunnel.
 async fn handle_devbox_tunnel(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
     original_dest: SocketAddr,
-    devbox_route: DevboxRouteInfo,
-    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+    mut initial_data: Vec<u8>,
+    target_port: u16,
+    devbox_route: DevboxRoute,
+    _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
     tunnel_manager: Arc<DevboxTunnelManager>,
 ) -> io::Result<()> {
     info!(
-        "Routing {} -> {} through devbox tunnel (intercept_id={}, session_id={})",
-        client_addr, original_dest, devbox_route.intercept_id, devbox_route.session_id
+        "Routing {} -> {} through devbox tunnel (intercept_id={}, session_id={}, target_port={})",
+        client_addr, original_dest, devbox_route.intercept_id, devbox_route.session_id, target_port
     );
 
-    // Get RPC client
-    let client = {
-        let lock = rpc_client.read().await;
-        lock.clone()
-    };
-
-    let client = match client {
-        Some(c) => c,
-        None => {
-            error!("RPC client not available - cannot establish devbox tunnel");
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "RPC client not connected to kube-manager",
-            ));
-        }
-    };
-
-    // Step 1: Call RPC to get tunnel info (control plane)
-    info!(
-        "Requesting tunnel setup from kube-manager for intercept_id={}",
-        devbox_route.intercept_id
-    );
-    let tunnel_info = client
-        .request_devbox_tunnel(
-            tarpc::context::current(),
-            devbox_route.intercept_id,
-            client_addr.to_string(),
-            devbox_route.target_port,
-        )
-        .await
-        .map_err(|e| {
-            error!("Failed to request devbox tunnel: {}", e);
-            io::Error::new(io::ErrorKind::Other, format!("RPC error: {}", e))
-        })?
-        .map_err(|e| {
-            error!("Kube-manager rejected tunnel request: {}", e);
-            io::Error::new(io::ErrorKind::PermissionDenied, e)
-        })?;
+    let websocket_url = devbox_route.websocket_url.clone();
 
     info!(
-        "Tunnel setup successful: tunnel_id={}, connecting to {}",
-        tunnel_info.tunnel_id, tunnel_info.websocket_url
+        "Connecting to devbox tunnel websocket for intercept_id={} at {}",
+        devbox_route.intercept_id, websocket_url
     );
 
     let mut devbox_stream = match tunnel_manager
         .connect_tcp_stream(
             devbox_route.session_id,
-            &tunnel_info.websocket_url,
-            &tunnel_info.auth_token,
+            &websocket_url,
+            &devbox_route.auth_token,
             "127.0.0.1",
-            devbox_route.target_port,
+            target_port,
         )
         .await
     {
@@ -826,6 +786,10 @@ async fn handle_devbox_tunnel(
             return Err(io::Error::from(err));
         }
     };
+
+    if !initial_data.is_empty() {
+        tokio::io::AsyncWriteExt::write_all(&mut devbox_stream, &initial_data).await?;
+    }
 
     match copy_bidirectional(&mut inbound_stream, &mut devbox_stream).await {
         Ok((bytes_tx, bytes_rx)) => {

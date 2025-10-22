@@ -11,10 +11,6 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     listen_addr: String,
 
-    /// Target service address (where to proxy requests)
-    #[arg(long, default_value = "127.0.0.1:3000")]
-    target_addr: String,
-
     /// Kubernetes namespace to watch for services
     #[arg(long, env = "KUBERNETES_NAMESPACE")]
     namespace: Option<String>,
@@ -53,7 +49,6 @@ async fn main() -> Result<()> {
 
     info!("Starting Lapdev Kubernetes Sidecar Proxy");
     info!("Listen address: {}", args.listen_addr);
-    info!("Target address: {}", args.target_addr);
     info!("Namespace: {:?}", args.namespace);
     info!("Pod name: {:?}", args.pod_name);
 
@@ -69,7 +64,6 @@ async fn main() -> Result<()> {
 
     let server = SidecarProxyServer::new(
         args.listen_addr.parse()?,
-        args.target_addr.parse()?,
         args.namespace,
         args.pod_name,
         environment_id,

@@ -3,138 +3,265 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
-/// Configuration for the sidecar proxy
+/// Immutable settings for the sidecar proxy determined at boot time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProxyConfig {
-    /// Address to listen on for incoming requests
+pub struct SidecarSettings {
+    /// Address the sidecar listens on for iptables redirected traffic.
     pub listen_addr: SocketAddr,
-
-    /// Default target address for proxying requests
-    pub default_target: SocketAddr,
-
-    /// Kubernetes namespace to operate in
+    /// Namespace the sidecar is running in.
     pub namespace: Option<String>,
-
-    /// Pod name for self-identification
+    /// Pod name for identification/logging.
     pub pod_name: Option<String>,
-
-    /// Lapdev environment ID this proxy belongs to
-    pub environment_id: Option<Uuid>,
-
-    /// Lapdev environment auth token
-    pub environment_auth_token: Option<String>,
-
-    /// Route configurations
-    pub routes: Vec<RouteConfig>,
-
-    /// Health check configuration
+    /// Lapdev environment identifier for this workload.
+    pub environment_id: Uuid,
+    /// Lapdev environment scoped auth token used for RPC calls.
+    pub environment_auth_token: String,
+    /// Health check configuration for readiness/liveness.
     pub health_check: HealthCheckConfig,
-
-    /// Metrics configuration
+    /// Metrics export configuration.
     pub metrics: MetricsConfig,
 }
 
-/// Individual route configuration
+impl SidecarSettings {
+    pub fn new(
+        listen_addr: SocketAddr,
+        namespace: Option<String>,
+        pod_name: Option<String>,
+        environment_id: Uuid,
+        environment_auth_token: String,
+    ) -> Self {
+        Self {
+            listen_addr,
+            namespace,
+            pod_name,
+            environment_id,
+            environment_auth_token,
+            health_check: HealthCheckConfig::default(),
+            metrics: MetricsConfig::default(),
+        }
+    }
+}
+
+/// Mutable routing state shared between RPC handlers and the proxy loop.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RouteConfig {
-    /// Path matcher (supports wildcards)
-    pub path: String,
+pub struct RoutingTable {
+    pub branch_routes: HashMap<Uuid, BranchRoute>,
+    pub default_route: DefaultRoute,
+}
 
-    /// Target service to route to
-    pub target: RouteTarget,
+impl Default for RoutingTable {
+    fn default() -> Self {
+        Self {
+            branch_routes: HashMap::new(),
+            default_route: DefaultRoute::default(),
+        }
+    }
+}
 
-    /// Optional branch environment identifier this route applies to
-    pub branch_environment_id: Option<Uuid>,
+impl RoutingTable {
+    pub fn resolve_http(&self, port: u16, branch_id: Option<Uuid>) -> RouteDecision {
+        if let Some(branch_id) = branch_id {
+            if let Some(route) = self.branch_routes.get(&branch_id) {
+                match &route.mode {
+                    BranchMode::Devbox(devbox) => {
+                        return RouteDecision::BranchDevbox {
+                            target_port: devbox.resolve_target_port(port),
+                            route: devbox.clone(),
+                        };
+                    }
+                    BranchMode::Service => {
+                        return RouteDecision::BranchService {
+                            service: route.service.clone(),
+                        };
+                    }
+                }
+            }
+        }
 
-    /// Optional headers to add/modify
+        if let DefaultRoute::Devbox(route) = &self.default_route {
+            return RouteDecision::DefaultDevbox {
+                target_port: route.resolve_target_port(port),
+                route: route.clone(),
+            };
+        }
+
+        RouteDecision::DefaultLocal
+    }
+
+    pub fn resolve_tcp(&self, port: u16) -> RouteDecision {
+        if let DefaultRoute::Devbox(route) = &self.default_route {
+            return RouteDecision::DefaultDevbox {
+                target_port: route.resolve_target_port(port),
+                route: route.clone(),
+            };
+        }
+
+        RouteDecision::DefaultLocal
+    }
+
+    pub fn replace_branch_routes(
+        &mut self,
+        routes: impl IntoIterator<Item = (Uuid, BranchServiceRoute)>,
+    ) {
+        let mut new_routes = HashMap::new();
+
+        for (env_id, service_route) in routes {
+            if let Some(existing) = self.branch_routes.get(&env_id) {
+                let mode = match &existing.mode {
+                    BranchMode::Devbox(devbox) => BranchMode::Devbox(devbox.clone()),
+                    BranchMode::Service => BranchMode::Service,
+                };
+                new_routes.insert(
+                    env_id,
+                    BranchRoute {
+                        service: service_route,
+                        mode,
+                    },
+                );
+                continue;
+            }
+            new_routes.insert(
+                env_id,
+                BranchRoute {
+                    service: service_route,
+                    mode: BranchMode::Service,
+                },
+            );
+        }
+
+        self.branch_routes = new_routes;
+    }
+
+    pub fn set_branch_devbox(&mut self, branch_id: &Uuid, devbox: DevboxRoute) -> bool {
+        let Some(entry) = self.branch_routes.get_mut(branch_id) else {
+            return false;
+        };
+
+        entry.mode = BranchMode::Devbox(devbox);
+        true
+    }
+
+    pub fn remove_branch_devbox_by_intercept(&mut self, intercept_id: &Uuid) -> Option<Uuid> {
+        for (branch_id, route) in self.branch_routes.iter_mut() {
+            if let BranchMode::Devbox(devbox) = &route.mode {
+                if devbox.intercept_id == *intercept_id {
+                    route.mode = BranchMode::Service;
+                    return Some(*branch_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn set_default_devbox(&mut self, route: DevboxRoute) {
+        self.default_route = DefaultRoute::Devbox(route);
+    }
+
+    pub fn clear_default_devbox(&mut self) {
+        self.default_route = DefaultRoute::Local;
+    }
+
+    pub fn default_devbox(&self) -> Option<&DevboxRoute> {
+        match &self.default_route {
+            DefaultRoute::Devbox(route) => Some(route),
+            DefaultRoute::Local => None,
+        }
+    }
+
+    pub fn remove_default_devbox_by_intercept(&mut self, intercept_id: &Uuid) -> bool {
+        match &self.default_route {
+            DefaultRoute::Devbox(route) if &route.intercept_id == intercept_id => {
+                self.default_route = DefaultRoute::Local;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchRoute {
+    pub service: BranchServiceRoute,
+    pub mode: BranchMode,
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchServiceRoute {
+    pub service_name: String,
     pub headers: HashMap<String, String>,
-
-    /// Timeout for this route in milliseconds
-    pub timeout_ms: Option<u64>,
-
-    /// Whether this route requires authentication
     pub requires_auth: bool,
-
-    /// Access level for this route
     pub access_level: AccessLevel,
+    pub timeout_ms: Option<u64>,
 }
 
-/// Target for routing
+impl BranchServiceRoute {
+    pub fn new_service(service_name: String) -> Self {
+        Self {
+            service_name,
+            headers: HashMap::new(),
+            requires_auth: true,
+            access_level: AccessLevel::Personal,
+            timeout_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum BranchMode {
+    Service,
+    Devbox(DevboxRoute),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RouteTarget {
-    /// Direct address
-    Address(SocketAddr),
-
-    /// Kubernetes service
-    Service { name: String, port: u16 },
-
-    /// Load balance across multiple targets
-    LoadBalance(Vec<RouteTarget>),
-
-    /// Devbox tunnel for service interception
-    /// Routes traffic to a developer's local machine via WebSocket tunnel
-    DevboxTunnel {
-        intercept_id: Uuid,
-        session_id: Uuid,
-        target_port: u16,
-        auth_token: String, // short-lived token for tunnel authentication
-    },
+pub struct DevboxRoute {
+    pub intercept_id: Uuid,
+    pub session_id: Uuid,
+    pub target_port: u16,
+    pub auth_token: String,
+    pub websocket_url: String,
+    pub path_pattern: String,
+    pub port_mappings: HashMap<u16, u16>,
+    pub created_at_epoch_seconds: Option<i64>,
+    pub expires_at_epoch_seconds: Option<i64>,
 }
 
-/// Access level for routes (matching Lapdev's preview URL access levels)
+impl DevboxRoute {
+    pub fn resolve_target_port(&self, original_port: u16) -> u16 {
+        self.port_mappings
+            .get(&original_port)
+            .copied()
+            .unwrap_or(original_port)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DefaultRoute {
+    Local,
+    Devbox(DevboxRoute),
+}
+
+impl Default for DefaultRoute {
+    fn default() -> Self {
+        DefaultRoute::Local
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AccessLevel {
     /// Only accessible by the owner with authentication
     Personal,
-    /// Accessible by organization members with authentication  
+    /// Accessible by organization members with authentication
     Shared,
     /// Accessible by anyone without authentication
     Public,
 }
 
-/// Health check configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckConfig {
-    /// Health check endpoint path
     pub path: String,
-
-    /// Interval between health checks in seconds
     pub interval_seconds: u64,
-
-    /// Timeout for health checks in milliseconds
     pub timeout_ms: u64,
-
-    /// Number of consecutive failures before marking unhealthy
     pub failure_threshold: u32,
-}
-
-/// Metrics configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetricsConfig {
-    /// Whether to enable metrics collection
-    pub enabled: bool,
-
-    /// Metrics endpoint path
-    pub path: String,
-
-    /// Port to serve metrics on (if different from main port)
-    pub port: Option<u16>,
-}
-
-impl Default for ProxyConfig {
-    fn default() -> Self {
-        Self {
-            listen_addr: "0.0.0.0:8080".parse().unwrap(),
-            default_target: "127.0.0.1:3000".parse().unwrap(),
-            namespace: None,
-            pod_name: None,
-            environment_id: None,
-            environment_auth_token: None,
-            routes: Vec::new(),
-            health_check: HealthCheckConfig::default(),
-            metrics: MetricsConfig::default(),
-        }
-    }
 }
 
 impl Default for HealthCheckConfig {
@@ -148,6 +275,13 @@ impl Default for HealthCheckConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    pub enabled: bool,
+    pub path: String,
+    pub port: Option<u16>,
+}
+
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
@@ -156,6 +290,22 @@ impl Default for MetricsConfig {
             port: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RouteDecision {
+    BranchService {
+        service: BranchServiceRoute,
+    },
+    BranchDevbox {
+        route: DevboxRoute,
+        target_port: u16,
+    },
+    DefaultDevbox {
+        route: DevboxRoute,
+        target_port: u16,
+    },
+    DefaultLocal,
 }
 
 /// Kubernetes annotations used for configuration

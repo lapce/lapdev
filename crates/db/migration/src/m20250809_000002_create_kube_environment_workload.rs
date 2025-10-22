@@ -33,6 +33,7 @@ impl MigrationTrait for Migration {
                             .uuid()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(KubeEnvironmentWorkload::BaseWorkloadId).uuid())
                     .col(
                         ColumnDef::new(KubeEnvironmentWorkload::Name)
                             .string()
@@ -93,6 +94,17 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_environment_workload_base_deleted_idx")
+                    .table(KubeEnvironmentWorkload::Table)
+                    .col(KubeEnvironmentWorkload::BaseWorkloadId)
+                    .col(KubeEnvironmentWorkload::DeletedAt)
+                    .to_owned(),
+            )
+            .await?;
+
         // Create unique index to prevent duplicate workloads per environment
         manager
             .create_index(
@@ -121,6 +133,7 @@ pub enum KubeEnvironmentWorkload {
     CreatedAt,
     DeletedAt,
     EnvironmentId,
+    BaseWorkloadId,
     Name,
     Namespace,
     Kind,

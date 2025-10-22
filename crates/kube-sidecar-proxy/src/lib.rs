@@ -3,7 +3,6 @@ pub mod error;
 pub mod original_dest;
 pub mod otel_routing;
 pub mod protocol_detector;
-pub mod proxy;
 pub mod rpc;
 pub mod server;
 

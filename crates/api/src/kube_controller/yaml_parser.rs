@@ -34,6 +34,7 @@ pub fn build_workload_details_from_yaml(
         containers,
         ports,
         workload_yaml,
+        base_workload_id: None,
     })
 }
 

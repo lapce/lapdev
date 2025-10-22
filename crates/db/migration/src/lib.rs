@@ -31,6 +31,7 @@ mod m20250820_000001_create_kube_cluster_service;
 mod m20250825_000001_create_kube_app_catalog_workload_label;
 mod m20250825_000002_create_kube_cluster_service_selector;
 mod m20250825_000003_create_kube_app_catalog_workload_dependency;
+mod m20250901_000001_create_kube_environment_workload_label;
 mod m20251008_000001_create_kube_devbox_session;
 mod m20251008_000002_create_kube_devbox_workload_intercept;
 
@@ -71,6 +72,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20250825_000001_create_kube_app_catalog_workload_label::Migration),
             Box::new(m20250825_000002_create_kube_cluster_service_selector::Migration),
             Box::new(m20250825_000003_create_kube_app_catalog_workload_dependency::Migration),
+            Box::new(m20250901_000001_create_kube_environment_workload_label::Migration),
             Box::new(m20251008_000001_create_kube_devbox_session::Migration),
             Box::new(m20251008_000002_create_kube_devbox_workload_intercept::Migration),
         ]

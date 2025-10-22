@@ -16,6 +16,7 @@ pub use super::kube_environment::Entity as KubeEnvironment;
 pub use super::kube_environment_preview_url::Entity as KubeEnvironmentPreviewUrl;
 pub use super::kube_environment_service::Entity as KubeEnvironmentService;
 pub use super::kube_environment_workload::Entity as KubeEnvironmentWorkload;
+pub use super::kube_environment_workload_label::Entity as KubeEnvironmentWorkloadLabel;
 pub use super::kube_namespace::Entity as KubeNamespace;
 pub use super::machine_type::Entity as MachineType;
 pub use super::oauth_connection::Entity as OauthConnection;

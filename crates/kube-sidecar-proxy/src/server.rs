@@ -590,8 +590,8 @@ async fn handle_devbox_tunnel(
                 "Failed to establish tunnel stream for intercept {}: {}",
                 metadata.intercept_id, err
             );
-            connection.clear_client().await;
-            return Err(err);
+            connection.clear_client();
+            return Err(io::Error::from(err));
         }
     };
 
@@ -611,8 +611,8 @@ async fn handle_devbox_tunnel(
                 "Devbox tunnel error for intercept_id={}: {}",
                 metadata.intercept_id, err
             );
-            connection.clear_client().await;
-            return Err(err);
+            connection.clear_client();
+            return Err(io::Error::from(err));
         }
     }
 

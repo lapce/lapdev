@@ -4,7 +4,7 @@ use lapdev_tunnel::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
@@ -258,14 +258,14 @@ impl DevboxRouteMetadata {
 
 pub struct DevboxConnection {
     metadata: DevboxRouteMetadata,
-    client: Arc<ClientHandle>,
+    client: OnceCell<Arc<TunnelClient>>,
 }
 
 impl DevboxConnection {
     pub fn new(metadata: DevboxRouteMetadata) -> Self {
         Self {
             metadata,
-            client: Arc::new(ClientHandle::default()),
+            client: OnceCell::new(),
         }
     }
 
@@ -290,7 +290,7 @@ impl DevboxConnection {
         {
             Ok(stream) => Ok(stream),
             Err(TunnelError::ConnectionClosed) => {
-                self.client.clear().await;
+                self.clear_client();
                 let client = self.ensure_client().await.map_err(io::Error::from)?;
                 client
                     .connect_tcp(target_host.to_string(), target_port)
@@ -301,17 +301,24 @@ impl DevboxConnection {
         }
     }
 
-    pub async fn clear_client(&self) {
-        self.client.clear().await;
+    pub fn clear_client(&self) {
+        self.client.take();
     }
 
     async fn ensure_client(&self) -> Result<Arc<TunnelClient>, TunnelError> {
-        if let Some(client) = self.client.get().await {
-            return Ok(client);
+        if let Some(client) = self.client.get() {
+            return Ok(client.clone());
         }
 
-        let new_client = Arc::new(self.create_client().await?);
-        Ok(self.client.set_if_empty(new_client).await)
+        let client = self
+            .client
+            .get_or_try_init(|| async {
+                let client = self.create_client().await?;
+                Ok(Arc::new(client))
+            })
+            .await?;
+
+        Ok(client.clone())
     }
 
     async fn create_client(&self) -> Result<TunnelClient, TunnelError> {
@@ -333,32 +340,6 @@ impl DevboxConnection {
 
         let transport = TunnelWebSocketTransport::new(stream);
         Ok(TunnelClient::connect(transport))
-    }
-}
-
-#[derive(Default)]
-struct ClientHandle {
-    client: Mutex<Option<Arc<TunnelClient>>>,
-}
-
-impl ClientHandle {
-    async fn get(&self) -> Option<Arc<TunnelClient>> {
-        self.client.lock().await.clone()
-    }
-
-    async fn set_if_empty(&self, client: Arc<TunnelClient>) -> Arc<TunnelClient> {
-        let mut guard = self.client.lock().await;
-        if let Some(existing) = guard.as_ref() {
-            existing.clone()
-        } else {
-            *guard = Some(client.clone());
-            client
-        }
-    }
-
-    async fn clear(&self) {
-        let mut guard = self.client.lock().await;
-        *guard = None;
     }
 }
 

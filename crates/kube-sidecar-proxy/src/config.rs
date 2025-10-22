@@ -4,7 +4,7 @@ use lapdev_tunnel::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, RwLock};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
@@ -258,14 +258,14 @@ impl DevboxRouteMetadata {
 
 pub struct DevboxConnection {
     metadata: DevboxRouteMetadata,
-    client: OnceCell<Arc<TunnelClient>>,
+    client: RwLock<OnceCell<Arc<TunnelClient>>>,
 }
 
 impl DevboxConnection {
     pub fn new(metadata: DevboxRouteMetadata) -> Self {
         Self {
             metadata,
-            client: OnceCell::new(),
+            client: RwLock::new(OnceCell::new()),
         }
     }
 
@@ -290,7 +290,7 @@ impl DevboxConnection {
         {
             Ok(stream) => Ok(stream),
             Err(TunnelError::ConnectionClosed) => {
-                self.clear_client();
+                self.clear_client().await;
                 let client = self.ensure_client().await.map_err(io::Error::from)?;
                 client
                     .connect_tcp(target_host.to_string(), target_port)
@@ -301,22 +301,25 @@ impl DevboxConnection {
         }
     }
 
-    pub fn clear_client(&self) {
-        self.client.take();
+    pub async fn clear_client(&self) {
+        self.client.write().await.take();
     }
 
     async fn ensure_client(&self) -> Result<Arc<TunnelClient>, TunnelError> {
-        if let Some(client) = self.client.get() {
+        if let Some(client) = self.client.read().await.get() {
             return Ok(client.clone());
         }
 
         let client = self
             .client
+            .read()
+            .await
             .get_or_try_init(|| async {
                 let client = self.create_client().await?;
-                Ok(Arc::new(client))
+                Ok::<Arc<TunnelClient>, TunnelError>(Arc::new(client))
             })
-            .await?;
+            .await?
+            .clone();
 
         Ok(client.clone())
     }

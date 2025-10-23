@@ -334,6 +334,14 @@ pub enum KubeWorkloadYamlOnly {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeWorkloadWithResources {
+    pub workload: KubeWorkloadYamlOnly,
+    pub services: HashMap<String, KubeServiceWithYaml>, // name -> service with YAML and details
+    pub configmaps: HashMap<String, String>,            // name -> YAML content
+    pub secrets: HashMap<String, String>,               // name -> YAML content
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeWorkloadsWithResources {
     pub workloads: Vec<KubeWorkloadYamlOnly>,
     pub services: HashMap<String, KubeServiceWithYaml>, // name -> service with YAML and details

@@ -13,8 +13,8 @@ use k8s_openapi::api::{
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use lapdev_common::kube::{KubeServiceDetails, KubeServiceWithYaml, KubeWorkloadKind};
 use lapdev_kube_rpc::{
-    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, ProxyBranchRouteConfig,
-    ProxyRouteAccessLevel,
+    KubeWorkloadWithResources, KubeWorkloadYamlOnly, KubeWorkloadsWithResources,
+    ProxyBranchRouteConfig, ProxyRouteAccessLevel,
 };
 use lapdev_rpc::error::ApiError;
 
@@ -135,7 +135,7 @@ impl KubeController {
             ))
         })?;
 
-        let (workloads_with_resources, persisted_yaml, extra_labels) =
+        let (workload_with_resources, persisted_yaml, extra_labels) =
             if environment.base_environment_id.is_some() {
                 let (manifest, yaml, labels) = self
                     .build_branch_workload_manifest(
@@ -174,7 +174,12 @@ impl KubeController {
         self.deploy_environment_resources(
             &cluster_server,
             &environment,
-            workloads_with_resources,
+            KubeWorkloadsWithResources {
+                workloads: vec![workload_with_resources.workload],
+                services: workload_with_resources.services,
+                configmaps: workload_with_resources.configmaps,
+                secrets: workload_with_resources.secrets,
+            },
             extra_labels,
         )
         .await?;
@@ -285,10 +290,7 @@ impl KubeController {
                 );
                 if let Err(err) = cluster_server
                     .rpc_client
-                    .refresh_branch_service_routes(
-                        tarpc::context::current(),
-                        base_environment_id,
-                    )
+                    .refresh_branch_service_routes(tarpc::context::current(), base_environment_id)
                     .await
                 {
                     tracing::warn!(
@@ -367,7 +369,7 @@ impl KubeController {
         existing_workload: &lapdev_common::kube::KubeEnvironmentWorkload,
         kind: KubeWorkloadKind,
         containers: &[lapdev_common::kube::KubeContainerInfo],
-    ) -> Result<(KubeWorkloadsWithResources, String, HashMap<String, String>), ApiError> {
+    ) -> Result<(KubeWorkloadWithResources, String, HashMap<String, String>), ApiError> {
         let base_workload_name = existing_workload.name.clone();
         let env_suffix = environment.id.to_string();
         let branch_workload_name = if base_workload_name.ends_with(&env_suffix) {
@@ -376,15 +378,17 @@ impl KubeController {
             format!("{}-{}", base_workload_name, environment.id)
         };
 
-        let (mut workloads_with_resources, _) = Self::build_standard_workload_manifest(
+        let (mut workload_with_resources, persisted_yaml) = Self::build_standard_workload_manifest(
             kind,
             &existing_workload.workload_yaml,
             containers,
         )?;
 
-        for workload_yaml in &mut workloads_with_resources.workloads {
-            rename_workload_yaml(workload_yaml, &base_workload_name, &branch_workload_name)?;
-        }
+        rename_workload_yaml(
+            &mut workload_with_resources.workload,
+            &base_workload_name,
+            &branch_workload_name,
+        )?;
 
         let environment_services = self
             .db
@@ -454,11 +458,9 @@ impl KubeController {
                 },
             );
         }
-        workloads_with_resources.services = updated_services;
-        workloads_with_resources.configmaps.clear();
-        workloads_with_resources.secrets.clear();
-
-        let persisted_yaml = extract_workload_yaml(&workloads_with_resources.workloads)?;
+        workload_with_resources.services = updated_services;
+        workload_with_resources.configmaps.clear();
+        workload_with_resources.secrets.clear();
 
         let mut extra_labels = HashMap::new();
         extra_labels.insert(
@@ -482,14 +484,14 @@ impl KubeController {
             existing_workload.id.to_string(),
         );
 
-        Ok((workloads_with_resources, persisted_yaml, extra_labels))
+        Ok((workload_with_resources, persisted_yaml, extra_labels))
     }
 
     fn build_standard_workload_manifest(
         kind: KubeWorkloadKind,
         original_yaml: &str,
         containers: &[lapdev_common::kube::KubeContainerInfo],
-    ) -> Result<(KubeWorkloadsWithResources, String), ApiError> {
+    ) -> Result<(KubeWorkloadWithResources, String), ApiError> {
         let rebuilt_yaml =
             rebuild_workload_yaml(&kind, original_yaml, containers).map_err(|err| {
                 ApiError::InvalidRequest(format!("Failed to rebuild workload manifest: {}", err))
@@ -508,8 +510,8 @@ impl KubeController {
         };
 
         Ok((
-            KubeWorkloadsWithResources {
-                workloads: vec![workload],
+            KubeWorkloadWithResources {
+                workload,
                 services: HashMap::new(),
                 configmaps: HashMap::new(),
                 secrets: HashMap::new(),
@@ -517,24 +519,6 @@ impl KubeController {
             rebuilt_yaml,
         ))
     }
-}
-
-fn extract_workload_yaml(workloads: &[KubeWorkloadYamlOnly]) -> Result<String, ApiError> {
-    let workload = workloads.first().ok_or_else(|| {
-        ApiError::InvalidRequest("No workload manifest generated for deployment".to_string())
-    })?;
-
-    let yaml = match workload {
-        KubeWorkloadYamlOnly::Deployment(yaml)
-        | KubeWorkloadYamlOnly::StatefulSet(yaml)
-        | KubeWorkloadYamlOnly::DaemonSet(yaml)
-        | KubeWorkloadYamlOnly::ReplicaSet(yaml)
-        | KubeWorkloadYamlOnly::Pod(yaml)
-        | KubeWorkloadYamlOnly::Job(yaml)
-        | KubeWorkloadYamlOnly::CronJob(yaml) => yaml.clone(),
-    };
-
-    Ok(yaml)
 }
 
 fn rename_workload_yaml(

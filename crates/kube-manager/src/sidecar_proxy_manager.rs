@@ -1,7 +1,10 @@
 use anyhow::Result;
 use futures::StreamExt;
 use lapdev_common::kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR};
-use lapdev_kube_rpc::{KubeClusterRpcClient, SidecarProxyManagerRpc, SidecarProxyRpcClient};
+use lapdev_kube_rpc::{
+    DevboxRouteConfig, KubeClusterRpcClient, ProxyBranchRouteConfig, SidecarProxyManagerRpc,
+    SidecarProxyRpcClient,
+};
 use lapdev_rpc::spawn_twoway;
 use std::{collections::HashMap, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
@@ -13,14 +16,8 @@ use crate::sidecar_proxy_manager_rpc::SidecarProxyManagerRpcServer;
 
 #[derive(Clone)]
 pub struct SidecarProxyManager {
-    pub(crate) sidecar_proxies: Arc<RwLock<HashMap<Uuid, SidecarProxyRegistration>>>,
+    pub(crate) sidecar_proxies: Arc<RwLock<HashMap<Uuid, HashMap<Uuid, SidecarProxyRpcClient>>>>,
     kube_cluster_rpc_client: Arc<RwLock<Option<KubeClusterRpcClient>>>,
-}
-
-#[derive(Clone)]
-pub(crate) struct SidecarProxyRegistration {
-    pub workload_id: Uuid,
-    pub rpc_client: SidecarProxyRpcClient,
 }
 
 impl SidecarProxyManager {
@@ -77,12 +74,12 @@ impl SidecarProxyManager {
     }
 
     pub async fn set_service_routes_if_registered(&self, environment_id: Uuid) -> Result<()> {
-        let registration = {
+        let connections = {
             let map = self.sidecar_proxies.read().await;
             map.get(&environment_id).cloned()
         };
 
-        let Some(registration) = registration else {
+        let Some(connections) = connections else {
             return Ok(());
         };
 
@@ -99,37 +96,189 @@ impl SidecarProxyManager {
             return Ok(());
         };
 
-        let routes = match cluster_client
-            .list_branch_service_routes(
-                tarpc::context::current(),
-                environment_id,
-                registration.workload_id,
-            )
-            .await
-        {
-            Ok(Ok(routes)) => routes,
-            Ok(Err(err)) => {
+        for (workload_id, client) in connections {
+            let routes = match cluster_client
+                .clone()
+                .list_branch_service_routes(tarpc::context::current(), environment_id, workload_id)
+                .await
+            {
+                Ok(Ok(routes)) => routes,
+                Ok(Err(err)) => {
+                    return Err(anyhow::anyhow!(
+                        "API rejected route request for environment {} workload {}: {}",
+                        environment_id,
+                        workload_id,
+                        err
+                    ));
+                }
+                Err(err) => {
+                    return Err(anyhow::anyhow!(
+                        "Failed to fetch routes for environment {} workload {}: {}",
+                        environment_id,
+                        workload_id,
+                        err
+                    ));
+                }
+            };
+
+            if let Err(e) = client
+                .set_service_routes(tarpc::context::current(), routes)
+                .await
+            {
                 return Err(anyhow::anyhow!(
-                    "API rejected route request for environment {}: {}",
-                    environment_id,
-                    err
+                    "Failed to push service routes to workload {}: {}",
+                    workload_id,
+                    e
                 ));
             }
-            Err(err) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to fetch routes for environment {}: {}",
-                    environment_id,
-                    err
-                ));
-            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn set_devbox_routes(
+        &self,
+        environment_id: Uuid,
+        mut routes: HashMap<Uuid, DevboxRouteConfig>,
+    ) -> Result<(), String> {
+        let connections = {
+            let map = self.sidecar_proxies.read().await;
+            map.get(&environment_id).cloned()
         };
 
-        if let Err(e) = registration
-            .rpc_client
-            .set_service_routes(tarpc::context::current(), routes)
+        let Some(connections) = connections else {
+            warn!(
+                "No sidecar proxy registered for environment {} when sending devbox routes",
+                environment_id
+            );
+            return Ok(());
+        };
+
+        for (workload_id, client) in connections {
+            if let Some(route) = routes.remove(&workload_id) {
+                if let Err(e) = client
+                    .set_devbox_route(tarpc::context::current(), route)
+                    .await
+                {
+                    return Err(format!(
+                        "Failed to send devbox routes to sidecar (workload {}): {}",
+                        workload_id, e
+                    ));
+                }
+            } else if let Err(e) = client.stop_devbox(tarpc::context::current(), None).await {
+                return Err(format!(
+                    "Failed to clear devbox routes for workload {}: {}",
+                    workload_id, e
+                ));
+            }
+        }
+
+        for workload_id in routes.into_keys() {
+            warn!(
+                "No sidecar proxy registered for workload {} when sending devbox route",
+                workload_id
+            );
+        }
+
+        Ok(())
+    }
+
+    pub async fn upsert_branch_service_route(
+        &self,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        route: ProxyBranchRouteConfig,
+    ) -> Result<(), String> {
+        let connections = {
+            let map = self.sidecar_proxies.read().await;
+            map.get(&base_environment_id).cloned()
+        };
+
+        let Some(connections) = connections else {
+            warn!(
+                "No sidecar proxy registered for environment {} when updating branch service route",
+                base_environment_id
+            );
+            return Ok(());
+        };
+
+        let Some(client) = connections.get(&workload_id) else {
+            warn!(
+                "No sidecar proxy registered for workload {} in environment {} when updating branch service route",
+                workload_id, base_environment_id
+            );
+            return Ok(());
+        };
+
+        if let Err(err) = client
+            .upsert_branch_service_route(tarpc::context::current(), route)
             .await
         {
-            return Err(anyhow::anyhow!("Failed to push service routes: {}", e));
+            return Err(format!(
+                "Failed to update branch service route for workload {}: {}",
+                workload_id, err
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn remove_branch_service_route(
+        &self,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String> {
+        let connections = {
+            let map = self.sidecar_proxies.read().await;
+            map.get(&base_environment_id).cloned()
+        };
+
+        let Some(connections) = connections else {
+            return Ok(());
+        };
+
+        let Some(client) = connections.get(&workload_id) else {
+            return Ok(());
+        };
+
+        if let Err(err) = client
+            .remove_branch_service_route(tarpc::context::current(), branch_environment_id)
+            .await
+        {
+            return Err(format!(
+                "Failed to remove branch service route for workload {} branch {}: {}",
+                workload_id, branch_environment_id, err
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn clear_devbox_routes(
+        &self,
+        environment_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        let connections = {
+            let map = self.sidecar_proxies.read().await;
+            map.get(&environment_id).cloned()
+        };
+
+        let Some(connections) = connections else {
+            return Ok(());
+        };
+
+        for (workload_id, client) in connections {
+            if let Err(err) = client
+                .stop_devbox(tarpc::context::current(), branch_environment_id)
+                .await
+            {
+                return Err(format!(
+                    "Failed to clear devbox routes for workload {}: {}",
+                    workload_id, err
+                ));
+            }
         }
 
         Ok(())

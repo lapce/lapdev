@@ -12,7 +12,9 @@ use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
 use lapdev_common::{UserRole, LAPDEV_BASE_HOSTNAME};
 use lapdev_conductor::{scheduler::LAPDEV_CPU_OVERCOMMIT, Conductor};
 use lapdev_db::api::DbApi;
+use lapdev_devbox_rpc::PortMapping;
 use lapdev_enterprise::license::LAPDEV_ENTERPRISE_LICENSE;
+use lapdev_kube_rpc::DevboxRouteConfig;
 use lapdev_rpc::error::ApiError;
 use pasetors::{
     claims::ClaimsValidationRules,
@@ -263,6 +265,190 @@ impl CoreState {
                 }
             }
         }
+    }
+
+    async fn websocket_base_url(&self) -> String {
+        let from_env = std::env::var("LAPDEV_API_URL").ok();
+        let host = if let Some(url) = from_env.filter(|s| !s.trim().is_empty()) {
+            url
+        } else {
+            self.conductor
+                .hostnames
+                .read()
+                .await
+                .get("")
+                .cloned()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "https://app.lap.dev".to_string())
+        };
+
+        CoreState::normalize_ws_base(&host)
+    }
+
+    fn normalize_ws_base(candidate: &str) -> String {
+        let trimmed = candidate.trim();
+        let with_scheme = if trimmed.starts_with("http://")
+            || trimmed.starts_with("https://")
+            || trimmed.starts_with("ws://")
+            || trimmed.starts_with("wss://")
+        {
+            trimmed.to_string()
+        } else {
+            format!("https://{}", trimmed)
+        };
+
+        if with_scheme.starts_with("http://") {
+            with_scheme.replacen("http://", "ws://", 1)
+        } else if with_scheme.starts_with("https://") {
+            with_scheme.replacen("https://", "wss://", 1)
+        } else {
+            with_scheme
+        }
+    }
+
+    pub async fn push_devbox_routes(&self, user_id: Uuid, session_id: Uuid, environment_id: Uuid) {
+        match self
+            .build_devbox_route_snapshot(user_id, session_id, environment_id)
+            .await
+        {
+            Ok((cluster_id, base_environment_id, routes)) => {
+                if !routes.is_empty() {
+                    if let Err(err) = self
+                        .kube_controller
+                        .set_devbox_routes(
+                            cluster_id,
+                            base_environment_id.unwrap_or(environment_id),
+                            routes,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            environment_id = %environment_id,
+                            error = %err,
+                            "Failed to push devbox routes to kube-manager"
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    environment_id = %environment_id,
+                    error = %err,
+                    "Failed to build devbox route snapshot"
+                );
+            }
+        }
+    }
+
+    pub async fn clear_devbox_routes_for_environment(&self, environment_id: Uuid) {
+        match self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch environment: {e}"))
+        {
+            Ok(Some(environment)) => {
+                if let Err(err) = self
+                    .kube_controller
+                    .clear_devbox_routes(
+                        environment.cluster_id,
+                        environment.base_environment_id.unwrap_or(environment_id),
+                        environment.base_environment_id.map(|_| environment_id),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        environment_id = %environment_id,
+                        error = %err,
+                        "Failed to clear devbox routes for environment"
+                    );
+                }
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    environment_id = %environment_id,
+                    "Environment not found while clearing devbox routes"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    environment_id = %environment_id,
+                    error = %err,
+                    "Failed to clear devbox routes for environment"
+                );
+            }
+        }
+    }
+
+    async fn build_devbox_route_snapshot(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(Uuid, Option<Uuid>, HashMap<Uuid, DevboxRouteConfig>), String> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch environment: {e}"))?
+            .ok_or_else(|| "Environment not found".to_string())?;
+
+        let intercepts = self
+            .db
+            .get_active_intercepts_for_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch intercepts: {e}"))?;
+
+        let base = self.websocket_base_url().await;
+        let base_trimmed = base.trim_end_matches('/');
+
+        let mut routes: HashMap<Uuid, DevboxRouteConfig> = HashMap::new();
+
+        for intercept in intercepts {
+            if intercept.user_id != user_id {
+                continue;
+            }
+
+            let value: serde_json::Value = intercept.port_mappings.clone().into();
+            let mappings: Vec<PortMapping> = serde_json::from_value(value).map_err(|e| {
+                format!(
+                    "Failed to parse port mappings for intercept {}: {e}",
+                    intercept.id
+                )
+            })?;
+
+            let mut port_map = HashMap::with_capacity(mappings.len());
+            for mapping in &mappings {
+                port_map.insert(mapping.workload_port, mapping.local_port);
+            }
+
+            let websocket_url = format!(
+                "{}/api/v1/kube/sidecar/tunnel/{}/{}/{}",
+                base_trimmed, environment_id, intercept.workload_id, session_id
+            );
+
+            routes.insert(
+                intercept.workload_id,
+                DevboxRouteConfig {
+                    intercept_id: intercept.id,
+                    workload_id: intercept.workload_id,
+                    session_id,
+                    auth_token: environment.auth_token.clone(),
+                    websocket_url,
+                    path_pattern: "/*".to_string(),
+                    branch_environment_id: environment.base_environment_id.map(|_| environment_id),
+                    created_at_epoch_seconds: Some(intercept.created_at.timestamp()),
+                    expires_at_epoch_seconds: intercept.stopped_at.map(|dt| dt.timestamp()),
+                    port_mappings: port_map,
+                },
+            );
+        }
+
+        Ok((
+            environment.cluster_id,
+            environment.base_environment_id,
+            routes,
+        ))
     }
 
     fn cookie_token(&self, cookie: &headers::Cookie, name: &str) -> Result<TrustedToken, ApiError> {

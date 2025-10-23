@@ -89,7 +89,7 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
             any(devbox_client_tunnel_websocket),
         )
         .route(
-            "/kube/sidecar/tunnel/{environment_id}/{session_id}",
+            "/kube/sidecar/tunnel/{environment_id}/{workload_id}/{session_id}",
             any(sidecar_tunnel_websocket),
         )
         .route(

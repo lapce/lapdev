@@ -14,8 +14,8 @@ use lapdev_db_entities::{
     kube_app_catalog_workload_label,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpc, KubeManagerRpcClient, ProxyBranchRouteConfig, ProxyRouteAccessLevel,
-    ResourceChangeEvent, ResourceChangeType, ResourceType,
+    DevboxRouteConfig, KubeClusterRpc, KubeManagerRpcClient, ProxyBranchRouteConfig,
+    ProxyRouteAccessLevel, ResourceChangeEvent, ResourceChangeType, ResourceType,
 };
 use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
@@ -136,6 +136,46 @@ impl KubeClusterServer {
             .get_cluster_catalog_namespaces(self.cluster_id)
             .await?;
         self.send_namespace_watch_configuration(namespaces).await
+    }
+
+    pub async fn set_devbox_routes(
+        &self,
+        environment_id: Uuid,
+        routes: HashMap<Uuid, DevboxRouteConfig>,
+    ) -> Result<(), String> {
+        match self
+            .rpc_client
+            .set_devbox_routes(tarpc::context::current(), environment_id, routes)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(format!(
+                "Failed to send set_devbox_routes RPC to kube-manager: {}",
+                err
+            )),
+        }
+    }
+
+    pub async fn clear_devbox_routes(
+        &self,
+        environment_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        match self
+            .rpc_client
+            .clear_devbox_routes(
+                tarpc::context::current(),
+                environment_id,
+                branch_environment_id,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(format!(
+                "Failed to send clear_devbox_routes RPC to kube-manager: {}",
+                err
+            )),
+        }
     }
 }
 

@@ -12,7 +12,10 @@ use k8s_openapi::api::{
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use lapdev_common::kube::{KubeServiceDetails, KubeServiceWithYaml, KubeWorkloadKind};
-use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
+use lapdev_kube_rpc::{
+    KubeWorkloadYamlOnly, KubeWorkloadsWithResources, ProxyBranchRouteConfig,
+    ProxyRouteAccessLevel,
+};
 use lapdev_rpc::error::ApiError;
 
 use super::{resources::rebuild_workload_yaml, KubeController};
@@ -176,17 +179,124 @@ impl KubeController {
         )
         .await?;
 
-        if environment.base_environment_id.is_some() {
-            if let Err(err) = cluster_server
-                .rpc_client
-                .refresh_branch_service_routes(tarpc::context::current(), environment.id)
-                .await
-            {
+        if let Some(base_environment_id) = environment.base_environment_id {
+            if let Some(base_workload_id) = existing_workload.base_workload_id {
+                match self
+                    .build_branch_service_route_config(
+                        base_environment_id,
+                        base_workload_id,
+                        environment.id,
+                    )
+                    .await
+                {
+                    Ok(Some(route)) => {
+                        match cluster_server
+                            .rpc_client
+                            .update_branch_service_route(
+                                tarpc::context::current(),
+                                base_environment_id,
+                                base_workload_id,
+                                route,
+                            )
+                            .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => {
+                                tracing::warn!(
+                                    base_environment_id = %base_environment_id,
+                                    branch_environment_id = %environment.id,
+                                    workload_id = %base_workload_id,
+                                    error = %err,
+                                    "KubeManager rejected branch service route update"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    base_environment_id = %base_environment_id,
+                                    branch_environment_id = %environment.id,
+                                    workload_id = %base_workload_id,
+                                    error = %err,
+                                    "Failed to send branch service route update to KubeManager"
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        match cluster_server
+                            .rpc_client
+                            .remove_branch_service_route(
+                                tarpc::context::current(),
+                                base_environment_id,
+                                base_workload_id,
+                                environment.id,
+                            )
+                            .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => {
+                                tracing::warn!(
+                                    base_environment_id = %base_environment_id,
+                                    branch_environment_id = %environment.id,
+                                    workload_id = %base_workload_id,
+                                    error = %err,
+                                    "KubeManager rejected branch service route removal"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    base_environment_id = %base_environment_id,
+                                    branch_environment_id = %environment.id,
+                                    workload_id = %base_workload_id,
+                                    error = %err,
+                                    "Failed to send branch service route removal to KubeManager"
+                                );
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            base_environment_id = %base_environment_id,
+                            branch_environment_id = %environment.id,
+                            workload_id = %base_workload_id,
+                            error = ?err,
+                            "Failed to build branch service route config; falling back to full refresh"
+                        );
+                        if let Err(err) = cluster_server
+                            .rpc_client
+                            .refresh_branch_service_routes(
+                                tarpc::context::current(),
+                                base_environment_id,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                base_environment_id = %base_environment_id,
+                                error = %err,
+                                "Failed to refresh branch service routes during fallback"
+                            );
+                        }
+                    }
+                }
+            } else {
                 tracing::warn!(
-                    "Failed to refresh branch service routes for environment {}: {}",
-                    environment.id,
-                    err
+                    environment_id = %environment.id,
+                    workload_id = %workload_id,
+                    "Branch workload missing base_workload_id; falling back to full refresh"
                 );
+                if let Err(err) = cluster_server
+                    .rpc_client
+                    .refresh_branch_service_routes(
+                        tarpc::context::current(),
+                        base_environment_id,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        base_environment_id = %base_environment_id,
+                        error = %err,
+                        "Failed to refresh branch service routes during fallback"
+                    );
+                }
             }
         }
 
@@ -196,6 +306,59 @@ impl KubeController {
             .map_err(ApiError::from)?;
 
         Ok(())
+    }
+
+    async fn build_branch_service_route_config(
+        &self,
+        base_environment_id: Uuid,
+        base_workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<Option<ProxyBranchRouteConfig>, ApiError> {
+        let base_environment = self
+            .db
+            .get_kube_environment(base_environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(format!(
+                    "Base environment {} not found",
+                    base_environment_id
+                ))
+            })?;
+
+        let workload_labels = self
+            .db
+            .get_environment_workload_labels(base_workload_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let shared_services = self
+            .db
+            .get_matching_cluster_services(
+                base_environment.cluster_id,
+                &base_environment.namespace,
+                &workload_labels,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        let Some(service) = shared_services.first() else {
+            return Ok(None);
+        };
+
+        let branch_service_name = format!("{}-{}", service.name, branch_environment_id);
+
+        let route = ProxyBranchRouteConfig {
+            branch_environment_id,
+            service_name: Some(branch_service_name),
+            headers: HashMap::new(),
+            requires_auth: true,
+            access_level: ProxyRouteAccessLevel::Personal,
+            timeout_ms: None,
+            devbox_route: None,
+        };
+
+        Ok(Some(route))
     }
 
     async fn build_branch_workload_manifest(

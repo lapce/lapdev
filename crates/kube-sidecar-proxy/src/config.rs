@@ -3,7 +3,12 @@ use lapdev_tunnel::{
     TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    io,
+    net::SocketAddr,
+    sync::Arc,
+};
 use tokio::sync::{OnceCell, RwLock};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -150,6 +155,49 @@ impl RoutingTable {
         true
     }
 
+    pub fn clear_branch_devboxes(&mut self) {
+        for route in self.branch_routes.values_mut() {
+            if matches!(route.mode, BranchMode::Devbox(_)) {
+                route.mode = BranchMode::Service;
+            }
+        }
+    }
+
+    pub fn remove_branch_devbox(&mut self, branch_id: &Uuid) -> bool {
+        let Some(route) = self.branch_routes.get_mut(branch_id) else {
+            return false;
+        };
+
+        if matches!(route.mode, BranchMode::Devbox(_)) {
+            route.mode = BranchMode::Service;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn upsert_branch_service_route(
+        &mut self,
+        branch_id: Uuid,
+        service_route: BranchServiceRoute,
+    ) {
+        match self.branch_routes.entry(branch_id) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().service = service_route;
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(BranchRoute {
+                    service: service_route,
+                    mode: BranchMode::Service,
+                });
+            }
+        }
+    }
+
+    pub fn remove_branch_service_route(&mut self, branch_id: &Uuid) -> bool {
+        self.branch_routes.remove(branch_id).is_some()
+    }
+
     pub fn remove_branch_devbox_by_intercept(&mut self, intercept_id: &Uuid) -> Option<Uuid> {
         for (branch_id, route) in self.branch_routes.iter_mut() {
             if let BranchMode::Devbox(connection) = &route.mode {
@@ -237,8 +285,8 @@ impl Default for DefaultRoute {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevboxRouteMetadata {
     pub intercept_id: Uuid,
+    pub workload_id: Uuid,
     pub session_id: Uuid,
-    pub target_port: u16,
     pub auth_token: String,
     pub websocket_url: String,
     pub path_pattern: String,

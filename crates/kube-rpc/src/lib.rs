@@ -418,6 +418,28 @@ pub trait KubeManagerRpc {
         requests: Vec<NamespacedResourceRequest>,
     ) -> Result<Vec<NamespacedResourceResponse>, String>;
 
+    async fn set_devbox_routes(
+        environment_id: Uuid,
+        routes: HashMap<Uuid, DevboxRouteConfig>,
+    ) -> Result<(), String>;
+
+    async fn update_branch_service_route(
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        route: ProxyBranchRouteConfig,
+    ) -> Result<(), String>;
+
+    async fn remove_branch_service_route(
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String>;
+
+    async fn clear_devbox_routes(
+        environment_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String>;
+
     async fn refresh_branch_service_routes(environment_id: Uuid) -> Result<(), String>;
 
     async fn destroy_environment(environment_id: Uuid, namespace: String) -> Result<(), String>;
@@ -451,14 +473,6 @@ pub trait SidecarProxyManagerRpc {
         byte_count: u64,
         active_connections: u32,
     ) -> Result<(), String>;
-
-    /// Request a devbox tunnel connection for service interception
-    /// Returns tunnel info for establishing direct WebSocket connection to API
-    async fn request_devbox_tunnel(
-        intercept_id: Uuid,
-        source_addr: String,
-        target_port: u16,
-    ) -> Result<DevboxTunnelInfo, String>;
 }
 
 /// Information returned when requesting a devbox tunnel
@@ -478,8 +492,8 @@ pub struct DevboxTunnelInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevboxRouteConfig {
     pub intercept_id: Uuid,
+    pub workload_id: Uuid,
     pub session_id: Uuid,
-    pub target_port: u16,
     pub auth_token: String,
     pub websocket_url: String,
     /// Path pattern for this route (e.g., "/*" for all traffic)
@@ -521,16 +535,17 @@ pub trait SidecarProxyRpc {
     /// Replace the service routes with the provided configuration
     async fn set_service_routes(routes: Vec<ProxyBranchRouteConfig>) -> Result<(), String>;
 
-    /// Add a DevboxTunnel route for service interception
-    /// Returns true if route was added successfully
-    async fn add_devbox_route(route: DevboxRouteConfig) -> Result<bool, String>;
+    /// Set the DevboxTunnel route for this sidecar's workload
+    async fn set_devbox_route(route: DevboxRouteConfig) -> Result<(), String>;
 
-    /// Remove a DevboxTunnel route by intercept_id
-    /// Returns true if route was found and removed
-    async fn remove_devbox_route(intercept_id: Uuid) -> Result<bool, String>;
+    /// Stop the active devbox route for either the default environment or a branch environment
+    async fn stop_devbox(branch_environment: Option<Uuid>) -> Result<(), String>;
 
-    /// List all active DevboxTunnel routes
-    async fn list_devbox_routes() -> Result<Vec<DevboxRouteConfig>, String>;
+    /// Update (or insert) the branch service route for a specific branch environment
+    async fn upsert_branch_service_route(route: ProxyBranchRouteConfig) -> Result<(), String>;
+
+    /// Remove the branch service route for a specific branch environment
+    async fn remove_branch_service_route(branch_environment_id: Uuid) -> Result<(), String>;
 }
 
 /// Information about a branch environment that shares the devbox-proxy

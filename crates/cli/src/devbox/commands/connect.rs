@@ -7,7 +7,7 @@ use lapdev_tunnel::WebSocketTransport;
 use lapdev_tunnel::{
     run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
 };
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     signal,
@@ -166,21 +166,6 @@ async fn connect_and_run_rpc(
     let rpc_client =
         DevboxSessionRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
 
-    // Create RPC server (for server to call us)
-    let client_rpc_server = DevboxClientRpcServer::new(shutdown_tx.clone(), env_change_tx.clone());
-
-    // Spawn the RPC server task
-    let server_task = tokio::spawn(async move {
-        tracing::info!("Starting DevboxClientRpc server...");
-        BaseChannel::with_defaults(server_chan)
-            .execute(client_rpc_server.serve())
-            .for_each(|resp| async move {
-                tokio::spawn(resp);
-            })
-            .await;
-        tracing::info!("DevboxClientRpc server stopped");
-    });
-
     // Call whoami to get session info
     let session_info = match rpc_client
         .whoami(tarpc::context::current())
@@ -209,10 +194,28 @@ async fn connect_and_run_rpc(
         }
     };
 
-    tunnel_manager
-        .ensure_intercept(api_url, token, session_info.session_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to start intercept tunnel: {}", e))?;
+    // Create RPC server (for server to call us)
+    let client_rpc_server = DevboxClientRpcServer::new(
+        shutdown_tx.clone(),
+        env_change_tx.clone(),
+        Arc::clone(&tunnel_manager),
+        api_url.to_string(),
+        token.to_string(),
+        session_info.session_id,
+    );
+
+    // Spawn the RPC server task
+    let server_task = tokio::spawn(async move {
+        tracing::info!("Starting DevboxClientRpc server...");
+        BaseChannel::with_defaults(server_chan)
+            .execute(client_rpc_server.serve())
+            .for_each(|resp| async move {
+                tokio::spawn(resp);
+            })
+            .await;
+        tracing::info!("DevboxClientRpc server stopped");
+    });
+
     tunnel_manager
         .ensure_client(api_url, token, session_info.session_id)
         .await
@@ -265,6 +268,24 @@ async fn connect_and_run_rpc(
                         intercept.workload_name.cyan(),
                         intercept.port_mappings.len()
                     );
+
+                    if let Err(err) = tunnel_manager
+                        .ensure_intercept_for_workload(
+                            api_url,
+                            token,
+                            session_info.session_id,
+                            intercept.workload_id,
+                            intercept.intercept_id,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            workload_id = %intercept.workload_id,
+                            intercept_id = %intercept.intercept_id,
+                            "Failed to ensure intercept tunnel during rehydrate: {}",
+                            err
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -361,16 +382,28 @@ async fn connect_and_run_rpc(
 struct DevboxClientRpcServer {
     shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
     env_change_tx: mpsc::UnboundedSender<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>,
+    tunnel_manager: Arc<DevboxTunnelManager>,
+    api_url: String,
+    token: String,
+    session_id: Uuid,
 }
 
 impl DevboxClientRpcServer {
     fn new(
         shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
         env_change_tx: mpsc::UnboundedSender<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>,
+        tunnel_manager: Arc<DevboxTunnelManager>,
+        api_url: String,
+        token: String,
+        session_id: Uuid,
     ) -> Self {
         Self {
             shutdown_tx,
             env_change_tx,
+            tunnel_manager,
+            api_url,
+            token,
+            session_id,
         }
     }
 }
@@ -381,6 +414,11 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         _context: tarpc::context::Context,
         intercept: StartInterceptRequest,
     ) -> Result<(), String> {
+        let tunnel_manager = self.tunnel_manager.clone();
+        let api_url = self.api_url.clone();
+        let token = self.token.clone();
+        let session_id = self.session_id;
+
         println!(
             "{} Starting intercept for workload: {}/{}",
             "→".cyan(),
@@ -388,7 +426,30 @@ impl DevboxClientRpc for DevboxClientRpcServer {
             intercept.workload_name
         );
 
-        tracing::info!("Intercept {} acknowledged by CLI", intercept.intercept_id);
+        if let Err(err) = tunnel_manager
+            .ensure_intercept_for_workload(
+                &api_url,
+                &token,
+                session_id,
+                intercept.workload_id,
+                intercept.intercept_id,
+            )
+            .await
+        {
+            tracing::error!(
+                workload_id = %intercept.workload_id,
+                intercept_id = %intercept.intercept_id,
+                "Failed to start intercept tunnel: {}",
+                err
+            );
+        } else {
+            tracing::info!(
+                workload_id = %intercept.workload_id,
+                intercept_id = %intercept.intercept_id,
+                "Intercept {} acknowledged by CLI",
+                intercept.intercept_id
+            );
+        }
         Ok(())
     }
 
@@ -398,6 +459,8 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         intercept_id: Uuid,
     ) -> Result<(), String> {
         println!("{} Received stop intercept: {}", "✗".yellow(), intercept_id);
+        let tunnel_manager = self.tunnel_manager.clone();
+        tunnel_manager.stop_intercept_by_id(intercept_id).await;
         tracing::info!("Intercept {} stop acknowledged by CLI", intercept_id);
         Ok(())
     }
@@ -416,6 +479,9 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         environment: Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>,
     ) {
         tracing::info!("environment_changed RPC handler called");
+        let tunnel_manager = self.tunnel_manager.clone();
+        tunnel_manager.stop_all_intercepts().await;
+
         let env_change_tx = self.env_change_tx;
 
         if let Some(ref env) = environment {
@@ -456,7 +522,7 @@ enum ShutdownSignal {
 }
 
 struct DevboxTunnelManager {
-    intercept_task: Mutex<Option<TunnelTask>>,
+    intercepts: Mutex<InterceptState>,
     client_task: Mutex<Option<TunnelTask>>,
     /// Shared tunnel client for DNS service bridge
     tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
@@ -468,10 +534,21 @@ struct DevboxTunnelManager {
     ip_allocator: Arc<Mutex<SyntheticIpAllocator>>,
 }
 
+#[derive(Default)]
+struct InterceptState {
+    tasks: HashMap<Uuid, InterceptTaskEntry>,
+    intercept_to_workload: HashMap<Uuid, Uuid>,
+}
+
+struct InterceptTaskEntry {
+    intercept_id: Uuid,
+    task: TunnelTask,
+}
+
 impl DevboxTunnelManager {
     fn new() -> Self {
         Self {
-            intercept_task: Mutex::new(None),
+            intercepts: Mutex::new(InterceptState::default()),
             client_task: Mutex::new(None),
             tunnel_client: Arc::new(RwLock::new(None)),
             service_bridge: Arc::new(ServiceBridge::new()),
@@ -618,6 +695,7 @@ impl DevboxTunnelManager {
 
 struct TunnelTask {
     kind: TunnelKind,
+    workload_id: Option<Uuid>,
     shutdown: oneshot::Sender<()>,
     handle: JoinHandle<()>,
 }
@@ -642,26 +720,103 @@ impl TunnelKind {
 }
 
 impl DevboxTunnelManager {
-    async fn ensure_intercept(
+    async fn ensure_intercept_for_workload(
         &self,
         api_url: &str,
         token: &str,
         session_id: Uuid,
+        workload_id: Uuid,
+        intercept_id: Uuid,
     ) -> Result<(), String> {
-        let mut guard = self.intercept_task.lock().await;
-        if guard.is_some() {
-            return Ok(());
-        }
+        loop {
+            let removed = {
+                let mut state = self.intercepts.lock().await;
 
-        let task = spawn_tunnel_task(
-            TunnelKind::Intercept,
-            api_url.trim_end_matches('/').to_string(),
-            token.to_string(),
-            session_id,
-            None, // Intercept tunnel doesn't need to share client
-        );
-        *guard = Some(task);
-        Ok(())
+                if let Some(entry) = state.tasks.get(&workload_id) {
+                    if entry.intercept_id == intercept_id {
+                        return Ok(());
+                    }
+                    let removed = state.tasks.remove(&workload_id).unwrap();
+                    state.intercept_to_workload.remove(&removed.intercept_id);
+                    Some(removed.task)
+                } else if let Some(existing_workload) =
+                    state.intercept_to_workload.get(&intercept_id).copied()
+                {
+                    if let Some(entry) = state.tasks.remove(&existing_workload) {
+                        state.intercept_to_workload.remove(&intercept_id);
+                        Some(entry.task)
+                    } else {
+                        state.intercept_to_workload.remove(&intercept_id);
+                        None
+                    }
+                } else {
+                    let task = spawn_tunnel_task(
+                        TunnelKind::Intercept,
+                        api_url.trim_end_matches('/').to_string(),
+                        token.to_string(),
+                        session_id,
+                        Some(workload_id),
+                        None,
+                    );
+                    state
+                        .tasks
+                        .insert(workload_id, InterceptTaskEntry { intercept_id, task });
+                    state
+                        .intercept_to_workload
+                        .insert(intercept_id, workload_id);
+                    return Ok(());
+                }
+            };
+
+            if let Some(task) = removed {
+                Self::stop_task(task, "Devbox intercept tunnel").await;
+            } else {
+                // Entry removed without task; retry to create the new one.
+                continue;
+            }
+        }
+    }
+
+    async fn stop_intercept_by_id(&self, intercept_id: Uuid) {
+        let task = {
+            let mut state = self.intercepts.lock().await;
+            if let Some(workload_id) = state.intercept_to_workload.remove(&intercept_id) {
+                state.tasks.remove(&workload_id).map(|entry| entry.task)
+            } else {
+                None
+            }
+        };
+
+        if let Some(task) = task {
+            Self::stop_task(task, "Devbox intercept tunnel").await;
+        }
+    }
+
+    async fn stop_intercept_by_workload(&self, workload_id: Uuid) {
+        let task = {
+            let mut state = self.intercepts.lock().await;
+            state.tasks.remove(&workload_id).map(|entry| {
+                state.intercept_to_workload.remove(&entry.intercept_id);
+                entry.task
+            })
+        };
+
+        if let Some(task) = task {
+            Self::stop_task(task, "Devbox intercept tunnel").await;
+        }
+    }
+
+    async fn stop_all_intercepts(&self) {
+        let tasks: Vec<TunnelTask> = {
+            let mut state = self.intercepts.lock().await;
+            let entries = state.tasks.drain().collect::<Vec<_>>();
+            state.intercept_to_workload.clear();
+            entries.into_iter().map(|(_, entry)| entry.task).collect()
+        };
+
+        for task in tasks {
+            Self::stop_task(task, "Devbox intercept tunnel").await;
+        }
     }
 
     async fn ensure_client(
@@ -680,6 +835,7 @@ impl DevboxTunnelManager {
             api_url.trim_end_matches('/').to_string(),
             token.to_string(),
             session_id,
+            None,
             Some(Arc::clone(&self.tunnel_client)), // Share client tunnel for DNS
         );
         *guard = Some(task);
@@ -693,9 +849,7 @@ impl DevboxTunnelManager {
     }
 
     async fn shutdown(&self) {
-        if let Some(task) = self.intercept_task.lock().await.take() {
-            Self::stop_task(task, "Devbox intercept tunnel").await;
-        }
+        self.stop_all_intercepts().await;
         if let Some(task) = self.client_task.lock().await.take() {
             Self::stop_task(task, "Devbox client tunnel").await;
         }
@@ -704,6 +858,7 @@ impl DevboxTunnelManager {
     async fn stop_task(task: TunnelTask, context: &str) {
         let TunnelTask {
             kind,
+            workload_id,
             shutdown,
             handle,
         } = task;
@@ -711,6 +866,7 @@ impl DevboxTunnelManager {
         if let Err(err) = handle.await {
             tracing::warn!(
                 tunnel_kind = kind.as_str(),
+                workload_id = workload_id.map(|id| id.to_string()),
                 error = %err,
                 "{} task exited with error",
                 context
@@ -724,6 +880,7 @@ fn spawn_tunnel_task(
     api_url: String,
     token: String,
     session_id: Uuid,
+    workload_id: Option<Uuid>,
     tunnel_client_slot: Option<Arc<RwLock<Option<Arc<TunnelClient>>>>>,
 ) -> TunnelTask {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -732,12 +889,14 @@ fn spawn_tunnel_task(
         api_url,
         token,
         session_id,
+        workload_id,
         shutdown_rx,
         tunnel_client_slot,
     ));
 
     TunnelTask {
         kind,
+        workload_id,
         shutdown: shutdown_tx,
         handle,
     }
@@ -748,42 +907,74 @@ async fn run_tunnel_loop(
     api_url: String,
     token: String,
     session_id: Uuid,
+    workload_id: Option<Uuid>,
     mut shutdown_rx: oneshot::Receiver<()>,
     tunnel_client_slot: Option<Arc<RwLock<Option<Arc<TunnelClient>>>>>,
 ) {
     let ws_base = api_url
         .replace("https://", "wss://")
         .replace("http://", "ws://");
-    let ws_url = format!(
-        "{}/api/v1/kube/devbox/tunnel/{}/{}",
-        ws_base.trim_end_matches('/'),
-        kind.path(),
-        session_id
-    );
+    let ws_url = match (kind, workload_id) {
+        (TunnelKind::Intercept, Some(workload)) => format!(
+            "{}/api/v1/kube/devbox/tunnel/{}/{}?workload_id={}",
+            ws_base.trim_end_matches('/'),
+            kind.path(),
+            session_id,
+            workload
+        ),
+        _ => format!(
+            "{}/api/v1/kube/devbox/tunnel/{}/{}",
+            ws_base.trim_end_matches('/'),
+            kind.path(),
+            session_id
+        ),
+    };
+    let workload_id_str = workload_id.map(|id| id.to_string());
 
     let mut backoff = Duration::from_secs(1);
 
     loop {
         tokio::select! {
             _ = &mut shutdown_rx => {
-                tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel shutdown signal received");
+                tracing::info!(
+                    %session_id,
+                    tunnel_kind = kind.as_str(),
+                    workload_id = workload_id_str.as_deref(),
+                    "Devbox tunnel shutdown signal received"
+                );
                 break;
             }
             result = connect_and_run_tunnel(&ws_url, &token, tunnel_client_slot.as_ref()) => {
                 match result {
                     Ok(()) => {
-                        tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel closed gracefully");
+                        tracing::info!(
+                            %session_id,
+                            tunnel_kind = kind.as_str(),
+                            workload_id = workload_id_str.as_deref(),
+                            "Devbox tunnel closed gracefully"
+                        );
                         backoff = Duration::from_secs(1);
                     }
                     Err(err) => {
-                        tracing::warn!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel disconnected: {}", err);
+                        tracing::warn!(
+                            %session_id,
+                            tunnel_kind = kind.as_str(),
+                            workload_id = workload_id_str.as_deref(),
+                            "Devbox tunnel disconnected: {}",
+                            err
+                        );
                         backoff = (backoff.saturating_mul(2)).min(Duration::from_secs(30));
                     }
                 }
 
                 tokio::select! {
                     _ = &mut shutdown_rx => {
-                        tracing::info!(%session_id, tunnel_kind = kind.as_str(), "Devbox tunnel shutdown signal received");
+                        tracing::info!(
+                            %session_id,
+                            tunnel_kind = kind.as_str(),
+                            workload_id = workload_id_str.as_deref(),
+                            "Devbox tunnel shutdown signal received"
+                        );
                         break;
                     }
                     _ = sleep(backoff) => {}

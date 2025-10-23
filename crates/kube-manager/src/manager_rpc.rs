@@ -3,9 +3,11 @@ use lapdev_common::kube::{
     KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml, KubeWorkloadsWithResources,
-    NamespacedResourceRequest, NamespacedResourceResponse, WorkloadIdentifier,
+    DevboxRouteConfig, KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml,
+    KubeWorkloadsWithResources, NamespacedResourceRequest, NamespacedResourceResponse,
+    ProxyBranchRouteConfig, WorkloadIdentifier,
 };
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::manager::KubeManager;
@@ -194,6 +196,54 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                 Err(format!("Failed to fetch namespaced resources: {e}"))
             }
         }
+    }
+
+    async fn set_devbox_routes(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+        routes: HashMap<Uuid, DevboxRouteConfig>,
+    ) -> Result<(), String> {
+        self.manager.set_devbox_routes(environment_id, routes).await
+    }
+
+    async fn update_branch_service_route(
+        self,
+        _context: ::tarpc::context::Context,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        route: ProxyBranchRouteConfig,
+    ) -> Result<(), String> {
+        self.manager
+            .update_branch_service_route(base_environment_id, workload_id, route)
+            .await
+    }
+
+    async fn remove_branch_service_route(
+        self,
+        _context: ::tarpc::context::Context,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String> {
+        self.manager
+            .remove_branch_service_route(
+                base_environment_id,
+                workload_id,
+                branch_environment_id,
+            )
+            .await
+    }
+
+    async fn clear_devbox_routes(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        self.manager
+            .clear_devbox_routes(environment_id, branch_environment_id)
+            .await
     }
 
     async fn refresh_branch_service_routes(

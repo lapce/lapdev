@@ -165,14 +165,15 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
 }
 
 pub async fn sidecar_tunnel_websocket(
-    Path((environment_id, session_id)): Path<(Uuid, Uuid)>,
+    Path((environment_id, workload_id, session_id)): Path<(Uuid, Uuid, Uuid)>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
     State(state): State<Arc<CoreState>>,
 ) -> Result<Response, ApiError> {
     tracing::debug!(
-        "Handling sidecar tunnel WebSocket for environment {} session {}",
+        "Handling sidecar tunnel WebSocket for environment {} workload {} session {}",
         environment_id,
+        workload_id,
         session_id
     );
 
@@ -197,14 +198,17 @@ pub async fn sidecar_tunnel_websocket(
     }
 
     tracing::debug!(
-        "Sidecar authenticated for environment {} using auth token",
-        environment.id
+        "Sidecar authenticated for environment {} workload {} using auth token",
+        environment.id,
+        workload_id
     );
 
     let broker = state.tunnel_broker.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        broker.register_sidecar(session_id, socket).await;
+        broker
+            .register_sidecar(session_id, workload_id, socket)
+            .await;
     }))
 }
 

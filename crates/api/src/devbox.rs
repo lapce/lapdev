@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{ws::WebSocket, Path, State, WebSocketUpgrade},
+    extract::{ws::WebSocket, Path, Query, State, WebSocketUpgrade},
     http::HeaderMap,
     response::Response,
     Json,
@@ -13,7 +13,7 @@ use lapdev_devbox_rpc::{
     StartInterceptRequest,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tarpc::{
     server::{BaseChannel, Channel},
     tokio_util::codec::LengthDelimitedCodec,
@@ -253,6 +253,17 @@ async fn handle_devbox_rpc(
     state.active_devbox_sessions.write().await.remove(&user_id);
     notification_task.abort();
 
+    if let Ok(Some(session)) = state.db.get_devbox_session(session_id).await {
+        if let Some(environment_id) = session.active_environment_id {
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                state_clone
+                    .clear_devbox_routes_for_environment(environment_id)
+                    .await;
+            });
+        }
+    }
+
     // Mark session as revoked in database
     if let Err(e) = state.db.revoke_devbox_session(session_id).await {
         tracing::error!(
@@ -270,9 +281,15 @@ async fn handle_devbox_rpc(
     );
 }
 
+#[derive(Default, Deserialize)]
+pub struct DevboxInterceptTunnelParams {
+    workload_id: Option<Uuid>,
+}
+
 /// WebSocket endpoint for devbox intercept tunnels (server side - receives connections from in-cluster services)
 pub async fn devbox_intercept_tunnel_websocket(
     Path(requested_session_id): Path<Uuid>,
+    Query(params): Query<DevboxInterceptTunnelParams>,
     websocket: WebSocketUpgrade,
     headers: HeaderMap,
     State(state): State<Arc<CoreState>>,
@@ -322,9 +339,12 @@ pub async fn devbox_intercept_tunnel_websocket(
 
     let broker = state.tunnel_broker.clone();
     let session_id = session.session_id;
+    let workload_id = params.workload_id;
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        broker.register_devbox(session_id, socket).await;
+        broker
+            .register_devbox(session_id, workload_id, socket)
+            .await;
     }))
 }
 
@@ -451,6 +471,17 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             .map_err(|e| format!("Failed to fetch session: {}", e))?
             .ok_or_else(|| "Session not found".to_string())?;
 
+        if let Some(environment_id) = session.active_environment_id {
+            let state = self.state.clone();
+            let session_id = self.session_id;
+            let user_id = self.user_id;
+            tokio::spawn(async move {
+                state
+                    .push_devbox_routes(user_id, session_id, environment_id)
+                    .await;
+            });
+        }
+
         Ok(DevboxSessionInfo {
             session_id: session.session_id,
             user_id: self.user_id,
@@ -546,6 +577,14 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             environment_id
         );
 
+        let previous_environment = self
+            .state
+            .db
+            .get_devbox_session(self.session_id)
+            .await
+            .map_err(|e| format!("Failed to fetch session: {}", e))?
+            .and_then(|session| session.active_environment_id);
+
         self.state
             .db
             .update_devbox_session_active_environment(self.session_id, Some(environment_id))
@@ -573,7 +612,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         let env_info = lapdev_devbox_rpc::DevboxEnvironmentInfo {
             environment_id: environment.id,
             cluster_name: cluster.name,
-            namespace: environment.namespace,
+            namespace: environment.namespace.clone(),
         };
 
         // Fire and forget - don't wait for client response
@@ -600,6 +639,22 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
                 }
             }
         });
+
+        let state = self.state.clone();
+        let user_id = self.user_id;
+        let session_id = self.session_id;
+        tokio::spawn(async move {
+            state
+                .push_devbox_routes(user_id, session_id, environment_id)
+                .await;
+        });
+
+        if let Some(prev_env) = previous_environment.filter(|prev| *prev != environment_id) {
+            let state = self.state.clone();
+            tokio::spawn(async move {
+                state.clear_devbox_routes_for_environment(prev_env).await;
+            });
+        }
 
         Ok(())
     }
@@ -803,7 +858,9 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
                 .map(|handle| (handle.session_id, handle.rpc_client.clone()))
         };
 
-        if let Some((session_id, rpc_client)) = rpc_client_opt {
+        let session_for_routes = rpc_client_opt.as_ref().map(|(session_id, _)| *session_id);
+
+        if let Some((session_id, rpc_client)) = rpc_client_opt.as_ref() {
             // Send start_intercept RPC to CLI
             tracing::info!(
                 "Notifying CLI session {} to start intercept {}",
@@ -820,6 +877,7 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             };
 
             // Send RPC to CLI (fire and forget)
+            let rpc_client = rpc_client.clone();
             tokio::spawn(async move {
                 if let Err(e) = rpc_client
                     .start_intercept(tarpc::context::current(), start_request)
@@ -834,6 +892,17 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
                 self.user_id,
                 intercept.id
             );
+        }
+
+        if let Some(session_id) = session_for_routes {
+            let state = self.state.clone();
+            let user_id = self.user_id;
+            let environment_id = environment.id;
+            tokio::spawn(async move {
+                state
+                    .push_devbox_routes(user_id, session_id, environment_id)
+                    .await;
+            });
         }
 
         Ok(intercept.id)
@@ -879,7 +948,9 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
                 .map(|handle| (handle.session_id, handle.rpc_client.clone()))
         };
 
-        if let Some((session_id, rpc_client)) = rpc_client_opt {
+        let session_for_routes = rpc_client_opt.as_ref().map(|(session_id, _)| *session_id);
+
+        if let Some((session_id, rpc_client)) = rpc_client_opt.as_ref() {
             // Send stop_intercept RPC to CLI
             tracing::info!(
                 "Notifying CLI session {} to stop intercept {}",
@@ -887,6 +958,7 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
                 intercept_id
             );
 
+            let rpc_client = rpc_client.clone();
             tokio::spawn(async move {
                 if let Err(e) = rpc_client
                     .stop_intercept(tarpc::context::current(), intercept_id)
@@ -894,6 +966,17 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
                 {
                     tracing::error!("Failed to notify CLI to stop intercept: {}", e);
                 }
+            });
+        }
+
+        if let Some(session_id) = session_for_routes {
+            let state = self.state.clone();
+            let user_id = self.user_id;
+            let environment_id = intercept.environment_id;
+            tokio::spawn(async move {
+                state
+                    .push_devbox_routes(user_id, session_id, environment_id)
+                    .await;
             });
         }
 

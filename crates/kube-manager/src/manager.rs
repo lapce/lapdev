@@ -22,8 +22,9 @@ use lapdev_common::kube::{
     KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_TUNNEL_URL_ENV_VAR, KUBE_CLUSTER_URL_ENV_VAR,
 };
 use lapdev_kube_rpc::{
-    KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadYamlOnly, KubeWorkloadsWithResources,
-    NamespacedResourceRequest, NamespacedResourceResponse,
+    DevboxRouteConfig, KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadYamlOnly,
+    KubeWorkloadsWithResources, NamespacedResourceRequest, NamespacedResourceResponse,
+    ProxyBranchRouteConfig,
 };
 use lapdev_rpc::spawn_twoway;
 use serde::Deserialize;
@@ -1895,6 +1896,52 @@ impl KubeManager {
     pub async fn refresh_branch_service_routes(&self, environment_id: Uuid) -> Result<()> {
         self.proxy_manager
             .set_service_routes_if_registered(environment_id)
+            .await
+    }
+
+    pub async fn set_devbox_routes(
+        &self,
+        environment_id: Uuid,
+        routes: HashMap<Uuid, DevboxRouteConfig>,
+    ) -> Result<(), String> {
+        self.proxy_manager
+            .set_devbox_routes(environment_id, routes)
+            .await
+    }
+
+    pub async fn update_branch_service_route(
+        &self,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        route: ProxyBranchRouteConfig,
+    ) -> Result<(), String> {
+        self.proxy_manager
+            .upsert_branch_service_route(base_environment_id, workload_id, route)
+            .await
+    }
+
+    pub async fn remove_branch_service_route(
+        &self,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String> {
+        self.proxy_manager
+            .remove_branch_service_route(
+                base_environment_id,
+                workload_id,
+                branch_environment_id,
+            )
+            .await
+    }
+
+    pub async fn clear_devbox_routes(
+        &self,
+        environment_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        self.proxy_manager
+            .clear_devbox_routes(environment_id, branch_environment_id)
             .await
     }
 }

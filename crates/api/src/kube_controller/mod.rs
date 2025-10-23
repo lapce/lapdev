@@ -4,8 +4,8 @@ use uuid::Uuid;
 
 use crate::environment_events::EnvironmentLifecycleEvent;
 use lapdev_db::api::DbApi;
-use lapdev_kube::server::KubeClusterServer;
-use lapdev_kube::tunnel::TunnelRegistry;
+use lapdev_kube::{server::KubeClusterServer, tunnel::TunnelRegistry};
+use lapdev_kube_rpc::{DevboxRouteConfig, ProxyBranchRouteConfig};
 use tracing::{debug, warn};
 
 // Submodules
@@ -97,5 +97,143 @@ impl KubeController {
                 );
             }
         }
+    }
+
+    pub async fn set_devbox_routes(
+        &self,
+        cluster_id: Uuid,
+        environment_id: Uuid,
+        routes: HashMap<Uuid, DevboxRouteConfig>,
+    ) -> Result<(), String> {
+        let servers = self.kube_cluster_servers.read().await;
+        let Some(cluster_servers) = servers.get(&cluster_id) else {
+            return Err(format!(
+                "No connected KubeManager instances for cluster {}",
+                cluster_id
+            ));
+        };
+
+        let mut last_err: Option<String> = None;
+        for server in cluster_servers {
+            match server
+                .set_devbox_routes(environment_id, routes.clone())
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            "Failed to dispatch set_devbox_routes to any KubeManager instances".to_string()
+        }))
+    }
+
+    pub async fn clear_devbox_routes(
+        &self,
+        cluster_id: Uuid,
+        environment_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        let servers = self.kube_cluster_servers.read().await;
+        let Some(cluster_servers) = servers.get(&cluster_id) else {
+            return Err(format!(
+                "No connected KubeManager instances for cluster {}",
+                cluster_id
+            ));
+        };
+
+        let mut last_err: Option<String> = None;
+        for server in cluster_servers {
+            match server
+                .clear_devbox_routes(environment_id, branch_environment_id)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            "Failed to dispatch clear_devbox_routes to any KubeManager instances".to_string()
+        }))
+    }
+
+    pub async fn update_branch_service_route(
+        &self,
+        cluster_id: Uuid,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        route: ProxyBranchRouteConfig,
+    ) -> Result<(), String> {
+        let servers = self.kube_cluster_servers.read().await;
+        let Some(cluster_servers) = servers.get(&cluster_id) else {
+            return Err(format!(
+                "No connected KubeManager instances for cluster {}",
+                cluster_id
+            ));
+        };
+
+        let mut last_err: Option<String> = None;
+        for server in cluster_servers {
+            match server
+                .rpc_client
+                .update_branch_service_route(
+                    tarpc::context::current(),
+                    base_environment_id,
+                    workload_id,
+                    route.clone(),
+                )
+                .await
+            {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(err)) => last_err = Some(err),
+                Err(err) => last_err = Some(format!("{}", err)),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            "Failed to dispatch update_branch_service_route to any KubeManager instances"
+                .to_string()
+        }))
+    }
+
+    pub async fn remove_branch_service_route(
+        &self,
+        cluster_id: Uuid,
+        base_environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String> {
+        let servers = self.kube_cluster_servers.read().await;
+        let Some(cluster_servers) = servers.get(&cluster_id) else {
+            return Err(format!(
+                "No connected KubeManager instances for cluster {}",
+                cluster_id
+            ));
+        };
+
+        let mut last_err: Option<String> = None;
+        for server in cluster_servers {
+            match server
+                .rpc_client
+                .remove_branch_service_route(
+                    tarpc::context::current(),
+                    base_environment_id,
+                    workload_id,
+                    branch_environment_id,
+                )
+                .await
+            {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(err)) => last_err = Some(err),
+                Err(err) => last_err = Some(format!("{}", err)),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            "Failed to dispatch remove_branch_service_route to any KubeManager instances"
+                .to_string()
+        }))
     }
 }

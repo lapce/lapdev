@@ -148,6 +148,7 @@ impl HrpcService for CoreState {
         environment_id: Uuid,
     ) -> Result<(), HrpcError> {
         let ctx = self.hrpc_resolve_active_devbox_session(headers).await?;
+        let previous_environment = ctx.session.active_environment_id;
         let environment = self
             .db
             .get_kube_environment(environment_id)
@@ -162,6 +163,10 @@ impl HrpcService for CoreState {
             .update_devbox_session_active_environment(ctx.session.session_id, Some(environment_id))
             .await
             .map_err(hrpc_from_anyhow)?;
+
+        self.tunnel_broker
+            .set_session_environment(ctx.session.session_id, Some(environment_id))
+            .await;
 
         // Notify CLI about the environment change
         let cluster = self
@@ -221,6 +226,22 @@ impl HrpcService for CoreState {
                 "No active WebSocket connection for user {}, environment change saved but CLI not notified",
                 ctx.user.id
             );
+        }
+
+        let state = self.clone();
+        let user_id = ctx.user.id;
+        let session_id = ctx.session.session_id;
+        tokio::spawn(async move {
+            state
+                .push_devbox_routes(user_id, session_id, environment_id)
+                .await;
+        });
+
+        if let Some(prev_env) = previous_environment.filter(|prev| *prev != environment_id) {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state.clear_devbox_routes_for_environment(prev_env).await;
+            });
         }
 
         Ok(())
@@ -347,10 +368,10 @@ impl HrpcService for CoreState {
             let sessions = self.active_devbox_sessions.read().await;
             sessions
                 .get(&user.id)
-                .map(|handle| handle.rpc_client.clone())
+                .map(|handle| (handle.session_id, handle.rpc_client.clone()))
         };
 
-        if let Some(client) = rpc_client {
+        if let Some((session_id, client)) = rpc_client.as_ref() {
             let request = StartInterceptRequest {
                 intercept_id: intercept.id,
                 workload_id,
@@ -359,10 +380,21 @@ impl HrpcService for CoreState {
                 port_mappings: mappings.iter().map(devbox_port_mapping_to_rpc).collect(),
             };
 
+            let client = client.clone();
             tokio::spawn(async move {
                 if let Err(err) = client.start_intercept(context::current(), request).await {
                     tracing::error!(?err, "Failed to notify CLI to start intercept");
                 }
+            });
+
+            let state = self.clone();
+            let user_id = user.id;
+            let environment_id = environment.id;
+            let session_id = *session_id;
+            tokio::spawn(async move {
+                state
+                    .push_devbox_routes(user_id, session_id, environment_id)
+                    .await;
             });
         }
 
@@ -398,10 +430,11 @@ impl HrpcService for CoreState {
             let sessions = self.active_devbox_sessions.read().await;
             sessions
                 .get(&user.id)
-                .map(|handle| handle.rpc_client.clone())
+                .map(|handle| (handle.session_id, handle.rpc_client.clone()))
         };
 
-        if let Some(client) = rpc_client {
+        if let Some((session_id, client)) = rpc_client.as_ref() {
+            let client = client.clone();
             tokio::spawn(async move {
                 if let Err(err) = client
                     .stop_intercept(context::current(), intercept_id)
@@ -409,6 +442,16 @@ impl HrpcService for CoreState {
                 {
                     tracing::error!(?err, "Failed to notify CLI to stop intercept");
                 }
+            });
+
+            let state = self.clone();
+            let user_id = user.id;
+            let environment_id = intercept.environment_id;
+            let session_id = *session_id;
+            tokio::spawn(async move {
+                state
+                    .push_devbox_routes(user_id, session_id, environment_id)
+                    .await;
             });
         }
 

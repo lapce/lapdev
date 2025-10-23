@@ -109,106 +109,146 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         Ok(())
     }
 
-    async fn add_devbox_route(
+    async fn set_devbox_route(
         self,
         _context: ::tarpc::context::Context,
         route: DevboxRouteConfig,
-    ) -> Result<bool, String> {
-        info!(
-            "Adding devbox route: intercept_id={}, session_id={}, target_port={}, path={}",
-            route.intercept_id, route.session_id, route.target_port, route.path_pattern
-        );
+    ) -> Result<(), String> {
+        if route.workload_id != self.workload_id {
+            warn!(
+                "Ignoring devbox route for workload {} on sidecar workload {}",
+                route.workload_id, self.workload_id
+            );
+            return Ok(());
+        }
 
-        let mut routing_table = self.routing_table.write().await;
         let devbox_connection = devbox_connection_from_config(route.clone());
 
-        if let Some(branch_id) = route.branch_environment_id {
-            if routing_table.set_branch_devbox(&branch_id, devbox_connection.clone()) {
-                info!(
-                    "Attached devbox route to branch {} (intercept_id={})",
-                    branch_id, route.intercept_id
-                );
-            } else {
-                warn!(
-                    "Received branch devbox route for unknown environment {}",
-                    branch_id
-                );
-                return Ok(false);
-            }
-        } else {
-            routing_table.set_default_devbox(devbox_connection.clone());
-            info!(
-                "Registered default devbox route (intercept_id={}, default_target_port={})",
-                route.intercept_id, route.target_port
-            );
-        }
-
-        Ok(true)
-    }
-
-    async fn remove_devbox_route(
-        self,
-        _context: ::tarpc::context::Context,
-        intercept_id: Uuid,
-    ) -> Result<bool, String> {
-        info!("Removing devbox route: intercept_id={}", intercept_id);
-
         let mut routing_table = self.routing_table.write().await;
 
-        if let Some(branch_id) = routing_table.remove_branch_devbox_by_intercept(&intercept_id) {
-            info!(
-                "Removed branch devbox route for environment {} (intercept_id={})",
-                branch_id, intercept_id
-            );
-            return Ok(true);
-        }
-
-        if routing_table.remove_default_devbox_by_intercept(&intercept_id) {
-            info!(
-                "Removed default devbox route (intercept_id={})",
-                intercept_id
-            );
-            return Ok(true);
-        }
-
-        warn!(
-            "No devbox route found for intercept_id={} to remove",
-            intercept_id
-        );
-
-        Ok(false)
-    }
-
-    async fn list_devbox_routes(
-        self,
-        _context: ::tarpc::context::Context,
-    ) -> Result<Vec<DevboxRouteConfig>, String> {
-        let routing_table = self.routing_table.read().await;
-        let mut routes = Vec::new();
-
-        if let Some(connection) = routing_table.default_devbox() {
-            routes.push(devbox_route_config_from_connection(&connection, None));
-        }
-
-        for (branch_id, branch_route) in &routing_table.branch_routes {
-            if let crate::config::BranchMode::Devbox(connection) = &branch_route.mode {
-                routes.push(devbox_route_config_from_connection(
-                    connection,
-                    Some(*branch_id),
-                ));
+        match route.branch_environment_id {
+            Some(branch_id) => {
+                if routing_table.set_branch_devbox(&branch_id, devbox_connection.clone()) {
+                    info!(
+                        "Attached devbox route to branch {} (intercept_id={})",
+                        branch_id, route.intercept_id
+                    );
+                } else {
+                    warn!(
+                        "Received branch devbox route for unknown environment {}",
+                        branch_id
+                    );
+                }
+            }
+            None => {
+                routing_table.set_default_devbox(devbox_connection.clone());
+                info!(
+                    "Registered default devbox route (intercept_id={})",
+                    route.intercept_id
+                );
             }
         }
 
-        info!("Listed {} devbox routes", routes.len());
-        Ok(routes)
+        Ok(())
+    }
+
+    async fn stop_devbox(
+        self,
+        _context: ::tarpc::context::Context,
+        branch_environment: Option<Uuid>,
+    ) -> Result<(), String> {
+        let mut routing_table = self.routing_table.write().await;
+
+        match branch_environment {
+            Some(branch_id) => {
+                if routing_table.remove_branch_devbox(&branch_id) {
+                    info!(
+                        "Cleared devbox route for branch environment {} on workload {}",
+                        branch_id, self.workload_id
+                    );
+                } else {
+                    info!(
+                        "No devbox route to clear for branch environment {} on workload {}",
+                        branch_id, self.workload_id
+                    );
+                }
+            }
+            None => {
+                routing_table.clear_default_devbox();
+                info!(
+                    "Cleared default devbox route for workload {}",
+                    self.workload_id
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn upsert_branch_service_route(
+        self,
+        _context: ::tarpc::context::Context,
+        route: ProxyBranchRouteConfig,
+    ) -> Result<(), String> {
+        let Some(service_name) = route.service_name.clone() else {
+            return Err("Missing service_name for branch service route update".to_string());
+        };
+
+        let branch_id = route.branch_environment_id;
+        let service_route = BranchServiceRoute {
+            service_name,
+            headers: route.headers.clone(),
+            requires_auth: route.requires_auth,
+            access_level: access_level_from_proxy(route.access_level),
+            timeout_ms: route.timeout_ms,
+        };
+
+        let devbox_override = route
+            .devbox_route
+            .map(devbox_connection_from_config);
+
+        let mut routing_table = self.routing_table.write().await;
+        routing_table.upsert_branch_service_route(branch_id, service_route);
+
+        if let Some(connection) = devbox_override {
+            routing_table.set_branch_devbox(&branch_id, connection);
+        }
+
+        info!(
+            "Updated branch service route for branch {} on workload {}",
+            branch_id, self.workload_id
+        );
+
+        Ok(())
+    }
+
+    async fn remove_branch_service_route(
+        self,
+        _context: ::tarpc::context::Context,
+        branch_environment_id: Uuid,
+    ) -> Result<(), String> {
+        let mut routing_table = self.routing_table.write().await;
+        if routing_table.remove_branch_service_route(&branch_environment_id) {
+            info!(
+                "Removed branch service route for branch {} on workload {}",
+                branch_environment_id, self.workload_id
+            );
+        } else {
+            info!(
+                "No branch service route found for branch {} on workload {}",
+                branch_environment_id, self.workload_id
+            );
+        }
+
+        Ok(())
     }
 }
 
 fn devbox_connection_from_config(route: DevboxRouteConfig) -> Arc<DevboxConnection> {
     Arc::new(DevboxConnection::new(DevboxRouteMetadata {
         intercept_id: route.intercept_id,
+        workload_id: route.workload_id,
         session_id: route.session_id,
-        target_port: route.target_port,
         auth_token: route.auth_token,
         websocket_url: route.websocket_url,
         path_pattern: route.path_pattern,
@@ -225,8 +265,8 @@ fn devbox_route_config_from_connection(
     let metadata = connection.metadata();
     DevboxRouteConfig {
         intercept_id: metadata.intercept_id,
+        workload_id: metadata.workload_id,
         session_id: metadata.session_id,
-        target_port: metadata.target_port,
         auth_token: metadata.auth_token.clone(),
         websocket_url: metadata.websocket_url.clone(),
         path_pattern: metadata.path_pattern.clone(),

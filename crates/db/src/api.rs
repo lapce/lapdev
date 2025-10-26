@@ -4,8 +4,9 @@ use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED,
     kube::{
-        KubeAppCatalogWorkload, KubeContainerInfo, KubeEnvironmentWorkload, KubeServicePort,
-        KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams,
+        ClusterStatusEvent, KubeAppCatalogWorkload, KubeClusterStatus, KubeContainerInfo,
+        KubeEnvironmentWorkload, KubeServicePort, KubeWorkloadDetails, KubeWorkloadKind,
+        PagePaginationParams,
     },
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
@@ -34,6 +35,8 @@ use serde_yaml::Value;
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
+use std::str::FromStr;
+use tracing::warn;
 use uuid::Uuid;
 
 // Custom result structure for multi-table join
@@ -619,7 +622,55 @@ impl DbApi {
             ..Default::default()
         };
         let updated = model.update(&self.conn).await?;
+        self.publish_cluster_status_event(&updated).await;
         Ok(updated)
+    }
+
+    async fn publish_cluster_status_event(
+        &self,
+        cluster: &lapdev_db_entities::kube_cluster::Model,
+    ) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+
+        let status =
+            KubeClusterStatus::from_str(&cluster.status).unwrap_or(KubeClusterStatus::NotReady);
+        let updated_at = cluster
+            .last_reported_at
+            .map(|ts| ts.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+
+        let event = ClusterStatusEvent {
+            organization_id: cluster.organization_id,
+            cluster_id: cluster.id,
+            status,
+            cluster_version: cluster.cluster_version.clone(),
+            region: cluster.region.clone(),
+            updated_at,
+        };
+
+        match serde_json::to_string(&event) {
+            Ok(payload) => {
+                if let Err(err) = sqlx::query("SELECT pg_notify($1, $2)")
+                    .bind("cluster_status")
+                    .bind(payload)
+                    .execute(pool)
+                    .await
+                {
+                    warn!(
+                        error = %err,
+                        "failed to publish cluster status event via pg_notify"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to serialize cluster status event"
+                );
+            }
+        }
     }
 
     pub async fn get_user_all_oauth(
@@ -2627,6 +2678,7 @@ impl DbApi {
     /// This ensures atomicity - either both operations succeed or both are rolled back.
     pub async fn create_kube_environment(
         &self,
+        environment_id: Uuid,
         org_id: Uuid,
         user_id: Uuid,
         app_catalog_id: Uuid,
@@ -2642,7 +2694,6 @@ impl DbApi {
     ) -> Result<lapdev_db_entities::kube_environment::Model, sea_orm::DbErr> {
         let txn = self.conn.begin().await?;
 
-        let environment_id = Uuid::new_v4();
         let created_at = Utc::now().into();
 
         // Generate auth token for the environment
@@ -2781,11 +2832,11 @@ impl DbApi {
                     vec![]
                 };
 
-            let selector: std::collections::HashMap<String, String> =
+            let selector: std::collections::BTreeMap<String, String> =
                 if let Ok(selector) = serde_json::from_value(service.selector.clone()) {
                     selector
                 } else {
-                    std::collections::HashMap::new()
+                    std::collections::BTreeMap::new()
                 };
 
             result.push(lapdev_common::kube::KubeEnvironmentService {
@@ -2820,12 +2871,8 @@ impl DbApi {
                     vec![]
                 };
 
-            let selector: std::collections::HashMap<String, String> =
-                if let Ok(selector) = serde_json::from_value(service.selector.clone()) {
-                    selector
-                } else {
-                    std::collections::HashMap::new()
-                };
+            let selector: std::collections::BTreeMap<String, String> =
+                serde_json::from_value(service.selector.clone()).unwrap_or_default();
 
             Ok(Some(lapdev_common::kube::KubeEnvironmentService {
                 id: service.id,

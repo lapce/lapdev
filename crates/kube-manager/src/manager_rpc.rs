@@ -121,21 +121,13 @@ impl KubeManagerRpc for KubeManagerRpcServer {
     async fn deploy_workload_yaml(
         self,
         _context: ::tarpc::context::Context,
-        environment_id: uuid::Uuid,
-        environment_auth_token: String,
         namespace: String,
         workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
         match self
             .manager
-            .apply_workloads_with_resources(
-                Some(environment_id),
-                environment_auth_token,
-                namespace.clone(),
-                workloads_with_resources,
-                labels,
-            )
+            .apply_workloads_with_resources(namespace.clone(), workloads_with_resources, labels)
             .await
         {
             Ok(()) => {
@@ -227,11 +219,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         branch_environment_id: Uuid,
     ) -> Result<(), String> {
         self.manager
-            .remove_branch_service_route(
-                base_environment_id,
-                workload_id,
-                branch_environment_id,
-            )
+            .remove_branch_service_route(base_environment_id, workload_id, branch_environment_id)
             .await
     }
 
@@ -357,17 +345,15 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         );
 
         // Get the devbox-proxy RPC client for the base environment
-        let proxy_client = self
+        let Some(proxy_client) = self
             .manager
             .devbox_proxy_manager
             .get_proxy_client(base_environment_id)
             .await
-            .ok_or_else(|| {
-                format!(
-                    "No devbox-proxy registered for base environment {}",
-                    base_environment_id
-                )
-            })?;
+        else {
+            // if the devbox proxy doesn't connect, we don't need to do anything
+            return Ok(());
+        };
 
         // Forward the request to the devbox-proxy
         proxy_client

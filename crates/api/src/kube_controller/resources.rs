@@ -10,7 +10,7 @@ use k8s_openapi::{
         batch::v1::{CronJob, CronJobSpec, Job, JobSpec},
         core::v1::{
             ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, Pod, PodSpec,
-            PodTemplateSpec, Secret,
+            PodTemplateSpec, Secret, Service,
         },
     },
     apimachinery::pkg::{api::resource::Quantity, apis::meta::v1::ObjectMeta},
@@ -82,6 +82,29 @@ pub fn clean_secret(secret: Secret) -> Secret {
         string_data: secret.string_data,
         type_: secret.type_,
         immutable: secret.immutable,
+    }
+}
+
+#[allow(dead_code)]
+pub fn clean_service(service: Service) -> Service {
+    let clean_spec = service.spec.map(|mut original_spec| {
+        original_spec.cluster_ip = None;
+        original_spec.cluster_ips = None;
+        original_spec.health_check_node_port = None;
+
+        if let Some(ports) = original_spec.ports.as_mut() {
+            for port in ports {
+                port.node_port = None;
+            }
+        }
+
+        original_spec
+    });
+
+    Service {
+        metadata: clean_metadata(service.metadata),
+        spec: clean_spec,
+        status: None,
     }
 }
 

@@ -378,30 +378,29 @@ async fn handle_http_proxy(
 
     match decision {
         RouteDecision::BranchService { service } => {
-            let service_name = &service.service_name;
-            info!(
-                "HTTP {} {} routing to branch {:?} service {}:{}",
-                http_request.method,
-                http_request.path,
-                branch_id,
-                service_name,
-                original_dest.port()
-            );
-
-            if let Err(err) = proxy_branch_stream(
-                &mut inbound_stream,
-                service_name.as_str(),
-                original_dest.port(),
-                &initial_data,
-            )
-            .await
-            {
-                warn!(
-                    "Branch route {} for env {:?} failed: {}; falling back to shared target",
-                    service_name, branch_id, err
+            let port = original_dest.port();
+            if let Some(service_name) = service.service_name_for_port(port) {
+                info!(
+                    "HTTP {} {} routing to branch {:?} service {}:{}",
+                    http_request.method, http_request.path, branch_id, service_name, port
                 );
+
+                if let Err(err) =
+                    proxy_branch_stream(&mut inbound_stream, service_name, port, &initial_data)
+                        .await
+                {
+                    warn!(
+                        "Branch route {} for env {:?} failed: {}; falling back to shared target",
+                        service_name, branch_id, err
+                    );
+                } else {
+                    return Ok(());
+                }
             } else {
-                return Ok(());
+                warn!(
+                    "Missing branch service mapping for port {} in env {:?}; falling back to shared target",
+                    port, branch_id
+                );
             }
         }
         RouteDecision::BranchDevbox {

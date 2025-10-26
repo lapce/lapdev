@@ -411,8 +411,6 @@ pub trait KubeManagerRpc {
     async fn get_namespaces() -> Result<Vec<KubeNamespaceInfo>, String>;
 
     async fn deploy_workload_yaml(
-        environment_id: uuid::Uuid,
-        environment_auth_token: String,
         namespace: String,
         workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
@@ -515,7 +513,7 @@ pub struct DevboxRouteConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyBranchRouteConfig {
     pub branch_environment_id: Uuid,
-    pub service_name: Option<String>,
+    pub service_names: HashMap<u16, String>,
     pub headers: HashMap<String, String>,
     pub requires_auth: bool,
     pub access_level: ProxyRouteAccessLevel,

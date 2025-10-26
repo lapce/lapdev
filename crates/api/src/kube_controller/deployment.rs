@@ -1,7 +1,13 @@
 use std::collections::HashMap;
 
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{
+    Container, ContainerPort, EnvVar, EnvVarSource, ObjectFieldSelector,
+};
 use lapdev_kube::server::KubeClusterServer;
+use lapdev_kube_rpc::KubeWorkloadYamlOnly;
 use lapdev_rpc::error::ApiError;
+use uuid::Uuid;
 
 use super::KubeController;
 
@@ -13,6 +19,7 @@ impl KubeController {
         workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
         extra_labels: Option<HashMap<String, String>>,
     ) -> Result<(), ApiError> {
+        let mut workloads_with_resources = workloads_with_resources;
         let namespace = &environment.namespace;
         let environment_name = &environment.name;
 
@@ -32,6 +39,19 @@ impl KubeController {
             workloads_with_resources.workloads.len(),
             environment_name
         );
+
+        if environment.base_environment_id.is_none() {
+            for workload in workloads_with_resources.workloads.iter_mut() {
+                if let KubeWorkloadYamlOnly::Deployment(yaml) = workload {
+                    inject_sidecar_proxy_into_deployment_yaml(
+                        yaml,
+                        environment.id,
+                        &environment.namespace,
+                        &environment.auth_token,
+                    )?;
+                }
+            }
+        }
 
         // Prepare environment-specific labels
         let mut environment_labels = std::collections::HashMap::new();
@@ -58,14 +78,10 @@ impl KubeController {
                 "Environment auth token is required".to_string(),
             ));
         }
-        let auth_token = environment.auth_token.clone();
-
         match target_server
             .rpc_client
             .deploy_workload_yaml(
                 tarpc::context::current(),
-                environment.id,
-                auth_token,
                 namespace.to_string(),
                 workloads_with_resources,
                 environment_labels,
@@ -87,4 +103,92 @@ impl KubeController {
             ))),
         }
     }
+}
+
+fn inject_sidecar_proxy_into_deployment_yaml(
+    yaml: &mut String,
+    environment_id: Uuid,
+    namespace: &str,
+    auth_token: &str,
+) -> Result<(), ApiError> {
+    let mut deployment: Deployment = serde_yaml::from_str(yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to parse deployment YAML for sidecar injection: {}",
+            err
+        ))
+    })?;
+
+    if let Some(spec) = deployment.spec.as_mut() {
+        if let Some(template) = spec.template.spec.as_mut() {
+            let already_present = template
+                .containers
+                .iter()
+                .any(|container| container.name == "lapdev-sidecar-proxy");
+            if !already_present {
+                let sidecar_container = Container {
+                    name: "lapdev-sidecar-proxy".to_string(),
+                    image: Some("lapdev/kube-sidecar-proxy:latest".to_string()),
+                    ports: Some(vec![
+                        ContainerPort {
+                            container_port: 8080,
+                            name: Some("proxy".to_string()),
+                            protocol: Some("TCP".to_string()),
+                            ..Default::default()
+                        },
+                        ContainerPort {
+                            container_port: 9090,
+                            name: Some("metrics".to_string()),
+                            protocol: Some("TCP".to_string()),
+                            ..Default::default()
+                        },
+                    ]),
+                    env: Some(vec![
+                        EnvVar {
+                            name: "LAPDEV_ENVIRONMENT_ID".to_string(),
+                            value: Some(environment_id.to_string()),
+                            ..Default::default()
+                        },
+                        EnvVar {
+                            name: "LAPDEV_ENVIRONMENT_AUTH_TOKEN".to_string(),
+                            value: Some(auth_token.to_string()),
+                            ..Default::default()
+                        },
+                        EnvVar {
+                            name: "KUBERNETES_NAMESPACE".to_string(),
+                            value: Some(namespace.to_string()),
+                            ..Default::default()
+                        },
+                        EnvVar {
+                            name: "HOSTNAME".to_string(),
+                            value_from: Some(EnvVarSource {
+                                field_ref: Some(ObjectFieldSelector {
+                                    field_path: "metadata.name".to_string(),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        },
+                    ]),
+                    args: Some(vec![
+                        "--listen-addr".to_string(),
+                        "0.0.0.0:8080".to_string(),
+                        "--target-addr".to_string(),
+                        "127.0.0.1:3000".to_string(),
+                    ]),
+                    ..Default::default()
+                };
+                template.containers.push(sidecar_container);
+            }
+        }
+    }
+
+    *yaml = serde_yaml::to_string(&deployment).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to serialize deployment YAML after sidecar injection: {}",
+            err
+        ))
+    })?;
+
+    Ok(())
 }

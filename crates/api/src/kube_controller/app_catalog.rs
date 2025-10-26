@@ -1,4 +1,4 @@
-use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service};
 use lapdev_common::kube::{
     KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeServiceDetails,
     KubeServiceWithYaml, PagePaginationParams, PaginatedInfo, PaginatedResult,
@@ -12,6 +12,8 @@ use lapdev_rpc::error::ApiError;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
+
+use crate::kube_controller::resources::clean_service;
 
 use super::{
     resources::{clean_configmap, clean_secret, rebuild_workload_yaml},
@@ -169,14 +171,16 @@ impl KubeController {
         for service_entity in service_entities {
             let ports: Vec<lapdev_common::kube::KubeServicePort> =
                 serde_json::from_value(service_entity.ports.clone()).unwrap_or_default();
-            let selector_btree: std::collections::BTreeMap<String, String> =
+            let selector: std::collections::BTreeMap<String, String> =
                 serde_json::from_value(service_entity.selector.clone()).unwrap_or_default();
-            let selector: HashMap<String, String> = selector_btree.into_iter().collect();
 
+            let service: Service = serde_yaml::from_str(&service_entity.service_yaml)?;
+            let service = clean_service(service);
+            let service_yaml = serde_yaml::to_string(&service)?;
             services_map.insert(
                 service_entity.name.clone(),
                 KubeServiceWithYaml {
-                    yaml: service_entity.service_yaml,
+                    yaml: service_yaml,
                     details: KubeServiceDetails {
                         name: service_entity.name,
                         ports,

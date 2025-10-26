@@ -468,7 +468,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         workloads
             .into_iter()
             .filter(|workload| {
-                workload.catalog_sync_version > env_version
+                workload.catalog_sync_version >= env_version
                     && (search_term.trim().is_empty()
                         || workload.name.to_lowercase().contains(&search_term))
             })

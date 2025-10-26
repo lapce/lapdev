@@ -3332,6 +3332,7 @@ dependencies = [
  "serde_yaml",
  "sqlx",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

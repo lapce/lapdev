@@ -246,7 +246,7 @@ pub struct BranchRoute {
 
 #[derive(Debug, Clone)]
 pub struct BranchServiceRoute {
-    pub service_name: String,
+    pub service_names: HashMap<u16, String>,
     pub headers: HashMap<String, String>,
     pub requires_auth: bool,
     pub access_level: AccessLevel,
@@ -254,14 +254,20 @@ pub struct BranchServiceRoute {
 }
 
 impl BranchServiceRoute {
-    pub fn new_service(service_name: String) -> Self {
+    pub fn new_service(port: u16, service_name: String) -> Self {
+        let mut service_names = HashMap::new();
+        service_names.insert(port, service_name);
         Self {
-            service_name,
+            service_names,
             headers: HashMap::new(),
             requires_auth: true,
             access_level: AccessLevel::Personal,
             timeout_ms: None,
         }
+    }
+
+    pub fn service_name_for_port(&self, port: u16) -> Option<&str> {
+        self.service_names.get(&port).map(String::as_str)
     }
 }
 

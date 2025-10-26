@@ -24,3 +24,4 @@ lapdev-db-entities.workspace = true
 lapdev-common.workspace = true
 secrecy.workspace = true
 serde_yaml.workspace = true
+tracing.workspace = true

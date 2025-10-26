@@ -1,4 +1,6 @@
-use chrono::{DateTime, FixedOffset};
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -35,6 +37,16 @@ pub struct KubeClusterInfo {
     pub provider: Option<String>,
     pub region: Option<String>,
     pub status: KubeClusterStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterStatusEvent {
+    pub organization_id: Uuid,
+    pub cluster_id: Uuid,
+    pub status: KubeClusterStatus,
+    pub cluster_version: Option<String>,
+    pub region: Option<String>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
@@ -356,7 +368,7 @@ pub struct KubeServicePort {
 pub struct KubeServiceDetails {
     pub name: String,
     pub ports: Vec<KubeServicePort>,
-    pub selector: std::collections::HashMap<String, String>,
+    pub selector: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,7 +386,7 @@ pub struct KubeEnvironmentService {
     pub namespace: String,
     pub yaml: String,
     pub ports: Vec<KubeServicePort>,
-    pub selector: std::collections::HashMap<String, String>,
+    pub selector: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

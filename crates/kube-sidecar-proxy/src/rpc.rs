@@ -74,9 +74,9 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         for route in routes {
             let branch_id = route.branch_environment_id;
 
-            if let Some(service_name) = route.service_name.clone() {
+            if !route.service_names.is_empty() {
                 let service_route = BranchServiceRoute {
-                    service_name,
+                    service_names: route.service_names.clone(),
                     headers: route.headers.clone(),
                     requires_auth: route.requires_auth,
                     access_level: access_level_from_proxy(route.access_level),
@@ -190,22 +190,20 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         _context: ::tarpc::context::Context,
         route: ProxyBranchRouteConfig,
     ) -> Result<(), String> {
-        let Some(service_name) = route.service_name.clone() else {
-            return Err("Missing service_name for branch service route update".to_string());
-        };
-
         let branch_id = route.branch_environment_id;
+        if route.service_names.is_empty() {
+            return Err("Missing service_names for branch service route update".to_string());
+        }
+
         let service_route = BranchServiceRoute {
-            service_name,
+            service_names: route.service_names.clone(),
             headers: route.headers.clone(),
             requires_auth: route.requires_auth,
             access_level: access_level_from_proxy(route.access_level),
             timeout_ms: route.timeout_ms,
         };
 
-        let devbox_override = route
-            .devbox_route
-            .map(devbox_connection_from_config);
+        let devbox_override = route.devbox_route.map(devbox_connection_from_config);
 
         let mut routing_table = self.routing_table.write().await;
         routing_table.upsert_branch_service_route(branch_id, service_route);

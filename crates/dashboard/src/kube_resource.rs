@@ -1,6 +1,8 @@
 use std::{collections::HashSet, str::FromStr};
 
 use anyhow::{anyhow, Result};
+use futures::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
 use lapdev_common::{
     console::Organization,
     kube::{
@@ -9,7 +11,7 @@ use lapdev_common::{
         PaginationCursor, PaginationParams,
     },
 };
-use leptos::prelude::*;
+use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use leptos_router::hooks::{use_location, use_params_map};
 use uuid::Uuid;
 
@@ -53,7 +55,7 @@ pub fn KubeResource() -> impl IntoView {
                 </a>
             </div>
 
-            <ClusterInfo cluster_id />
+            <ClusterInfo cluster_id update_counter />
 
             <KubeResourceList update_counter cluster_id />
         </div>
@@ -104,16 +106,21 @@ async fn get_cluster_info_from_api(
 }
 
 #[component]
-pub fn ClusterInfo(cluster_id: Uuid) -> impl IntoView {
+pub fn ClusterInfo(
+    cluster_id: Uuid,
+    update_counter: RwSignal<usize, LocalStorage>,
+) -> impl IntoView {
     let org = get_current_org();
 
     let config = use_context::<AppConfig>().unwrap();
-    let cluster_info =
+    let cluster_info_resource =
         LocalResource::new(
             move || async move { get_cluster_info_from_api(org, cluster_id).await.ok() },
         );
+
+    let cluster_info_signal = cluster_info_resource.clone();
     let cluster_info = Signal::derive(move || {
-        let cluster_info = cluster_info.get();
+        let cluster_info = cluster_info_signal.get();
         if let Some(Some(info)) = cluster_info.as_ref() {
             config
                 .current_page
@@ -129,6 +136,59 @@ pub fn ClusterInfo(cluster_id: Uuid) -> impl IntoView {
             region: None,
             status: KubeClusterStatus::NotReady,
         })
+    });
+
+    let sse_started = RwSignal::new_local(false);
+    let cluster_info_for_sse = cluster_info_resource.clone();
+    let org_for_sse = org;
+    Effect::new(move |_| {
+        if sse_started.get_value() {
+            return;
+        }
+
+        if let Some(org) = org_for_sse.get() {
+            sse_started.set_value(true);
+            let org_id = org.id;
+            spawn_local_scoped_with_cancellation({
+                let cluster_info_for_sse = cluster_info_for_sse.clone();
+                async move {
+                    let url = format!(
+                        "/api/v1/organizations/{}/kube/clusters/{}/events",
+                        org_id, cluster_id
+                    );
+
+                    match EventSource::new(&url) {
+                        Ok(mut event_source) => {
+                            match event_source.subscribe("cluster") {
+                                Ok(mut stream) => {
+                                    while let Some(event) = stream.next().await {
+                                        if event.is_ok() {
+                                            cluster_info_for_sse.refetch();
+                                            update_counter.update(|c| *c += 1);
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    web_sys::console::error_1(
+                                        &format!(
+                                            "Failed to subscribe to cluster status events: {err}"
+                                        )
+                                        .into(),
+                                    );
+                                }
+                            }
+                            event_source.close();
+                        }
+                        Err(err) => {
+                            web_sys::console::error_1(
+                                &format!("Failed to connect to cluster status events: {err}")
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            });
+        }
     });
 
     view! {

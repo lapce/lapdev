@@ -1143,8 +1143,6 @@ impl KubeManager {
 
     pub(crate) async fn apply_workloads_with_resources(
         &self,
-        environment_id: Option<Uuid>,
-        environment_auth_token: String,
         namespace: String,
         workloads_with_resources: KubeWorkloadsWithResources,
         labels: std::collections::HashMap<String, String>,
@@ -1172,15 +1170,8 @@ impl KubeManager {
         // Step 3: Apply all workloads
         for workload in &workloads_with_resources.workloads {
             tracing::info!("Applying workload to namespace '{}'", namespace);
-            self.apply_workload_only(
-                client,
-                environment_id,
-                environment_auth_token.clone(),
-                &namespace,
-                workload,
-                &labels,
-            )
-            .await?;
+            self.apply_workload_only(client, &namespace, workload, &labels)
+                .await?;
         }
 
         // Step 4: Apply services last as they reference workloads
@@ -1332,22 +1323,13 @@ impl KubeManager {
     async fn apply_workload_only(
         &self,
         client: &kube::Client,
-        environment_id: Option<Uuid>,
-        environment_auth_token: String,
         namespace: &str,
         workload: &KubeWorkloadYamlOnly,
         labels: &std::collections::HashMap<String, String>,
     ) -> Result<()> {
         match workload {
             KubeWorkloadYamlOnly::Deployment(yaml) => {
-                self.apply_deployment(
-                    environment_id,
-                    environment_auth_token,
-                    namespace,
-                    yaml,
-                    labels,
-                )
-                .await?;
+                self.apply_deployment(namespace, yaml, labels).await?;
             }
             KubeWorkloadYamlOnly::StatefulSet(yaml) => {
                 self.apply_statefulset(client, namespace, yaml, labels)
@@ -1454,94 +1436,8 @@ impl KubeManager {
         Ok(())
     }
 
-    fn inject_sidecar_proxy_into_deployment(
-        &self,
-        environment_id: Uuid,
-        environment_auth_token: String,
-        namespace: &str,
-        deployment: &mut k8s_openapi::api::apps::v1::Deployment,
-    ) -> Result<()> {
-        use k8s_openapi::api::core::v1::{Container, ContainerPort, EnvVar};
-
-        if let Some(ref mut spec) = deployment.spec {
-            if let Some(ref mut template) = spec.template.spec {
-                // Create environment variables
-                let env_vars = vec![
-                    EnvVar {
-                        name: "LAPDEV_ENVIRONMENT_ID".to_string(),
-                        value: Some(environment_id.to_string()),
-                        ..Default::default()
-                    },
-                    EnvVar {
-                        name: "LAPDEV_ENVIRONMENT_AUTH_TOKEN".to_string(),
-                        value: Some(environment_auth_token.to_string()),
-                        ..Default::default()
-                    },
-                    EnvVar {
-                        name: "KUBERNETES_NAMESPACE".to_string(),
-                        value: Some(namespace.to_string()),
-                        ..Default::default()
-                    },
-                    EnvVar {
-                        name: "HOSTNAME".to_string(),
-                        value_from: Some(k8s_openapi::api::core::v1::EnvVarSource {
-                            field_ref: Some(k8s_openapi::api::core::v1::ObjectFieldSelector {
-                                field_path: "metadata.name".to_string(),
-                                ..Default::default()
-                            }),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    },
-                ];
-
-                // Create the sidecar proxy container
-                let sidecar_container = Container {
-                    name: "lapdev-sidecar-proxy".to_string(),
-                    image: Some("lapdev/kube-sidecar-proxy:latest".to_string()),
-                    ports: Some(vec![
-                        ContainerPort {
-                            container_port: 8080,
-                            name: Some("proxy".to_string()),
-                            protocol: Some("TCP".to_string()),
-                            ..Default::default()
-                        },
-                        ContainerPort {
-                            container_port: 9090,
-                            name: Some("metrics".to_string()),
-                            protocol: Some("TCP".to_string()),
-                            ..Default::default()
-                        },
-                    ]),
-                    env: Some(env_vars),
-                    args: Some(vec![
-                        "--listen-addr".to_string(),
-                        "0.0.0.0:8080".to_string(),
-                        "--target-addr".to_string(),
-                        "127.0.0.1:3000".to_string(), // Assume main app is on port 3000
-                    ]),
-                    ..Default::default()
-                };
-
-                // Add the sidecar container to the pod spec
-                template.containers.push(sidecar_container);
-
-                tracing::info!(
-                    "Injected sidecar proxy into deployment '{}' in namespace '{}' for environment '{}'",
-                    deployment.metadata.name.as_ref().unwrap_or(&"unknown".to_string()),
-                    namespace,
-                    environment_id
-                );
-            }
-        }
-
-        Ok(())
-    }
-
     async fn apply_deployment(
         &self,
-        environment_id: Option<Uuid>,
-        environment_auth_token: String,
         namespace: &str,
         yaml_manifest: &str,
         labels: &std::collections::HashMap<String, String>,
@@ -1553,16 +1449,6 @@ impl KubeManager {
 
         // Force namespace
         deployment.metadata.namespace = Some(namespace.to_string());
-
-        // Inject sidecar proxy if this is a base environment (not a branch)
-        if let Some(environment_id) = environment_id {
-            self.inject_sidecar_proxy_into_deployment(
-                environment_id,
-                environment_auth_token,
-                namespace,
-                &mut deployment,
-            )?;
-        }
 
         let api: kube::Api<Deployment> =
             kube::Api::namespaced((*self.kube_client).clone(), namespace);
@@ -1927,11 +1813,7 @@ impl KubeManager {
         branch_environment_id: Uuid,
     ) -> Result<(), String> {
         self.proxy_manager
-            .remove_branch_service_route(
-                base_environment_id,
-                workload_id,
-                branch_environment_id,
-            )
+            .remove_branch_service_route(base_environment_id, workload_id, branch_environment_id)
             .await
     }
 

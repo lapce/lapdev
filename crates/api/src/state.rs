@@ -9,7 +9,7 @@ use axum_extra::{
 };
 use chrono::{DateTime, Utc};
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
-use lapdev_common::{UserRole, LAPDEV_BASE_HOSTNAME};
+use lapdev_common::{kube::ClusterStatusEvent, UserRole, LAPDEV_BASE_HOSTNAME};
 use lapdev_conductor::{scheduler::LAPDEV_CPU_OVERCOMMIT, Conductor};
 use lapdev_db::api::DbApi;
 use lapdev_devbox_rpc::PortMapping;
@@ -101,6 +101,7 @@ pub struct CoreState {
     pub active_devbox_sessions: Arc<RwLock<HashMap<Uuid, DevboxSessionHandle>>>,
     // Lifecycle notifications for kube environments
     pub environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
+    pub cluster_events: broadcast::Sender<ClusterStatusEvent>,
 }
 
 /// Handle for an active devbox session
@@ -135,6 +136,7 @@ impl CoreState {
 
         let db = conductor.db.clone();
         let (environment_events, _) = broadcast::channel(128);
+        let (cluster_events, _) = broadcast::channel(128);
         let state = Self {
             db: db.clone(),
             conductor,
@@ -151,6 +153,7 @@ impl CoreState {
             pending_cli_auth: Arc::new(RwLock::new(HashMap::new())),
             active_devbox_sessions: Arc::new(RwLock::new(HashMap::new())),
             environment_events,
+            cluster_events,
         };
 
         {
@@ -174,6 +177,15 @@ impl CoreState {
             tokio::spawn(async move {
                 if let Err(e) = state.monitor_environment_events().await {
                     tracing::error!("api monitor environment events error: {e:#}");
+                }
+            });
+        }
+
+        {
+            let state = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = state.monitor_cluster_events().await {
+                    tracing::error!("api monitor cluster events error: {e:#}");
                 }
             });
         }
@@ -261,6 +273,31 @@ impl CoreState {
                         payload = notification.payload(),
                         error = ?err,
                         "failed to deserialize environment lifecycle notification"
+                    );
+                }
+            }
+        }
+    }
+
+    async fn monitor_cluster_events(&self) -> Result<()> {
+        let pool = self
+            .db
+            .pool
+            .clone()
+            .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
+        let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
+        listener.listen("cluster_status").await?;
+        loop {
+            let notification = listener.recv().await?;
+            match serde_json::from_str::<ClusterStatusEvent>(notification.payload()) {
+                Ok(event) => {
+                    let _ = self.cluster_events.send(event);
+                }
+                Err(err) => {
+                    tracing::error!(
+                        payload = notification.payload(),
+                        error = ?err,
+                        "failed to deserialize cluster status notification"
                     );
                 }
             }

@@ -17,10 +17,12 @@ use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpc, KubeManagerRpcClient, ProxyBranchRouteConfig,
     ProxyRouteAccessLevel, ResourceChangeEvent, ResourceChangeType, ResourceType,
 };
+use lapdev_rpc::error::ApiError;
 use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::convert::TryFrom;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -176,6 +178,83 @@ impl KubeClusterServer {
                 err
             )),
         }
+    }
+
+    pub async fn build_branch_service_route_config(
+        &self,
+        base_environment: &lapdev_db_entities::kube_environment::Model,
+        base_workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<Option<ProxyBranchRouteConfig>, ApiError> {
+        let workload_labels = self
+            .db
+            .get_environment_workload_labels(base_workload_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let shared_services = self
+            .db
+            .get_matching_cluster_services(
+                base_environment.cluster_id,
+                &base_environment.namespace,
+                &workload_labels,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        if shared_services.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Self::build_branch_service_route_config_from_services(
+            branch_environment_id,
+            &shared_services,
+        ))
+    }
+
+    fn build_branch_service_route_config_from_services(
+        branch_environment_id: Uuid,
+        shared_services: &[CachedClusterService],
+    ) -> Option<ProxyBranchRouteConfig> {
+        let mut service_names = HashMap::new();
+        let branch_suffix = format!("-{}", branch_environment_id);
+
+        for service in shared_services {
+            let branch_service_name = format!("{}{branch_suffix}", service.name);
+            for port in &service.ports {
+                match u16::try_from(port.port) {
+                    Ok(port_number) => {
+                        service_names.insert(port_number, branch_service_name.clone());
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Skipping branch service mapping for {} in env {} due to unsupported port {}",
+                            branch_service_name,
+                            branch_environment_id,
+                            port.port
+                        );
+                    }
+                }
+            }
+        }
+
+        if service_names.is_empty() {
+            tracing::warn!(
+                "Found shared services for branch env {} but no valid ports; skipping branch route",
+                branch_environment_id
+            );
+            return None;
+        }
+
+        Some(ProxyBranchRouteConfig {
+            branch_environment_id,
+            service_names,
+            headers: HashMap::new(),
+            requires_auth: true,
+            access_level: ProxyRouteAccessLevel::Personal,
+            timeout_ms: None,
+            devbox_route: None,
+        })
     }
 }
 
@@ -335,6 +414,10 @@ impl KubeClusterRpc for KubeClusterServer {
                 )
             })?;
 
+        if shared_services.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let branch_workloads = self
             .db
             .get_workloads_by_base_workload_id(workload_id)
@@ -368,19 +451,11 @@ impl KubeClusterRpc for KubeClusterServer {
                 continue;
             }
 
-            let branch_suffix = format!("-{}", branch_env_id);
-
-            for service in &shared_services {
-                let branch_service_name = format!("{}{branch_suffix}", service.name);
-                routes.push(ProxyBranchRouteConfig {
-                    branch_environment_id: branch_env_id,
-                    service_name: Some(branch_service_name),
-                    headers: HashMap::new(),
-                    requires_auth: true,
-                    access_level: ProxyRouteAccessLevel::Personal,
-                    timeout_ms: None,
-                    devbox_route: None,
-                });
+            if let Some(route) = Self::build_branch_service_route_config_from_services(
+                branch_env_id,
+                &shared_services,
+            ) {
+                routes.push(route);
             }
         }
 

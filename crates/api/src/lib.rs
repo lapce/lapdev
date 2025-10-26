@@ -3,6 +3,7 @@ pub mod admin;
 pub mod auth;
 pub mod cert;
 pub mod cli_auth;
+pub mod cluster_events;
 pub mod devbox;
 pub mod devbox_auth;
 pub mod environment_events;

@@ -20,8 +20,8 @@ pub enum SidecarProxyError {
     #[error("Service discovery error: {0}")]
     ServiceDiscovery(String),
 
-    #[error("Target service not found: {service_name}")]
-    TargetNotFound { service_name: String },
+    #[error("Target service not found for port {port}")]
+    TargetNotFound { port: u16 },
 
     #[error("Authorization error: {0}")]
     Authorization(String),

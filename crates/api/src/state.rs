@@ -37,13 +37,13 @@ use crate::{
     cert::{load_cert, CertStore},
     github::GithubClient,
     kube_controller::KubeController,
-    session::OAUTH_STATE_COOKIE,
     tunnel_broker::TunnelBroker,
 };
 
 use crate::environment_events::EnvironmentLifecycleEvent;
 
-pub const TOKEN_COOKIE_NAME: &str = "token";
+pub const OAUTH_STATE_COOKIE: &str = "lapdev_auth_state";
+pub const TOKEN_COOKIE_NAME: &str = "lapdev_auth_token";
 pub const LAPDEV_CERTS: &str = "lapdev-certs";
 
 pub type HyperClient = hyper_util::client::legacy::Client<HttpConnector, Body>;

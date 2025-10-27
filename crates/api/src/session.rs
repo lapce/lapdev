@@ -22,10 +22,9 @@ use sea_orm::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::state::{CoreState, RequestInfo, TOKEN_COOKIE_NAME};
+use crate::state::{CoreState, OAUTH_STATE_COOKIE, RequestInfo, TOKEN_COOKIE_NAME};
 
 pub const OAUTH_STATE: &str = "oauth_state";
-pub const OAUTH_STATE_COOKIE: &str = "state";
 pub const REDIRECT_URL: &str = "redirect_url";
 pub const CONNECT_USER: &str = "connect_user";
 pub const READ_REPO: &str = "read_repo";

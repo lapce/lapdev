@@ -13,10 +13,10 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use lapdev_conductor::Conductor;
 use lapdev_db::api::DbApi;
 use serde::Deserialize;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, time::Duration};
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
-use tracing::error;
+use tracing::{error, info, warn};
 
 use crate::{
     cert::tls_config,
@@ -36,6 +36,7 @@ struct LapdevConfig {
     ssh_proxy_port: Option<u16>,
     ssh_proxy_display_port: Option<u16>,
     force_osuser: Option<String>,
+    preview_url_proxy_port: Option<u16>,
 }
 
 #[derive(Parser)]
@@ -63,6 +64,7 @@ pub struct ApiServer {
     pub app: Router,
     pub conductor: Conductor,
     ssh_proxy_port: u16,
+    preview_url_proxy_port: u16,
     _log: Result<tracing_appender::non_blocking::WorkerGuard, anyhow::Error>,
 }
 
@@ -100,6 +102,7 @@ impl ApiServer {
 
         let ssh_proxy_port = config.ssh_proxy_port.unwrap_or(2222);
         let ssh_proxy_display_port = config.ssh_proxy_display_port.unwrap_or(2222);
+        let preview_url_proxy_port = config.preview_url_proxy_port.unwrap_or(8443);
         let state = Arc::new(
             CoreState::new(
                 conductor.clone(),
@@ -118,6 +121,7 @@ impl ApiServer {
             conductor,
             app,
             ssh_proxy_port,
+            preview_url_proxy_port,
             _log: log,
         })
     }
@@ -137,6 +141,41 @@ impl ApiServer {
                 .await
                 {
                     error!("ssh proxy error: {e:?}");
+                }
+            });
+        }
+
+        {
+            let db = self.conductor.db.clone();
+            let tunnel_registry = self.state.kube_controller.tunnel_registry.clone();
+            let host = self
+                .config
+                .bind
+                .clone()
+                .unwrap_or_else(|| "0.0.0.0".to_string());
+            let port = self.preview_url_proxy_port;
+            tokio::spawn(async move {
+                loop {
+                    let db_clone = db.clone();
+                    let tunnel_clone = tunnel_registry.clone();
+                    let bind = format!("{host}:{port}");
+                    match lapdev_kube::start_preview_url_proxy_server(
+                        db_clone,
+                        tunnel_clone,
+                        &bind,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!("Preview URL proxy server exited gracefully");
+                            break;
+                        }
+                        Err(err) => {
+                            error!("Preview URL proxy server failed: {err:?}");
+                            warn!("Retrying preview URL proxy server in 5 seconds");
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
                 }
             });
         }
@@ -204,6 +243,7 @@ async fn run(
 
     let ssh_proxy_port = config.ssh_proxy_port.unwrap_or(2222);
     let ssh_proxy_display_port = config.ssh_proxy_display_port.unwrap_or(2222);
+    let preview_url_proxy_port = config.preview_url_proxy_port.unwrap_or(8443);
     {
         let conductor = conductor.clone();
         let bind = config.bind.clone();
@@ -231,6 +271,39 @@ async fn run(
     );
     let app = router::build_router(state.clone());
     let certs = state.certs.clone();
+
+    {
+        let db = state.db.clone();
+        let tunnel_registry = state.kube_controller.tunnel_registry.clone();
+        let host = config
+            .bind
+            .clone()
+            .unwrap_or_else(|| "0.0.0.0".to_string());
+        tokio::spawn(async move {
+            loop {
+                let bind = format!("{host}:{preview_url_proxy_port}");
+                let db_clone = db.clone();
+                let tunnel_clone = tunnel_registry.clone();
+                match lapdev_kube::start_preview_url_proxy_server(
+                    db_clone,
+                    tunnel_clone,
+                    &bind,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        info!("Preview URL proxy server exited gracefully");
+                        break;
+                    }
+                    Err(err) => {
+                        error!("Preview URL proxy server failed: {err:?}");
+                        warn!("Retrying preview URL proxy server in 5 seconds");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+    }
 
     {
         // start http server

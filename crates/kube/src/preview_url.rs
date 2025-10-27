@@ -1,4 +1,5 @@
 use anyhow::Result;
+use lapdev_common::kube::PreviewUrlAccessLevel;
 use lapdev_db::api::DbApi;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -16,7 +17,7 @@ pub struct PreviewUrlTarget {
     pub namespace: String,
     pub service_name: String,
     pub service_port: u16,
-    pub access_level: String,
+    pub access_level: PreviewUrlAccessLevel,
     pub protocol: String,
     pub environment_id: Uuid,
     pub preview_url_id: Uuid,
@@ -99,26 +100,27 @@ impl PreviewUrlResolver {
             .ok_or(PreviewUrlError::PreviewUrlNotConfigured)?;
 
         // 4. Validate access level and permissions (basic validation)
-        self.validate_access_level(&preview_url.access_level)
-            .await?;
+        let access_level = self.parse_access_level(&preview_url.access_level)?;
 
         Ok(PreviewUrlTarget {
             cluster_id: environment.cluster_id,
             namespace: environment.namespace,
             service_name: service.name,
             service_port: info.port,
-            access_level: preview_url.access_level,
+            access_level,
             protocol: preview_url.protocol,
             environment_id: environment.id,
             preview_url_id: preview_url.id,
         })
     }
 
-    async fn validate_access_level(&self, access_level: &str) -> Result<(), PreviewUrlError> {
-        match access_level {
-            "public" | "shared" | "personal" => Ok(()),
-            _ => Err(PreviewUrlError::AccessDenied),
-        }
+    fn parse_access_level(
+        &self,
+        access_level: &str,
+    ) -> Result<PreviewUrlAccessLevel, PreviewUrlError> {
+        access_level
+            .parse::<PreviewUrlAccessLevel>()
+            .map_err(|_| PreviewUrlError::AccessDenied)
     }
 
     /// Update last accessed timestamp for the preview URL

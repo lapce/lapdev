@@ -4,9 +4,9 @@ use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED,
     kube::{
-        ClusterStatusEvent, KubeAppCatalogWorkload, KubeClusterStatus, KubeContainerInfo,
-        KubeEnvironmentWorkload, KubeServicePort, KubeWorkloadDetails, KubeWorkloadKind,
-        PagePaginationParams,
+        AppCatalogStatusEvent, ClusterStatusEvent, KubeAppCatalogWorkload, KubeClusterStatus,
+        KubeContainerInfo, KubeEnvironmentWorkload, KubeServicePort, KubeWorkloadDetails,
+        KubeWorkloadKind, PagePaginationParams,
     },
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
@@ -673,6 +673,47 @@ impl DbApi {
         }
     }
 
+    async fn publish_app_catalog_status_event(
+        &self,
+        catalog: &lapdev_db_entities::kube_app_catalog::Model,
+    ) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+
+        let event = AppCatalogStatusEvent {
+            organization_id: catalog.organization_id,
+            catalog_id: catalog.id,
+            cluster_id: catalog.cluster_id,
+            sync_version: catalog.sync_version,
+            last_synced_at: catalog.last_synced_at.map(|ts| ts.to_string()),
+            last_sync_actor_id: catalog.last_sync_actor_id,
+            updated_at: Utc::now(),
+        };
+
+        match serde_json::to_string(&event) {
+            Ok(payload) => {
+                if let Err(err) = sqlx::query("SELECT pg_notify($1, $2)")
+                    .bind("app_catalog_status")
+                    .bind(payload)
+                    .execute(pool)
+                    .await
+                {
+                    warn!(
+                        error = %err,
+                        "failed to publish app catalog status event via pg_notify"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to serialize app catalog status event"
+                );
+            }
+        }
+    }
+
     pub async fn get_user_all_oauth(
         &self,
         user_id: Uuid,
@@ -1252,6 +1293,9 @@ impl DbApi {
             .await?;
 
         txn.commit().await?;
+        if let Ok(Some(catalog)) = self.get_app_catalog(catalog_id).await {
+            self.publish_app_catalog_status_event(&catalog).await;
+        }
         Ok(catalog_id)
     }
 
@@ -1299,6 +1343,9 @@ impl DbApi {
             .await?;
 
         txn.commit().await?;
+        if let Ok(Some(catalog)) = self.get_app_catalog(catalog_id).await {
+            self.publish_app_catalog_status_event(&catalog).await;
+        }
         Ok(catalog_id)
     }
 
@@ -1472,6 +1519,7 @@ impl DbApi {
             .await?;
 
         if let Some(model) = updated.into_iter().next() {
+            self.publish_app_catalog_status_event(&model).await;
             Ok(model.sync_version)
         } else {
             Err(anyhow!(

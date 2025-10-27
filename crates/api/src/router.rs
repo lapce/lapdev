@@ -17,7 +17,7 @@ use lapdev_proxy_http::{forward::ProxyForward, proxy::WorkspaceForwardError};
 use lapdev_rpc::error::ApiError;
 
 use crate::{
-    account, admin, cli_auth, cluster_events,
+    account, admin, app_catalog_events, cli_auth, cluster_events,
     devbox::{
         devbox_client_tunnel_websocket, devbox_intercept_tunnel_websocket, devbox_rpc_websocket,
         devbox_whoami,
@@ -148,6 +148,10 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
         .route(
             "/organizations/{org_id}/kube/clusters/{cluster_id}/events",
             get(cluster_events::stream_cluster_status_events),
+        )
+        .route(
+            "/organizations/{org_id}/kube/catalogs/{catalog_id}/events",
+            get(app_catalog_events::stream_app_catalog_events),
         )
         .route(
             "/organizations/{org_id}/projects",

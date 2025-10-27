@@ -142,12 +142,12 @@ pub fn ClusterInfo(
     let cluster_info_for_sse = cluster_info_resource.clone();
     let org_for_sse = org;
     Effect::new(move |_| {
-        if sse_started.get_value() {
+        if sse_started.get_untracked() {
             return;
         }
 
         if let Some(org) = org_for_sse.get() {
-            sse_started.set_value(true);
+            sse_started.set(true);
             let org_id = org.id;
             spawn_local_scoped_with_cancellation({
                 let cluster_info_for_sse = cluster_info_for_sse.clone();

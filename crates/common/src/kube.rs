@@ -49,6 +49,17 @@ pub struct ClusterStatusEvent {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppCatalogStatusEvent {
+    pub organization_id: Uuid,
+    pub catalog_id: Uuid,
+    pub cluster_id: Uuid,
+    pub sync_version: i64,
+    pub last_synced_at: Option<String>,
+    pub last_sync_actor_id: Option<Uuid>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
 pub enum KubeClusterStatus {
     Ready,
@@ -137,16 +148,16 @@ pub enum KubeWorkloadStatus {
     Debug, Clone, Serialize, Deserialize, PartialEq, strum_macros::EnumString, strum_macros::Display,
 )]
 pub enum PreviewUrlAccessLevel {
-    Personal, // Only accessible by the owner with authentication
-    Shared,   // Accessible by organization members with authentication
-    Public,   // Accessible by anyone without authentication
+    Organization, // Accessible by authenticated organization members
+    Public,       // Accessible by anyone without authentication
 }
 
 impl PreviewUrlAccessLevel {
     pub fn get_detailed_message(&self) -> &'static str {
         match self {
-            PreviewUrlAccessLevel::Personal => "Personal - Only you can access",
-            PreviewUrlAccessLevel::Shared => "Shared - Organization members can access",
+            PreviewUrlAccessLevel::Organization => {
+                "Organization - Members of your Lapdev org after login"
+            }
             PreviewUrlAccessLevel::Public => "Public - Anyone can access without authentication",
         }
     }
@@ -413,7 +424,7 @@ pub struct CreateKubeEnvironmentPreviewUrlRequest {
     pub port: i32,
     pub port_name: Option<String>,
     pub protocol: Option<String>,                    // Default to "HTTP"
-    pub access_level: Option<PreviewUrlAccessLevel>, // Default to Personal
+    pub access_level: Option<PreviewUrlAccessLevel>, // Default to Organization
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

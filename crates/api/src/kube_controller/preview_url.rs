@@ -64,7 +64,7 @@ impl KubeController {
         let protocol = request.protocol.unwrap_or_else(|| "HTTP".to_string());
         let access_level = request
             .access_level
-            .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Personal);
+            .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Organization);
 
         let url = format!("https://{auto_name}.app.lap.dev");
 
@@ -114,7 +114,7 @@ impl KubeController {
             access_level: preview_url
                 .access_level
                 .parse()
-                .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Personal),
+                .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Organization),
             created_by: preview_url.created_by,
             last_accessed_at: preview_url.last_accessed_at,
             url,
@@ -168,7 +168,7 @@ impl KubeController {
                     access_level: preview_url
                         .access_level
                         .parse()
-                        .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Personal),
+                        .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Organization),
                     created_by: preview_url.created_by,
                     last_accessed_at: preview_url.last_accessed_at,
                     url,
@@ -235,7 +235,7 @@ impl KubeController {
             access_level: updated_preview_url
                 .access_level
                 .parse()
-                .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Personal),
+                .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Organization),
             created_by: updated_preview_url.created_by,
             last_accessed_at: updated_preview_url.last_accessed_at,
             url,

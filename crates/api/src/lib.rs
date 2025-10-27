@@ -1,5 +1,6 @@
 pub mod account;
 pub mod admin;
+pub mod app_catalog_events;
 pub mod auth;
 pub mod cert;
 pub mod cli_auth;

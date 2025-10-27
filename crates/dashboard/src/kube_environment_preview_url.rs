@@ -203,8 +203,7 @@ fn PreviewUrlRow(
                     {
                         let variant = match preview_url_for_view.access_level {
                             lapdev_common::kube::PreviewUrlAccessLevel::Public => BadgeVariant::Default,
-                            lapdev_common::kube::PreviewUrlAccessLevel::Shared => BadgeVariant::Secondary,
-                            lapdev_common::kube::PreviewUrlAccessLevel::Personal => BadgeVariant::Outline,
+                            lapdev_common::kube::PreviewUrlAccessLevel::Organization => BadgeVariant::Secondary,
                         };
                         view! {
                             <Badge variant=variant class="text-xs">
@@ -259,7 +258,7 @@ pub fn CreatePreviewUrlModal(
     let description = RwSignal::new(String::new());
     let selected_port = RwSignal::new(None::<i32>);
     let selected_port_name = RwSignal::new(None::<String>);
-    let access_level = RwSignal::new(PreviewUrlAccessLevel::Personal);
+    let access_level = RwSignal::new(PreviewUrlAccessLevel::Organization);
     let select_open = RwSignal::new(false);
 
     // Available ports for the service
@@ -281,7 +280,7 @@ pub fn CreatePreviewUrlModal(
             description.set(String::new());
             selected_port.set(None);
             selected_port_name.set(None);
-            access_level.set(PreviewUrlAccessLevel::Personal);
+            access_level.set(PreviewUrlAccessLevel::Organization);
         }
     });
 
@@ -384,8 +383,7 @@ pub fn CreatePreviewUrlModal(
                                 {move || access_level.get().get_detailed_message() }
                             </SelectTrigger>
                             <SelectContent class="w-full">
-                                <SelectItem value=PreviewUrlAccessLevel::Personal>{PreviewUrlAccessLevel::Personal.get_detailed_message()}</SelectItem>
-                                <SelectItem value=PreviewUrlAccessLevel::Shared>{PreviewUrlAccessLevel::Shared.get_detailed_message()}</SelectItem>
+                                <SelectItem value=PreviewUrlAccessLevel::Organization>{PreviewUrlAccessLevel::Organization.get_detailed_message()}</SelectItem>
                                 <SelectItem value=PreviewUrlAccessLevel::Public>{PreviewUrlAccessLevel::Public.get_detailed_message()}</SelectItem>
                             </SelectContent>
                         </Select>
@@ -406,7 +404,7 @@ fn EditPreviewUrlModal(
 
     // Form state
     let description = RwSignal::new(String::new());
-    let access_level = RwSignal::new(PreviewUrlAccessLevel::Personal);
+    let access_level = RwSignal::new(PreviewUrlAccessLevel::Organization);
     let edit_select_open = RwSignal::new(false);
 
     // Initialize form when preview URL changes
@@ -478,8 +476,7 @@ fn EditPreviewUrlModal(
                                 {move || access_level.get().get_detailed_message() }
                             </SelectTrigger>
                             <SelectContent class="w-full">
-                                <SelectItem value=PreviewUrlAccessLevel::Personal>{PreviewUrlAccessLevel::Personal.get_detailed_message()}</SelectItem>
-                                <SelectItem value=PreviewUrlAccessLevel::Shared>{PreviewUrlAccessLevel::Shared.get_detailed_message()}</SelectItem>
+                                <SelectItem value=PreviewUrlAccessLevel::Organization>{PreviewUrlAccessLevel::Organization.get_detailed_message()}</SelectItem>
                                 <SelectItem value=PreviewUrlAccessLevel::Public>{PreviewUrlAccessLevel::Public.get_detailed_message()}</SelectItem>
                             </SelectContent>
                         </Select>

@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
+use futures::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
@@ -8,7 +10,7 @@ use lapdev_common::{
         KubeAppCatalog, KubeAppCatalogWorkload, KubeCluster, KubeClusterStatus, KubeContainerInfo,
     },
 };
-use leptos::prelude::*;
+use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use leptos_router::hooks::use_params_map;
 use uuid::Uuid;
 
@@ -169,6 +171,60 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                 .unwrap_or_else(|_| vec![]);
             is_loading.set(false);
             result
+        }
+    });
+
+    let sse_started = RwSignal::new_local(false);
+    let catalog_result_for_sse = catalog_result.clone();
+    let update_counter_for_sse = update_counter.clone();
+    let org_for_sse = org;
+    Effect::new(move |_| {
+        if sse_started.get_untracked() {
+            return;
+        }
+
+        if let Some(org) = org_for_sse.get() {
+            sse_started.set(true);
+            let org_id = org.id;
+            let catalog_result_for_sse = catalog_result_for_sse.clone();
+            let update_counter = update_counter_for_sse.clone();
+            spawn_local_scoped_with_cancellation({
+                async move {
+                    let url = format!(
+                        "/api/v1/organizations/{}/kube/catalogs/{}/events",
+                        org_id, catalog_id
+                    );
+
+                    match EventSource::new(&url) {
+                        Ok(mut event_source) => {
+                            match event_source.subscribe("catalog") {
+                                Ok(mut stream) => {
+                                    while let Some(event) = stream.next().await {
+                                        if event.is_ok() {
+                                            catalog_result_for_sse.refetch();
+                                            update_counter.update(|c| *c += 1);
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    web_sys::console::error_1(
+                                        &format!(
+                                            "Failed to subscribe to app catalog events: {err}"
+                                        )
+                                        .into(),
+                                    );
+                                }
+                            }
+                            event_source.close();
+                        }
+                        Err(err) => {
+                            web_sys::console::error_1(
+                                &format!("Failed to connect to app catalog events: {err}").into(),
+                            );
+                        }
+                    }
+                }
+            });
         }
     });
 

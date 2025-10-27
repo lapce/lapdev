@@ -18,7 +18,7 @@ pub async fn start_preview_url_proxy_server(
     tunnel_registry: Arc<TunnelRegistry>,
     bind_addr: &str,
 ) -> Result<()> {
-    let proxy = Arc::new(PreviewUrlProxy::new(db, tunnel_registry));
+    let proxy = Arc::new(PreviewUrlProxy::new(db, tunnel_registry).await);
 
     tracing::info!("Starting PreviewUrlProxy TCP server on {}", bind_addr);
 

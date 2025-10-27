@@ -3437,6 +3437,7 @@ dependencies = [
  "lapdev-kube-rpc",
  "lapdev-rpc",
  "lapdev-tunnel",
+ "pasetors",
  "pem",
  "reqwest",
  "sea-orm",

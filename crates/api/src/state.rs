@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
 use lapdev_common::{
     kube::{AppCatalogStatusEvent, ClusterStatusEvent},
-    UserRole, LAPDEV_BASE_HOSTNAME,
+    UserRole, LAPDEV_AUTH_STATE_COOKIE, LAPDEV_AUTH_TOKEN_COOKIE, LAPDEV_BASE_HOSTNAME,
 };
 use lapdev_conductor::{scheduler::LAPDEV_CPU_OVERCOMMIT, Conductor};
 use lapdev_db::api::DbApi;
@@ -42,8 +42,8 @@ use crate::{
 
 use crate::environment_events::EnvironmentLifecycleEvent;
 
-pub const OAUTH_STATE_COOKIE: &str = "lapdev_auth_state";
-pub const TOKEN_COOKIE_NAME: &str = "lapdev_auth_token";
+pub const OAUTH_STATE_COOKIE: &str = LAPDEV_AUTH_STATE_COOKIE;
+pub const TOKEN_COOKIE_NAME: &str = LAPDEV_AUTH_TOKEN_COOKIE;
 pub const LAPDEV_CERTS: &str = "lapdev-certs";
 
 pub type HyperClient = hyper_util::client::legacy::Client<HttpConnector, Body>;

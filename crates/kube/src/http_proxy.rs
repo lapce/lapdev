@@ -1,7 +1,6 @@
 use anyhow::Result;
 use axum::{
-    body::Body,
-    http::{Response, StatusCode},
+    http::StatusCode,
     response::IntoResponse,
 };
 use std::{io, sync::Arc};
@@ -16,19 +15,51 @@ use crate::{
     preview_url::{PreviewUrlError, PreviewUrlResolver, PreviewUrlTarget},
     tunnel::TunnelRegistry,
 };
+use lapdev_common::{kube::PreviewUrlAccessLevel, LAPDEV_AUTH_TOKEN_COOKIE};
 use lapdev_db::api::DbApi;
 use lapdev_kube_rpc::http_parser;
+use pasetors::{
+    claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
+};
+
+const PAGE_NOT_AUTHORISED: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../api/pages/not_authorised.html"
+));
+const PAGE_NOT_FOUND: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../api/pages/not_found.html"
+));
+const PAGE_NOT_FORWARDED: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../api/pages/not_forwarded.html"
+));
+const PAGE_NOT_RUNNING: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../api/pages/not_running.html"
+));
+const PAGE_GENERIC_ERROR: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../api/pages/generic_error.html"
+));
 
 pub struct PreviewUrlProxy {
     url_resolver: PreviewUrlResolver,
     tunnel_registry: Arc<TunnelRegistry>,
+    db: DbApi,
+    auth_token_key: Arc<SymmetricKey<V4>>,
 }
 
 impl PreviewUrlProxy {
-    pub fn new(db: DbApi, tunnel_registry: Arc<TunnelRegistry>) -> Self {
+    pub async fn new(db: DbApi, tunnel_registry: Arc<TunnelRegistry>) -> Self {
+        let auth_token_key = Arc::new(db.load_api_auth_token_key().await);
+        let url_resolver = PreviewUrlResolver::new(db.clone());
+
         Self {
-            url_resolver: PreviewUrlResolver::new(db),
+            url_resolver,
             tunnel_registry,
+            db,
+            auth_token_key,
         }
     }
 
@@ -90,7 +121,19 @@ impl PreviewUrlProxy {
                 debug!("Extracted subdomain: {} from host: {}", subdomain, host);
 
                 // Resolve preview URL target
-                let target = self.resolve_preview_url_target(&subdomain).await?;
+                let target = match self.resolve_preview_url_target(&subdomain).await {
+                    Ok(target) => target,
+                    Err(err) => {
+                        self.respond_with_proxy_error(&mut stream, err).await?;
+                        return Ok(());
+                    }
+                };
+
+                // Enforce access controls based on preview URL configuration
+                if let Err(err) = self.authorize_request(&parsed_request, &target).await {
+                    self.respond_with_proxy_error(&mut stream, err).await?;
+                    return Ok(());
+                }
 
                 info!(
                     "Resolved target: service={}:{} in cluster={}",
@@ -113,98 +156,58 @@ impl PreviewUrlProxy {
                     && e.to_string().contains("exceed maximum size") =>
             {
                 // Request headers are too large - reject it
-                self.send_error_response(&mut stream, 413, "Request Entity Too Large")
-                    .await
+                self.send_error_page(
+                    &mut stream,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    PAGE_GENERIC_ERROR,
+                )
+                .await
             }
             Err(_) => {
-                self.send_error_response(&mut stream, 400, "Bad Request")
+                self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR)
                     .await
             }
         }
     }
 
-    /// Send HTTP response back to client
-    async fn send_http_response(
+    /// Send error response to client
+    async fn send_error_page(
         &self,
         stream: &mut TcpStream,
-        response: Response<Body>,
+        status: StatusCode,
+        body: &'static str,
     ) -> Result<(), ProxyError> {
-        let (parts, body) = response.into_parts();
-
-        // Write status line
         let status_line = format!(
             "HTTP/1.1 {} {}\r\n",
-            parts.status.as_u16(),
-            parts.status.canonical_reason().unwrap_or("Unknown")
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("Unknown")
         );
         stream
             .write_all(status_line.as_bytes())
             .await
             .map_err(|e| ProxyError::Internal(format!("Failed to write status line: {e}")))?;
 
-        // Write headers
-        for (name, value) in parts.headers.iter() {
-            let header_line = format!(
-                "{}: {}\r\n",
-                name.as_str(),
-                value
-                    .to_str()
-                    .map_err(|e| ProxyError::Internal(format!("Invalid header value: {e}")))?
-            );
-            stream
-                .write_all(header_line.as_bytes())
-                .await
-                .map_err(|e| ProxyError::Internal(format!("Failed to write header: {e}")))?;
-        }
-
-        // End headers
-        stream
-            .write_all(b"\r\n")
-            .await
-            .map_err(|e| ProxyError::Internal(format!("Failed to write header separator: {e}")))?;
-
-        // Write body
-        let body_bytes = axum::body::to_bytes(body, usize::MAX)
-            .await
-            .map_err(|e| ProxyError::Internal(format!("Failed to read response body: {e}")))?;
+        let headers = format!(
+            "Content-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
 
         stream
-            .write_all(&body_bytes)
+            .write_all(headers.as_bytes())
             .await
-            .map_err(|e| ProxyError::Internal(format!("Failed to write response body: {e}")))?;
+            .map_err(|e| ProxyError::Internal(format!("Failed to write headers: {e}")))?;
+
+        stream
+            .write_all(body.as_bytes())
+            .await
+            .map_err(|e| ProxyError::Internal(format!("Failed to write body: {e}")))?;
 
         stream
             .flush()
             .await
-            .map_err(|e| ProxyError::Internal(format!("Failed to flush stream: {e}")))?;
+            .map_err(|e| ProxyError::Internal(format!("Failed to flush response: {e}")))?;
 
         Ok(())
-    }
-
-    /// Send error response to client
-    async fn send_error_response(
-        &self,
-        stream: &mut TcpStream,
-        status_code: u16,
-        reason: &str,
-    ) -> Result<(), ProxyError> {
-        use axum::body::Body;
-
-        let response_body = format!("<h1>{} {}</h1>", status_code, reason);
-
-        let status = StatusCode::from_u16(status_code)
-            .map_err(|_| ProxyError::Internal(format!("Invalid status code: {}", status_code)))?;
-
-        let response = Response::builder()
-            .status(status)
-            .header("Content-Type", "text/html")
-            .header("Content-Length", response_body.len())
-            .header("Connection", "close")
-            .body(Body::from(response_body))
-            .map_err(|e| ProxyError::Internal(format!("Failed to build error response: {}", e)))?;
-
-        // Reuse the existing send_http_response method
-        self.send_http_response(stream, response).await
     }
 
     /// Resolve preview URL target from subdomain
@@ -247,6 +250,126 @@ impl PreviewUrlProxy {
         }
 
         Ok(target)
+    }
+
+    async fn respond_with_proxy_error(
+        &self,
+        stream: &mut TcpStream,
+        error: ProxyError,
+    ) -> Result<(), ProxyError> {
+        let (status, page) = match &error {
+            ProxyError::Forbidden(_) => (StatusCode::FORBIDDEN, PAGE_NOT_AUTHORISED),
+            ProxyError::NotFound(_) => (StatusCode::NOT_FOUND, PAGE_NOT_FOUND),
+            ProxyError::TunnelNotAvailable(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, PAGE_NOT_FORWARDED)
+            }
+            ProxyError::Timeout(_) => (StatusCode::GATEWAY_TIMEOUT, PAGE_NOT_RUNNING),
+            ProxyError::InvalidUrl(_) => (StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR),
+            ProxyError::NetworkError(_) => (StatusCode::BAD_GATEWAY, PAGE_GENERIC_ERROR),
+            ProxyError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, PAGE_GENERIC_ERROR),
+        };
+
+        warn!("Responding with error page: {:?} ({})", status, error);
+
+        self.send_error_page(stream, status, page).await
+    }
+
+    /// Ensure the caller is authorized to access the resolved preview target
+    async fn authorize_request(
+        &self,
+        request: &http_parser::ParsedHttpRequest,
+        target: &PreviewUrlTarget,
+    ) -> Result<(), ProxyError> {
+        match target.access_level {
+            PreviewUrlAccessLevel::Public => Ok(()),
+            PreviewUrlAccessLevel::Organization => {
+                let token = self
+                    .extract_cookie_value(&request.headers, LAPDEV_AUTH_TOKEN_COOKIE)
+                    .ok_or_else(|| ProxyError::Forbidden("Authentication required".to_string()))?;
+
+                let user_id = self.user_id_from_token(&token)?;
+
+                self.ensure_org_membership(user_id, target.organization_id)
+                    .await?;
+
+                debug!(
+                    "Authorized organization member {} for preview {}",
+                    user_id, target.preview_url_id
+                );
+
+                Ok(())
+            }
+        }
+    }
+
+    fn extract_cookie_value(
+        &self,
+        headers: &[(String, String)],
+        cookie_name: &str,
+    ) -> Option<String> {
+        let prefix = format!("{cookie_name}=");
+
+        headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+            .flat_map(|(_, value)| value.split(';'))
+            .map(|cookie| cookie.trim())
+            .find_map(|cookie| cookie.strip_prefix(&prefix).map(|value| value.to_string()))
+    }
+
+    fn user_id_from_token(&self, token: &str) -> Result<Uuid, ProxyError> {
+        let untrusted =
+            UntrustedToken::try_from(token).map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+
+        let trusted = local::decrypt(
+            self.auth_token_key.as_ref(),
+            &untrusted,
+            &ClaimsValidationRules::new(),
+            None,
+            None,
+        )
+            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+
+        let claims = trusted
+            .payload_claims()
+            .ok_or_else(|| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+
+        let user_id_value = claims
+            .get_claim("user_id")
+            .ok_or_else(|| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+
+        let user_id: String = serde_json::from_value(user_id_value.clone())
+            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+
+        Uuid::parse_str(&user_id)
+            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))
+    }
+
+    async fn ensure_org_membership(
+        &self,
+        user_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<(), ProxyError> {
+        self.db
+            .get_organization_member(user_id, organization_id)
+            .await
+            .map(|_| ())
+            .map_err(|err| {
+                if err
+                    .to_string()
+                    .contains("no organization member found")
+                {
+                    ProxyError::Forbidden("Organization membership required".to_string())
+                } else {
+                    error!(
+                        "Failed to verify organization membership for user {} in organization {}: {}",
+                        user_id, organization_id, err
+                    );
+                    ProxyError::Internal(
+                        "Failed to verify organization membership".to_string(),
+                    )
+                }
+            })
     }
 
     /// Start direct TCP proxying between client and target service

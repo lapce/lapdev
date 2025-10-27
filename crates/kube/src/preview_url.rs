@@ -20,6 +20,7 @@ pub struct PreviewUrlTarget {
     pub access_level: PreviewUrlAccessLevel,
     pub protocol: String,
     pub environment_id: Uuid,
+    pub organization_id: Uuid,
     pub preview_url_id: Uuid,
 }
 
@@ -110,6 +111,7 @@ impl PreviewUrlResolver {
             access_level,
             protocol: preview_url.protocol,
             environment_id: environment.id,
+            organization_id: environment.organization_id,
             preview_url_id: preview_url.id,
         })
     }

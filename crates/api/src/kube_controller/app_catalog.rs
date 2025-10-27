@@ -333,7 +333,8 @@ impl KubeController {
             .enrich_workloads_with_details(cluster_id, workloads)
             .await?;
 
-        self.db
+        let catalog_id = self
+            .db
             .create_app_catalog_with_enriched_workloads(
                 org_id,
                 user_id,
@@ -343,7 +344,11 @@ impl KubeController {
                 enriched_workloads,
             )
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        self.refresh_cluster_namespace_watches(cluster_id).await;
+
+        Ok(catalog_id)
     }
 
     pub async fn get_all_app_catalogs(

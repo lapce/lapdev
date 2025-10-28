@@ -3,14 +3,13 @@ use lapdev_kube_rpc::{
     DevboxRouteConfig, ProxyBranchRouteConfig, ProxyRouteAccessLevel, SidecarProxyManagerRpcClient,
     SidecarProxyRpc,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::config::{
-    AccessLevel, BranchMode, BranchServiceRoute, DevboxConnection, DevboxRouteMetadata,
-    RoutingTable,
+    AccessLevel, BranchServiceRoute, DevboxConnection, DevboxRouteMetadata, RoutingTable,
 };
 
 #[derive(Clone)]
@@ -81,6 +80,7 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
                     requires_auth: route.requires_auth,
                     access_level: access_level_from_proxy(route.access_level),
                     timeout_ms: route.timeout_ms,
+                    http2_clients: Arc::new(RwLock::new(HashMap::new())),
                 };
                 updates.push((branch_id, service_route));
             }
@@ -90,7 +90,7 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             }
         }
 
-        routing_table.replace_branch_routes(updates);
+        routing_table.replace_branch_routes(updates).await;
 
         for (branch_id, devbox) in devbox_overrides {
             if !routing_table.set_branch_devbox(&branch_id, devbox) {
@@ -201,12 +201,15 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             requires_auth: route.requires_auth,
             access_level: access_level_from_proxy(route.access_level),
             timeout_ms: route.timeout_ms,
+            http2_clients: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let devbox_override = route.devbox_route.map(devbox_connection_from_config);
 
         let mut routing_table = self.routing_table.write().await;
-        routing_table.upsert_branch_service_route(branch_id, service_route);
+        routing_table
+            .upsert_branch_service_route(branch_id, service_route)
+            .await;
 
         if let Some(connection) = devbox_override {
             routing_table.set_branch_devbox(&branch_id, connection);
@@ -226,7 +229,10 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         branch_environment_id: Uuid,
     ) -> Result<(), String> {
         let mut routing_table = self.routing_table.write().await;
-        if routing_table.remove_branch_service_route(&branch_environment_id) {
+        if routing_table
+            .remove_branch_service_route(&branch_environment_id)
+            .await
+        {
             info!(
                 "Removed branch service route for branch {} on workload {}",
                 branch_environment_id, self.workload_id

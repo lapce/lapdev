@@ -1,63 +1,131 @@
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    time::{timeout, Duration, Instant},
+};
 use tracing::debug;
 
-/// HTTP methods that we recognize
-const HTTP_METHODS: &[&[u8]] = &[
-    b"GET ",
-    b"POST ",
-    b"PUT ",
-    b"DELETE ",
-    b"HEAD ",
-    b"OPTIONS ",
-    b"PATCH ",
-    b"TRACE ",
-    b"CONNECT ",
-];
+/// Maximum bytes to read while attempting to detect HTTP.
+const MAX_DETECTION_BYTES: usize = 8192;
+
+/// HTTP/2 client preface sent at the start of cleartext connections.
+const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// Result of protocol detection
 #[derive(Debug, Clone)]
 pub enum ProtocolType {
     Http { method: String, path: String },
+    Http2,
     Tcp,
 }
 
-/// Detect if incoming data looks like HTTP
-pub async fn detect_protocol<R>(reader: &mut R) -> std::io::Result<(ProtocolType, Vec<u8>)>
+/// Result of protocol detection attempt.
+pub struct ProtocolDetectionResult {
+    pub protocol: ProtocolType,
+    pub buffer: Vec<u8>,
+    pub timed_out: bool,
+}
+
+/// Detect if incoming data looks like HTTP, with an optional timeout budget.
+pub async fn detect_protocol<R>(
+    reader: &mut R,
+    timeout_duration: Option<Duration>,
+) -> std::io::Result<ProtocolDetectionResult>
 where
     R: AsyncRead + Unpin,
 {
-    let mut buffer = vec![0u8; 1024]; // Read up to 1KB to detect protocol
-    let bytes_read = reader.read(&mut buffer).await?;
+    let mut buffer = Vec::with_capacity(1024);
+    let mut timed_out = false;
+    let deadline = timeout_duration.map(|d| Instant::now() + d);
 
-    if bytes_read == 0 {
-        return Ok((ProtocolType::Tcp, buffer));
+    loop {
+        if buffer.len() >= MAX_DETECTION_BYTES {
+            break;
+        }
+
+        let mut chunk = [0u8; 1024];
+        let read_result = if let Some(deadline) = deadline {
+            let now = Instant::now();
+            if now >= deadline {
+                timed_out = true;
+                break;
+            }
+            let remaining = deadline - now;
+            match timeout(remaining, reader.read(&mut chunk)).await {
+                Ok(result) => result,
+                Err(_) => {
+                    timed_out = true;
+                    break;
+                }
+            }
+        } else {
+            reader.read(&mut chunk).await
+        };
+
+        let bytes_read = match read_result {
+            Ok(n) => n,
+            Err(e) => return Err(e),
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+
+        // Stop once we've seen the end of the first line.
+        if buffer.iter().any(|&b| b == b'\n') {
+            break;
+        }
     }
 
-    buffer.truncate(bytes_read);
+    if buffer.is_empty() {
+        return Ok(ProtocolDetectionResult {
+            protocol: ProtocolType::Tcp,
+            buffer,
+            timed_out,
+        });
+    }
 
-    // Check if it starts with an HTTP method
+    // Check if it starts with the HTTP/2 client connection preface
+    if buffer.starts_with(HTTP2_PREFACE)
+        || (buffer.len() < HTTP2_PREFACE.len() && HTTP2_PREFACE.starts_with(&buffer))
+    // partial preface
+    {
+        debug!("Detected HTTP/2 protocol preface");
+        return Ok(ProtocolDetectionResult {
+            protocol: ProtocolType::Http2,
+            buffer,
+            timed_out,
+        });
+    }
+
+    // Check if it starts with an HTTP method (HTTP/1.x)
     if let Some(protocol) = detect_http_in_buffer(&buffer) {
         debug!("Detected HTTP protocol: {:?}", protocol);
-        Ok((protocol, buffer))
+        Ok(ProtocolDetectionResult {
+            protocol,
+            buffer,
+            timed_out,
+        })
     } else {
         debug!("Detected TCP protocol (not HTTP)");
-        Ok((ProtocolType::Tcp, buffer))
+        Ok(ProtocolDetectionResult {
+            protocol: ProtocolType::Tcp,
+            buffer,
+            timed_out,
+        })
     }
 }
 
 /// Check if the buffer contains HTTP request data
 fn detect_http_in_buffer(buffer: &[u8]) -> Option<ProtocolType> {
-    // Check if buffer starts with known HTTP method
-    for &method_bytes in HTTP_METHODS {
-        if buffer.starts_with(method_bytes) {
-            // Try to parse the HTTP request line
-            if let Some(request_line) = get_request_line(buffer) {
-                if let Some((method, path)) = parse_request_line(&request_line) {
-                    return Some(ProtocolType::Http {
-                        method: method.to_string(),
-                        path: path.to_string(),
-                    });
-                }
+    if let Some(request_line) = get_request_line(buffer) {
+        if let Some((method, path)) = parse_request_line(&request_line) {
+            if method.chars().all(|c| c.is_ascii_uppercase()) {
+                return Some(ProtocolType::Http {
+                    method: method.to_string(),
+                    path: path.to_string(),
+                });
             }
         }
     }
@@ -87,6 +155,12 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::{AsyncRead, ReadBuf};
 
     #[test]
     fn test_detect_http_get() {
@@ -131,5 +205,87 @@ mod tests {
         let result = detect_http_in_buffer(buffer);
 
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_detect_http2_preface() {
+        let buffer = super::HTTP2_PREFACE;
+        let detection = super::detect_protocol(&mut &buffer[..], None)
+            .await
+            .unwrap();
+
+        match detection.protocol {
+            ProtocolType::Http2 => {}
+            _ => panic!("Expected HTTP/2 detection"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_uncommon_verb() {
+        let request = b"PROPFIND /calendar HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let detection = detect_protocol(&mut std::io::Cursor::new(request), None)
+            .await
+            .unwrap();
+
+        match detection.protocol {
+            ProtocolType::Http { method, path } => {
+                assert_eq!(method, "PROPFIND");
+                assert_eq!(path, "/calendar");
+            }
+            _ => panic!("Expected HTTP detection for PROPFIND"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_long_first_line() {
+        let long_path = format!("/{}", "a".repeat(5000));
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test\r\n\r\n",
+            long_path
+        );
+        let mut reader = ChunkedReader::new(request.into_bytes(), 512);
+        let detection = detect_protocol(&mut reader, None).await.unwrap();
+
+        match detection.protocol {
+            ProtocolType::Http { method, path } => {
+                assert_eq!(method, "GET");
+                assert_eq!(path, long_path);
+            }
+            _ => panic!("Expected HTTP detection for long request line"),
+        }
+    }
+
+    struct ChunkedReader {
+        data: Vec<u8>,
+        position: usize,
+        chunk_size: usize,
+    }
+
+    impl ChunkedReader {
+        fn new(data: Vec<u8>, chunk_size: usize) -> Self {
+            Self {
+                data,
+                position: 0,
+                chunk_size,
+            }
+        }
+    }
+
+    impl AsyncRead for ChunkedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if self.position >= self.data.len() {
+                return Poll::Ready(Ok(()));
+            }
+
+            let end = (self.position + self.chunk_size).min(self.data.len());
+            let slice = &self.data[self.position..end];
+            buf.put_slice(slice);
+            self.position = end;
+            Poll::Ready(Ok(()))
+        }
     }
 }

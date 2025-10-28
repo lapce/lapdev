@@ -607,6 +607,7 @@ impl DbApi {
         id: Uuid,
         cluster_version: Option<String>,
         status: Option<String>,
+        provider: Option<String>,
         region: Option<String>,
     ) -> Result<lapdev_db_entities::kube_cluster::Model> {
         use lapdev_db_entities::kube_cluster;
@@ -617,6 +618,7 @@ impl DbApi {
             id: ActiveValue::Set(id),
             cluster_version: ActiveValue::Set(cluster_version),
             status: status.map(ActiveValue::Set).unwrap_or(ActiveValue::NotSet),
+            provider: ActiveValue::Set(provider),
             region: ActiveValue::Set(region),
             last_reported_at: ActiveValue::Set(Some(now)),
             ..Default::default()
@@ -1011,6 +1013,7 @@ impl DbApi {
             name: ActiveValue::Set(name),
             cluster_version: ActiveValue::Set(None),
             status: ActiveValue::Set(status),
+            provider: ActiveValue::Set(None),
             region: ActiveValue::Set(None),
             created_by: ActiveValue::Set(user_id),
             organization_id: ActiveValue::Set(org_id),
@@ -1813,6 +1816,7 @@ impl DbApi {
                             name,
                             cluster_version: None,
                             status: "Not Ready".to_string(),
+                            provider: None,
                             region: None,
                             created_at: related.env_created_at,
                             created_by: related.env_user_id,

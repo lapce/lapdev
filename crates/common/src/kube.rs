@@ -29,7 +29,6 @@ pub struct KubeCluster {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeClusterInfo {
-    pub cluster_name: Option<String>,
     pub cluster_version: String,
     pub node_count: u32,
     pub available_cpu: String,

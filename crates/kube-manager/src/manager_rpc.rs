@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use lapdev_common::kube::{
     KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
 };
@@ -30,14 +30,16 @@ impl KubeManagerRpcServer {
         let cluster_info = self.manager.collect_cluster_info().await?;
         tracing::info!("Reporting cluster info: {:?}", cluster_info);
 
-        match self
+        let _ = self
             .rpc_client
             .report_cluster_info(tarpc::context::current(), cluster_info)
             .await
-        {
-            Ok(_) => tracing::info!("Successfully reported cluster info"),
-            Err(e) => tracing::error!("RPC call failed: {}", e),
-        }
+            .map_err(|e| {
+                tracing::error!("RPC call failed: {}", e);
+                anyhow!("report_cluster_info RPC failed: {e}")
+            })?;
+
+        tracing::info!("Successfully reported cluster info");
 
         Ok(())
     }

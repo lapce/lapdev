@@ -110,6 +110,7 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
                             <TableHead class="pl-4">Name</TableHead>
                             <TableHead>Status</TableHead>
                             <TableHead>Version</TableHead>
+                            <TableHead>Provider</TableHead>
                             <TableHead>Region</TableHead>
                             <TableHead>Nodes</TableHead>
                             <TableHead>Can Deploy Personal</TableHead>
@@ -172,6 +173,11 @@ pub fn KubeClusterItem(
     let cluster_id_for_delete = cluster_id;
     let cluster_id_for_resources = cluster_id;
     let cluster_name = cluster.name.clone();
+    let provider = cluster
+        .info
+        .provider
+        .clone()
+        .unwrap_or_else(|| "Unknown".to_string());
     let cluster_name_clone = cluster_name.clone();
 
     let delete_action = Action::new_local(move |_| {
@@ -196,6 +202,7 @@ pub fn KubeClusterItem(
                 <Badge variant=status_variant>{status_text}</Badge>
             </TableCell>
             <TableCell>{cluster.info.cluster_version}</TableCell>
+            <TableCell>{provider}</TableCell>
             <TableCell>{cluster.info.region.unwrap_or("N/A".to_string())}</TableCell>
             <TableCell>{cluster.info.node_count.to_string()}</TableCell>
             <TableCell>

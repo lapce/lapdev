@@ -27,12 +27,11 @@ impl KubeController {
                 can_deploy_personal: c.can_deploy_personal,
                 can_deploy_shared: c.can_deploy_shared,
                 info: KubeClusterInfo {
-                    cluster_name: Some(c.name),
                     cluster_version: c.cluster_version.unwrap_or("Unknown".to_string()),
                     node_count: 0, // TODO: Get actual node count from kube-manager
                     available_cpu: "N/A".to_string(), // TODO: Get actual CPU from kube-manager
                     available_memory: "N/A".to_string(), // TODO: Get actual memory from kube-manager
-                    provider: None,                      // TODO: Get provider info
+                    provider: c.provider.clone(),
                     region: c.region,
                     status: KubeClusterStatus::from_str(&c.status)
                         .unwrap_or(KubeClusterStatus::NotReady),
@@ -358,7 +357,7 @@ impl KubeController {
         &self,
         org_id: Uuid,
         cluster_id: Uuid,
-    ) -> Result<KubeClusterInfo, ApiError> {
+    ) -> Result<KubeCluster, ApiError> {
         // Get cluster from database
         let cluster = self
             .db
@@ -373,17 +372,25 @@ impl KubeController {
 
         // Convert database cluster to KubeClusterInfo
         let cluster_info = KubeClusterInfo {
-            cluster_name: Some(cluster.name),
-            cluster_version: cluster.cluster_version.unwrap_or("Unknown".to_string()),
+            cluster_version: cluster
+                .cluster_version
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string()),
             node_count: 0, // TODO: Get actual node count from kube-manager
             available_cpu: "N/A".to_string(), // TODO: Get actual CPU from kube-manager
             available_memory: "N/A".to_string(), // TODO: Get actual memory from kube-manager
-            provider: None, // TODO: Get provider info
-            region: cluster.region,
+            provider: cluster.provider.clone(),
+            region: cluster.region.clone(),
             status: KubeClusterStatus::from_str(&cluster.status)
                 .unwrap_or(KubeClusterStatus::NotReady),
         };
 
-        Ok(cluster_info)
+        Ok(KubeCluster {
+            id: cluster.id,
+            name: cluster.name,
+            can_deploy_personal: cluster.can_deploy_personal,
+            can_deploy_shared: cluster.can_deploy_shared,
+            info: cluster_info,
+        })
     }
 }

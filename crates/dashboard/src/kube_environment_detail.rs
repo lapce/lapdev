@@ -11,7 +11,7 @@ use lapdev_common::{
         DevboxWorkloadInterceptSummary,
     },
     kube::{
-        KubeClusterInfo, KubeContainerInfo, KubeEnvironment, KubeEnvironmentService,
+        KubeCluster, KubeContainerInfo, KubeEnvironment, KubeEnvironmentService,
         KubeEnvironmentStatus, KubeEnvironmentSyncStatus, KubeEnvironmentWorkload,
     },
 };
@@ -85,7 +85,7 @@ async fn get_environment_detail(
 async fn get_environment_cluster_info(
     org: Signal<Option<Organization>>,
     cluster_id: Uuid,
-) -> Result<KubeClusterInfo> {
+) -> Result<KubeCluster> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     Ok(client.get_cluster_info(org.id, cluster_id).await??)

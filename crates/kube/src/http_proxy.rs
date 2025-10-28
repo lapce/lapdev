@@ -1,8 +1,5 @@
 use anyhow::Result;
-use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{http::StatusCode, response::IntoResponse};
 use std::{io, sync::Arc};
 use tokio::{
     io::{copy_bidirectional, AsyncWriteExt},
@@ -318,8 +315,8 @@ impl PreviewUrlProxy {
     }
 
     fn user_id_from_token(&self, token: &str) -> Result<Uuid, ProxyError> {
-        let untrusted =
-            UntrustedToken::try_from(token).map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+        let untrusted = UntrustedToken::try_from(token)
+            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
 
         let trusted = local::decrypt(
             self.auth_token_key.as_ref(),
@@ -328,7 +325,7 @@ impl PreviewUrlProxy {
             None,
             None,
         )
-            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+        .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
 
         let claims = trusted
             .payload_claims()

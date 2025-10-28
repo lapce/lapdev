@@ -57,7 +57,7 @@ After creation:
 * Lapdev automatically provisions:
   * All workloads from the App Catalog
   * Associated ConfigMaps, Secrets, and Services
-  * Unique HTTPS preview URLs for accessing your services
+  * Kubernetes namespace and networking
 
 You can monitor status, logs, and sync state directly from the dashboard.
 
@@ -65,6 +65,6 @@ You can monitor status, logs, and sync state directly from the dashboard.
 
 Your environment is ready! You can now:
 
+* Create [Preview URLs](use-preview-urls.md) for HTTPS access to your services
 * Use [Devbox](local-development-with-devbox.md) to connect locally for live debugging
-* Create [Preview URLs](use-preview-urls.md) to share your work
 * Learn more about [Environments](../core-concepts/environment.md)

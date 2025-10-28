@@ -22,7 +22,7 @@ Lapdev consists of three main components:
 
 The Lapdev cloud service handles:
 
-* **User authentication and authorization** - GitHub/Google OAuth, team management
+* **User authentication and authorization** - GitHub/GitLab OAuth, team management
 * **Environment orchestration** - Receives environment creation requests from users
 * **Secure tunnel management** - Establishes websocket tunnels between your cluster and Lapdev
 * **[Preview URL](../preview-url.md) routing** - Routes traffic from automatically generated HTTPS URLs to your cluster
@@ -31,7 +31,9 @@ The Lapdev cloud service handles:
 
 * Communicates with your cluster via secure websocket tunnels (TLS encrypted)
 * No direct access to your cluster's API server
-* Cannot read your application data or secrets
+* Receives workload manifests (Deployments, StatefulSets, ConfigMaps, Secrets) from lapdev-kube-manager to build App Catalogs
+* You control which workloads Lapdev can access through App Catalog selection
+* No access to runtime application data (databases, logs, persistent volumes)
 
 #### Lapdev-Kube-Manager (In Your Cluster)
 

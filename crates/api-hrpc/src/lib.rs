@@ -6,10 +6,10 @@ use lapdev_common::{
     },
     kube::{
         CreateKubeClusterResponse, CreateKubeEnvironmentPreviewUrlRequest, KubeAppCatalogWorkload,
-        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeContainerInfo,
-        KubeEnvironmentPreviewUrl, KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace,
-        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams,
-        PaginatedResult, PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeContainerInfo, KubeEnvironmentPreviewUrl,
+        KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo,
+        KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult,
+        PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
     },
 };
 use uuid::Uuid;
@@ -109,7 +109,7 @@ pub trait HrpcService {
         &self,
         org_id: Uuid,
         cluster_id: Uuid,
-    ) -> Result<KubeClusterInfo, HrpcError>;
+    ) -> Result<KubeCluster, HrpcError>;
 
     async fn create_app_catalog(
         &self,

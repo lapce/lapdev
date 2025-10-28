@@ -6,9 +6,9 @@ use gloo_net::eventsource::futures::EventSource;
 use lapdev_common::{
     console::Organization,
     kube::{
-        KubeAppCatalogWorkloadCreate, KubeClusterInfo, KubeClusterStatus, KubeNamespace,
-        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, KubeWorkloadStatus,
-        PaginationCursor, PaginationParams,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeClusterStatus,
+        KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
+        KubeWorkloadStatus, PaginationCursor, PaginationParams,
     },
 };
 use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
@@ -98,7 +98,7 @@ async fn get_namespaces_from_api(
 async fn get_cluster_info_from_api(
     org: Signal<Option<Organization>>,
     cluster_id: uuid::Uuid,
-) -> Result<KubeClusterInfo> {
+) -> Result<KubeCluster> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = get_hrpc_client();
 
@@ -119,22 +119,25 @@ pub fn ClusterInfo(
         );
 
     let cluster_info_signal = cluster_info_resource.clone();
-    let cluster_info = Signal::derive(move || {
-        let cluster_info = cluster_info_signal.get();
-        if let Some(Some(info)) = cluster_info.as_ref() {
-            config
-                .current_page
-                .set(info.cluster_name.clone().unwrap_or_default());
+    let cluster = Signal::derive(move || {
+        let cluster_data = cluster_info_signal.get();
+        if let Some(Some(cluster)) = cluster_data.as_ref() {
+            config.current_page.set(cluster.name.clone());
         }
-        cluster_info.flatten().unwrap_or_else(|| KubeClusterInfo {
-            cluster_name: Some("Unknown".to_string()),
-            cluster_version: "Unknown".to_string(),
-            node_count: 0,
-            available_cpu: "N/A".to_string(),
-            available_memory: "N/A".to_string(),
-            provider: None,
-            region: None,
-            status: KubeClusterStatus::NotReady,
+        cluster_data.flatten().unwrap_or_else(|| KubeCluster {
+            id: cluster_id,
+            name: "Unknown".to_string(),
+            can_deploy_personal: false,
+            can_deploy_shared: false,
+            info: KubeClusterInfo {
+                cluster_version: "Unknown".to_string(),
+                node_count: 0,
+                available_cpu: "N/A".to_string(),
+                available_memory: "N/A".to_string(),
+                provider: None,
+                region: None,
+                status: KubeClusterStatus::NotReady,
+            },
         })
     });
 
@@ -195,39 +198,52 @@ pub fn ClusterInfo(
         <Card class="p-6 flex flex-col gap-4">
             <H4>Cluster Information</H4>
             {move || {
-                let info = cluster_info.get();
+                let cluster = cluster.get();
+                let info = cluster.info.clone();
 
-                let status_variant = match info.status {
+                let cluster_name = cluster.name.clone();
+                let cluster_version = info.cluster_version.clone();
+                let status = info.status.clone();
+                let status_label = status.to_string();
+                let status_variant = match status {
                     KubeClusterStatus::Ready => BadgeVariant::Secondary,
                     KubeClusterStatus::NotReady => BadgeVariant::Destructive,
                     KubeClusterStatus::Error => BadgeVariant::Destructive,
                     KubeClusterStatus::Provisioning => BadgeVariant::Outline,
                 };
+                let region = info.region.clone().unwrap_or_else(|| "N/A".to_string());
+                let provider = info.provider.clone().unwrap_or_else(|| "Unknown".to_string());
 
                 view! {
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
                         <div>
                             <div class="flex flex-col gap-1">
                                 <Label>Name</Label>
-                                <P class="font-medium">{info.cluster_name.unwrap_or("N/A".to_string())}</P>
+                                <P class="font-medium">{cluster_name}</P>
                             </div>
                         </div>
                         <div>
                             <div class="flex flex-col gap-1">
                                 <Label>Version</Label>
-                                <P class="font-medium">{info.cluster_version}</P>
+                                <P class="font-medium">{cluster_version}</P>
                             </div>
                         </div>
                         <div>
                             <div class="flex flex-col gap-1">
                                 <Label>Status</Label>
-                                <Badge variant=status_variant>{info.status.to_string()}</Badge>
+                                <Badge variant=status_variant>{status_label}</Badge>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex flex-col gap-1">
+                                <Label>Provider</Label>
+                                <P class="font-medium">{provider}</P>
                             </div>
                         </div>
                         <div>
                             <div class="flex flex-col gap-1">
                                 <Label>Region</Label>
-                                <P class="font-medium">{info.region.unwrap_or("N/A".to_string())}</P>
+                                <P class="font-medium">{region}</P>
                             </div>
                         </div>
                     </div>
@@ -270,15 +286,15 @@ pub fn KubeResourceList(
     let limit_select_value = RwSignal::new(20usize);
     let include_system_workloads = RwSignal::new(false);
 
-    let cluster_info =
+    let cluster_resource =
         LocalResource::new(
             move || async move { get_cluster_info_from_api(org, cluster_id).await.ok() },
         );
     let cluster_status = Signal::derive(move || {
-        cluster_info
+        cluster_resource
             .get()
             .flatten()
-            .map(|info| info.status)
+            .map(|cluster| cluster.info.status)
             .unwrap_or(KubeClusterStatus::NotReady)
     });
 

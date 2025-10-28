@@ -20,12 +20,12 @@ Lapdev reads your **production Kubernetes manifests directly from your cluster**
 
 **Your production manifests become the single source of truth** - no duplicate YAML files to maintain, no config drift between prod and dev.
 
-### Automatic Sync with Production
+### Stay in Sync with Production
 
 * Lapdev continuously monitors your production manifests for changes
 * App Catalogs automatically update when their source workloads change
-* All environments created from the catalog use the latest configuration
-* **Never again:** "My dev environment is 3 months behind prod"
+* Environments **notify you when updates are available** - sync with one click when you're ready
+* No surprise interruptions during development - you control when to pull in changes
 
 ### Flexible Environment Models
 

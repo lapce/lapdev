@@ -159,12 +159,8 @@ impl ApiServer {
                     let db_clone = db.clone();
                     let tunnel_clone = tunnel_registry.clone();
                     let bind = format!("{host}:{port}");
-                    match lapdev_kube::start_preview_url_proxy_server(
-                        db_clone,
-                        tunnel_clone,
-                        &bind,
-                    )
-                    .await
+                    match lapdev_kube::start_preview_url_proxy_server(db_clone, tunnel_clone, &bind)
+                        .await
                     {
                         Ok(_) => {
                             info!("Preview URL proxy server exited gracefully");
@@ -275,21 +271,14 @@ async fn run(
     {
         let db = state.db.clone();
         let tunnel_registry = state.kube_controller.tunnel_registry.clone();
-        let host = config
-            .bind
-            .clone()
-            .unwrap_or_else(|| "0.0.0.0".to_string());
+        let host = config.bind.clone().unwrap_or_else(|| "0.0.0.0".to_string());
         tokio::spawn(async move {
             loop {
                 let bind = format!("{host}:{preview_url_proxy_port}");
                 let db_clone = db.clone();
                 let tunnel_clone = tunnel_registry.clone();
-                match lapdev_kube::start_preview_url_proxy_server(
-                    db_clone,
-                    tunnel_clone,
-                    &bind,
-                )
-                .await
+                match lapdev_kube::start_preview_url_proxy_server(db_clone, tunnel_clone, &bind)
+                    .await
                 {
                     Ok(_) => {
                         info!("Preview URL proxy server exited gracefully");

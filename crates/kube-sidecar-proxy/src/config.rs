@@ -3,16 +3,13 @@ use lapdev_tunnel::{
     TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    io,
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 use tokio::sync::{OnceCell, RwLock};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
+
+use crate::http2_client::Http2ClientActor;
 
 /// Immutable settings for the sidecar proxy determined at boot time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,18 +106,17 @@ impl RoutingTable {
         RouteDecision::DefaultLocal
     }
 
-    pub fn replace_branch_routes(
+    pub async fn replace_branch_routes(
         &mut self,
         routes: impl IntoIterator<Item = (Uuid, BranchServiceRoute)>,
     ) {
+        let mut old_routes = std::mem::take(&mut self.branch_routes);
         let mut new_routes = HashMap::new();
 
-        for (env_id, service_route) in routes {
-            if let Some(existing) = self.branch_routes.get(&env_id) {
-                let mode = match &existing.mode {
-                    BranchMode::Devbox(connection) => BranchMode::Devbox(connection.clone()),
-                    BranchMode::Service => BranchMode::Service,
-                };
+        for (env_id, service_route) in routes.into_iter() {
+            if let Some(existing) = old_routes.remove(&env_id) {
+                reset_http2_clients(&existing.service.http2_clients).await;
+                let mode = existing.mode;
                 new_routes.insert(
                     env_id,
                     BranchRoute {
@@ -128,15 +124,19 @@ impl RoutingTable {
                         mode,
                     },
                 );
-                continue;
+            } else {
+                new_routes.insert(
+                    env_id,
+                    BranchRoute {
+                        service: service_route,
+                        mode: BranchMode::Service,
+                    },
+                );
             }
-            new_routes.insert(
-                env_id,
-                BranchRoute {
-                    service: service_route,
-                    mode: BranchMode::Service,
-                },
-            );
+        }
+
+        for (_, route) in old_routes.into_iter() {
+            reset_http2_clients(&route.service.http2_clients).await;
         }
 
         self.branch_routes = new_routes;
@@ -176,26 +176,39 @@ impl RoutingTable {
         }
     }
 
-    pub fn upsert_branch_service_route(
+    pub async fn upsert_branch_service_route(
         &mut self,
         branch_id: Uuid,
         service_route: BranchServiceRoute,
     ) {
-        match self.branch_routes.entry(branch_id) {
-            Entry::Occupied(mut entry) => {
-                entry.get_mut().service = service_route;
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(BranchRoute {
+        if let Some(existing) = self.branch_routes.remove(&branch_id) {
+            reset_http2_clients(&existing.service.http2_clients).await;
+            let mode = existing.mode;
+            self.branch_routes.insert(
+                branch_id,
+                BranchRoute {
+                    service: service_route,
+                    mode,
+                },
+            );
+        } else {
+            self.branch_routes.insert(
+                branch_id,
+                BranchRoute {
                     service: service_route,
                     mode: BranchMode::Service,
-                });
-            }
+                },
+            );
         }
     }
 
-    pub fn remove_branch_service_route(&mut self, branch_id: &Uuid) -> bool {
-        self.branch_routes.remove(branch_id).is_some()
+    pub async fn remove_branch_service_route(&mut self, branch_id: &Uuid) -> bool {
+        if let Some(route) = self.branch_routes.remove(branch_id) {
+            reset_http2_clients(&route.service.http2_clients).await;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn remove_branch_devbox_by_intercept(&mut self, intercept_id: &Uuid) -> Option<Uuid> {
@@ -244,13 +257,14 @@ pub struct BranchRoute {
     pub mode: BranchMode,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BranchServiceRoute {
     pub service_names: HashMap<u16, String>,
     pub headers: HashMap<String, String>,
     pub requires_auth: bool,
     pub access_level: AccessLevel,
     pub timeout_ms: Option<u64>,
+    pub http2_clients: Arc<RwLock<HashMap<u16, Arc<Http2ClientActor>>>>,
 }
 
 impl BranchServiceRoute {
@@ -263,6 +277,7 @@ impl BranchServiceRoute {
             requires_auth: true,
             access_level: AccessLevel::Personal,
             timeout_ms: None,
+            http2_clients: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -313,6 +328,7 @@ impl DevboxRouteMetadata {
 pub struct DevboxConnection {
     metadata: DevboxRouteMetadata,
     client: RwLock<OnceCell<Arc<TunnelClient>>>,
+    http2_clients: RwLock<HashMap<u16, Arc<Http2ClientActor>>>,
 }
 
 impl DevboxConnection {
@@ -320,6 +336,7 @@ impl DevboxConnection {
         Self {
             metadata,
             client: RwLock::new(OnceCell::new()),
+            http2_clients: RwLock::new(HashMap::new()),
         }
     }
 
@@ -357,6 +374,7 @@ impl DevboxConnection {
 
     pub async fn clear_client(&self) {
         self.client.write().await.take();
+        self.clear_http2_clients().await;
     }
 
     async fn ensure_client(&self) -> Result<Arc<TunnelClient>, TunnelError> {
@@ -397,6 +415,40 @@ impl DevboxConnection {
 
         let transport = TunnelWebSocketTransport::new(stream);
         Ok(TunnelClient::connect(transport))
+    }
+
+    pub async fn get_or_create_http2_client<F>(
+        &self,
+        target_port: u16,
+        create: F,
+    ) -> Arc<Http2ClientActor>
+    where
+        F: FnOnce() -> Arc<Http2ClientActor>,
+    {
+        let mut guard = self.http2_clients.write().await;
+        guard.entry(target_port).or_insert_with(create).clone()
+    }
+
+    pub async fn remove_http2_client(&self, target_port: u16) {
+        let client = {
+            let mut guard = self.http2_clients.write().await;
+            guard.remove(&target_port)
+        };
+
+        if let Some(client) = client {
+            client.shutdown().await;
+        }
+    }
+
+    pub async fn clear_http2_clients(&self) {
+        let clients = {
+            let mut guard = self.http2_clients.write().await;
+            guard.drain().collect::<Vec<_>>()
+        };
+
+        for (_, client) in clients {
+            client.shutdown().await;
+        }
     }
 }
 
@@ -492,4 +544,18 @@ where
     E: std::fmt::Display,
 {
     TunnelError::Transport(io::Error::new(io::ErrorKind::Other, err.to_string()))
+}
+
+async fn reset_http2_clients(clients: &Arc<RwLock<HashMap<u16, Arc<Http2ClientActor>>>>) {
+    let drained = {
+        let mut guard = clients.write().await;
+        guard
+            .drain()
+            .map(|(_, client)| client)
+            .collect::<Vec<Arc<Http2ClientActor>>>()
+    };
+
+    for client in drained {
+        client.shutdown().await;
+    }
 }

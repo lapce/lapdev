@@ -1,9 +1,10 @@
 use crate::{
-    config::{BranchServiceRoute, DevboxConnection, RouteDecision, RoutingTable, SidecarSettings},
+    config::{DevboxConnection, RouteDecision, RoutingTable, SidecarSettings},
     error::Result,
+    http2_proxy::handle_http2_proxy,
     original_dest::get_original_destination,
     otel_routing::{determine_routing_target, extract_routing_context},
-    protocol_detector::{detect_protocol, ProtocolType},
+    protocol_detector::{detect_protocol, ProtocolDetectionResult, ProtocolType},
     rpc::SidecarProxyRpcServer,
 };
 use anyhow::anyhow;
@@ -17,6 +18,7 @@ use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
     sync::RwLock,
+    time::{sleep, Duration},
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -109,6 +111,7 @@ impl SidecarProxyServer {
         // Handle connections
         let routing_table_for_server = Arc::clone(&self.routing_table);
         let rpc_client_for_server = Arc::clone(&self.rpc_client);
+        let settings_for_server = Arc::clone(&self.settings);
         let server = async move {
             loop {
                 match listener.accept().await {
@@ -116,11 +119,13 @@ impl SidecarProxyServer {
                         debug!("Accepted connection from {}", client_addr);
                         let routing_table = Arc::clone(&routing_table_for_server);
                         let rpc_client = Arc::clone(&rpc_client_for_server);
+                        let settings = Arc::clone(&settings_for_server);
 
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(
                                 inbound_stream,
                                 client_addr,
+                                settings,
                                 routing_table,
                                 rpc_client,
                             )
@@ -130,10 +135,32 @@ impl SidecarProxyServer {
                             }
                         });
                     }
-                    Err(e) => {
-                        error!("Failed to accept connection: {}", e);
-                        break;
-                    }
+                    Err(e) => match e.kind() {
+                        io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::Interrupted => {
+                            warn!("Transient accept error: {}", e);
+                            continue;
+                        }
+                        _ => {
+                            if let Some(raw_os_error) = e.raw_os_error() {
+                                const EMFILE: i32 = 24;
+                                const WSAEMFILE: i32 = 10024;
+
+                                if raw_os_error == EMFILE || raw_os_error == WSAEMFILE {
+                                    error!(
+                                            "File descriptor limit hit while accepting connection: {} (errno={}), backing off before retrying",
+                                            e, raw_os_error
+                                        );
+                                    sleep(Duration::from_millis(100)).await;
+                                    continue;
+                                }
+                            }
+
+                            error!("Failed to accept connection: {}", e);
+                            break;
+                        }
+                    },
                 }
             }
         };
@@ -252,6 +279,7 @@ impl SidecarProxyServer {
 async fn handle_connection(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
+    settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
@@ -269,14 +297,28 @@ async fn handle_connection(
 
     debug!("Original destination: {} -> {}", client_addr, original_dest);
 
-    // Detect protocol by reading initial data
-    let (protocol_type, initial_data) = match detect_protocol(&mut inbound_stream).await {
+    // Detect protocol by reading initial data with a bounded timeout
+    let detection = detect_protocol(&mut inbound_stream, Some(Duration::from_secs(10))).await;
+    let detection = match detection {
         Ok(result) => result,
         Err(e) => {
             warn!("Failed to detect protocol for {}: {}", client_addr, e);
             return Err(e);
         }
     };
+
+    let ProtocolDetectionResult {
+        protocol: protocol_type,
+        buffer: initial_data,
+        timed_out,
+    } = detection;
+
+    if timed_out {
+        debug!(
+            "Protocol detection for {} timed out after 10s; falling back to {:?}",
+            client_addr, protocol_type
+        );
+    }
 
     match protocol_type {
         ProtocolType::Http { .. } => {
@@ -285,6 +327,19 @@ async fn handle_connection(
                 client_addr,
                 original_dest,
                 initial_data,
+                Arc::clone(&settings),
+                Arc::clone(&routing_table),
+                Arc::clone(&_rpc_client),
+            )
+            .await
+        }
+        ProtocolType::Http2 => {
+            handle_http2_proxy(
+                inbound_stream,
+                client_addr,
+                original_dest,
+                initial_data,
+                settings,
                 Arc::clone(&routing_table),
                 Arc::clone(&_rpc_client),
             )
@@ -344,6 +399,7 @@ async fn handle_http_proxy(
     client_addr: SocketAddr,
     original_dest: SocketAddr,
     mut initial_data: Vec<u8>,
+    _settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
@@ -589,7 +645,7 @@ async fn handle_devbox_tunnel(
                 "Failed to establish tunnel stream for intercept {}: {}",
                 metadata.intercept_id, err
             );
-            connection.clear_client();
+            connection.clear_client().await;
             return Err(io::Error::from(err));
         }
     };
@@ -610,7 +666,7 @@ async fn handle_devbox_tunnel(
                 "Devbox tunnel error for intercept_id={}: {}",
                 metadata.intercept_id, err
             );
-            connection.clear_client();
+            connection.clear_client().await;
             return Err(io::Error::from(err));
         }
     }

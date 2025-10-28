@@ -11,9 +11,9 @@ use lapdev_common::{
     hrpc::HrpcError,
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
-        KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeEnvironment,
-        KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
-        KubeWorkloadList, PagePaginationParams, PaginatedResult, PaginationParams,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeEnvironment, KubeEnvironmentWorkload,
+        KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
+        PagePaginationParams, PaginatedResult, PaginationParams,
     },
     UserRole,
 };
@@ -614,7 +614,7 @@ impl HrpcService for CoreState {
         headers: &axum::http::HeaderMap,
         org_id: Uuid,
         cluster_id: Uuid,
-    ) -> Result<KubeClusterInfo, HrpcError> {
+    ) -> Result<KubeCluster, HrpcError> {
         let _ = self.authorize(headers, org_id, None).await?;
 
         self.kube_controller

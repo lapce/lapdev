@@ -285,6 +285,7 @@ impl KubeClusterRpc for KubeClusterServer {
                 self.cluster_id,
                 Some(cluster_info.cluster_version),
                 Some(status_str),
+                cluster_info.provider,
                 cluster_info.region,
             )
             .await

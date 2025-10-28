@@ -14,6 +14,7 @@ pub struct Model {
     pub name: String,
     pub cluster_version: Option<String>,
     pub status: String,
+    pub provider: Option<String>,
     pub region: Option<String>,
     pub last_reported_at: Option<DateTimeWithTimeZone>,
     pub can_deploy_personal: bool,

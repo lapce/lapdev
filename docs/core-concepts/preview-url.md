@@ -33,13 +33,12 @@ Each Preview URL is unique and automatically managed by Lapdev, making it safe t
 
 ### Access Control
 
-By default, Preview URLs are public, but Lapdev allows optional access control:
+Preview URLs default to **Organization** access, but you can configure per Preview URL:
 
-* **Authenticated access only:** Only Lapdev users in your organization can open the URL.
-* **Public preview:** Anyone with the link can view it.
-* **Custom rules (coming soon):** Integrate with your identity provider for fine-grained access policies.
+* **Organization:** Only members of your Lapdev organization can access (after login)
+* **Public:** Anyone with the link can access without authentication
 
-Access settings are managed per environment in the Lapdev dashboard.
+Access settings are managed per Preview URL in the Lapdev dashboard.
 
 ### Benefits
 

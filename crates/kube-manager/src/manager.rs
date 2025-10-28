@@ -334,22 +334,16 @@ impl KubeManager {
         let nodes = self.get_cluster_nodes(client).await?;
         let (total_cpu_millicores, total_memory_bytes) = self.calculate_cluster_resources(&nodes);
         let node_count = nodes.len() as u32;
-        let status = self.determine_cluster_status(&nodes, node_count);
+        let status = KubeClusterStatus::Ready;
 
         // Detect provider and region from node labels
         let (detected_provider, detected_region) = self.detect_provider_and_region(&nodes);
-
-        // Get cluster identification
-        let cluster_name = Self::get_cluster_name(client)
-            .await
-            .or_else(|| std::env::var("CLUSTER_NAME").ok());
 
         // Use detected values with environment variable fallbacks
         let provider = detected_provider.or_else(|| std::env::var("CLUSTER_PROVIDER").ok());
         let region = detected_region.or_else(|| std::env::var("CLUSTER_REGION").ok());
 
         Ok(KubeClusterInfo {
-            cluster_name,
             cluster_version: format!("{}.{}", version.major, version.minor),
             node_count,
             available_cpu: format!("{}m", total_cpu_millicores),
@@ -445,39 +439,19 @@ impl KubeManager {
         }
     }
 
-    fn determine_cluster_status(
-        &self,
-        nodes: &[k8s_openapi::api::core::v1::Node],
-        node_count: u32,
-    ) -> KubeClusterStatus {
-        let ready_nodes = nodes.iter().filter(|node| self.is_node_ready(node)).count();
-
-        if ready_nodes == nodes.len() && node_count > 0 {
-            KubeClusterStatus::Ready
-        } else if ready_nodes > 0 {
-            KubeClusterStatus::NotReady
-        } else {
-            KubeClusterStatus::Error
-        }
-    }
-
-    fn is_node_ready(&self, node: &k8s_openapi::api::core::v1::Node) -> bool {
-        node.status
-            .as_ref()
-            .and_then(|s| s.conditions.as_ref())
-            .map(|conditions| {
-                conditions
-                    .iter()
-                    .any(|c| c.type_ == "Ready" && c.status == "True")
-            })
-            .unwrap_or(false)
-    }
-
     fn detect_provider_and_region(
         &self,
         nodes: &[k8s_openapi::api::core::v1::Node],
     ) -> (Option<String>, Option<String>) {
-        let mut detected_provider = None;
+        let mut detected_provider = nodes
+            .iter()
+            .filter_map(|node| {
+                node.spec
+                    .as_ref()
+                    .and_then(|spec| spec.provider_id.as_deref())
+                    .and_then(Self::detect_provider_from_provider_id)
+            })
+            .next();
         let mut detected_region = None;
 
         for node in nodes {
@@ -492,9 +466,11 @@ impl KubeManager {
 
                 // Detect provider from instance type
                 if detected_provider.is_none() {
-                    if let Some(instance_type) = labels.get("node.kubernetes.io/instance-type") {
-                        detected_provider = Self::detect_provider_from_instance_type(instance_type);
-                    }
+                    detected_provider = Self::detect_provider_from_labels(labels).or_else(|| {
+                        labels
+                            .get("node.kubernetes.io/instance-type")
+                            .and_then(|value| Self::detect_provider_from_instance_type(value))
+                    });
                 }
 
                 // Break early if we have both
@@ -505,6 +481,18 @@ impl KubeManager {
         }
 
         (detected_provider, detected_region)
+    }
+
+    fn detect_provider_from_provider_id(provider_id: &str) -> Option<String> {
+        if provider_id.starts_with("aws:///") {
+            Some("AWS".to_string())
+        } else if provider_id.starts_with("gce://") {
+            Some("GCP".to_string())
+        } else if provider_id.starts_with("azure:///") {
+            Some("Azure".to_string())
+        } else {
+            None
+        }
     }
 
     fn detect_provider_from_instance_type(instance_type: &str) -> Option<String> {
@@ -528,16 +516,27 @@ impl KubeManager {
         }
     }
 
-    async fn get_cluster_name(client: &kube::Client) -> Option<String> {
-        use k8s_openapi::api::core::v1::ConfigMap;
-
-        let configmaps: kube::Api<ConfigMap> = kube::Api::namespaced(client.clone(), "kube-public");
-
-        if let Ok(Some(cluster_info)) = configmaps.get_opt("cluster-info").await {
-            return cluster_info.metadata.name.clone();
+    fn detect_provider_from_labels(
+        labels: &std::collections::BTreeMap<String, String>,
+    ) -> Option<String> {
+        if labels.contains_key("eks.amazonaws.com/nodegroup")
+            || labels.contains_key("alpha.eksctl.io/nodegroup-name")
+            || labels.contains_key("karpenter.sh/nodepool")
+        {
+            Some("AWS".to_string())
+        } else if labels.contains_key("cloud.google.com/gke-nodepool")
+            || labels.contains_key("cloud.google.com/machine-family")
+            || labels.contains_key("topology.gke.io/zone")
+        {
+            Some("GCP".to_string())
+        } else if labels.contains_key("kubernetes.azure.com/nodepool-name")
+            || labels.contains_key("agentpool")
+            || labels.contains_key("azure.microsoft.com/machine")
+        {
+            Some("Azure".to_string())
+        } else {
+            None
         }
-
-        None
     }
 
     pub(crate) async fn collect_workloads(

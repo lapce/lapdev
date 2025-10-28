@@ -12,7 +12,9 @@ When you create an environment:
 
 1. Select an existing App Catalog that defines your app's workloads
 2. Choose an environment type (Personal, Shared, or Branch)
-3. Lapdev deploys the catalog's workloads into a dedicated namespace
+3. Lapdev deploys the workloads:
+   - Personal/Shared: into a dedicated namespace
+   - Branch: into the shared base environment's namespace
 4. ConfigMaps, Secrets, and Services are automatically included
 
 The result: a fully functional copy of your app that mirrors production exactly, with zero manual YAML management.
@@ -129,7 +131,7 @@ When requests come in through a Preview URL in a branch environment, Lapdev auto
 Lapdev Kubernetes Environments let you:
 
 * Reproduce production exactly, without manual setup
-* Keep all environments automatically synced with production
+* Stay notified when production changes - sync with one click when you're ready
 * Choose between **full isolation**, **team-wide sharing**, or **cost-efficient branching**
 * Use **Devbox** for fast, local-style development in Kubernetes
 * Collaborate efficiently with consistent, shareable environments

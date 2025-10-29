@@ -35,7 +35,7 @@ impl KubeController {
                     region: c.region,
                     status: KubeClusterStatus::from_str(&c.status)
                         .unwrap_or(KubeClusterStatus::NotReady),
-                    manager_namespace: None,
+                    manager_namespace: c.manager_namespace.clone(),
                 },
             })
             .collect();
@@ -384,7 +384,7 @@ impl KubeController {
             region: cluster.region.clone(),
             status: KubeClusterStatus::from_str(&cluster.status)
                 .unwrap_or(KubeClusterStatus::NotReady),
-            manager_namespace: None,
+            manager_namespace: cluster.manager_namespace.clone(),
         };
 
         Ok(KubeCluster {

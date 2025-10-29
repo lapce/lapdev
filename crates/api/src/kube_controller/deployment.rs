@@ -53,6 +53,14 @@ impl KubeController {
         );
 
         if environment.base_environment_id.is_none() {
+            let manager_namespace = self
+                .db
+                .get_kube_cluster(environment.cluster_id)
+                .await
+                .map_err(ApiError::from)?
+                .and_then(|cluster| cluster.manager_namespace);
+            let manager_namespace_ref = manager_namespace.as_deref();
+
             for workload in workloads_with_resources.workloads.iter_mut() {
                 if let KubeWorkloadYamlOnly::Deployment(yaml) = workload {
                     inject_sidecar_proxy_into_deployment_yaml(
@@ -60,6 +68,7 @@ impl KubeController {
                         environment.id,
                         &environment.namespace,
                         &environment.auth_token,
+                        manager_namespace_ref,
                     )?;
                 }
             }
@@ -138,6 +147,7 @@ fn inject_sidecar_proxy_into_deployment_yaml(
     environment_id: Uuid,
     namespace: &str,
     auth_token: &str,
+    manager_namespace: Option<&str>,
 ) -> Result<(), ApiError> {
     let mut deployment: Deployment = serde_yaml::from_str(yaml).map_err(|err| {
         ApiError::InvalidRequest(format!(
@@ -148,7 +158,13 @@ fn inject_sidecar_proxy_into_deployment_yaml(
 
     if let Some(spec) = deployment.spec.as_mut() {
         if let Some(pod_spec) = spec.template.spec.as_mut() {
-            ensure_sidecar_proxy_container(pod_spec, environment_id, namespace, auth_token);
+            ensure_sidecar_proxy_container(
+                pod_spec,
+                environment_id,
+                namespace,
+                auth_token,
+                manager_namespace,
+            );
         }
     }
 
@@ -167,6 +183,7 @@ fn ensure_sidecar_proxy_container(
     environment_id: Uuid,
     namespace: &str,
     auth_token: &str,
+    manager_namespace: Option<&str>,
 ) {
     let already_present = pod_spec
         .containers
@@ -180,6 +197,7 @@ fn ensure_sidecar_proxy_container(
         environment_id,
         namespace,
         auth_token,
+        manager_namespace,
     ));
 }
 
@@ -187,8 +205,11 @@ fn build_sidecar_proxy_container(
     environment_id: Uuid,
     namespace: &str,
     auth_token: &str,
+    manager_namespace: Option<&str>,
 ) -> Container {
     let sidecar_image = container_images::sidecar_proxy_image_reference();
+    let manager_namespace = manager_namespace.unwrap_or("lapdev");
+    let manager_addr = format!("lapdev-kube-manager.{manager_namespace}.svc:5001");
 
     Container {
         name: "lapdev-sidecar-proxy".to_string(),
@@ -235,7 +256,7 @@ fn build_sidecar_proxy_container(
             },
             EnvVar {
                 name: SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR.to_string(),
-                value: Some("lapdev-kube-manager.lapdev.svc:5001".to_string()),
+                value: Some(manager_addr),
                 ..Default::default()
             },
             EnvVar {
@@ -371,6 +392,7 @@ mod tests {
             environment_id,
             "lapdev-namespace",
             "auth-token",
+            Some("lapdev"),
         );
 
         let mut sidecars: Vec<&Container> = pod_spec
@@ -385,6 +407,7 @@ mod tests {
             environment_id,
             "lapdev-namespace",
             "auth-token",
+            Some("lapdev"),
         );
 
         sidecars = pod_spec
@@ -433,6 +456,16 @@ mod tests {
             port_var.value.as_deref(),
             Some(expected_port.as_str()),
             "port env var should reflect the default proxy port"
+        );
+
+        let manager_addr_var = env_vars
+            .iter()
+            .find(|var| var.name == SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR)
+            .expect("manager addr environment variable should be set");
+        assert_eq!(
+            manager_addr_var.value.as_deref(),
+            Some("lapdev-kube-manager.lapdev.svc:5001"),
+            "manager addr env var should default to lapdev namespace"
         );
     }
 

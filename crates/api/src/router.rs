@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     debug_handler,
-    extract::{FromRequestParts, Request, State, WebSocketUpgrade},
+    extract::{FromRequestParts, Query, Request, State, WebSocketUpgrade},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, delete, get, post, put},
@@ -15,6 +15,7 @@ use lapdev_api_hrpc::{HrpcService, HrpcServiceResponse};
 use lapdev_common::WorkspaceStatus;
 use lapdev_proxy_http::{forward::ProxyForward, proxy::WorkspaceForwardError};
 use lapdev_rpc::error::ApiError;
+use serde::Deserialize;
 
 use crate::{
     account, admin, app_catalog_events, cli_auth, cluster_events,
@@ -27,6 +28,7 @@ use crate::{
         devbox_proxy_tunnel_websocket, kube_cluster_rpc_websocket, kube_data_plane_websocket,
         sidecar_tunnel_websocket,
     },
+    kube_controller::container_images,
     machine_type, organization, project,
     session::{logout, new_session, session_authorize},
     state::CoreState,
@@ -324,11 +326,184 @@ pub fn build_router(state: Arc<CoreState>) -> Router {
         .route("/", any(handle_catch_all))
         .route("/{*wildcard}", any(handle_catch_all))
         .route("/health-check", get(health_check))
+        .route(
+            "/install/lapdev-kube-manager.yaml",
+            get(kube_manager_install_manifest),
+        )
         .nest("/api", main_routes())
         .with_state(state)
 }
 
 async fn health_check() {}
+
+#[derive(Debug, Deserialize)]
+struct KubeManagerManifestQuery {
+    token: String,
+}
+
+async fn kube_manager_install_manifest(
+    State(state): State<Arc<CoreState>>,
+    Query(query): Query<KubeManagerManifestQuery>,
+) -> Result<Response, ApiError> {
+    let token = query.token.trim();
+    if token.is_empty() {
+        return Err(ApiError::InvalidRequest(
+            "token query parameter is required".to_string(),
+        ));
+    }
+
+    let ws_base = state.websocket_base_url().await;
+    let ws_base = ws_base.trim_end_matches('/');
+    let cluster_url = format!("{}/api/v1/kube/cluster/rpc", ws_base);
+    let tunnel_url = format!("{}/api/v1/kube/cluster/tunnel", ws_base);
+    let image = container_images::kube_manager_image_reference();
+
+    let manifest = format!(
+        r#"apiVersion: v1
+kind: Namespace
+metadata:
+  name: lapdev
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lapdev-kube-manager
+  namespace: lapdev
+type: Opaque
+stringData:
+  LAPDEV_KUBE_CLUSTER_TOKEN: "{cluster_token}"
+  LAPDEV_KUBE_CLUSTER_URL: "{cluster_url}"
+  LAPDEV_KUBE_CLUSTER_TUNNEL_URL: "{tunnel_url}"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lapdev-kube-manager
+  namespace: lapdev
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lapdev-kube-manager
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "update", "patch", "delete", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lapdev-kube-manager
+subjects:
+  - kind: ServiceAccount
+    name: lapdev-kube-manager
+    namespace: lapdev
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lapdev-kube-manager
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lapdev-kube-manager
+  namespace: lapdev
+  labels:
+    app.kubernetes.io/name: lapdev-kube-manager
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    app.kubernetes.io/name: lapdev-kube-manager
+  ports:
+    - name: sidecar-rpc
+      port: 5001
+      targetPort: sidecar-rpc
+    - name: devbox-rpc
+      port: 7771
+      targetPort: devbox-rpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lapdev-kube-manager
+  namespace: lapdev
+  labels:
+    app.kubernetes.io/name: lapdev-kube-manager
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lapdev-kube-manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lapdev-kube-manager
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: lapdev-kube-manager
+      containers:
+        - name: manager
+          image: {image}
+          imagePullPolicy: Always
+          env:
+            - name: LAPDEV_KUBE_CLUSTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lapdev-kube-manager
+                  key: LAPDEV_KUBE_CLUSTER_TOKEN
+            - name: LAPDEV_KUBE_CLUSTER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lapdev-kube-manager
+                  key: LAPDEV_KUBE_CLUSTER_URL
+            - name: LAPDEV_KUBE_CLUSTER_TUNNEL_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lapdev-kube-manager
+                  key: LAPDEV_KUBE_CLUSTER_TUNNEL_URL
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - containerPort: 5001
+              name: sidecar-rpc
+            - containerPort: 7771
+              name: devbox-rpc
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+"#,
+        cluster_token = token,
+        cluster_url = cluster_url,
+        tunnel_url = tunnel_url,
+        image = image,
+    );
+
+    let headers = [
+        (axum::http::header::CONTENT_TYPE, "text/yaml"),
+        (axum::http::header::CACHE_CONTROL, "no-store"),
+    ];
+
+    Ok((StatusCode::OK, headers, manifest).into_response())
+}
 
 #[debug_handler]
 async fn handle_catch_all(

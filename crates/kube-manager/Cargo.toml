@@ -5,10 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-yup-oauth2 = "12.1.0"
-pem = "3.0.5"
 uuid.workspace = true
-base64.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 chrono.workspace = true

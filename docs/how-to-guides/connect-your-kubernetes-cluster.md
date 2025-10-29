@@ -15,14 +15,13 @@ Keep this token handy — it’s used to securely register your cluster with Lap
 
 ### Install the Lapdev Kube Manager
 
-Run the following commands in your terminal:
+Run the install command shown in the dashboard, or apply the manifest manually:
 
 ```bash
-kubectl create namespace lapdev
-kubectl apply -f https://get.lap.dev/lapdev-kube-manager.yaml
+kubectl apply -f "https://get.lap.dev/install/lapdev-kube-manager.yaml?token=<your-cluster-token>"
 ```
 
-This deploys the `lapdev-kube-manager` controller that securely connects your cluster to Lapdev.
+Replace `<your-cluster-token>` with the token generated when you created the cluster. The manifest creates the `lapdev` namespace (if needed), configures the required RBAC, and deploys the `lapdev-kube-manager` controller that securely connects your cluster to Lapdev.
 
 ### Configure Cluster Permissions
 

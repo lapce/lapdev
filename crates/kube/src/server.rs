@@ -287,6 +287,7 @@ impl KubeClusterRpc for KubeClusterServer {
                 Some(status_str),
                 cluster_info.provider,
                 cluster_info.region,
+                cluster_info.manager_namespace,
             )
             .await
             .map_err(|e| format!("Failed to update cluster info: {}", e))?;

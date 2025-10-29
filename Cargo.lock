@@ -3127,6 +3127,7 @@ name = "lapdev"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dotenvy",
  "lapdev-api",
  "lapdev-cli",
  "lapdev-db",
@@ -3225,6 +3226,7 @@ dependencies = [
  "hostname",
  "http 1.3.1",
  "keyring",
+ "lapdev-common",
  "lapdev-devbox-rpc",
  "lapdev-rpc",
  "lapdev-tunnel",
@@ -3461,6 +3463,7 @@ dependencies = [
  "clap",
  "futures-util",
  "http 1.3.1",
+ "lapdev-common",
  "lapdev-kube-rpc",
  "lapdev-rpc",
  "lapdev-tunnel",
@@ -3478,7 +3481,6 @@ name = "lapdev-kube-manager"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "bytes",
  "chrono",
  "futures",
@@ -3489,7 +3491,6 @@ dependencies = [
  "lapdev-kube-rpc",
  "lapdev-rpc",
  "lapdev-tunnel",
- "pem",
  "reqwest",
  "serde",
  "serde_yaml",
@@ -3501,7 +3502,6 @@ dependencies = [
  "tracing-journald",
  "tracing-subscriber",
  "uuid",
- "yup-oauth2",
 ]
 
 [[package]]

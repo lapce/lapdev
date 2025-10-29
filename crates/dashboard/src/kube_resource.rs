@@ -137,6 +137,7 @@ pub fn ClusterInfo(
                 provider: None,
                 region: None,
                 status: KubeClusterStatus::NotReady,
+                manager_namespace: None,
             },
         })
     });

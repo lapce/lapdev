@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod api;
 mod auth;
+mod config;
 mod devbox;
 
 #[derive(Parser)]
@@ -25,23 +26,23 @@ enum Commands {
         #[arg(long)]
         device_name: Option<String>,
 
-        /// API server URL
-        #[arg(long, env = "LAPDEV_API_URL", default_value = "https://app.lap.dev")]
-        api_url: String,
+        /// API host (e.g. app.lap.dev)
+        #[arg(long = "api-host", alias = "api-url", env = "LAPDEV_API_HOST")]
+        api_host: Option<String>,
     },
 
     /// Sign out (deletes token from keychain)
     Logout {
-        /// API server URL
-        #[arg(long, env = "LAPDEV_API_URL", default_value = "https://app.lap.dev")]
-        api_url: String,
+        /// API host (e.g. app.lap.dev)
+        #[arg(long = "api-host", alias = "api-url", env = "LAPDEV_API_HOST")]
+        api_host: Option<String>,
     },
 
     /// Show current session info
     Whoami {
-        /// API server URL
-        #[arg(long, env = "LAPDEV_API_URL", default_value = "https://app.lap.dev")]
-        api_url: String,
+        /// API host (e.g. app.lap.dev)
+        #[arg(long = "api-host", alias = "api-url", env = "LAPDEV_API_HOST")]
+        api_host: Option<String>,
     },
 
     /// Devbox commands
@@ -78,14 +79,17 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Login {
             device_name,
-            api_url,
+            api_host,
         } => {
+            let (_, api_url) = config::resolve_api_base_url(api_host);
             devbox::commands::login::execute(&api_url, device_name).await?;
         }
-        Commands::Logout { api_url } => {
+        Commands::Logout { api_host } => {
+            let (_, api_url) = config::resolve_api_base_url(api_host);
             devbox::commands::logout::execute(&api_url).await?;
         }
-        Commands::Whoami { api_url } => {
+        Commands::Whoami { api_host } => {
+            let (_, api_url) = config::resolve_api_base_url(api_host);
             devbox::commands::whoami::execute(&api_url).await?;
         }
         Commands::Devbox { command } => {

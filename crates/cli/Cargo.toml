@@ -29,6 +29,7 @@ lapdev-devbox-rpc.workspace = true
 lapdev-rpc.workspace = true
 futures.workspace = true
 lapdev-tunnel.workspace = true
+lapdev-common.workspace = true
 
 # CLI-specific dependencies
 keyring = { version = "3.6.1", features = ["apple-native", "windows-native", "linux-native"] }

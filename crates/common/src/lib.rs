@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 pub const LAPDEV_DEFAULT_OSUSER: &str = "lapdev";
 pub const LAPDEV_BASE_HOSTNAME: &str = "lapdev-base-hostname";
+pub const LAPDEV_API_HOST: &str = "app.lap.dev";
 pub const LAPDEV_ISOLATE_CONTAINER: &str = "lapdev-isolate-container";
 pub const LAPDEV_AUTH_STATE_COOKIE: &str = "lapdev_auth_state";
 pub const LAPDEV_AUTH_TOKEN_COOKIE: &str = "lapdev_auth_token";

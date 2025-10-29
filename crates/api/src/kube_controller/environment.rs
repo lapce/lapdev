@@ -1780,15 +1780,14 @@ impl KubeController {
             match serde_json::to_string(&event) {
                 Ok(payload) => {
                     if let Some(pool) = self.db.pool.clone() {
-                        if let Err(err) = sqlx::query("SELECT pg_notify($1, $2)")
-                            .bind("environment_lifecycle")
+                        if let Err(err) = sqlx::query("NOTIFY environment_lifecycle, $1")
                             .bind(payload)
                             .execute(&pool)
                             .await
                         {
                             warn!(
                                 error = %err,
-                                "failed to publish environment lifecycle event via pg_notify"
+                                "failed to publish environment lifecycle event via NOTIFY"
                             );
                             let _ = self.environment_events.send(event);
                         }

@@ -14,14 +14,14 @@ struct BranchTunnelInfo {
 #[derive(Clone)]
 pub struct BranchConfig {
     branches: Arc<RwLock<HashMap<Uuid, BranchTunnelInfo>>>,
-    api_url: String,
+    api_host: String,
 }
 
 impl BranchConfig {
-    pub fn new(api_url: String) -> Self {
+    pub fn new(api_host: String) -> Self {
         Self {
             branches: Arc::new(RwLock::new(HashMap::new())),
-            api_url,
+            api_host,
         }
     }
 
@@ -76,11 +76,11 @@ impl BranchConfig {
         tracing::info!("Starting tunnel for branch environment {}", environment_id);
 
         // Spawn a task to maintain WebSocket tunnel for this branch environment
-        let api_url = self.api_url.clone();
+        let api_host = self.api_host.clone();
         let auth_token = branch_tunnel.info.auth_token.clone();
         let tunnel_task = tokio::spawn(async move {
             crate::rpc_server::DevboxProxyRpcServer::maintain_tunnel(
-                api_url,
+                api_host,
                 environment_id,
                 auth_token,
             )

@@ -156,28 +156,28 @@ impl Conductor {
             db,
         };
 
-        {
-            let conductor = conductor.clone();
-            tokio::spawn(async move {
-                conductor.monitor_workspace_hosts().await;
-            });
-        }
+        // {
+        //     let conductor = conductor.clone();
+        //     tokio::spawn(async move {
+        //         conductor.monitor_workspace_hosts().await;
+        //     });
+        // }
 
-        {
-            let conductor = conductor.clone();
-            tokio::spawn(async move {
-                if let Err(e) = conductor.monitor_status_updates().await {
-                    tracing::error!("conductor monitor status updates error: {e}");
-                }
-            });
-        }
+        // {
+        //     let conductor = conductor.clone();
+        //     tokio::spawn(async move {
+        //         if let Err(e) = conductor.monitor_status_updates().await {
+        //             tracing::error!("conductor monitor status updates error: {e}");
+        //         }
+        //     });
+        // }
 
-        {
-            let conductor = conductor.clone();
-            tokio::spawn(async move {
-                conductor.monitor_auto_start_stop().await;
-            });
-        }
+        // {
+        //     let conductor = conductor.clone();
+        //     tokio::spawn(async move {
+        //         conductor.monitor_auto_start_stop().await;
+        //     });
+        // }
 
         Ok(conductor)
     }

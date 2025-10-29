@@ -36,7 +36,7 @@ use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::str::FromStr;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 // Custom result structure for multi-table join
@@ -126,6 +126,8 @@ impl StoredServicePort {
 }
 
 async fn connect_db(conn_url: &str) -> Result<sqlx::PgPool> {
+    let redacted_url = redact_connection_url(conn_url);
+    info!(%redacted_url, "Connecting to PostgreSQL database");
     let pool: sqlx::PgPool = sqlx::pool::PoolOptions::new()
         .max_connections(100)
         .connect(conn_url)
@@ -133,21 +135,56 @@ async fn connect_db(conn_url: &str) -> Result<sqlx::PgPool> {
     Ok(pool)
 }
 
+fn redact_connection_url(conn_url: &str) -> String {
+    let (scheme, remainder) = conn_url.split_once("://").unwrap_or(("postgres", conn_url));
+
+    let target_host = remainder
+        .split_once('@')
+        .map(|(_, after)| after)
+        .unwrap_or(remainder);
+
+    let mut redacted = String::from(scheme);
+    redacted.push_str("://");
+
+    if target_host.is_empty() {
+        redacted.push_str("<unknown>");
+        return redacted;
+    }
+
+    let mut segments = target_host.splitn(2, '/');
+    let host_port = segments.next().unwrap_or("");
+
+    if host_port.is_empty() {
+        redacted.push_str("<unknown>");
+        return redacted;
+    }
+
+    redacted.push_str(host_port);
+
+    if let Some(path_and_query) = segments.next() {
+        if let Some(database) = path_and_query.split('?').next() {
+            if !database.is_empty() {
+                redacted.push('/');
+                redacted.push_str(database);
+            }
+        }
+    }
+
+    redacted
+}
+
 impl DbApi {
-    pub async fn new(conn_url: &str, no_migration: bool) -> Result<Self> {
+    pub async fn new(conn_url: &str) -> Result<Self> {
         let pool = connect_db(conn_url).await?;
         let conn = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
         let db = DbApi {
             conn,
             pool: Some(pool),
         };
-        if !no_migration {
-            db.migrate().await?;
-        }
         Ok(db)
     }
 
-    async fn migrate(&self) -> Result<()> {
+    pub async fn migrate(&self) -> Result<()> {
         Migrator::up(&self.conn, None).await?;
         Ok(())
     }
@@ -609,6 +646,7 @@ impl DbApi {
         status: Option<String>,
         provider: Option<String>,
         region: Option<String>,
+        manager_namespace: Option<String>,
     ) -> Result<lapdev_db_entities::kube_cluster::Model> {
         use lapdev_db_entities::kube_cluster;
         use sea_orm::ActiveValue;
@@ -620,6 +658,7 @@ impl DbApi {
             status: status.map(ActiveValue::Set).unwrap_or(ActiveValue::NotSet),
             provider: ActiveValue::Set(provider),
             region: ActiveValue::Set(region),
+            manager_namespace: ActiveValue::Set(manager_namespace),
             last_reported_at: ActiveValue::Set(Some(now)),
             ..Default::default()
         };
@@ -654,15 +693,14 @@ impl DbApi {
 
         match serde_json::to_string(&event) {
             Ok(payload) => {
-                if let Err(err) = sqlx::query("SELECT pg_notify($1, $2)")
-                    .bind("cluster_status")
+                if let Err(err) = sqlx::query("NOTIFY cluster_status, $1")
                     .bind(payload)
                     .execute(pool)
                     .await
                 {
                     warn!(
                         error = %err,
-                        "failed to publish cluster status event via pg_notify"
+                        "failed to publish cluster status event via NOTIFY"
                     );
                 }
             }
@@ -695,15 +733,14 @@ impl DbApi {
 
         match serde_json::to_string(&event) {
             Ok(payload) => {
-                if let Err(err) = sqlx::query("SELECT pg_notify($1, $2)")
-                    .bind("app_catalog_status")
+                if let Err(err) = sqlx::query("NOTIFY app_catalog_status, $1")
                     .bind(payload)
                     .execute(pool)
                     .await
                 {
                     warn!(
                         error = %err,
-                        "failed to publish app catalog status event via pg_notify"
+                        "failed to publish app catalog status event via NOTIFY"
                     );
                 }
             }
@@ -1015,6 +1052,7 @@ impl DbApi {
             status: ActiveValue::Set(status),
             provider: ActiveValue::Set(None),
             region: ActiveValue::Set(None),
+            manager_namespace: ActiveValue::Set(None),
             created_by: ActiveValue::Set(user_id),
             organization_id: ActiveValue::Set(org_id),
             deleted_at: ActiveValue::Set(None),
@@ -1818,6 +1856,7 @@ impl DbApi {
                             status: "Not Ready".to_string(),
                             provider: None,
                             region: None,
+                            manager_namespace: None,
                             created_at: related.env_created_at,
                             created_by: related.env_user_id,
                             organization_id: related.env_organization_id,

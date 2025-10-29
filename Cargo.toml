@@ -40,6 +40,7 @@ lapdev-cli.workspace = true
 lapdev-guest-agent.workspace = true
 lapdev-kube.workspace = true
 lapdev-kube-manager.workspace = true
+dotenvy.workspace = true
 
 [workspace]
 members = [
@@ -71,6 +72,7 @@ members = [
 [workspace.dependencies]
 rust_decimal = "1.37.1"
 toml = "0.8.11"
+dotenvy = "0.15.7"
 clap = { version = "4.5.2", features = ["derive"] }
 tempfile = "3.8.1"
 zstd = "0.13.0"

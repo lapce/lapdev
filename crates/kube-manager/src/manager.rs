@@ -1,7 +1,6 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, fs, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::StreamExt;
 use k8s_openapi::{
     api::{
@@ -11,10 +10,7 @@ use k8s_openapi::{
     },
     NamespaceResourceScope,
 };
-use kube::{
-    api::{DeleteParams, ListParams},
-    config::AuthInfo,
-};
+use kube::api::{DeleteParams, ListParams};
 use lapdev_common::kube::{
     KubeClusterInfo, KubeClusterStatus, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
     KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
@@ -27,7 +23,6 @@ use lapdev_kube_rpc::{
     ProxyBranchRouteConfig,
 };
 use lapdev_rpc::spawn_twoway;
-use serde::Deserialize;
 use tarpc::server::{BaseChannel, Channel};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -41,8 +36,6 @@ use crate::{
     websocket_transport::WebSocketTransport,
 };
 
-const SCOPE: &[&str] = &["https://www.googleapis.com/auth/cloud-platform"];
-
 #[derive(Clone)]
 pub struct KubeManager {
     pub(crate) kube_client: Arc<kube::Client>,
@@ -51,52 +44,7 @@ pub struct KubeManager {
     pub(crate) devbox_proxy_manager: Arc<DevboxProxyManager>,
     tunnel_manager: TunnelManager,
     pub(crate) watch_manager: Arc<WatchManager>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ListClustersResponse {
-    pub clusters: Vec<Cluster>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ControlPlaneEndpointsConfig {
-    pub ip_endpoints_config: IPEndpointsConfig,
-    pub dns_endpoint_config: DNSEndpointConfig,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IPEndpointsConfig {
-    pub public_endpoint: Option<String>,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DNSEndpointConfig {
-    pub endpoint: String,
-    pub allow_external_traffic: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MasterAuth {
-    pub cluster_ca_certificate: String,
-    pub client_certificate: Option<String>,
-    pub client_key: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Cluster {
-    pub name: String,
-    pub description: Option<String>,
-    pub locations: Vec<String>,
-    pub endpoint: String,
-    pub master_auth: MasterAuth,
-    pub control_plane_endpoints_config: ControlPlaneEndpointsConfig,
+    manager_namespace: Option<String>,
 }
 
 impl KubeManager {
@@ -129,12 +77,15 @@ impl KubeManager {
             .headers_mut()
             .insert(KUBE_CLUSTER_TOKEN_HEADER, token.parse()?);
 
+        let manager_namespace = Self::detect_manager_namespace();
+
         let manager = KubeManager {
             kube_client,
             proxy_manager,
             devbox_proxy_manager,
             tunnel_manager: TunnelManager::new(tunnel_request),
             watch_manager,
+            manager_namespace,
         };
 
         // Start the tunnel manager connection cycle in the background
@@ -247,79 +198,22 @@ impl KubeManager {
         Ok(client)
     }
 
-    async fn retrieve_cluster_config_from_home() -> Result<kube::Config> {
+    async fn retrieve_cluster_config() -> Result<kube::Config> {
         Ok(kube::Config::infer().await?)
     }
 
-    async fn retrieve_cluster_config() -> Result<kube::Config> {
-        let retrive_from_home = std::env::var("KUBE_CLUSTER_FROM_HOME")
-            .ok()
-            .map(|v| v == "yes")
-            .unwrap_or(false);
-        if retrive_from_home {
-            return Self::retrieve_cluster_config_from_home().await;
+    fn detect_manager_namespace() -> Option<String> {
+        if let Ok(ns) = std::env::var("POD_NAMESPACE") {
+            let trimmed = ns.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
         }
 
-        let key = yup_oauth2::read_service_account_key("/workspaces/key.json").await?;
-        let project_id = key
-            .project_id
-            .clone()
-            .ok_or_else(|| anyhow!("no project_id in key.json"))?;
-        let authenticator = yup_oauth2::ServiceAccountAuthenticator::builder(key)
-            .build()
-            .await?;
-        let token = authenticator.token(SCOPE).await?;
-        let token = token.token().ok_or_else(|| anyhow!("no token"))?;
-        let resp = reqwest::Client::new()
-            .get(format!(
-                "https://container.googleapis.com/v1/projects/{project_id}/locations/-/clusters"
-            ))
-            .header("Authorization", format!("Bearer {token}"))
-            .send()
-            .await?;
-        let resp: ListClustersResponse = resp.json().await?;
-
-        let cluster = resp
-            .clusters
-            .iter()
-            .find(|c| c.name == "autopilot-belgium-production")
-            .unwrap();
-        let cert = STANDARD.decode(&cluster.master_auth.cluster_ca_certificate)?;
-        let _cert = pem::parse_many(&cert)?
-            .into_iter()
-            .filter_map(|p| {
-                if p.tag() == "CERTIFICATE" {
-                    Some(p.into_contents())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        tracing::debug!("Cluster details: {:?}", cluster);
-        let mut config = kube::Config::new(
-            format!(
-                "https://{}/",
-                cluster
-                    .control_plane_endpoints_config
-                    .dns_endpoint_config
-                    .endpoint
-            )
-            .parse()?,
-        );
-        // config.root_cert = Some(cert);
-        config.auth_info = AuthInfo {
-            token: Some(token.into()),
-            ..Default::default()
-        };
-        // let client = kube::Client::try_from(config)?;
-        // let api: kube::Api<Deployment> = kube::Api::all(client);
-        // tracing::debug!("get api");
-        // let r = api.list(&ListParams::default().limit(1)).await?;
-        // let namespace = r.items.first().map(|d| d.namespace());
-        // // client.
-        // tracing::debug!("kube {namespace:?}");
-
-        Ok(config)
+        fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+            .ok()
+            .map(|contents| contents.trim().to_string())
+            .filter(|value| !value.is_empty())
     }
 }
 
@@ -351,6 +245,7 @@ impl KubeManager {
             provider,
             region,
             status,
+            manager_namespace: self.manager_namespace.clone(),
         })
     }
 

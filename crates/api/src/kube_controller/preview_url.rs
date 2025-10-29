@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use lapdev_common::{kube::KubeEnvironmentPreviewUrl, utils::rand_string};
+use lapdev_common::{kube::KubeEnvironmentPreviewUrl, utils::rand_string, LAPDEV_API_HOST};
 use lapdev_rpc::error::ApiError;
 
 use super::KubeController;
@@ -66,7 +66,7 @@ impl KubeController {
             .access_level
             .unwrap_or(lapdev_common::kube::PreviewUrlAccessLevel::Organization);
 
-        let url = format!("https://{auto_name}.app.lap.dev");
+        let url = format!("https://{auto_name}.{}", LAPDEV_API_HOST);
 
         // Create preview URL in database
         let preview_url = match self
@@ -153,7 +153,7 @@ impl KubeController {
         Ok(preview_urls
             .into_iter()
             .map(|preview_url| {
-                let url = format!("https://{}.app.lap.dev", preview_url.name);
+                let url = format!("https://{}.{}", preview_url.name, LAPDEV_API_HOST);
 
                 KubeEnvironmentPreviewUrl {
                     id: preview_url.id,
@@ -220,7 +220,7 @@ impl KubeController {
             .await
             .map_err(ApiError::from)?;
 
-        let url = format!("https://{}.app.lap.dev", updated_preview_url.name);
+        let url = format!("https://{}.{}", updated_preview_url.name, LAPDEV_API_HOST);
 
         Ok(KubeEnvironmentPreviewUrl {
             id: updated_preview_url.id,

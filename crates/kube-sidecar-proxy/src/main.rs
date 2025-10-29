@@ -1,15 +1,32 @@
 use anyhow::Result;
 use clap::Parser;
+use lapdev_common::kube::{
+    DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_PORT, SIDECAR_PROXY_BIND_ADDR_ENV_VAR,
+    SIDECAR_PROXY_PORT_ENV_VAR,
+};
 use lapdev_kube_sidecar_proxy::SidecarProxyServer;
+use std::net::{IpAddr, SocketAddr};
 use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Proxy listen address
-    #[arg(long, default_value = "0.0.0.0:8080")]
-    listen_addr: String,
+    /// Proxy bind address
+    #[arg(
+        long,
+        env = SIDECAR_PROXY_BIND_ADDR_ENV_VAR,
+        default_value = DEFAULT_SIDECAR_PROXY_BIND_ADDR
+    )]
+    bind_addr: String,
+
+    /// Proxy listening port
+    #[arg(
+        long,
+        env = SIDECAR_PROXY_PORT_ENV_VAR,
+        default_value_t = DEFAULT_SIDECAR_PROXY_PORT
+    )]
+    listen_port: u16,
 
     /// Kubernetes namespace to watch for services
     #[arg(long, env = "KUBERNETES_NAMESPACE")]
@@ -48,7 +65,7 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting Lapdev Kubernetes Sidecar Proxy");
-    info!("Listen address: {}", args.listen_addr);
+    info!("Listen address: {}:{}", args.bind_addr, args.listen_port);
     info!("Namespace: {:?}", args.namespace);
     info!("Pod name: {:?}", args.pod_name);
 
@@ -62,8 +79,11 @@ async fn main() -> Result<()> {
 
     info!("Environment ID: {}", environment_id);
 
+    let bind_ip: IpAddr = args.bind_addr.parse()?;
+    let listen_addr = SocketAddr::new(bind_ip, args.listen_port);
+
     let server = SidecarProxyServer::new(
-        args.listen_addr.parse()?,
+        listen_addr,
         args.namespace,
         args.pod_name,
         environment_id,

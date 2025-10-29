@@ -11,6 +11,7 @@ use tracing::{debug, warn};
 // Submodules
 mod app_catalog;
 mod cluster;
+pub(crate) mod container_images;
 mod deployment;
 mod environment;
 mod preview_url;
@@ -21,6 +22,7 @@ mod workload;
 pub mod yaml_parser;
 
 // Re-exports
+pub use self::container_images::CONTAINER_IMAGE_TAG;
 pub use validation::*;
 pub use yaml_parser::*;
 

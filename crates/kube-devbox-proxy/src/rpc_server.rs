@@ -1,3 +1,4 @@
+use lapdev_common::utils::resolve_api_host;
 use lapdev_kube_rpc::{BranchEnvironmentInfo, DevboxProxyRpc};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -11,7 +12,7 @@ use crate::branch_config::BranchConfig;
 pub struct DevboxProxyRpcServer {
     branch_config: BranchConfig,
     is_shared: bool,
-    api_url: String,
+    api_host: String,
     environment_id: Uuid,
     environment_auth_token: String,
     base_tunnel_task: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -21,14 +22,14 @@ impl DevboxProxyRpcServer {
     pub fn new(
         branch_config: BranchConfig,
         is_shared: bool,
-        api_url: String,
+        api_host: String,
         environment_id: Uuid,
         environment_auth_token: String,
     ) -> Self {
         Self {
             branch_config,
             is_shared,
-            api_url,
+            api_host,
             environment_id,
             environment_auth_token,
             base_tunnel_task: Arc::new(RwLock::new(None)),
@@ -121,12 +122,12 @@ impl DevboxProxyRpc for DevboxProxyRpcServer {
                 );
 
                 // Spawn a task to maintain the base tunnel
-                let api_url = self.api_url.clone();
+                let api_host = self.api_host.clone();
                 let environment_id = self.environment_id;
                 let auth_token = self.environment_auth_token.clone();
 
                 let tunnel_task = tokio::spawn(async move {
-                    Self::maintain_tunnel(api_url, environment_id, auth_token).await;
+                    Self::maintain_tunnel(api_host, environment_id, auth_token).await;
                 });
 
                 *task_lock = Some(tunnel_task);
@@ -194,7 +195,11 @@ impl DevboxProxyRpc for DevboxProxyRpcServer {
 }
 
 impl DevboxProxyRpcServer {
-    pub(crate) async fn maintain_tunnel(api_url: String, environment_id: Uuid, auth_token: String) {
+    pub(crate) async fn maintain_tunnel(
+        api_host: String,
+        environment_id: Uuid,
+        auth_token: String,
+    ) {
         use lapdev_tunnel::{run_tunnel_server, WebSocketTransport};
         use tokio_tungstenite::connect_async;
 
@@ -203,15 +208,12 @@ impl DevboxProxyRpcServer {
             environment_id
         );
 
+        let host = resolve_api_host(Some(api_host.as_str()));
+        let ws_base = format!("wss://{}/api/v1", host);
+
         loop {
             // Build WebSocket URL
-            let ws_url = format!(
-                "{}/kube/devbox-proxy/tunnel/{}",
-                api_url
-                    .replace("http://", "ws://")
-                    .replace("https://", "wss://"),
-                environment_id
-            );
+            let ws_url = format!("{}/kube/devbox-proxy/tunnel/{}", ws_base, environment_id);
 
             tracing::info!(
                 "Connecting tunnel for {} to WebSocket: {}",

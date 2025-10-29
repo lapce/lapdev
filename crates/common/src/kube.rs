@@ -15,8 +15,11 @@ pub const SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAG
 pub const SIDECAR_PROXY_MANAGER_PORT_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAGER_PORT";
 pub const DEFAULT_SIDECAR_PROXY_MANAGER_PORT: u16 = 5001;
 pub const SIDECAR_PROXY_PORT_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_PORT";
-pub const DEFAULT_SIDECAR_PROXY_PORT: u16 = 15001;
+pub const DEFAULT_SIDECAR_PROXY_PORT: u16 = 25001;
+pub const DEFAULT_SIDECAR_PROXY_METRICS_PORT: u16 = 25090;
 pub const SIDECAR_PROXY_WORKLOAD_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_WORKLOAD";
+pub const SIDECAR_PROXY_BIND_ADDR_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_BIND_ADDR";
+pub const DEFAULT_SIDECAR_PROXY_BIND_ADDR: &str = "0.0.0.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeCluster {
@@ -36,6 +39,7 @@ pub struct KubeClusterInfo {
     pub provider: Option<String>,
     pub region: Option<String>,
     pub status: KubeClusterStatus,
+    pub manager_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

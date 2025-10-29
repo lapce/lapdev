@@ -6,6 +6,7 @@ use lapdev_common::{
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use std::rc::Rc;
 
 use crate::{
     component::{
@@ -431,6 +432,15 @@ pub fn TokenDisplayModal(
     cluster_response: RwSignal<Option<CreateKubeClusterResponse>, LocalStorage>,
 ) -> impl IntoView {
     let copy_success = RwSignal::new_local(false);
+    let command_copy_success = RwSignal::new_local(false);
+    let origin = StoredValue::new(
+        window()
+            .location()
+            .origin()
+            .unwrap_or_else(|_| "".to_string())
+            .trim_end_matches('/')
+            .to_string(),
+    );
 
     let copy_token = move |_| {
         if let Some(response) = cluster_response.get_untracked() {
@@ -445,6 +455,43 @@ pub fn TokenDisplayModal(
                 std::time::Duration::from_secs(2),
             );
         }
+    };
+
+    let manifest_path = Memo::new(move |_| {
+        cluster_response
+            .get()
+            .map(|response| format!("/install/lapdev-kube-manager.yaml?token={}", response.token))
+    });
+
+    let install_command = {
+        Memo::new(move |_| {
+            manifest_path
+                .get()
+                .map(|path| {
+                    let origin = origin.get_value();
+                    if origin.is_empty() {
+                        format!("kubectl apply -f {}", path)
+                    } else {
+                        format!("kubectl apply -f {origin}{path}")
+                    }
+                })
+                .unwrap_or_default()
+        })
+    };
+
+    let copy_install_command = move |_| {
+        let command = install_command.get();
+        if command.is_empty() {
+            return;
+        }
+        let navigator = window().navigator();
+        let clipboard = navigator.clipboard();
+        let _ = clipboard.write_text(&command);
+        command_copy_success.set(true);
+        set_timeout(
+            move || command_copy_success.set(false),
+            std::time::Duration::from_secs(2),
+        );
     };
 
     view! {
@@ -498,6 +545,33 @@ pub fn TokenDisplayModal(
                     }}
                 </div>
 
+                <div class="flex flex-col gap-2">
+                    <Label>Install Command</Label>
+                    <div class="relative">
+                        <Textarea
+                            prop:value=move || install_command.get()
+                            prop:readonly=true
+                            class="font-mono text-sm min-h-20 pr-16"
+                        />
+                        <Button
+                            on:click=copy_install_command
+                            class="absolute top-2 right-2 h-8 w-8 p-0"
+                            variant=ButtonVariant::Outline
+                        >
+                            {move || if command_copy_success.get() {
+                                view! { <lucide_leptos::Check /> }.into_any()
+                            } else {
+                                view! { <lucide_leptos::Copy /> }.into_any()
+                            }}
+                        </Button>
+                    </div>
+                    {move || if command_copy_success.get() {
+                        view! { <P class="text-sm text-green-600">Install command copied!</P> }
+                    } else {
+                        view! { <P class="text-sm text-muted-foreground">Run this command in a shell with kubectl access to your cluster</P> }
+                    }}
+                </div>
+
                 <div class="flex flex-col gap-2 p-4 bg-muted rounded-lg">
                     <P class="font-medium text-sm">Next Steps:</P>
                     <ul class="text-sm space-y-1">
@@ -505,6 +579,19 @@ pub fn TokenDisplayModal(
                         <li>{"- Configure it with this token"}</li>
                         <li>{"- Your cluster will appear in the list once connected"}</li>
                     </ul>
+                    {move || manifest_path.get().map(|href| {
+                        view! {
+                            <a
+                                class="text-sm text-primary underline"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                href=href
+                            >
+                                "Open manifest in a new tab"
+                            </a>
+                        }
+                        .into_any()
+                    }).unwrap_or_else(|| ().into_any() )}
                 </div>
             </div>
         </Modal>

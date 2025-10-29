@@ -1,23 +1,24 @@
 use clap::Subcommand;
 
+use crate::config;
+
 pub mod commands;
 pub mod dns;
-
-const DEFAULT_LAPDEV_URL: &str = "https://app.lap.dev";
 
 #[derive(Subcommand)]
 pub enum DevboxCommand {
     /// Connect to Lapdev devbox and establish port forwarding tunnels
     Connect {
-        /// API server URL
-        #[arg(long, env = "LAPDEV_API_URL", default_value = DEFAULT_LAPDEV_URL)]
-        api_url: String,
+        /// API host (e.g. app.lap.dev)
+        #[arg(long = "api-host", alias = "api-url", env = "LAPDEV_API_HOST")]
+        api_host: Option<String>,
     },
 }
 
 pub async fn handle_command(command: DevboxCommand) -> anyhow::Result<()> {
     match command {
-        DevboxCommand::Connect { api_url } => {
+        DevboxCommand::Connect { api_host } => {
+            let (_, api_url) = config::resolve_api_base_url(api_host);
             commands::connect::execute(&api_url).await?;
         }
     }

@@ -43,9 +43,9 @@ spec:
           
         # Sidecar proxy container
         - name: sidecar-proxy
-          image: lapdev/kube-sidecar-proxy:latest
+          image: ghcr.io/lapdev/lapdev-kube-sidecar-proxy:0.1.0
           ports:
-            - containerPort: 8080
+            - containerPort: 25001
               name: proxy
           env:
             - name: KUBERNETES_NAMESPACE
@@ -58,9 +58,11 @@ spec:
                   fieldPath: metadata.name
             - name: LAPDEV_ENVIRONMENT_ID
               value: "550e8400-e29b-41d4-a716-446655440000"
+            - name: LAPDEV_SIDECAR_PROXY_BIND_ADDR
+              value: "0.0.0.0"
+            - name: LAPDEV_SIDECAR_PROXY_PORT
+              value: "25001"
           args:
-            - "--listen-addr=0.0.0.0:8080"
-            - "--target-addr=127.0.0.1:3000"
             - "--log-level=info"
           resources:
             requests:
@@ -72,13 +74,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: 8080
+              port: 25001
             initialDelaySeconds: 10
             periodSeconds: 30
           readinessProbe:
             httpGet:
               path: /ready
-              port: 8080
+              port: 25001
             initialDelaySeconds: 5
             periodSeconds: 10
 ---
@@ -97,6 +99,6 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: 8080
+      targetPort: 25001
       protocol: TCP
   type: ClusterIP

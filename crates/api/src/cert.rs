@@ -15,6 +15,7 @@ use webpki::EndEntityCert;
 
 pub type CertStore = Arc<RwLock<Arc<HashMap<String, Arc<CertifiedKey>>>>>;
 
+#[allow(dead_code)]
 pub fn tls_config(certs: CertStore) -> Result<ServerConfig> {
     let mut config = ServerConfig::builder()
         .with_no_client_auth()

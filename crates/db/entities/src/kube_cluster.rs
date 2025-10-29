@@ -16,6 +16,7 @@ pub struct Model {
     pub status: String,
     pub provider: Option<String>,
     pub region: Option<String>,
+    pub manager_namespace: Option<String>,
     pub last_reported_at: Option<DateTimeWithTimeZone>,
     pub can_deploy_personal: bool,
     pub can_deploy_shared: bool,

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use lapdev_common::{utils::resolve_api_host, LAPDEV_API_HOST};
 use tracing::info;
 use tracing_subscriber;
 use uuid::Uuid;
@@ -13,9 +14,9 @@ pub const DEFAULT_KUBE_MANAGER_RPC_PORT: u16 = 7771;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Lapdev API server URL for WebSocket tunnel
-    #[arg(long, env = "LAPDEV_API_URL")]
-    api_url: String,
+    /// Lapdev API host for WebSocket tunnel
+    #[arg(long, env = "LAPDEV_API_HOST", default_value = LAPDEV_API_HOST)]
+    api_host: String,
 
     /// Lapdev environment ID
     #[arg(long, env = "LAPDEV_ENVIRONMENT_ID")]
@@ -48,8 +49,14 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    let api_host_input = args.api_host;
+
+    let api_host = resolve_api_host(Some(api_host_input.as_str()));
+    let api_http_base = format!("https://{}", api_host);
+
     info!("Starting Lapdev Kube Devbox Proxy");
-    info!("API URL: {}", args.api_url);
+    info!("API host: {}", api_host);
+    info!("API HTTP base: {}", api_http_base);
 
     // Validate that environment ID and auth token are present
     let environment_id = args
@@ -61,11 +68,8 @@ async fn main() -> Result<()> {
 
     info!("Environment ID: {}", environment_id);
 
-    // Parse environment ID as UUID
     let env_id = Uuid::parse_str(&environment_id)
         .map_err(|e| anyhow!("Failed to parse environment_id as UUID: {}", e))?;
-
-    let api_url = args.api_url.clone();
 
     info!("Devbox proxy server initialized successfully");
 
@@ -74,11 +78,11 @@ async fn main() -> Result<()> {
     let kube_manager_addr = format!("{}:{}", args.kube_manager_host, args.kube_manager_port);
     info!("Connecting to kube-manager at {}", kube_manager_addr);
 
-    let branch_config = branch_config::BranchConfig::new(api_url.clone());
+    let branch_config = branch_config::BranchConfig::new(api_host.clone());
     let rpc_server = rpc_server::DevboxProxyRpcServer::new(
         branch_config,
         args.is_shared,
-        api_url.clone(),
+        api_host.clone(),
         env_id,
         environment_auth_token.clone(),
     );

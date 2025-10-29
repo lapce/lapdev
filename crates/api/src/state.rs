@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
 use lapdev_common::{
     kube::{AppCatalogStatusEvent, ClusterStatusEvent},
+    utils::resolve_api_host,
     UserRole, LAPDEV_AUTH_STATE_COOKIE, LAPDEV_AUTH_TOKEN_COOKIE, LAPDEV_BASE_HOSTNAME,
 };
 use lapdev_conductor::{scheduler::LAPDEV_CPU_OVERCOMMIT, Conductor};
@@ -344,19 +345,24 @@ impl CoreState {
         }
     }
 
-    async fn websocket_base_url(&self) -> String {
-        let from_env = std::env::var("LAPDEV_API_URL").ok();
-        let host = if let Some(url) = from_env.filter(|s| !s.trim().is_empty()) {
-            url
+    pub async fn websocket_base_url(&self) -> String {
+        let host = if let Ok(value) = std::env::var("LAPDEV_API_HOST") {
+            resolve_api_host(Some(value.as_str()))
         } else {
-            self.conductor
+            let stored = self
+                .conductor
                 .hostnames
                 .read()
                 .await
                 .get("")
                 .cloned()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "https://app.lap.dev".to_string())
+                .unwrap_or_default();
+            let stored_ref = if stored.trim().is_empty() {
+                None
+            } else {
+                Some(stored.as_str())
+            };
+            resolve_api_host(stored_ref)
         };
 
         CoreState::normalize_ws_base(&host)

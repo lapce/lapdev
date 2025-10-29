@@ -248,9 +248,41 @@ pub async fn devbox_proxy_tunnel_websocket(
         environment.id
     );
 
-    let broker = state.tunnel_broker.clone();
+    let cluster_id = environment.cluster_id;
+    let tunnel_registry = state.kube_controller.tunnel_registry.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        broker.register_devbox_proxy(environment_id, socket).await;
+        match tunnel_registry.get_client(cluster_id).await {
+            Some(client) if !client.is_closed() => {
+                serve_devbox_proxy_tunnel(socket, client).await;
+            }
+            _ => {
+                tracing::warn!(
+                    "No active cluster tunnel available for devbox proxy environment {} (cluster {})",
+                    environment_id,
+                    cluster_id
+                );
+            }
+        }
     }))
+}
+
+async fn serve_devbox_proxy_tunnel(socket: WebSocket, cluster_client: Arc<TunnelClient>) {
+    let transport = WebSocketTransport::new(socket);
+    let connector_client = cluster_client.clone();
+
+    let connector = move |target: lapdev_tunnel::TunnelTarget| {
+        let client = connector_client.clone();
+        async move {
+            let lapdev_tunnel::TunnelTarget { host, port } = target;
+            let stream = client.connect_tcp(host, port).await?;
+            Ok::<lapdev_tunnel::DynTunnelStream, lapdev_tunnel::TunnelError>(
+                Box::new(stream) as lapdev_tunnel::DynTunnelStream
+            )
+        }
+    };
+
+    if let Err(err) = lapdev_tunnel::run_tunnel_server_with_connector(transport, connector).await {
+        tracing::warn!("Devbox proxy tunnel terminated with error: {}", err);
+    }
 }

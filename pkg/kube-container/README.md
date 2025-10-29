@@ -6,7 +6,6 @@ the service binaries that run inside customer clusters:
 - `lapdev-api`
 - `lapdev-kube-manager`
 - `lapdev-kube-sidecar-proxy`
-- `lapdev-kube-devbox-proxy`
 
 ## Building images locally
 
@@ -35,12 +34,6 @@ podman build \
   -t ghcr.io/lapdev/lapdev-kube-sidecar-proxy:0.1.0 \
   .
 
-# Devbox proxy
-podman build \
-  -f pkg/kube-container/Dockerfile \
-  --target kube-devbox-proxy \
-  -t ghcr.io/lapdev/lapdev-kube-devbox-proxy:0.1.0 \
-  .
 ```
 
 We publish these images from CI; customers do not need to build them.
@@ -84,10 +77,3 @@ When cutting a new release, update `CONTAINER_IMAGE_TAG` in
 - Requires `LAPDEV_ENVIRONMENT_ID`, `LAPDEV_ENVIRONMENT_AUTH_TOKEN`, and
   `LAPDEV_SIDECAR_PROXY_MANAGER_ADDR` to bootstrap (`crates/kube-sidecar-proxy`).
 - Runs as root because it needs low-level socket access for SO\_ORIGINAL\_DST.
-
-### `lapdev-kube-devbox-proxy`
-
-- Connects back to kube-manager on `LAPDEV_DEVBOX_PROXY_MANAGER_PORT`
-  (defaults to `7771`) and does not expose ports itself.
-- Needs `LAPDEV_API_HOST`, `LAPDEV_ENVIRONMENT_ID`, and
-  `LAPDEV_ENVIRONMENT_AUTH_TOKEN` to establish upstream tunnels.

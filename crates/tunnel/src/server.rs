@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::{future::BoxFuture, SinkExt, StreamExt};
 use serde_json;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -15,6 +15,7 @@ use crate::{
     error::TunnelError,
     message::{Protocol, Target, WireMessage},
     util::spawn_detached,
+    TunnelTarget,
 };
 
 #[derive(Clone)]
@@ -171,8 +172,73 @@ fn finalize_connection(
     let _ = send.send(WireMessage::Close { tunnel_id, reason });
 }
 
+pub trait TunnelStream: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> TunnelStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+pub type DynTunnelStream = Box<dyn TunnelStream>;
+
+pub trait TunnelConnector: Send + Sync + 'static {
+    fn connect(
+        &self,
+        target: TunnelTarget,
+    ) -> BoxFuture<'static, Result<DynTunnelStream, TunnelError>>;
+}
+
+#[derive(Clone, Default)]
+pub struct TcpConnector;
+
+impl TunnelConnector for TcpConnector {
+    fn connect(
+        &self,
+        target: TunnelTarget,
+    ) -> BoxFuture<'static, Result<DynTunnelStream, TunnelError>> {
+        Box::pin(async move {
+            let address = format!("{}:{}", target.host, target.port);
+            let stream = TcpStream::connect(address).await?;
+            Ok(Box::new(stream) as DynTunnelStream)
+        })
+    }
+}
+
+impl<F, Fut> TunnelConnector for F
+where
+    F: Fn(TunnelTarget) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<DynTunnelStream, TunnelError>> + Send + 'static,
+{
+    fn connect(
+        &self,
+        target: TunnelTarget,
+    ) -> BoxFuture<'static, Result<DynTunnelStream, TunnelError>> {
+        Box::pin((self)(target))
+    }
+}
+
 /// Run a tunnel server on top of any async byte stream.
 pub async fn run_tunnel_server<S>(stream: S) -> Result<(), TunnelError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    run_tunnel_server_with_connector(stream, TcpConnector::default()).await
+}
+
+/// Run a tunnel server using a custom connector for handling inbound tunnel requests.
+pub async fn run_tunnel_server_with_connector<S, C>(
+    stream: S,
+    connector: C,
+) -> Result<(), TunnelError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    C: TunnelConnector,
+{
+    let connector: Arc<dyn TunnelConnector> = Arc::new(connector);
+    run_tunnel_server_inner(stream, connector).await
+}
+
+async fn run_tunnel_server_inner<S>(
+    stream: S,
+    connector: Arc<dyn TunnelConnector>,
+) -> Result<(), TunnelError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -216,7 +282,15 @@ where
                     protocol,
                     target,
                 }) => {
-                    handle_open(&send_tx, &manager, tunnel_id, protocol, target).await;
+                    handle_open(
+                        &send_tx,
+                        &manager,
+                        connector.clone(),
+                        tunnel_id,
+                        protocol,
+                        target,
+                    )
+                    .await;
                 }
                 Ok(WireMessage::Data { tunnel_id, payload }) => {
                     handle_data(&manager, tunnel_id, payload);
@@ -249,16 +323,17 @@ where
 async fn handle_open(
     send: &mpsc::UnboundedSender<WireMessage>,
     manager: &ConnectionManager,
+    connector: Arc<dyn TunnelConnector>,
     tunnel_id: String,
     protocol: Protocol,
     target: Target,
 ) {
     match protocol {
         Protocol::Tcp => {
-            let address = format!("{}:{}", target.host, target.port);
-            match TcpStream::connect(address).await {
+            let tunnel_target = TunnelTarget::new(target.host.clone(), target.port);
+            match connector.connect(tunnel_target).await {
                 Ok(stream) => {
-                    let (read_half, write_half) = stream.into_split();
+                    let (read_half, write_half) = tokio::io::split(stream);
                     let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
                     let (shutdown_tx, _) = watch::channel(false);
 
@@ -320,13 +395,15 @@ fn handle_data(manager: &ConnectionManager, tunnel_id: String, payload: Vec<u8>)
     manager.forward_data(tunnel_id, payload);
 }
 
-fn spawn_conn_writer(
-    mut write_half: tokio::net::tcp::OwnedWriteHalf,
+fn spawn_conn_writer<W>(
+    mut write_half: W,
     mut data_rx: mpsc::UnboundedReceiver<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
     tunnel_id: String,
     manager: ConnectionManager,
-) {
+) where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     spawn_detached(async move {
         let mut close_reason: Option<String> = None;
         loop {
@@ -354,13 +431,15 @@ fn spawn_conn_writer(
     });
 }
 
-fn spawn_conn_reader(
-    mut read_half: tokio::net::tcp::OwnedReadHalf,
+fn spawn_conn_reader<R>(
+    mut read_half: R,
     mut shutdown_rx: watch::Receiver<bool>,
     send: mpsc::UnboundedSender<WireMessage>,
     tunnel_id: String,
     manager: ConnectionManager,
-) {
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
     spawn_detached(async move {
         let mut buffer = vec![0u8; 8192];
         let mut send_close = false;

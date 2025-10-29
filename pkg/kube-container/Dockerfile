@@ -35,12 +35,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --package lapdev \
     --package lapdev-kube-manager \
     --package lapdev-kube-sidecar-proxy \
-    --package lapdev-kube-devbox-proxy \
     && mkdir -p /artifacts \
     && install -Dm755 /app/target/release/lapdev /artifacts/lapdev-api \
     && install -Dm755 /app/target/release/lapdev-kube-manager /artifacts/lapdev-kube-manager \
-    && install -Dm755 /app/target/release/lapdev-kube-sidecar-proxy /artifacts/lapdev-kube-sidecar-proxy \
-    && install -Dm755 /app/target/release/lapdev-kube-devbox-proxy /artifacts/lapdev-kube-devbox-proxy
+    && install -Dm755 /app/target/release/lapdev-kube-sidecar-proxy /artifacts/lapdev-kube-sidecar-proxy
 
 # Base runtime image shared by all targets.
 FROM docker.io/library/debian:12-slim AS runtime-base
@@ -78,16 +76,6 @@ EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/lapdev-kube-sidecar-proxy"]
 
-# -----------------------------------------------------------------------------
-# lapdev-kube-devbox-proxy image
-# -----------------------------------------------------------------------------
-FROM runtime-base AS kube-devbox-proxy
-
-WORKDIR /app
-
-COPY --from=builder /artifacts/lapdev-kube-devbox-proxy /usr/local/bin/lapdev-kube-devbox-proxy
-
-ENTRYPOINT ["/usr/local/bin/lapdev-kube-devbox-proxy"]
 # -----------------------------------------------------------------------------
 # lapdev-api image
 # -----------------------------------------------------------------------------

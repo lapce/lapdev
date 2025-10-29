@@ -119,10 +119,9 @@ parse_repo_components() {
 API_REPO=$(extract_const_value "API_IMAGE_REPO")
 SIDECAR_REPO=$(extract_const_value "SIDECAR_PROXY_IMAGE_REPO")
 KUBE_MANAGER_REPO=$(extract_const_value "KUBE_MANAGER_IMAGE_REPO")
-DEVBOX_REPO=$(extract_const_value "DEVBOX_PROXY_IMAGE_REPO")
 CONTAINER_IMAGE_TAG=$(extract_const_value "CONTAINER_IMAGE_TAG")
 
-if [[ -z "$API_REPO" || -z "$SIDECAR_REPO" || -z "$KUBE_MANAGER_REPO" || -z "$DEVBOX_REPO" || -z "$CONTAINER_IMAGE_TAG" ]]; then
+if [[ -z "$API_REPO" || -z "$SIDECAR_REPO" || -z "$KUBE_MANAGER_REPO" || -z "$CONTAINER_IMAGE_TAG" ]]; then
   echo "Error: failed to parse image constants from ${IMAGE_CONST_FILE}" >&2
   exit 1
 fi
@@ -130,14 +129,13 @@ fi
 IFS='|' read -r API_REGISTRY API_OWNER API_IMAGE_NAME <<< "$(parse_repo_components "$API_REPO")"
 IFS='|' read -r SIDECAR_REGISTRY SIDECAR_OWNER SIDECAR_IMAGE_NAME <<< "$(parse_repo_components "$SIDECAR_REPO")"
 IFS='|' read -r KUBE_MANAGER_REGISTRY KUBE_MANAGER_OWNER KUBE_MANAGER_IMAGE_NAME <<< "$(parse_repo_components "$KUBE_MANAGER_REPO")"
-IFS='|' read -r DEVBOX_REGISTRY DEVBOX_OWNER DEVBOX_IMAGE_NAME <<< "$(parse_repo_components "$DEVBOX_REPO")"
 
-if [[ "$API_REGISTRY" != "$SIDECAR_REGISTRY" || "$SIDECAR_REGISTRY" != "$KUBE_MANAGER_REGISTRY" || "$SIDECAR_REGISTRY" != "$DEVBOX_REGISTRY" ]]; then
+if [[ "$API_REGISTRY" != "$SIDECAR_REGISTRY" || "$SIDECAR_REGISTRY" != "$KUBE_MANAGER_REGISTRY" ]]; then
   echo "Error: image registries differ between components" >&2
   exit 1
 fi
 
-if [[ "$API_OWNER" != "$SIDECAR_OWNER" || "$SIDECAR_OWNER" != "$KUBE_MANAGER_OWNER" || "$SIDECAR_OWNER" != "$DEVBOX_OWNER" ]]; then
+if [[ "$API_OWNER" != "$SIDECAR_OWNER" || "$SIDECAR_OWNER" != "$KUBE_MANAGER_OWNER" ]]; then
   echo "Error: image owners differ between components" >&2
   exit 1
 fi
@@ -176,7 +174,6 @@ declare -a TARGETS=(
   "lapdev-api|${API_IMAGE_NAME}|${API_REPO}"
   "kube-manager|${KUBE_MANAGER_IMAGE_NAME}|${KUBE_MANAGER_REPO}"
   "kube-sidecar-proxy|${SIDECAR_IMAGE_NAME}|${SIDECAR_REPO}"
-  "kube-devbox-proxy|${DEVBOX_IMAGE_NAME}|${DEVBOX_REPO}"
 )
 
 build_image() {

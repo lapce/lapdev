@@ -10,7 +10,9 @@ use lapdev_common::{kube::KUBE_CLUSTER_TOKEN_HEADER, token::HashedToken};
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
-use lapdev_tunnel::TunnelClient;
+use lapdev_tunnel::{
+    run_tunnel_server_with_connector, DynTunnelStream, TunnelClient, TunnelError, TunnelTarget,
+};
 use secrecy::ExposeSecret;
 use tarpc::{
     server::{BaseChannel, Channel},
@@ -203,12 +205,17 @@ pub async fn sidecar_tunnel_websocket(
         workload_id
     );
 
-    let broker = state.tunnel_broker.clone();
+    let registry = state.devbox_tunnels.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        broker
-            .register_sidecar(session_id, workload_id, socket)
-            .await;
+        if let Err(err) = registry.attach_sidecar(session_id, socket).await {
+            tracing::warn!(
+                session_id = %session_id,
+                workload_id = %workload_id,
+                error = %err,
+                "Sidecar tunnel terminated with error"
+            );
+        }
     }))
 }
 
@@ -271,18 +278,16 @@ async fn serve_devbox_proxy_tunnel(socket: WebSocket, cluster_client: Arc<Tunnel
     let transport = WebSocketTransport::new(socket);
     let connector_client = cluster_client.clone();
 
-    let connector = move |target: lapdev_tunnel::TunnelTarget| {
+    let connector = move |target: TunnelTarget| {
         let client = connector_client.clone();
         async move {
-            let lapdev_tunnel::TunnelTarget { host, port } = target;
+            let TunnelTarget { host, port } = target;
             let stream = client.connect_tcp(host, port).await?;
-            Ok::<lapdev_tunnel::DynTunnelStream, lapdev_tunnel::TunnelError>(
-                Box::new(stream) as lapdev_tunnel::DynTunnelStream
-            )
+            Ok::<DynTunnelStream, TunnelError>(Box::new(stream) as DynTunnelStream)
         }
     };
 
-    if let Err(err) = lapdev_tunnel::run_tunnel_server_with_connector(transport, connector).await {
+    if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
         tracing::warn!("Devbox proxy tunnel terminated with error: {}", err);
     }
 }

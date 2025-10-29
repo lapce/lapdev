@@ -7,6 +7,7 @@ pub mod cli_auth;
 pub mod cluster_events;
 pub mod devbox;
 pub mod devbox_auth;
+pub mod devbox_tunnels;
 pub mod environment_events;
 pub mod github;
 pub mod gitlab;

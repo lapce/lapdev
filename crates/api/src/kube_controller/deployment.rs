@@ -1,14 +1,13 @@
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 
-use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, EnvVarSource, ObjectFieldSelector, PodSpec, PodTemplateSpec,
+    Container, ContainerPort, EnvVar, EnvVarSource, ObjectFieldSelector, PodSpec,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use lapdev_common::kube::{
-    KubeEnvironmentStatus, DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_METRICS_PORT,
-    DEFAULT_SIDECAR_PROXY_PORT, SIDECAR_PROXY_BIND_ADDR_ENV_VAR, SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR,
-    SIDECAR_PROXY_PORT_ENV_VAR,
+    DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_METRICS_PORT,
+    DEFAULT_SIDECAR_PROXY_PORT, SIDECAR_PROXY_BIND_ADDR_ENV_VAR,
+    SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ENV_VAR,
 };
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::KubeWorkloadYamlOnly;
@@ -66,7 +65,6 @@ impl KubeController {
                     )?;
                 }
             }
-
         }
 
         // Prepare environment-specific labels
@@ -350,5 +348,4 @@ mod tests {
             "manager addr env var should default to lapdev namespace"
         );
     }
-
 }

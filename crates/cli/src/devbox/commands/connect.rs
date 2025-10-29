@@ -270,11 +270,10 @@ async fn connect_and_run_rpc(
                     );
 
                     if let Err(err) = tunnel_manager
-                        .ensure_intercept_for_workload(
+                        .ensure_intercept(
                             api_url,
                             token,
                             session_info.session_id,
-                            intercept.workload_id,
                             intercept.intercept_id,
                         )
                         .await
@@ -427,13 +426,7 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         );
 
         if let Err(err) = tunnel_manager
-            .ensure_intercept_for_workload(
-                &api_url,
-                &token,
-                session_id,
-                intercept.workload_id,
-                intercept.intercept_id,
-            )
+            .ensure_intercept(&api_url, &token, session_id, intercept.intercept_id)
             .await
         {
             tracing::error!(
@@ -536,13 +529,7 @@ struct DevboxTunnelManager {
 
 #[derive(Default)]
 struct InterceptState {
-    tasks: HashMap<Uuid, InterceptTaskEntry>,
-    intercept_to_workload: HashMap<Uuid, Uuid>,
-}
-
-struct InterceptTaskEntry {
-    intercept_id: Uuid,
-    task: TunnelTask,
+    tasks: HashMap<Uuid, TunnelTask>,
 }
 
 impl DevboxTunnelManager {
@@ -695,7 +682,7 @@ impl DevboxTunnelManager {
 
 struct TunnelTask {
     kind: TunnelKind,
-    workload_id: Option<Uuid>,
+    intercept_id: Option<Uuid>,
     shutdown: oneshot::Sender<()>,
     handle: JoinHandle<()>,
 }
@@ -720,86 +707,33 @@ impl TunnelKind {
 }
 
 impl DevboxTunnelManager {
-    async fn ensure_intercept_for_workload(
+    async fn ensure_intercept(
         &self,
         api_url: &str,
         token: &str,
         session_id: Uuid,
-        workload_id: Uuid,
         intercept_id: Uuid,
     ) -> Result<(), String> {
-        loop {
-            let removed = {
-                let mut state = self.intercepts.lock().await;
-
-                if let Some(entry) = state.tasks.get(&workload_id) {
-                    if entry.intercept_id == intercept_id {
-                        return Ok(());
-                    }
-                    let removed = state.tasks.remove(&workload_id).unwrap();
-                    state.intercept_to_workload.remove(&removed.intercept_id);
-                    Some(removed.task)
-                } else if let Some(existing_workload) =
-                    state.intercept_to_workload.get(&intercept_id).copied()
-                {
-                    if let Some(entry) = state.tasks.remove(&existing_workload) {
-                        state.intercept_to_workload.remove(&intercept_id);
-                        Some(entry.task)
-                    } else {
-                        state.intercept_to_workload.remove(&intercept_id);
-                        None
-                    }
-                } else {
-                    let task = spawn_tunnel_task(
-                        TunnelKind::Intercept,
-                        api_url.trim_end_matches('/').to_string(),
-                        token.to_string(),
-                        session_id,
-                        Some(workload_id),
-                        None,
-                    );
-                    state
-                        .tasks
-                        .insert(workload_id, InterceptTaskEntry { intercept_id, task });
-                    state
-                        .intercept_to_workload
-                        .insert(intercept_id, workload_id);
-                    return Ok(());
-                }
-            };
-
-            if let Some(task) = removed {
-                Self::stop_task(task, "Devbox intercept tunnel").await;
-            } else {
-                // Entry removed without task; retry to create the new one.
-                continue;
-            }
+        let mut state = self.intercepts.lock().await;
+        if state.tasks.contains_key(&intercept_id) {
+            return Ok(());
         }
+
+        let task = spawn_tunnel_task(
+            TunnelKind::Intercept,
+            api_url.trim_end_matches('/').to_string(),
+            token.to_string(),
+            session_id,
+            Some(intercept_id),
+            None,
+        );
+
+        state.tasks.insert(intercept_id, task);
+        Ok(())
     }
 
     async fn stop_intercept_by_id(&self, intercept_id: Uuid) {
-        let task = {
-            let mut state = self.intercepts.lock().await;
-            if let Some(workload_id) = state.intercept_to_workload.remove(&intercept_id) {
-                state.tasks.remove(&workload_id).map(|entry| entry.task)
-            } else {
-                None
-            }
-        };
-
-        if let Some(task) = task {
-            Self::stop_task(task, "Devbox intercept tunnel").await;
-        }
-    }
-
-    async fn stop_intercept_by_workload(&self, workload_id: Uuid) {
-        let task = {
-            let mut state = self.intercepts.lock().await;
-            state.tasks.remove(&workload_id).map(|entry| {
-                state.intercept_to_workload.remove(&entry.intercept_id);
-                entry.task
-            })
-        };
+        let task = self.intercepts.lock().await.tasks.remove(&intercept_id);
 
         if let Some(task) = task {
             Self::stop_task(task, "Devbox intercept tunnel").await;
@@ -809,9 +743,7 @@ impl DevboxTunnelManager {
     async fn stop_all_intercepts(&self) {
         let tasks: Vec<TunnelTask> = {
             let mut state = self.intercepts.lock().await;
-            let entries = state.tasks.drain().collect::<Vec<_>>();
-            state.intercept_to_workload.clear();
-            entries.into_iter().map(|(_, entry)| entry.task).collect()
+            state.tasks.drain().map(|(_, task)| task).collect()
         };
 
         for task in tasks {
@@ -858,7 +790,7 @@ impl DevboxTunnelManager {
     async fn stop_task(task: TunnelTask, context: &str) {
         let TunnelTask {
             kind,
-            workload_id,
+            intercept_id,
             shutdown,
             handle,
         } = task;
@@ -866,7 +798,7 @@ impl DevboxTunnelManager {
         if let Err(err) = handle.await {
             tracing::warn!(
                 tunnel_kind = kind.as_str(),
-                workload_id = workload_id.map(|id| id.to_string()),
+                intercept_id = intercept_id.map(|id| id.to_string()),
                 error = %err,
                 "{} task exited with error",
                 context
@@ -880,7 +812,7 @@ fn spawn_tunnel_task(
     api_url: String,
     token: String,
     session_id: Uuid,
-    workload_id: Option<Uuid>,
+    intercept_id: Option<Uuid>,
     tunnel_client_slot: Option<Arc<RwLock<Option<Arc<TunnelClient>>>>>,
 ) -> TunnelTask {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -889,14 +821,14 @@ fn spawn_tunnel_task(
         api_url,
         token,
         session_id,
-        workload_id,
+        intercept_id,
         shutdown_rx,
         tunnel_client_slot,
     ));
 
     TunnelTask {
         kind,
-        workload_id,
+        intercept_id,
         shutdown: shutdown_tx,
         handle,
     }
@@ -907,20 +839,19 @@ async fn run_tunnel_loop(
     api_url: String,
     token: String,
     session_id: Uuid,
-    workload_id: Option<Uuid>,
+    intercept_id: Option<Uuid>,
     mut shutdown_rx: oneshot::Receiver<()>,
     tunnel_client_slot: Option<Arc<RwLock<Option<Arc<TunnelClient>>>>>,
 ) {
     let ws_base = api_url
         .replace("https://", "wss://")
         .replace("http://", "ws://");
-    let ws_url = match (kind, workload_id) {
-        (TunnelKind::Intercept, Some(workload)) => format!(
-            "{}/api/v1/kube/devbox/tunnel/{}/{}?workload_id={}",
+    let ws_url = match (kind, intercept_id) {
+        (TunnelKind::Intercept, _) => format!(
+            "{}/api/v1/kube/devbox/tunnel/{}/{}",
             ws_base.trim_end_matches('/'),
             kind.path(),
-            session_id,
-            workload
+            session_id
         ),
         _ => format!(
             "{}/api/v1/kube/devbox/tunnel/{}/{}",
@@ -929,7 +860,7 @@ async fn run_tunnel_loop(
             session_id
         ),
     };
-    let workload_id_str = workload_id.map(|id| id.to_string());
+    let intercept_id_str = intercept_id.map(|id| id.to_string());
 
     let mut backoff = Duration::from_secs(1);
 
@@ -939,7 +870,7 @@ async fn run_tunnel_loop(
                 tracing::info!(
                     %session_id,
                     tunnel_kind = kind.as_str(),
-                    workload_id = workload_id_str.as_deref(),
+                    intercept_id = intercept_id_str.as_deref(),
                     "Devbox tunnel shutdown signal received"
                 );
                 break;
@@ -950,7 +881,7 @@ async fn run_tunnel_loop(
                         tracing::info!(
                             %session_id,
                             tunnel_kind = kind.as_str(),
-                            workload_id = workload_id_str.as_deref(),
+                            intercept_id = intercept_id_str.as_deref(),
                             "Devbox tunnel closed gracefully"
                         );
                         backoff = Duration::from_secs(1);
@@ -959,7 +890,7 @@ async fn run_tunnel_loop(
                         tracing::warn!(
                             %session_id,
                             tunnel_kind = kind.as_str(),
-                            workload_id = workload_id_str.as_deref(),
+                            intercept_id = intercept_id_str.as_deref(),
                             "Devbox tunnel disconnected: {}",
                             err
                         );
@@ -972,7 +903,7 @@ async fn run_tunnel_loop(
                         tracing::info!(
                             %session_id,
                             tunnel_kind = kind.as_str(),
-                            workload_id = workload_id_str.as_deref(),
+                            intercept_id = intercept_id_str.as_deref(),
                             "Devbox tunnel shutdown signal received"
                         );
                         break;

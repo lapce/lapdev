@@ -13,6 +13,7 @@ use lapdev_devbox_rpc::{
     StartInterceptRequest,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
+use lapdev_tunnel::{run_tunnel_server_with_connector, DynTunnelStream, TunnelError, TunnelTarget};
 use serde::{Deserialize, Serialize};
 use tarpc::{
     server::{BaseChannel, Channel},
@@ -283,13 +284,13 @@ async fn handle_devbox_rpc(
 
 #[derive(Default, Deserialize)]
 pub struct DevboxInterceptTunnelParams {
-    workload_id: Option<Uuid>,
+    _workload_id: Option<Uuid>,
 }
 
 /// WebSocket endpoint for devbox intercept tunnels (server side - receives connections from in-cluster services)
 pub async fn devbox_intercept_tunnel_websocket(
     Path(requested_session_id): Path<Uuid>,
-    Query(params): Query<DevboxInterceptTunnelParams>,
+    Query(_params): Query<DevboxInterceptTunnelParams>,
     websocket: WebSocketUpgrade,
     headers: HeaderMap,
     State(state): State<Arc<CoreState>>,
@@ -337,14 +338,11 @@ pub async fn devbox_intercept_tunnel_websocket(
         session.device_name
     );
 
-    let broker = state.tunnel_broker.clone();
     let session_id = session.session_id;
-    let workload_id = params.workload_id;
+    let registry = state.devbox_tunnels.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        broker
-            .register_devbox(session_id, workload_id, socket)
-            .await;
+        registry.register_cli(session_id, socket).await;
     }))
 }
 
@@ -402,19 +400,59 @@ pub async fn devbox_client_tunnel_websocket(
         .active_environment_id
         .ok_or_else(|| ApiError::InvalidRequest("No active environment selected".to_string()))?;
 
+    let environment = state
+        .db
+        .get_kube_environment(environment_id)
+        .await?
+        .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
     tracing::info!(
         "Devbox client tunnel session {} targeting environment {}",
         session.session_id,
         environment_id
     );
 
-    let broker = state.tunnel_broker.clone();
     let session_id = session.session_id;
+    let tunnel_registry = state.kube_controller.tunnel_registry.clone();
+    let cluster_id = environment.cluster_id;
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        broker
-            .register_devbox_proxy_client(environment_id, session_id, socket)
-            .await;
+        if let Some(cluster_client) = tunnel_registry.get_client(cluster_id).await {
+            if cluster_client.is_closed() {
+                tracing::warn!(
+                    session_id = %session_id,
+                    cluster_id = %cluster_id,
+                    "Cluster tunnel is closed; dropping devbox client connection"
+                );
+                return;
+            }
+
+            let connector = move |target: TunnelTarget| {
+                let cluster_client = cluster_client.clone();
+                async move {
+                    let stream = cluster_client
+                        .connect_tcp(target.host.clone(), target.port)
+                        .await?;
+                    Ok::<DynTunnelStream, TunnelError>(Box::new(stream) as DynTunnelStream)
+                }
+            };
+
+            let transport = WebSocketTransport::new(socket);
+            if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    cluster_id = %cluster_id,
+                    error = %err,
+                    "Devbox client tunnel terminated with error"
+                );
+            }
+        } else {
+            tracing::warn!(
+                session_id = %session_id,
+                cluster_id = %cluster_id,
+                "No cluster tunnel available for devbox client connection"
+            );
+        }
     }))
 }
 

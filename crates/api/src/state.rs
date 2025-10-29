@@ -39,7 +39,6 @@ use crate::{
     devbox_tunnels::DevboxTunnelRegistry,
     github::GithubClient,
     kube_controller::KubeController,
-    tunnel_broker::TunnelBroker,
 };
 
 use crate::environment_events::EnvironmentLifecycleEvent;
@@ -98,8 +97,6 @@ pub struct CoreState {
     pub static_dir: Arc<Option<include_dir::Dir<'static>>>,
     // Kubernetes controller
     pub kube_controller: KubeController,
-    // Tunnel broker for devbox ↔ sidecar streams
-    pub tunnel_broker: Arc<TunnelBroker>,
     // Devbox tunnel registry for session-level bridging
     pub devbox_tunnels: Arc<DevboxTunnelRegistry>,
     // Pending CLI authentication tokens (session_id -> token)
@@ -158,7 +155,6 @@ impl CoreState {
             hyper_client: Arc::new(hyper_client),
             static_dir: Arc::new(static_dir),
             kube_controller: KubeController::new(db, environment_events.clone()),
-            tunnel_broker: Arc::new(TunnelBroker::new()),
             devbox_tunnels: Arc::new(DevboxTunnelRegistry::new()),
             pending_cli_auth: Arc::new(RwLock::new(HashMap::new())),
             active_devbox_sessions: Arc::new(RwLock::new(HashMap::new())),

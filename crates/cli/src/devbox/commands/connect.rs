@@ -7,7 +7,7 @@ use lapdev_tunnel::WebSocketTransport;
 use lapdev_tunnel::{
     run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
 };
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     signal,
@@ -221,6 +221,17 @@ async fn connect_and_run_rpc(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start client tunnel: {}", e))?;
 
+    if let Err(err) = tunnel_manager
+        .ensure_intercept(api_url, token, session_info.session_id)
+        .await
+    {
+        tracing::error!(
+            session_id = %session_info.session_id,
+            "Failed to start intercept tunnel: {}",
+            err
+        );
+    }
+
     // Attempt to rehydrate active environment and intercepts
     let active_environment = match rpc_client
         .get_active_environment(tarpc::context::current())
@@ -268,23 +279,6 @@ async fn connect_and_run_rpc(
                         intercept.workload_name.cyan(),
                         intercept.port_mappings.len()
                     );
-
-                    if let Err(err) = tunnel_manager
-                        .ensure_intercept(
-                            api_url,
-                            token,
-                            session_info.session_id,
-                            intercept.intercept_id,
-                        )
-                        .await
-                    {
-                        tracing::error!(
-                            workload_id = %intercept.workload_id,
-                            intercept_id = %intercept.intercept_id,
-                            "Failed to ensure intercept tunnel during rehydrate: {}",
-                            err
-                        );
-                    }
                 }
             }
             Err(err) => {
@@ -413,11 +407,6 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         _context: tarpc::context::Context,
         intercept: StartInterceptRequest,
     ) -> Result<(), String> {
-        let tunnel_manager = self.tunnel_manager.clone();
-        let api_url = self.api_url.clone();
-        let token = self.token.clone();
-        let session_id = self.session_id;
-
         println!(
             "{} Starting intercept for workload: {}/{}",
             "→".cyan(),
@@ -425,8 +414,9 @@ impl DevboxClientRpc for DevboxClientRpcServer {
             intercept.workload_name
         );
 
-        if let Err(err) = tunnel_manager
-            .ensure_intercept(&api_url, &token, session_id, intercept.intercept_id)
+        if let Err(err) = self
+            .tunnel_manager
+            .ensure_intercept(&self.api_url, &self.token, self.session_id)
             .await
         {
             tracing::error!(
@@ -452,8 +442,6 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         intercept_id: Uuid,
     ) -> Result<(), String> {
         println!("{} Received stop intercept: {}", "✗".yellow(), intercept_id);
-        let tunnel_manager = self.tunnel_manager.clone();
-        tunnel_manager.stop_intercept_by_id(intercept_id).await;
         tracing::info!("Intercept {} stop acknowledged by CLI", intercept_id);
         Ok(())
     }
@@ -502,6 +490,18 @@ impl DevboxClientRpc for DevboxClientRpcServer {
                 tracing::error!("Failed to send environment change to main loop: {:?}", e);
             }
         }
+
+        if let Err(err) = self
+            .tunnel_manager
+            .ensure_intercept(&self.api_url, &self.token, self.session_id)
+            .await
+        {
+            tracing::error!(
+                session_id = %self.session_id,
+                "Failed to restart intercept tunnel after environment change: {}",
+                err
+            );
+        }
     }
 
     async fn ping(self, _context: tarpc::context::Context) -> Result<(), String> {
@@ -515,7 +515,7 @@ enum ShutdownSignal {
 }
 
 struct DevboxTunnelManager {
-    intercepts: Mutex<InterceptState>,
+    intercept_task: Mutex<Option<TunnelTask>>,
     client_task: Mutex<Option<TunnelTask>>,
     /// Shared tunnel client for DNS service bridge
     tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
@@ -527,15 +527,10 @@ struct DevboxTunnelManager {
     ip_allocator: Arc<Mutex<SyntheticIpAllocator>>,
 }
 
-#[derive(Default)]
-struct InterceptState {
-    tasks: HashMap<Uuid, TunnelTask>,
-}
-
 impl DevboxTunnelManager {
     fn new() -> Self {
         Self {
-            intercepts: Mutex::new(InterceptState::default()),
+            intercept_task: Mutex::new(None),
             client_task: Mutex::new(None),
             tunnel_client: Arc::new(RwLock::new(None)),
             service_bridge: Arc::new(ServiceBridge::new()),
@@ -712,10 +707,9 @@ impl DevboxTunnelManager {
         api_url: &str,
         token: &str,
         session_id: Uuid,
-        intercept_id: Uuid,
     ) -> Result<(), String> {
-        let mut state = self.intercepts.lock().await;
-        if state.tasks.contains_key(&intercept_id) {
+        let mut guard = self.intercept_task.lock().await;
+        if guard.is_some() {
             return Ok(());
         }
 
@@ -724,29 +718,16 @@ impl DevboxTunnelManager {
             api_url.trim_end_matches('/').to_string(),
             token.to_string(),
             session_id,
-            Some(intercept_id),
+            None,
             None,
         );
 
-        state.tasks.insert(intercept_id, task);
+        *guard = Some(task);
         Ok(())
     }
 
-    async fn stop_intercept_by_id(&self, intercept_id: Uuid) {
-        let task = self.intercepts.lock().await.tasks.remove(&intercept_id);
-
-        if let Some(task) = task {
-            Self::stop_task(task, "Devbox intercept tunnel").await;
-        }
-    }
-
     async fn stop_all_intercepts(&self) {
-        let tasks: Vec<TunnelTask> = {
-            let mut state = self.intercepts.lock().await;
-            state.tasks.drain().map(|(_, task)| task).collect()
-        };
-
-        for task in tasks {
+        if let Some(task) = self.intercept_task.lock().await.take() {
             Self::stop_task(task, "Devbox intercept tunnel").await;
         }
     }

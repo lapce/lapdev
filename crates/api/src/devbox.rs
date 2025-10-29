@@ -10,7 +10,6 @@ use axum_extra::{headers, TypedHeader};
 use futures::StreamExt;
 use lapdev_devbox_rpc::{
     DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionInfo, DevboxSessionRpc, PortMapping,
-    StartInterceptRequest,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{run_tunnel_server_with_connector, DynTunnelStream, TunnelError, TunnelTarget};
@@ -888,51 +887,14 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .await
             .map_err(|e| format!("Failed to create intercept: {}", e))?;
 
-        // Get the active session handle to send RPC to CLI
-        let rpc_client_opt = {
-            let sessions = self.state.active_devbox_sessions.read().await;
-            sessions
-                .get(&self.user_id)
-                .map(|handle| (handle.session_id, handle.rpc_client.clone()))
-        };
-
-        let session_for_routes = rpc_client_opt.as_ref().map(|(session_id, _)| *session_id);
-
-        if let Some((session_id, rpc_client)) = rpc_client_opt.as_ref() {
-            // Send start_intercept RPC to CLI
-            tracing::info!(
-                "Notifying CLI session {} to start intercept {}",
-                session_id,
-                intercept.id
-            );
-
-            let start_request = StartInterceptRequest {
-                intercept_id: intercept.id,
-                workload_id,
-                workload_name: workload.name.clone(),
-                namespace: workload.namespace.clone(),
-                port_mappings: actual_port_mappings,
-            };
-
-            // Send RPC to CLI (fire and forget)
-            let rpc_client = rpc_client.clone();
-            tokio::spawn(async move {
-                if let Err(e) = rpc_client
-                    .start_intercept(tarpc::context::current(), start_request)
-                    .await
-                {
-                    tracing::error!("Failed to notify CLI to start intercept: {}", e);
-                }
-            });
-        } else {
-            tracing::warn!(
-                "No active WebSocket connection for user {}, intercept {} created but CLI not notified",
-                self.user_id,
-                intercept.id
-            );
-        }
-
-        if let Some(session_id) = session_for_routes {
+        if let Some(session_id) = self
+            .state
+            .active_devbox_sessions
+            .read()
+            .await
+            .get(&self.user_id)
+            .map(|handle| handle.session_id)
+        {
             let state = self.state.clone();
             let user_id = self.user_id;
             let environment_id = environment.id;
@@ -978,36 +940,14 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .await
             .map_err(|e| format!("Failed to stop intercept: {}", e))?;
 
-        // Notify CLI if session is still active
-        let rpc_client_opt = {
-            let sessions = self.state.active_devbox_sessions.read().await;
-            sessions
-                .get(&self.user_id)
-                .map(|handle| (handle.session_id, handle.rpc_client.clone()))
-        };
-
-        let session_for_routes = rpc_client_opt.as_ref().map(|(session_id, _)| *session_id);
-
-        if let Some((session_id, rpc_client)) = rpc_client_opt.as_ref() {
-            // Send stop_intercept RPC to CLI
-            tracing::info!(
-                "Notifying CLI session {} to stop intercept {}",
-                session_id,
-                intercept_id
-            );
-
-            let rpc_client = rpc_client.clone();
-            tokio::spawn(async move {
-                if let Err(e) = rpc_client
-                    .stop_intercept(tarpc::context::current(), intercept_id)
-                    .await
-                {
-                    tracing::error!("Failed to notify CLI to stop intercept: {}", e);
-                }
-            });
-        }
-
-        if let Some(session_id) = session_for_routes {
+        if let Some(session_id) = self
+            .state
+            .active_devbox_sessions
+            .read()
+            .await
+            .get(&self.user_id)
+            .map(|handle| handle.session_id)
+        {
             let state = self.state.clone();
             let user_id = self.user_id;
             let environment_id = intercept.environment_id;

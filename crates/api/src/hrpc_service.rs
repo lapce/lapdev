@@ -17,7 +17,6 @@ use lapdev_common::{
     },
     UserRole,
 };
-use lapdev_devbox_rpc::{PortMapping as RpcPortMapping, StartInterceptRequest};
 use lapdev_rpc::error::ApiError;
 use pasetors::claims::Claims;
 use sea_orm::DbErr;
@@ -163,10 +162,6 @@ impl HrpcService for CoreState {
             .update_devbox_session_active_environment(ctx.session.session_id, Some(environment_id))
             .await
             .map_err(hrpc_from_anyhow)?;
-
-        self.tunnel_broker
-            .set_session_environment(ctx.session.session_id, Some(environment_id))
-            .await;
 
         // Notify CLI about the environment change
         let cluster = self
@@ -363,34 +358,16 @@ impl HrpcService for CoreState {
             .await
             .map_err(hrpc_from_anyhow)?;
 
-        // Try to notify CLI if there's an active session (optional)
-        let rpc_client = {
-            let sessions = self.active_devbox_sessions.read().await;
-            sessions
-                .get(&user.id)
-                .map(|handle| (handle.session_id, handle.rpc_client.clone()))
-        };
-
-        if let Some((session_id, client)) = rpc_client.as_ref() {
-            let request = StartInterceptRequest {
-                intercept_id: intercept.id,
-                workload_id,
-                workload_name: workload.name.clone(),
-                namespace: workload.namespace.clone(),
-                port_mappings: mappings.iter().map(devbox_port_mapping_to_rpc).collect(),
-            };
-
-            let client = client.clone();
-            tokio::spawn(async move {
-                if let Err(err) = client.start_intercept(context::current(), request).await {
-                    tracing::error!(?err, "Failed to notify CLI to start intercept");
-                }
-            });
-
+        if let Some(session_id) = self
+            .active_devbox_sessions
+            .read()
+            .await
+            .get(&user.id)
+            .map(|handle| handle.session_id)
+        {
             let state = self.clone();
             let user_id = user.id;
             let environment_id = environment.id;
-            let session_id = *session_id;
             tokio::spawn(async move {
                 state
                     .push_devbox_routes(user_id, session_id, environment_id)
@@ -425,32 +402,18 @@ impl HrpcService for CoreState {
             .stop_workload_intercept(intercept_id)
             .await
             .map_err(hrpc_from_anyhow)?;
-
-        let rpc_client = {
-            let sessions = self.active_devbox_sessions.read().await;
-            sessions
-                .get(&user.id)
-                .map(|handle| (handle.session_id, handle.rpc_client.clone()))
-        };
-
-        if let Some((session_id, client)) = rpc_client.as_ref() {
-            let client = client.clone();
-            tokio::spawn(async move {
-                if let Err(err) = client
-                    .stop_intercept(context::current(), intercept_id)
-                    .await
-                {
-                    tracing::error!(?err, "Failed to notify CLI to stop intercept");
-                }
-            });
-
+        if let Some(session_id) = self
+            .active_devbox_sessions
+            .read()
+            .await
+            .get(&user.id)
+            .map(|handle| handle.session_id)
+        {
             let state = self.clone();
-            let user_id = user.id;
             let environment_id = intercept.environment_id;
-            let session_id = *session_id;
             tokio::spawn(async move {
                 state
-                    .push_devbox_routes(user_id, session_id, environment_id)
+                    .push_devbox_routes(user.id, session_id, environment_id)
                     .await;
             });
         }
@@ -1172,14 +1135,6 @@ impl CoreState {
         } else {
             Err(hrpc_error("Unauthorized"))
         }
-    }
-}
-
-fn devbox_port_mapping_to_rpc(mapping: &DevboxPortMapping) -> RpcPortMapping {
-    RpcPortMapping {
-        workload_port: mapping.workload_port,
-        local_port: mapping.local_port,
-        protocol: mapping.protocol.clone(),
     }
 }
 

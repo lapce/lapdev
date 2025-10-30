@@ -1,4 +1,5 @@
 use http::header::AUTHORIZATION;
+use lapdev_common::kube::ProxyPortRoute;
 use lapdev_tunnel::{
     TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
 };
@@ -54,6 +55,7 @@ impl SidecarSettings {
 pub struct RoutingTable {
     pub branch_routes: HashMap<Uuid, BranchRoute>,
     pub default_route: DefaultRoute,
+    pub port_routes: HashMap<u16, ProxyPortRoute>,
 }
 
 impl Default for RoutingTable {
@@ -61,6 +63,7 @@ impl Default for RoutingTable {
         Self {
             branch_routes: HashMap::new(),
             default_route: DefaultRoute::default(),
+            port_routes: HashMap::new(),
         }
     }
 }
@@ -92,7 +95,9 @@ impl RoutingTable {
             };
         }
 
-        RouteDecision::DefaultLocal
+        RouteDecision::DefaultLocal {
+            target_port: self.target_port_for_service(port),
+        }
     }
 
     pub fn resolve_tcp(&self, port: u16) -> RouteDecision {
@@ -103,7 +108,9 @@ impl RoutingTable {
             };
         }
 
-        RouteDecision::DefaultLocal
+        RouteDecision::DefaultLocal {
+            target_port: self.target_port_for_service(port),
+        }
     }
 
     pub async fn replace_branch_routes(
@@ -248,6 +255,41 @@ impl RoutingTable {
             }
             _ => false,
         }
+    }
+
+    pub fn set_port_routes(
+        &mut self,
+        routes: impl IntoIterator<Item = ProxyPortRoute>,
+    ) -> &mut Self {
+        self.port_routes.clear();
+        for route in routes {
+            self.port_routes.insert(route.proxy_port, route);
+        }
+        self
+    }
+
+    pub fn upsert_port_route(&mut self, route: ProxyPortRoute) -> Option<ProxyPortRoute> {
+        self.port_routes.insert(route.proxy_port, route)
+    }
+
+    pub fn remove_port_route(&mut self, proxy_port: u16) -> Option<ProxyPortRoute> {
+        self.port_routes.remove(&proxy_port)
+    }
+
+    pub fn port_route(&self, proxy_port: u16) -> Option<&ProxyPortRoute> {
+        self.port_routes.get(&proxy_port)
+    }
+
+    pub fn port_routes(&self) -> impl Iterator<Item = &ProxyPortRoute> {
+        self.port_routes.values()
+    }
+
+    pub fn target_port_for_service(&self, service_port: u16) -> u16 {
+        self.port_routes
+            .values()
+            .find(|route| route.service_port == service_port)
+            .map(|route| route.target_port)
+            .unwrap_or(service_port)
     }
 }
 
@@ -510,7 +552,9 @@ pub enum RouteDecision {
         connection: Arc<DevboxConnection>,
         target_port: u16,
     },
-    DefaultLocal,
+    DefaultLocal {
+        target_port: u16,
+    },
 }
 
 /// Kubernetes annotations used for configuration

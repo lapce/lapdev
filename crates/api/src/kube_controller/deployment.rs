@@ -1,20 +1,13 @@
 use std::collections::HashMap;
 
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, EnvVarSource, ObjectFieldSelector, PodSpec,
-};
-use lapdev_common::kube::{
-    DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_METRICS_PORT,
-    DEFAULT_SIDECAR_PROXY_PORT, SIDECAR_PROXY_BIND_ADDR_ENV_VAR,
-    SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ENV_VAR,
-};
+use lapdev_common::kube::ProxyPortRoute;
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::KubeWorkloadYamlOnly;
 use lapdev_rpc::error::ApiError;
 use uuid::Uuid;
 
-use super::{container_images, KubeController};
+use super::{resources, KubeController};
 
 impl KubeController {
     pub(super) async fn deploy_environment_resources(
@@ -62,6 +55,7 @@ impl KubeController {
                         &environment.namespace,
                         &environment.auth_token,
                         manager_namespace_ref,
+                        None,
                     )?;
                 }
             }
@@ -119,12 +113,13 @@ impl KubeController {
     }
 }
 
-fn inject_sidecar_proxy_into_deployment_yaml(
+pub(super) fn inject_sidecar_proxy_into_deployment_yaml(
     yaml: &mut String,
     environment_id: Uuid,
     namespace: &str,
     auth_token: &str,
     manager_namespace: Option<&str>,
+    proxy_routes: Option<&[ProxyPortRoute]>,
 ) -> Result<(), ApiError> {
     let mut deployment: Deployment = serde_yaml::from_str(yaml).map_err(|err| {
         ApiError::InvalidRequest(format!(
@@ -133,17 +128,21 @@ fn inject_sidecar_proxy_into_deployment_yaml(
         ))
     })?;
 
-    if let Some(spec) = deployment.spec.as_mut() {
-        if let Some(pod_spec) = spec.template.spec.as_mut() {
-            ensure_sidecar_proxy_container(
-                pod_spec,
-                environment_id,
-                namespace,
-                auth_token,
-                manager_namespace,
-            );
-        }
-    }
+    let routes = proxy_routes.unwrap_or_default();
+    let options = resources::SidecarInjectionOptions {
+        environment_id,
+        namespace,
+        auth_token,
+        manager_namespace,
+        proxy_routes: routes,
+    };
+
+    resources::inject_sidecar_proxy_into_deployment(&mut deployment, &options).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to inject sidecar proxy into deployment manifest: {}",
+            err
+        ))
+    })?;
 
     *yaml = serde_yaml::to_string(&deployment).map_err(|err| {
         ApiError::InvalidRequest(format!(
@@ -155,154 +154,67 @@ fn inject_sidecar_proxy_into_deployment_yaml(
     Ok(())
 }
 
-fn ensure_sidecar_proxy_container(
-    pod_spec: &mut PodSpec,
-    environment_id: Uuid,
-    namespace: &str,
-    auth_token: &str,
-    manager_namespace: Option<&str>,
-) {
-    let already_present = pod_spec
-        .containers
-        .iter()
-        .any(|container| container.name == "lapdev-sidecar-proxy");
-    if already_present {
-        return;
-    }
-
-    pod_spec.containers.push(build_sidecar_proxy_container(
-        environment_id,
-        namespace,
-        auth_token,
-        manager_namespace,
-    ));
-}
-
-fn build_sidecar_proxy_container(
-    environment_id: Uuid,
-    namespace: &str,
-    auth_token: &str,
-    manager_namespace: Option<&str>,
-) -> Container {
-    let sidecar_image = container_images::sidecar_proxy_image_reference();
-    let manager_namespace = manager_namespace.unwrap_or("lapdev");
-    let manager_addr = format!("lapdev-kube-manager.{manager_namespace}.svc:5001");
-
-    Container {
-        name: "lapdev-sidecar-proxy".to_string(),
-        image: Some(sidecar_image),
-        ports: Some(vec![
-            ContainerPort {
-                container_port: DEFAULT_SIDECAR_PROXY_PORT as i32,
-                name: Some("proxy".to_string()),
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-            ContainerPort {
-                container_port: DEFAULT_SIDECAR_PROXY_METRICS_PORT as i32,
-                name: Some("metrics".to_string()),
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-        ]),
-        env: Some(vec![
-            EnvVar {
-                name: "LAPDEV_ENVIRONMENT_ID".to_string(),
-                value: Some(environment_id.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "LAPDEV_ENVIRONMENT_AUTH_TOKEN".to_string(),
-                value: Some(auth_token.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "KUBERNETES_NAMESPACE".to_string(),
-                value: Some(namespace.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: SIDECAR_PROXY_BIND_ADDR_ENV_VAR.to_string(),
-                value: Some(DEFAULT_SIDECAR_PROXY_BIND_ADDR.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: SIDECAR_PROXY_PORT_ENV_VAR.to_string(),
-                value: Some(DEFAULT_SIDECAR_PROXY_PORT.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR.to_string(),
-                value: Some(manager_addr),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "HOSTNAME".to_string(),
-                value_from: Some(EnvVarSource {
-                    field_ref: Some(ObjectFieldSelector {
-                        field_path: "metadata.name".to_string(),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        ]),
-        ..Default::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k8s_openapi::api::apps::v1::DeploymentSpec;
+    use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
+    use lapdev_common::kube::{
+        DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_PORT,
+        SIDECAR_PROXY_BIND_ADDR_ENV_VAR, SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ENV_VAR,
+    };
+    use super::super::container_images;
 
     #[test]
-    fn ensure_sidecar_proxy_container_appends_once() {
-        let mut pod_spec = PodSpec {
-            containers: vec![Container {
-                name: "primary".to_string(),
+    fn inject_sidecar_proxy_appends_once() {
+        let mut deployment = Deployment {
+            metadata: Default::default(),
+            spec: Some(DeploymentSpec {
+                replicas: None,
+                selector: LabelSelector::default(),
+                template: PodTemplateSpec {
+                    metadata: Default::default(),
+                    spec: Some(PodSpec {
+                        containers: vec![Container {
+                            name: "primary".to_string(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                },
                 ..Default::default()
-            }],
-            ..Default::default()
+            }),
+            status: None,
         };
 
         let environment_id = Uuid::new_v4();
-        ensure_sidecar_proxy_container(
-            &mut pod_spec,
+        let options = resources::SidecarInjectionOptions {
             environment_id,
-            "lapdev-namespace",
-            "auth-token",
-            Some("lapdev"),
-        );
+            namespace: "lapdev-namespace",
+            auth_token: "auth-token",
+            manager_namespace: Some("lapdev"),
+            proxy_routes: &[],
+        };
 
-        let mut sidecars: Vec<&Container> = pod_spec
+        resources::inject_sidecar_proxy_into_deployment(&mut deployment, &options).unwrap();
+        resources::inject_sidecar_proxy_into_deployment(&mut deployment, &options).unwrap();
+
+        let pod_spec = deployment
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.spec.as_ref())
+            .expect("deployment pod spec should exist");
+
+        let sidecars: Vec<&Container> = pod_spec
             .containers
             .iter()
             .filter(|container| container.name == "lapdev-sidecar-proxy")
             .collect();
         assert_eq!(sidecars.len(), 1, "sidecar should be appended exactly once");
 
-        ensure_sidecar_proxy_container(
-            &mut pod_spec,
-            environment_id,
-            "lapdev-namespace",
-            "auth-token",
-            Some("lapdev"),
-        );
-
-        sidecars = pod_spec
-            .containers
-            .iter()
-            .filter(|container| container.name == "lapdev-sidecar-proxy")
-            .collect();
-        assert_eq!(
-            sidecars.len(),
-            1,
-            "subsequent injections must not duplicate the sidecar"
-        );
-
-        let sidecar = sidecars.pop().expect("sidecar container should exist");
-        let expected_image = super::container_images::sidecar_proxy_image_reference();
+        let sidecar = sidecars[0];
+        let expected_image = container_images::sidecar_proxy_image_reference();
         assert_eq!(
             sidecar.image.as_deref(),
             Some(expected_image.as_str()),

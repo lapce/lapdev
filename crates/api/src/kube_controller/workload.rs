@@ -460,7 +460,7 @@ impl KubeController {
         containers: &[lapdev_common::kube::KubeContainerInfo],
     ) -> Result<(KubeWorkloadWithResources, String), ApiError> {
         let rebuilt_yaml =
-            rebuild_workload_yaml(&kind, original_yaml, containers).map_err(|err| {
+            rebuild_workload_yaml(&kind, original_yaml, containers, None).map_err(|err| {
                 ApiError::InvalidRequest(format!("Failed to rebuild workload manifest: {}", err))
             })?;
 

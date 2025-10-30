@@ -19,7 +19,7 @@ use crate::{
         dialog::DialogTrigger,
         dropdown_menu::{
             DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
-            DropdownMenuSeparator, DropdownMenuTrigger,
+            DropdownMenuSeparator, DropdownMenuTrigger, DropdownPlacement,
         },
         input::Input,
         label::Label,
@@ -75,7 +75,10 @@ pub fn OrgSelector() -> impl IntoView {
     view! {
         <SidebarMenu>
             <DropdownMenu open=menu_open>
-                <DropdownMenuTrigger open=menu_open>
+                <DropdownMenuTrigger
+                    open=menu_open
+                    placement=DropdownPlacement::RightTop
+                >
                     <SidebarMenuButton
                         size=SidebarButtonSize::Lg
                         class="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
@@ -105,7 +108,7 @@ pub fn OrgSelector() -> impl IntoView {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
                     open=menu_open.read_only()
-                    class="-right-57 top-0 w-56 min-w-56 max-w-56 rounded-lg"
+                    class="w-56 min-w-56 max-w-56 rounded-lg"
                 >
                     <DropdownMenuLabel class="text-xs text-muted-foreground">
                         Switch Organization

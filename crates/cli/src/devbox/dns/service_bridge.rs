@@ -8,7 +8,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::ServiceEndpoint;
+use super::{is_tcp_protocol, ServiceEndpoint};
 
 /// Bridges TCP connections from synthetic IPs to services via tunnel
 pub struct ServiceBridge {
@@ -18,6 +18,12 @@ pub struct ServiceBridge {
     listeners: Arc<RwLock<Vec<JoinHandle<()>>>>,
     /// Tunnel client for connecting to services
     tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
+}
+
+#[derive(Debug, Default)]
+pub struct ServiceBridgeStartReport {
+    pub started: Vec<ServiceEndpoint>,
+    pub failed: Vec<(ServiceEndpoint, anyhow::Error)>,
 }
 
 impl ServiceBridge {
@@ -35,45 +41,72 @@ impl ServiceBridge {
     }
 
     /// Start listening on synthetic IPs for the given service endpoints
-    pub async fn start(&self, endpoints: Vec<ServiceEndpoint>) -> Result<()> {
-        if self.tunnel_client.read().await.is_none() {
-            anyhow::bail!("Tunnel client not set");
-        }
-
+    pub async fn start(&self, endpoints: Vec<ServiceEndpoint>) -> ServiceBridgeStartReport {
         // Stop existing listeners
         self.stop().await;
 
-        // Update endpoint mappings
-        let mut endpoint_map = self.endpoints.write().await;
-        endpoint_map.clear();
-        for endpoint in &endpoints {
-            let addr = SocketAddr::new(endpoint.synthetic_ip, endpoint.port);
-            endpoint_map.insert(addr, endpoint.clone());
+        let mut tcp_endpoints = Vec::new();
+        let mut skipped = Vec::new();
+
+        for endpoint in endpoints {
+            if is_tcp_protocol(&endpoint.protocol) {
+                tcp_endpoints.push(endpoint);
+            } else {
+                skipped.push(endpoint);
+            }
         }
-        drop(endpoint_map);
+
+        if !skipped.is_empty() {
+            for endpoint in &skipped {
+                warn!(
+                    service = %endpoint.service_name,
+                    namespace = %endpoint.namespace,
+                    port = endpoint.port,
+                    protocol = %endpoint.protocol,
+                    "Skipping non-TCP service endpoint; protocol not supported"
+                );
+            }
+        }
+
+        {
+            // Clear any existing endpoint mappings before rebuilding
+            let mut endpoint_map = self.endpoints.write().await;
+            endpoint_map.clear();
+        }
 
         // Start listener for each unique IP:port combination
-        let tunnel_client = self.tunnel_client.read().await.clone().unwrap();
+        let tunnel_client = Arc::clone(&self.tunnel_client);
         let mut tasks = Vec::new();
-        for endpoint in endpoints {
+        let mut started = Vec::new();
+        let mut failed = Vec::new();
+
+        for endpoint in tcp_endpoints {
             let addr = SocketAddr::new(endpoint.synthetic_ip, endpoint.port);
             match self
                 .spawn_listener(addr, endpoint.clone(), Arc::clone(&tunnel_client))
                 .await
             {
-                Ok(task) => tasks.push(task),
+                Ok(task) => {
+                    {
+                        let mut endpoint_map = self.endpoints.write().await;
+                        endpoint_map.insert(addr, endpoint.clone());
+                    }
+                    tasks.push(task);
+                    started.push(endpoint);
+                }
                 Err(e) => {
                     error!("Failed to start listener on {}: {}", addr, e);
-                    // Continue with other listeners
+                    failed.push((endpoint, e));
                 }
             }
         }
 
-        let num_endpoints = tasks.len();
         *self.listeners.write().await = tasks;
 
-        info!("Service bridge started with {} endpoints", num_endpoints);
-        Ok(())
+        let num_started = started.len();
+        info!("Service bridge started with {} endpoints", num_started);
+
+        ServiceBridgeStartReport { started, failed }
     }
 
     /// Stop all listeners
@@ -90,7 +123,7 @@ impl ServiceBridge {
         &self,
         addr: SocketAddr,
         endpoint: ServiceEndpoint,
-        tunnel_client: Arc<TunnelClient>,
+        tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
     ) -> Result<JoinHandle<()>> {
         let listener = TcpListener::bind(addr)
             .await
@@ -131,24 +164,12 @@ impl ServiceBridge {
     }
 }
 
-impl Drop for ServiceBridge {
-    fn drop(&mut self) {
-        let listeners = self.listeners.clone();
-        tokio::spawn(async move {
-            let mut listeners = listeners.write().await;
-            for task in listeners.drain(..) {
-                task.abort();
-            }
-        });
-    }
-}
-
 /// Handle a single TCP connection by proxying it through the tunnel
 async fn handle_connection(
     mut local_stream: TcpStream,
     local_addr: SocketAddr,
     endpoints: Arc<RwLock<HashMap<SocketAddr, ServiceEndpoint>>>,
-    tunnel_client: Arc<TunnelClient>,
+    tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
 ) -> Result<()> {
     // Look up the service endpoint
     let endpoint = {
@@ -157,6 +178,14 @@ async fn handle_connection(
             .get(&local_addr)
             .cloned()
             .context(format!("No endpoint found for {}", local_addr))?
+    };
+
+    let tunnel_client = {
+        let guard = tunnel_client.read().await;
+        guard
+            .as_ref()
+            .cloned()
+            .context("Tunnel client not available")?
     };
 
     debug!(

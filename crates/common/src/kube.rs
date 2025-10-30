@@ -20,6 +20,7 @@ pub const DEFAULT_SIDECAR_PROXY_METRICS_PORT: u16 = 25090;
 pub const SIDECAR_PROXY_WORKLOAD_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_WORKLOAD";
 pub const SIDECAR_PROXY_BIND_ADDR_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_BIND_ADDR";
 pub const DEFAULT_SIDECAR_PROXY_BIND_ADDR: &str = "0.0.0.0";
+pub const SIDECAR_PROXY_PORT_ROUTES_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_PORT_ROUTES";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeCluster {
@@ -389,6 +390,16 @@ pub struct KubeServiceDetails {
 pub struct KubeServiceWithYaml {
     pub yaml: String,
     pub details: KubeServiceDetails,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyPortRoute {
+    /// Port exposed by the sidecar proxy inside the pod.
+    pub proxy_port: u16,
+    /// Service port advertised to the cluster.
+    pub service_port: u16,
+    /// Container port on the workload that should receive the traffic.
+    pub target_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

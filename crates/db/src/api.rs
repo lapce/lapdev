@@ -94,6 +94,7 @@ pub struct CachedClusterService {
     pub name: String,
     pub selector: BTreeMap<String, String>,
     pub ports: Vec<KubeServicePort>,
+    pub service_yaml: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1161,6 +1162,7 @@ impl DbApi {
                 name: svc.name,
                 selector,
                 ports,
+                service_yaml: svc.service_yaml,
             });
         }
 
@@ -2299,6 +2301,7 @@ impl DbApi {
                 name: svc.name,
                 selector,
                 ports,
+                service_yaml: svc.service_yaml,
             });
         }
 
@@ -2312,9 +2315,9 @@ impl DbApi {
         &self,
         cluster_id: Uuid,
         workload_ids: &[Uuid],
-    ) -> Result<Vec<CachedClusterService>> {
+    ) -> Result<HashMap<Uuid, Vec<CachedClusterService>>> {
         if workload_ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let workload_ids_vec: Vec<Uuid> = workload_ids.to_vec();
@@ -2328,7 +2331,7 @@ impl DbApi {
             .await?;
 
         if label_rows.is_empty() {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let mut workload_labels: HashMap<Uuid, BTreeMap<String, String>> = HashMap::new();
@@ -2360,10 +2363,10 @@ impl DbApi {
         }
 
         if workloads_by_namespace.is_empty() {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
-        let mut all_matching_service_ids: HashSet<Uuid> = HashSet::new();
+        let mut workload_service_ids: HashMap<Uuid, HashSet<Uuid>> = HashMap::new();
 
         for (namespace, workloads_in_namespace) in workloads_by_namespace {
             let mut label_pairs: BTreeSet<(String, String)> = BTreeSet::new();
@@ -2407,16 +2410,13 @@ impl DbApi {
                 continue;
             }
 
-            let candidate_service_ids_vec: Vec<Uuid> =
-                candidate_service_ids.iter().copied().collect();
-
             let selector_rows_full = kube_cluster_service_selector::Entity::find()
                 .filter(kube_cluster_service_selector::Column::ClusterId.eq(cluster_id))
                 .filter(kube_cluster_service_selector::Column::Namespace.eq(namespace.clone()))
                 .filter(kube_cluster_service_selector::Column::DeletedAt.is_null())
                 .filter(
                     kube_cluster_service_selector::Column::ServiceId
-                        .is_in(candidate_service_ids_vec),
+                        .is_in(candidate_service_ids.iter().copied().collect::<Vec<_>>()),
                 )
                 .all(&self.conn)
                 .await?;
@@ -2442,28 +2442,35 @@ impl DbApi {
                                 .map(|existing| existing == value)
                                 .unwrap_or(false)
                         }) {
-                            all_matching_service_ids.insert(*service_id);
+                            workload_service_ids
+                                .entry(workload_id)
+                                .or_default()
+                                .insert(*service_id);
                         }
                     }
                 }
             }
         }
 
-        if all_matching_service_ids.is_empty() {
-            return Ok(Vec::new());
+        if workload_service_ids.is_empty() {
+            return Ok(HashMap::new());
         }
 
-        // Fetch the actual service records
+        let all_service_ids: HashSet<Uuid> = workload_service_ids
+            .values()
+            .flat_map(|set| set.iter().copied())
+            .collect();
+
         let services = kube_cluster_service::Entity::find()
             .filter(
                 kube_cluster_service::Column::Id
-                    .is_in(all_matching_service_ids.into_iter().collect::<Vec<_>>()),
+                    .is_in(all_service_ids.iter().copied().collect::<Vec<_>>()),
             )
             .filter(kube_cluster_service::Column::DeletedAt.is_null())
             .all(&self.conn)
             .await?;
 
-        let mut results = Vec::with_capacity(services.len());
+        let mut service_by_id: HashMap<Uuid, CachedClusterService> = HashMap::new();
         for svc in services {
             let selector: BTreeMap<String, String> =
                 serde_json::from_value(svc.selector.clone()).unwrap_or_default();
@@ -2474,11 +2481,27 @@ impl DbApi {
                 .filter_map(StoredServicePort::into_service_port)
                 .collect();
 
-            results.push(CachedClusterService {
-                name: svc.name,
-                selector,
-                ports,
-            });
+            service_by_id.insert(
+                svc.id,
+                CachedClusterService {
+                    name: svc.name,
+                    selector,
+                    ports,
+                    service_yaml: svc.service_yaml,
+                },
+            );
+        }
+
+        let mut results: HashMap<Uuid, Vec<CachedClusterService>> = HashMap::new();
+        for (workload_id, service_ids) in workload_service_ids {
+            let services_for_workload = service_ids
+                .into_iter()
+                .filter_map(|service_id| service_by_id.get(&service_id).cloned())
+                .collect::<Vec<_>>();
+
+            if !services_for_workload.is_empty() {
+                results.insert(workload_id, services_for_workload);
+            }
         }
 
         Ok(results)
@@ -2782,13 +2805,11 @@ impl DbApi {
         base_environment_id: Option<Uuid>,
         workloads: Vec<KubeWorkloadDetails>,
         services: std::collections::HashMap<String, lapdev_common::kube::KubeServiceWithYaml>,
+        auth_token: String,
     ) -> Result<lapdev_db_entities::kube_environment::Model, sea_orm::DbErr> {
         let txn = self.conn.begin().await?;
 
         let created_at = Utc::now().into();
-
-        // Generate auth token for the environment
-        let auth_token = lapdev_common::utils::rand_string(32);
 
         // Create the environment
         let environment = lapdev_db_entities::kube_environment::ActiveModel {

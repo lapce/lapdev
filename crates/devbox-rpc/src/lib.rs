@@ -16,11 +16,9 @@ pub trait DevboxSessionRpc {
 }
 
 // Devbox client RPC - CLI to Server
-// These are methods that the server calls on the CLI to manage intercepts
+// These are methods that the server calls on the CLI
 #[tarpc::service]
 pub trait DevboxClientRpc {
-    async fn start_intercept(intercept: StartInterceptRequest) -> Result<(), String>;
-    async fn stop_intercept(intercept_id: Uuid) -> Result<(), String>;
     async fn session_displaced(new_device_name: String);
     async fn environment_changed(environment: Option<DevboxEnvironmentInfo>);
     async fn ping() -> Result<(), String>;
@@ -82,15 +80,6 @@ fn default_protocol() -> String {
 pub struct PortMappingOverride {
     pub workload_port: u16,
     pub local_port: Option<u16>, // None means use same port as workload
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StartInterceptRequest {
-    pub intercept_id: Uuid,
-    pub workload_id: Uuid,
-    pub workload_name: String,
-    pub namespace: String,
-    pub port_mappings: Vec<PortMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

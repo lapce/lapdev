@@ -400,10 +400,7 @@ impl PreviewUrlProxy {
         }
 
         // Build the target host for the service inside the cluster
-        let target_host = format!(
-            "{}.{}.svc.cluster.local",
-            target.service_name, target.namespace
-        );
+        let target_host = format!("{}.{}.svc", target.service_name, target.namespace);
 
         debug!("Target: {}:{}", target_host, target.service_port);
 

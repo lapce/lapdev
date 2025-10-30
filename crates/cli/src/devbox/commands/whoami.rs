@@ -4,9 +4,9 @@ use colored::Colorize;
 
 use crate::{api::client::LapdevClient, auth};
 
-pub async fn execute(api_url: &str) -> Result<()> {
+pub async fn execute(api_host: &str, api_url: &str) -> Result<()> {
     // Get token from keychain
-    let token = auth::get_token(api_url)?;
+    let token = auth::get_token(api_host)?;
 
     // Create client and fetch user info
     let client = LapdevClient::new(api_url.to_string()).with_token(token);

@@ -81,16 +81,16 @@ async fn main() -> anyhow::Result<()> {
             device_name,
             api_host,
         } => {
-            let (_, api_url) = config::resolve_api_base_url(api_host);
-            devbox::commands::login::execute(&api_url, device_name).await?;
+            let (api_host, _) = config::resolve_api_base_url(api_host);
+            devbox::commands::login::execute(&api_host, device_name).await?;
         }
         Commands::Logout { api_host } => {
-            let (_, api_url) = config::resolve_api_base_url(api_host);
-            devbox::commands::logout::execute(&api_url).await?;
+            let (api_host, _) = config::resolve_api_base_url(api_host);
+            devbox::commands::logout::execute(&api_host).await?;
         }
         Commands::Whoami { api_host } => {
-            let (_, api_url) = config::resolve_api_base_url(api_host);
-            devbox::commands::whoami::execute(&api_url).await?;
+            let (api_host, api_url) = config::resolve_api_base_url(api_host);
+            devbox::commands::whoami::execute(&api_host, &api_url).await?;
         }
         Commands::Devbox { command } => {
             devbox::handle_command(command).await?;

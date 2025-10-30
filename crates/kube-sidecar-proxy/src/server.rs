@@ -7,17 +7,20 @@ use crate::{
     protocol_detector::{detect_protocol, ProtocolDetectionResult, ProtocolType},
     rpc::SidecarProxyRpcServer,
 };
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use futures::StreamExt;
-use lapdev_common::kube::{SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR};
+use lapdev_common::kube::{
+    ProxyPortRoute, SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ROUTES_ENV_VAR,
+    SIDECAR_PROXY_WORKLOAD_ENV_VAR,
+};
 use lapdev_kube_rpc::{http_parser, SidecarProxyManagerRpcClient, SidecarProxyRpc};
 use lapdev_rpc::spawn_twoway;
-use std::{io, net::SocketAddr, str::FromStr, sync::Arc};
+use std::{collections::HashSet, env, io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
-    sync::RwLock,
+    sync::{mpsc, RwLock},
     time::{sleep, Duration},
 };
 use tracing::{debug, error, info, warn};
@@ -79,11 +82,52 @@ impl SidecarProxyServer {
             environment_auth_token,
         );
 
+        let mut routing_table = RoutingTable::default();
+
+        match env::var(SIDECAR_PROXY_PORT_ROUTES_ENV_VAR) {
+            Ok(raw_routes) => {
+                let routes: Vec<ProxyPortRoute> =
+                    serde_json::from_str(&raw_routes).with_context(|| {
+                        format!(
+                            "failed to parse {} as JSON array of proxy routes",
+                            SIDECAR_PROXY_PORT_ROUTES_ENV_VAR
+                        )
+                    })?;
+
+                if routes.is_empty() {
+                    warn!(
+                        "{} provided but contained no routes; sidecar will fall back to default port",
+                        SIDECAR_PROXY_PORT_ROUTES_ENV_VAR
+                    );
+                } else {
+                    info!(
+                        "Loaded {} proxy port routes from {}",
+                        routes.len(),
+                        SIDECAR_PROXY_PORT_ROUTES_ENV_VAR
+                    );
+                }
+
+                routing_table.set_port_routes(routes);
+            }
+            Err(env::VarError::NotPresent) => {
+                debug!(
+                    "{} not set; using default listener port {}",
+                    SIDECAR_PROXY_PORT_ROUTES_ENV_VAR,
+                    listen_addr.port()
+                );
+            }
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(
+                    anyhow!("{} must be valid UTF-8", SIDECAR_PROXY_PORT_ROUTES_ENV_VAR).into(),
+                );
+            }
+        }
+
         let server = Self {
             workload_id,
             sidecar_proxy_manager_addr,
             settings: Arc::new(settings),
-            routing_table: Arc::new(RwLock::new(RoutingTable::default())),
+            routing_table: Arc::new(RwLock::new(routing_table)),
             rpc_client: Arc::new(RwLock::new(None)),
         };
 
@@ -103,70 +147,55 @@ impl SidecarProxyServer {
             });
         }
 
-        // Create TCP listener for iptables-redirected connections
+        // Determine which ports we should listen on.
         let listen_addr = self.settings.as_ref().listen_addr;
-        let listener = TcpListener::bind(&listen_addr).await?;
-        info!("Sidecar proxy listening on: {}", listen_addr);
+        let listen_ip = listen_addr.ip();
+        let default_port = listen_addr.port();
 
-        // Handle connections
-        let routing_table_for_server = Arc::clone(&self.routing_table);
-        let rpc_client_for_server = Arc::clone(&self.rpc_client);
-        let settings_for_server = Arc::clone(&self.settings);
-        let server = async move {
-            loop {
-                match listener.accept().await {
-                    Ok((inbound_stream, client_addr)) => {
-                        debug!("Accepted connection from {}", client_addr);
-                        let routing_table = Arc::clone(&routing_table_for_server);
-                        let rpc_client = Arc::clone(&rpc_client_for_server);
-                        let settings = Arc::clone(&settings_for_server);
-
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_connection(
-                                inbound_stream,
-                                client_addr,
-                                settings,
-                                routing_table,
-                                rpc_client,
-                            )
-                            .await
-                            {
-                                error!("Error handling connection from {}: {}", client_addr, e);
-                            }
-                        });
-                    }
-                    Err(e) => match e.kind() {
-                        io::ErrorKind::ConnectionAborted
-                        | io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::Interrupted => {
-                            warn!("Transient accept error: {}", e);
-                            continue;
-                        }
-                        _ => {
-                            if let Some(raw_os_error) = e.raw_os_error() {
-                                const EMFILE: i32 = 24;
-                                const WSAEMFILE: i32 = 10024;
-
-                                if raw_os_error == EMFILE || raw_os_error == WSAEMFILE {
-                                    error!(
-                                            "File descriptor limit hit while accepting connection: {} (errno={}), backing off before retrying",
-                                            e, raw_os_error
-                                        );
-                                    sleep(Duration::from_millis(100)).await;
-                                    continue;
-                                }
-                            }
-
-                            error!("Failed to accept connection: {}", e);
-                            break;
-                        }
-                    },
-                }
-            }
+        let initial_ports: Vec<u16> = {
+            let table = self.routing_table.read().await;
+            let mut ports: HashSet<u16> = HashSet::new();
+            ports.insert(default_port);
+            ports.extend(table.port_routes().map(|route| route.proxy_port));
+            ports.into_iter().collect()
         };
 
-        // Wait for either the server to complete or tasks to fail
-        tokio::pin!(server);
+        if initial_ports.is_empty() {
+            return Err(anyhow!("no listener ports configured for sidecar proxy").into());
+        }
+
+        let (listener_err_tx, mut listener_err_rx) =
+            mpsc::unbounded_channel::<(SocketAddr, String)>();
+        let mut listener_handles = Vec::new();
+
+        for port in initial_ports {
+            let addr = SocketAddr::new(listen_ip, port);
+            let listener = TcpListener::bind(addr).await?;
+            info!("Sidecar proxy listening on: {}", addr);
+
+            let routing_table = Arc::clone(&self.routing_table);
+            let rpc_client = Arc::clone(&self.rpc_client);
+            let settings = Arc::clone(&self.settings);
+            let err_tx = listener_err_tx.clone();
+
+            let handle = tokio::spawn(async move {
+                if let Err(err) =
+                    run_listener(listener, addr, settings, routing_table, rpc_client).await
+                {
+                    let _ = err_tx.send((addr, err.to_string()));
+                }
+            });
+
+            listener_handles.push(handle);
+        }
+
+        drop(listener_err_tx);
+
+        let mut server = Box::pin(async move {
+            if let Some((addr, err)) = listener_err_rx.recv().await {
+                error!("Listener {} failed: {}", addr, err);
+            }
+        });
 
         tokio::select! {
             _ = &mut server => {
@@ -175,6 +204,11 @@ impl SidecarProxyServer {
             _ = shutdown_signal => {
                 info!("Shutdown signal received");
             }
+        }
+
+        for handle in listener_handles {
+            handle.abort();
+            let _ = handle.await;
         }
 
         Ok(())
@@ -272,6 +306,74 @@ impl SidecarProxyServer {
         // Use a never-completing future as the shutdown signal
         let shutdown_signal = std::future::pending::<()>();
         self.serve_with_graceful_shutdown(shutdown_signal).await
+    }
+}
+
+async fn run_listener(
+    listener: TcpListener,
+    listener_addr: SocketAddr,
+    settings: Arc<SidecarSettings>,
+    routing_table: Arc<RwLock<RoutingTable>>,
+    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+) -> io::Result<()> {
+    loop {
+        match listener.accept().await {
+            Ok((inbound_stream, client_addr)) => {
+                debug!(
+                    "Accepted connection on {} from {}",
+                    listener_addr, client_addr
+                );
+                let routing_table = Arc::clone(&routing_table);
+                let rpc_client = Arc::clone(&rpc_client);
+                let settings = Arc::clone(&settings);
+
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(
+                        inbound_stream,
+                        client_addr,
+                        settings,
+                        routing_table,
+                        rpc_client,
+                    )
+                    .await
+                    {
+                        error!("Error handling connection from {}: {}", client_addr, e);
+                    }
+                });
+            }
+            Err(e) => match e.kind() {
+                io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::Interrupted => {
+                    warn!(
+                        "Transient accept error on listener {}: {}",
+                        listener_addr, e
+                    );
+                    continue;
+                }
+                _ => {
+                    if let Some(raw_os_error) = e.raw_os_error() {
+                        const EMFILE: i32 = 24;
+                        const WSAEMFILE: i32 = 10024;
+
+                        if raw_os_error == EMFILE || raw_os_error == WSAEMFILE {
+                            error!(
+                                "File descriptor limit hit on listener {}: {} (errno={}), backing off before retrying",
+                                listener_addr, e, raw_os_error
+                            );
+                            sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    }
+
+                    error!(
+                        "Failed to accept connection on listener {}: {}",
+                        listener_addr, e
+                    );
+                    return Err(e);
+                }
+            },
+        }
     }
 }
 
@@ -379,11 +481,19 @@ async fn handle_connection(
                     )
                     .await
                 }
-                _ => {
+                RouteDecision::DefaultLocal { target_port } => {
+                    let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), target_port);
+                    info!(
+                        "Proxying TCP from {} -> {} (local: {})",
+                        client_addr, original_dest, local_target
+                    );
+                    handle_tcp_proxy(inbound_stream, local_target, initial_data).await
+                }
+                RouteDecision::BranchService { .. } => {
                     let local_target =
                         SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
                     info!(
-                        "Proxying TCP from {} -> {} (local: {})",
+                        "TCP {} -> {} matched branch service route unexpectedly; proxying to local {}",
                         client_addr, original_dest, local_target
                     );
                     handle_tcp_proxy(inbound_stream, local_target, initial_data).await
@@ -416,21 +526,25 @@ async fn handle_http_proxy(
                 "Failed to parse HTTP request: {}, falling back to TCP proxy",
                 e
             );
-            let fallback_target =
-                SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
+            let fallback_port = {
+                let table = routing_table.read().await;
+                table.target_port_for_service(original_dest.port())
+            };
+            let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), fallback_port);
             return handle_tcp_proxy(inbound_stream, fallback_target, initial_data).await;
         }
     };
 
     // Extract OpenTelemetry and routing context from headers
     let routing_context = extract_routing_context(&http_request.headers);
-    let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
 
     let branch_id = routing_context.lapdev_environment_id;
     let decision = {
         let table = routing_table.read().await;
         table.resolve_http(original_dest.port(), branch_id)
     };
+
+    let mut fallback_port = original_dest.port();
 
     match decision {
         RouteDecision::BranchService { service } => {
@@ -507,8 +621,12 @@ async fn handle_http_proxy(
             )
             .await;
         }
-        RouteDecision::DefaultLocal => {}
+        RouteDecision::DefaultLocal { target_port } => {
+            fallback_port = target_port;
+        }
     }
+
+    let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), fallback_port);
 
     // Determine routing target based on headers for fallback logging
     let routing_target = determine_routing_target(&routing_context, original_dest.port());

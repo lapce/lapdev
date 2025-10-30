@@ -3234,14 +3234,17 @@ dependencies = [
  "serde",
  "serde_json",
  "tarpc",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.27.0",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
  "webbrowser",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

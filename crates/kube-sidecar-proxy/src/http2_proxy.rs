@@ -278,7 +278,7 @@ async fn proxy_http2_stream(
                 return Ok(());
             }
         }
-        RouteDecision::DefaultLocal => {}
+        RouteDecision::DefaultLocal { target_port: _ } => {}
     }
 
     let routing_target = determine_routing_target(&routing_context, port);

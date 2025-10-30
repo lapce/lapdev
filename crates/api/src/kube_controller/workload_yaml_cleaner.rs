@@ -14,12 +14,15 @@ use k8s_openapi::{
 };
 use lapdev_common::kube::{KubeContainerImage, KubeContainerInfo, KubeWorkloadKind};
 
+use super::resources::SidecarInjectionOptions;
+
 /// Rebuild workload YAML so it reflects the latest container configuration while
 /// stripping server-managed metadata. Mirrors kube-manager's clean_* helpers.
 pub fn rebuild_workload_yaml(
     kind: &KubeWorkloadKind,
     yaml: &str,
     containers: &[KubeContainerInfo],
+    _sidecar: Option<&SidecarInjectionOptions<'_>>,
 ) -> Result<String> {
     match kind {
         KubeWorkloadKind::Deployment => {

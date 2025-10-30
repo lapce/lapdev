@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use urlencoding::encode;
 use uuid::Uuid;
 
 use crate::{api::client::LapdevClient, auth};
@@ -7,9 +8,9 @@ use crate::{api::client::LapdevClient, auth};
 const POLL_INTERVAL_SECONDS: u64 = 2;
 const TIMEOUT_SECONDS: u64 = 300; // 5 minutes
 
-pub async fn execute(api_url: &str, device_name: Option<String>) -> Result<()> {
+pub async fn execute(api_host: &str, device_name: Option<String>) -> Result<()> {
     // Check if already logged in
-    if auth::has_token(api_url) {
+    if auth::has_token(api_host) {
         println!(
             "{}",
             "Already authenticated. Use 'lapdev logout' to sign out.".yellow()
@@ -29,11 +30,12 @@ pub async fn execute(api_url: &str, device_name: Option<String>) -> Result<()> {
     let session_id = Uuid::new_v4();
 
     // Build auth URL
+    let base_url = format!("https://{}", api_host);
     let auth_url = format!(
         "{}/auth/cli?session_id={}&device_name={}",
-        api_url,
+        base_url,
         session_id,
-        urlencoding::encode(&device_name)
+        encode(&device_name)
     );
 
     println!("{}", "Opening browser for authentication...".cyan());
@@ -54,7 +56,7 @@ pub async fn execute(api_url: &str, device_name: Option<String>) -> Result<()> {
     println!("{}", "Waiting for authentication...".cyan());
 
     // Poll for token
-    let client = LapdevClient::new(api_url.to_string());
+    let client = LapdevClient::new(base_url.clone());
     let start_time = std::time::Instant::now();
     let mut poll_count = 0;
 
@@ -69,12 +71,12 @@ pub async fn execute(api_url: &str, device_name: Option<String>) -> Result<()> {
         match client.poll_cli_token(session_id).await {
             Ok(Some(response)) => {
                 // Success! Store the token
-                auth::store_token(api_url, &response.token)
+                auth::store_token(api_host, &response.token)
                     .context("Failed to store authentication token")?;
 
                 // Fetch user info to display
                 let client_with_token =
-                    LapdevClient::new(api_url.to_string()).with_token(response.token);
+                    LapdevClient::new(base_url).with_token(response.token.clone());
 
                 match client_with_token.whoami().await {
                     Ok(whoami) => {
@@ -116,18 +118,5 @@ pub async fn execute(api_url: &str, device_name: Option<String>) -> Result<()> {
                 anyhow::bail!("Failed to authenticate: {}", e);
             }
         }
-    }
-}
-
-// URL encoding helper (simple implementation)
-mod urlencoding {
-    pub fn encode(s: &str) -> String {
-        s.chars()
-            .map(|c| match c {
-                'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-                ' ' => "+".to_string(),
-                _ => format!("%{:02X}", c as u8),
-            })
-            .collect()
     }
 }

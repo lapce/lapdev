@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::environment_events::EnvironmentLifecycleEvent;
 
 use super::{
+    app_catalog::SidecarInjectionContext,
     resources::{set_cronjob_suspend, set_daemonset_paused, set_workload_replicas},
     workload::{build_branch_service_selector, rename_service_yaml, rename_workload_yaml},
     EnvironmentNamespaceKind, KubeController,
@@ -804,11 +805,6 @@ impl KubeController {
             )));
         }
 
-        // Get workloads YAML to validate before creating in database
-        let workloads_with_resources = self
-            .get_catalog_workloads_with_yaml_from_db(app_catalog.cluster_id, workloads.clone())
-            .await?;
-
         // Generate unique namespace
         let namespace = self
             .generate_unique_namespace(
@@ -822,6 +818,22 @@ impl KubeController {
             .await?;
 
         let environment_id = Uuid::new_v4();
+        let auth_token = rand_string(32);
+        let manager_namespace = cluster.manager_namespace.as_deref();
+
+        // Get workloads YAML to validate before creating in database (with sidecar injection)
+        let workloads_with_resources = self
+            .get_catalog_workloads_with_yaml_from_db(
+                app_catalog.cluster_id,
+                workloads.clone(),
+                &SidecarInjectionContext {
+                    environment_id,
+                    namespace: &namespace,
+                    auth_token: &auth_token,
+                    manager_namespace,
+                },
+            )
+            .await?;
 
         let services_map = workloads_with_resources.services.clone();
 
@@ -845,6 +857,7 @@ impl KubeController {
                 None, // No base environment for regular environments
                 workload_details,
                 services_map,
+                auth_token.clone(),
             )
             .await
         {
@@ -1232,6 +1245,7 @@ impl KubeController {
             .map_err(ApiError::from)?;
 
         let branch_environment_id = Uuid::new_v4();
+        let auth_token = rand_string(32);
         let namespace = base_environment.namespace.clone();
 
         // Prepare workload details and branch workload name mapping
@@ -1265,6 +1279,7 @@ impl KubeController {
                 Some(base_environment_id), // Set the base environment reference
                 workload_details,
                 services_map,
+                auth_token.clone(),
             )
             .await
         {
@@ -1437,12 +1452,25 @@ impl KubeController {
                 )
             })?;
 
+        let manager_namespace = self
+            .db
+            .get_kube_cluster(catalog.cluster_id)
+            .await
+            .map_err(ApiError::from)?
+            .and_then(|cluster| cluster.manager_namespace);
+
         // Get workload YAML from database cache instead of querying Kubernetes
         // Handles workloads from multiple namespaces
         let workloads_with_resources = self
             .get_catalog_workloads_with_yaml_from_db(
                 catalog.cluster_id,
                 workloads_to_deploy.to_vec(),
+                &SidecarInjectionContext {
+                    environment_id: environment.id,
+                    namespace: &environment.namespace,
+                    auth_token: &environment.auth_token,
+                    manager_namespace: manager_namespace.as_deref(),
+                },
             )
             .await?;
 

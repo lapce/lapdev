@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use k8s_openapi::{
     api::{
         apps::v1::{
@@ -9,14 +9,32 @@ use k8s_openapi::{
         },
         batch::v1::{CronJob, CronJobSpec, Job, JobSpec},
         core::v1::{
-            ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, Pod, PodSpec,
-            PodTemplateSpec, Secret, Service,
+            ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, ObjectFieldSelector, Pod,
+            PodSpec, PodTemplateSpec, Secret, Service,
         },
     },
     apimachinery::pkg::{api::resource::Quantity, apis::meta::v1::ObjectMeta},
 };
-use lapdev_common::kube::{KubeContainerImage, KubeContainerInfo, KubeWorkloadKind};
+use lapdev_common::kube::{
+    KubeContainerImage, KubeContainerInfo, KubeWorkloadKind, ProxyPortRoute,
+    DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_METRICS_PORT,
+    DEFAULT_SIDECAR_PROXY_PORT, SIDECAR_PROXY_BIND_ADDR_ENV_VAR,
+    SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ENV_VAR,
+};
 use lapdev_kube_rpc::KubeWorkloadYamlOnly;
+use serde_json;
+use uuid::Uuid;
+
+use super::container_images;
+
+#[derive(Debug)]
+pub struct SidecarInjectionOptions<'a> {
+    pub environment_id: Uuid,
+    pub namespace: &'a str,
+    pub auth_token: &'a str,
+    pub manager_namespace: Option<&'a str>,
+    pub proxy_routes: &'a [ProxyPortRoute],
+}
 
 /// Rebuild workload YAML so it reflects the latest container configuration while
 /// stripping server-managed metadata. Mirrors kube-manager's clean_* helpers.
@@ -24,11 +42,15 @@ pub fn rebuild_workload_yaml(
     kind: &KubeWorkloadKind,
     yaml: &str,
     containers: &[KubeContainerInfo],
+    sidecar: Option<&SidecarInjectionOptions<'_>>,
 ) -> Result<String> {
     match kind {
         KubeWorkloadKind::Deployment => {
             let deployment: Deployment = serde_yaml::from_str(yaml)?;
-            let cleaned = clean_deployment(deployment, containers);
+            let mut cleaned = clean_deployment(deployment, containers);
+            if let Some(options) = sidecar {
+                inject_sidecar_proxy_into_deployment(&mut cleaned, options)?;
+            }
             Ok(serde_yaml::to_string(&cleaned)?)
         }
         KubeWorkloadKind::StatefulSet => {
@@ -62,6 +84,48 @@ pub fn rebuild_workload_yaml(
             Ok(serde_yaml::to_string(&cleaned)?)
         }
     }
+}
+
+pub fn inject_sidecar_proxy_into_deployment(
+    deployment: &mut Deployment,
+    options: &SidecarInjectionOptions<'_>,
+) -> Result<()> {
+    let spec = match deployment.spec.as_mut() {
+        Some(spec) => spec,
+        None => return Err(anyhow!("Deployment spec missing for sidecar injection")),
+    };
+
+    let pod_spec = spec
+        .template
+        .spec
+        .as_mut()
+        .ok_or_else(|| anyhow!("Deployment pod spec missing for sidecar injection"))?;
+
+    let routes_json = if options.proxy_routes.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(options.proxy_routes)?)
+    };
+
+    let sidecar_index = ensure_sidecar_proxy_container(
+        pod_spec,
+        options.environment_id,
+        options.namespace,
+        options.auth_token,
+        options.manager_namespace,
+        routes_json.as_deref(),
+    );
+
+    if let (Some(json), Some(container)) = (routes_json, pod_spec.containers.get_mut(sidecar_index))
+    {
+        upsert_env_var(
+            container,
+            "LAPDEV_SIDECAR_PROXY_PORT_ROUTES",
+            json.to_string(),
+        );
+    }
+
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -466,6 +530,189 @@ fn merge_single_container(
     }
 
     new_container
+}
+
+fn ensure_sidecar_proxy_container(
+    pod_spec: &mut PodSpec,
+    environment_id: Uuid,
+    namespace: &str,
+    auth_token: &str,
+    manager_namespace: Option<&str>,
+    proxy_routes_json: Option<&str>,
+) -> usize {
+    let manager_namespace = manager_namespace.unwrap_or("lapdev");
+    let manager_addr = format!("lapdev-kube-manager.{manager_namespace}.svc:5001");
+
+    if let Some(index) = pod_spec
+        .containers
+        .iter()
+        .position(|container| container.name == "lapdev-sidecar-proxy")
+    {
+        let container = &mut pod_spec.containers[index];
+        ensure_sidecar_ports(container);
+        apply_sidecar_env(
+            container,
+            environment_id,
+            namespace,
+            auth_token,
+            &manager_addr,
+        );
+        if let Some(json) = proxy_routes_json {
+            upsert_env_var(
+                container,
+                "LAPDEV_SIDECAR_PROXY_PORT_ROUTES",
+                json.to_string(),
+            );
+        }
+        return index;
+    }
+
+    let mut container = build_sidecar_proxy_container(
+        environment_id,
+        namespace,
+        auth_token,
+        &manager_addr,
+        proxy_routes_json.map(|value| value.to_string()),
+    );
+    pod_spec.containers.push(container);
+    pod_spec.containers.len() - 1
+}
+
+fn build_sidecar_proxy_container(
+    environment_id: Uuid,
+    namespace: &str,
+    auth_token: &str,
+    manager_addr: &str,
+    proxy_routes_json: Option<String>,
+) -> Container {
+    let sidecar_image = container_images::sidecar_proxy_image_reference();
+
+    let mut container = Container {
+        name: "lapdev-sidecar-proxy".to_string(),
+        image: Some(sidecar_image),
+        ..Default::default()
+    };
+
+    ensure_sidecar_ports(&mut container);
+    apply_sidecar_env(
+        &mut container,
+        environment_id,
+        namespace,
+        auth_token,
+        manager_addr,
+    );
+
+    if let Some(routes_json) = proxy_routes_json {
+        upsert_env_var(
+            &mut container,
+            "LAPDEV_SIDECAR_PROXY_PORT_ROUTES",
+            routes_json,
+        );
+    }
+
+    container
+}
+
+fn ensure_sidecar_ports(container: &mut Container) {
+    let ports = container.ports.get_or_insert_with(Vec::new);
+
+    if !ports
+        .iter()
+        .any(|port| port.container_port == DEFAULT_SIDECAR_PROXY_PORT as i32)
+    {
+        ports.push(ContainerPort {
+            container_port: DEFAULT_SIDECAR_PROXY_PORT as i32,
+            name: Some("proxy".to_string()),
+            protocol: Some("TCP".to_string()),
+            ..Default::default()
+        });
+    }
+
+    if !ports
+        .iter()
+        .any(|port| port.container_port == DEFAULT_SIDECAR_PROXY_METRICS_PORT as i32)
+    {
+        ports.push(ContainerPort {
+            container_port: DEFAULT_SIDECAR_PROXY_METRICS_PORT as i32,
+            name: Some("metrics".to_string()),
+            protocol: Some("TCP".to_string()),
+            ..Default::default()
+        });
+    }
+}
+
+fn apply_sidecar_env(
+    container: &mut Container,
+    environment_id: Uuid,
+    namespace: &str,
+    auth_token: &str,
+    manager_addr: &str,
+) {
+    upsert_env_var(
+        container,
+        "LAPDEV_ENVIRONMENT_ID",
+        environment_id.to_string(),
+    );
+    upsert_env_var(
+        container,
+        "LAPDEV_ENVIRONMENT_AUTH_TOKEN",
+        auth_token.to_string(),
+    );
+    upsert_env_var(container, "KUBERNETES_NAMESPACE", namespace.to_string());
+    upsert_env_var(
+        container,
+        SIDECAR_PROXY_BIND_ADDR_ENV_VAR,
+        DEFAULT_SIDECAR_PROXY_BIND_ADDR.to_string(),
+    );
+    upsert_env_var(
+        container,
+        SIDECAR_PROXY_PORT_ENV_VAR,
+        DEFAULT_SIDECAR_PROXY_PORT.to_string(),
+    );
+    upsert_env_var(
+        container,
+        SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR,
+        manager_addr.to_string(),
+    );
+
+    ensure_hostname_env(container);
+}
+
+fn ensure_hostname_env(container: &mut Container) {
+    let env_list = container.env.get_or_insert_with(Vec::new);
+
+    if env_list.iter().any(|var| var.name == "HOSTNAME") {
+        return;
+    }
+
+    env_list.push(EnvVar {
+        name: "HOSTNAME".to_string(),
+        value: None,
+        value_from: Some(EnvVarSource {
+            field_ref: Some(ObjectFieldSelector {
+                field_path: "metadata.name".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+}
+
+fn upsert_env_var(container: &mut Container, name: &str, value: String) {
+    let env_list = container.env.get_or_insert_with(Vec::new);
+
+    if let Some(existing) = env_list.iter_mut().find(|var| var.name == name) {
+        existing.value = Some(value);
+        existing.value_from = None;
+    } else {
+        env_list.push(EnvVar {
+            name: name.to_string(),
+            value: Some(value),
+            value_from: None,
+            ..Default::default()
+        });
+    }
 }
 
 pub fn set_workload_replicas(workload: &mut KubeWorkloadYamlOnly, replicas: i32) -> Result<()> {

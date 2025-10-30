@@ -3,9 +3,9 @@ use colored::Colorize;
 
 use crate::auth;
 
-pub async fn execute(api_url: &str) -> Result<()> {
+pub async fn execute(api_host: &str) -> Result<()> {
     // Check if token exists
-    if !auth::has_token(api_url) {
+    if !auth::has_token(api_host) {
         println!(
             "{}",
             "Not currently authenticated. Use 'lapdev devbox login' to sign in.".yellow()
@@ -14,7 +14,7 @@ pub async fn execute(api_url: &str) -> Result<()> {
     }
 
     // Delete token from keychain
-    auth::delete_token(api_url)?;
+    auth::delete_token(api_host)?;
 
     println!("{}", "✓ Logged out successfully".green());
     println!();

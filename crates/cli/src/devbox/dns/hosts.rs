@@ -1,13 +1,14 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::{self, OpenOptions},
-    path::PathBuf,
-};
+use anyhow::{anyhow, Context, Result};
+use std::{fs::OpenOptions, path::PathBuf};
+use tempfile::NamedTempFile;
+use tokio::io::AsyncWriteExt;
+
+#[cfg(windows)]
+use std::path::Path;
 
 use super::ServiceEndpoint;
 
-const BEGIN_MARKER: &str = "# BEGIN lapdev-devbox";
-const END_MARKER: &str = "# END lapdev-devbox";
+const LINE_MARKER: &str = "# lapdev-devbox";
 
 /// Manages /etc/hosts file entries for devbox DNS
 pub struct HostsManager {
@@ -36,83 +37,146 @@ impl HostsManager {
         }
     }
 
-    /// Write service endpoints to hosts file between markers
-    pub fn write_entries(&self, endpoints: &[ServiceEndpoint]) -> Result<()> {
+    /// Write service endpoints to hosts file with per-line markers
+    pub async fn write_entries(&self, endpoints: &[ServiceEndpoint]) -> Result<()> {
         // Read existing hosts file
-        let content = fs::read_to_string(&self.hosts_path)
+        let content = tokio::fs::read_to_string(&self.hosts_path)
+            .await
             .with_context(|| format!("Failed to read hosts file: {:?}", self.hosts_path))?;
 
-        // Remove existing lapdev block if present
-        let without_block = self.remove_block(&content);
+        // Remove existing lapdev entries
+        let mut cleaned = self.remove_existing_entries(&content);
 
-        // Build new block
-        let mut new_block = String::new();
-        new_block.push_str(BEGIN_MARKER);
-        new_block.push('\n');
+        if !cleaned.ends_with('\n') && !cleaned.is_empty() {
+            cleaned.push('\n');
+        }
 
         for endpoint in endpoints {
             let aliases = endpoint.aliases().join(" ");
-            new_block.push_str(&format!("{} {}\n", endpoint.synthetic_ip, aliases));
+            cleaned.push_str(&format!(
+                "{} {} {}\n",
+                endpoint.synthetic_ip, aliases, LINE_MARKER
+            ));
         }
 
-        new_block.push_str(END_MARKER);
-        new_block.push('\n');
-
-        // Combine
-        let new_content = format!("{}{}", without_block, new_block);
-
         // Write back (requires elevated permissions)
-        self.write_hosts_file(&new_content)?;
+        self.write_hosts_file(&cleaned).await?;
 
         Ok(())
     }
 
     /// Remove all lapdev entries from hosts file
-    pub fn remove_entries(&self) -> Result<()> {
-        let content = fs::read_to_string(&self.hosts_path)
+    pub async fn remove_entries(&self) -> Result<()> {
+        let content = tokio::fs::read_to_string(&self.hosts_path)
+            .await
             .with_context(|| format!("Failed to read hosts file: {:?}", self.hosts_path))?;
 
-        let without_block = self.remove_block(&content);
+        let cleaned = self.remove_existing_entries(&content);
 
-        self.write_hosts_file(&without_block)?;
+        self.write_hosts_file(&cleaned).await?;
 
         Ok(())
     }
 
-    /// Remove the lapdev block from content
-    fn remove_block(&self, content: &str) -> String {
+    fn remove_existing_entries(&self, content: &str) -> String {
         let mut result = String::new();
-        let mut in_block = false;
 
         for line in content.lines() {
-            if line.trim() == BEGIN_MARKER {
-                in_block = true;
+            if line.trim_end().ends_with(LINE_MARKER) {
                 continue;
             }
-            if line.trim() == END_MARKER {
-                in_block = false;
-                continue;
-            }
-            if !in_block {
-                result.push_str(line);
-                result.push('\n');
-            }
+            result.push_str(line);
+            result.push('\n');
         }
 
         result
     }
 
     /// Write content to hosts file with platform-specific line endings
-    fn write_hosts_file(&self, content: &str) -> Result<()> {
-        let content = if cfg!(windows) {
-            // Windows requires CRLF
-            content.replace('\n', "\r\n")
-        } else {
-            content.to_string()
+    async fn write_hosts_file(&self, content: &str) -> Result<()> {
+        #[cfg(windows)]
+        let content = {
+            // Preserve logical lines while enforcing CRLF endings
+            let mut lines: Vec<String> = content
+                .lines()
+                .map(|line| line.trim_end_matches('\r').to_string())
+                .collect();
+            if let Some(true) = lines.last().map(|line| line.is_empty()) {
+                lines.pop();
+            }
+            let mut normalized = lines.join("\r\n");
+            normalized.push_str("\r\n");
+            normalized
         };
 
-        fs::write(&self.hosts_path, content)
-            .with_context(|| format!("Failed to write hosts file: {:?}", self.hosts_path))?;
+        #[cfg(not(windows))]
+        let content = content.to_string();
+
+        let parent = self
+            .hosts_path
+            .parent()
+            .context("Hosts path has no parent directory")?;
+
+        let temp_file = NamedTempFile::new_in(parent)
+            .with_context(|| format!("Failed to create temporary hosts file in {:?}", parent))?;
+        let temp_path = temp_file.path().to_path_buf();
+
+        let std_file = temp_file.as_file().try_clone().with_context(|| {
+            format!(
+                "Failed to clone temporary hosts file handle: {:?}",
+                temp_path
+            )
+        })?;
+        let mut async_file = tokio::fs::File::from_std(std_file);
+
+        async_file
+            .write_all(content.as_bytes())
+            .await
+            .with_context(|| format!("Failed to write temporary hosts file: {:?}", temp_path))?;
+        async_file
+            .sync_all()
+            .await
+            .with_context(|| format!("Failed to sync temporary hosts file: {:?}", temp_path))?;
+
+        drop(async_file);
+
+        #[cfg(unix)]
+        if let Ok(metadata) = tokio::fs::metadata(&self.hosts_path).await {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::Permissions::from_mode(metadata.permissions().mode());
+            let _ = tokio::fs::set_permissions(&temp_path, permissions).await;
+        }
+
+        #[cfg(windows)]
+        if let Ok(metadata) = tokio::fs::metadata(&self.hosts_path).await {
+            let permissions = metadata.permissions();
+            let _ = tokio::fs::set_permissions(&temp_path, permissions).await;
+        }
+
+        #[cfg(windows)]
+        {
+            use tempfile::TempPath;
+
+            let temp_path_handle: TempPath = temp_file.into_temp_path();
+            replace_file_windows(temp_path.as_path(), &self.hosts_path)?;
+            let _ = temp_path_handle.close();
+        }
+
+        #[cfg(not(windows))]
+        {
+            temp_file.persist(&self.hosts_path).map_err(|err| {
+                anyhow!(
+                    "Failed to replace hosts file at {:?}: {}",
+                    self.hosts_path,
+                    err.error
+                )
+            })?;
+        }
+
+        #[cfg(unix)]
+        if let Ok(dir) = tokio::fs::File::open(parent).await {
+            let _ = dir.sync_all().await;
+        }
 
         Ok(())
     }
@@ -130,15 +194,13 @@ impl HostsManager {
     pub fn print_manual_instructions(&self, endpoints: &[ServiceEndpoint]) {
         eprintln!("\n⚠️  Unable to automatically update hosts file.");
         eprintln!(
-            "Please manually add the following entries to {:?}:\n",
+            "Please manually add the following entries to {:?}:",
             self.hosts_path
         );
-        eprintln!("{}", BEGIN_MARKER);
         for endpoint in endpoints {
             let aliases = endpoint.aliases().join(" ");
-            eprintln!("{} {}", endpoint.synthetic_ip, aliases);
+            eprintln!("{} {} {}", endpoint.synthetic_ip, aliases, LINE_MARKER);
         }
-        eprintln!("{}", END_MARKER);
         eprintln!();
 
         if cfg!(unix) {
@@ -154,22 +216,55 @@ impl HostsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
-    fn test_remove_block() {
+    fn test_remove_existing_entries_strips_tagged_lines() {
         let manager = HostsManager::new();
         let content = r#"127.0.0.1 localhost
-# BEGIN lapdev-devbox
-127.77.0.1 service1
-# END lapdev-devbox
-127.0.1.1 hostname
+127.77.0.1 svc1.default.svc.cluster.local # lapdev-devbox
+127.0.0.2 other
 "#;
 
-        let result = manager.remove_block(content);
-        assert!(!result.contains("BEGIN lapdev-devbox"));
-        assert!(!result.contains("service1"));
-        assert!(result.contains("localhost"));
-        assert!(result.contains("hostname"));
+        let cleaned = manager.remove_existing_entries(content);
+        assert!(cleaned.contains("127.0.0.1 localhost"));
+        assert!(cleaned.contains("127.0.0.2 other"));
+        assert!(!cleaned.contains("lapdev-devbox"));
+        assert!(cleaned.ends_with('\n'));
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_windows(temp_path: &Path, target_path: &Path) -> Result<()> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+    let target_w: Vec<u16> = target_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let temp_w: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
+
+    let success = unsafe {
+        ReplaceFileW(
+            target_w.as_ptr(),
+            temp_w.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+
+    if success == 0 {
+        let err = std::io::Error::last_os_error();
+        Err(anyhow!(
+            "Failed to replace hosts file at {:?}: {}",
+            target_path,
+            err
+        ))
+    } else {
+        Ok(())
     }
 }

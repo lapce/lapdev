@@ -18,8 +18,8 @@ pub enum DevboxCommand {
 pub async fn handle_command(command: DevboxCommand) -> anyhow::Result<()> {
     match command {
         DevboxCommand::Connect { api_host } => {
-            let (_, api_url) = config::resolve_api_base_url(api_host);
-            commands::connect::execute(&api_url).await?;
+            let (api_host, _) = config::resolve_api_base_url(api_host);
+            commands::connect::execute(&api_host).await?;
         }
     }
 

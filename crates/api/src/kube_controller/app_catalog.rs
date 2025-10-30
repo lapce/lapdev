@@ -1,7 +1,8 @@
 use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service};
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use lapdev_common::kube::{
     KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeServiceDetails,
-    KubeServiceWithYaml, PagePaginationParams, PaginatedInfo, PaginatedResult,
+    KubeServiceWithYaml, PagePaginationParams, PaginatedInfo, PaginatedResult, ProxyPortRoute,
 };
 use lapdev_db::api::CachedClusterService;
 use lapdev_db_entities::kube_app_catalog_workload_dependency;
@@ -11,16 +12,24 @@ use lapdev_kube_rpc::{
 use lapdev_rpc::error::ApiError;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::collections::{HashMap, HashSet};
+use std::convert::TryFrom;
 use uuid::Uuid;
 
 use crate::kube_controller::resources::clean_service;
 
 use super::{
-    resources::{clean_configmap, clean_secret, rebuild_workload_yaml},
+    resources::{clean_configmap, clean_secret, rebuild_workload_yaml, SidecarInjectionOptions},
     yaml_parser::build_workload_details_from_yaml,
     KubeController,
 };
 use chrono::Utc;
+
+pub struct SidecarInjectionContext<'a> {
+    pub environment_id: Uuid,
+    pub namespace: &'a str,
+    pub auth_token: &'a str,
+    pub manager_namespace: Option<&'a str>,
+}
 
 impl KubeController {
     pub(super) async fn enrich_workloads_with_details(
@@ -95,9 +104,20 @@ impl KubeController {
         &self,
         cluster_id: Uuid,
         workloads: Vec<KubeAppCatalogWorkload>,
+        injection_ctx: &SidecarInjectionContext<'_>,
     ) -> Result<KubeWorkloadsWithResources, ApiError> {
+        // Get services that select these workloads using the label and selector tables
+        let workload_ids: Vec<Uuid> = workloads.iter().map(|w| w.id).collect();
+        let services_by_workload = self
+            .db
+            .get_services_for_catalog_workloads(cluster_id, &workload_ids)
+            .await
+            .map_err(ApiError::from)?;
+
         // Build workload YAMLs from database
         let mut workload_yamls = Vec::new();
+        let mut proxy_routes: HashMap<Uuid, Vec<ProxyPortRoute>> = HashMap::new();
+
         for workload in &workloads {
             if workload.workload_yaml.trim().is_empty() {
                 return Err(ApiError::InvalidRequest(format!(
@@ -105,17 +125,59 @@ impl KubeController {
                     workload.name
                 )));
             }
+
+            let mut routes = Vec::new();
+            if let Some(services) = services_by_workload.get(&workload.id) {
+                for service in services {
+                    for port in &service.ports {
+                        let service_port = match u16::try_from(port.port) {
+                            Ok(port) if port > 0 => port,
+                            _ => continue,
+                        };
+
+                        let target_port = match port.target_port {
+                            Some(value) => match u16::try_from(value) {
+                                Ok(tp) if tp > 0 => tp,
+                                _ => continue,
+                            },
+                            None => {
+                                // TODO: support named targetPort values when the service uses port names.
+                                continue;
+                            }
+                        };
+
+                        routes.push(ProxyPortRoute {
+                            proxy_port: service_port,
+                            service_port,
+                            target_port,
+                        });
+                    }
+                }
+            }
+
             let raw_yaml = workload.workload_yaml.clone();
 
-            let rebuilt_yaml =
-                rebuild_workload_yaml(&workload.kind, &raw_yaml, &workload.containers).map_err(
-                    |err| {
-                        ApiError::InvalidRequest(format!(
-                            "Failed to reconstruct workload YAML for '{}': {}",
-                            workload.name, err
-                        ))
-                    },
-                )?;
+            let sidecar_options = SidecarInjectionOptions {
+                environment_id: injection_ctx.environment_id,
+                namespace: injection_ctx.namespace,
+                auth_token: injection_ctx.auth_token,
+                manager_namespace: injection_ctx.manager_namespace,
+                proxy_routes: &routes,
+            };
+            let rebuilt_yaml = {
+                rebuild_workload_yaml(
+                    &workload.kind,
+                    &raw_yaml,
+                    &workload.containers,
+                    Some(&sidecar_options),
+                )
+            }
+            .map_err(|err| {
+                ApiError::InvalidRequest(format!(
+                    "Failed to reconstruct workload YAML for '{}': {}",
+                    workload.name, err
+                ))
+            })?;
 
             let workload_yaml_only = match workload.kind {
                 lapdev_common::kube::KubeWorkloadKind::Deployment => {
@@ -142,52 +204,59 @@ impl KubeController {
             };
 
             workload_yamls.push(workload_yaml_only);
+
+            if !routes.is_empty() {
+                proxy_routes.insert(workload.id, routes);
+            }
         }
 
-        // Get services that select these workloads using the label and selector tables
-        let workload_ids: Vec<Uuid> = workloads.iter().map(|w| w.id).collect();
-        let cached_services = self
-            .db
-            .get_services_for_catalog_workloads(cluster_id, &workload_ids)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Convert CachedClusterService to KubeServiceWithYaml format
-        // Note: We need to fetch the service YAML from the database
-        let service_names: Vec<String> = cached_services.iter().map(|s| s.name.clone()).collect();
-        let service_entities = if !service_names.is_empty() {
-            lapdev_db_entities::kube_cluster_service::Entity::find()
-                .filter(lapdev_db_entities::kube_cluster_service::Column::ClusterId.eq(cluster_id))
-                .filter(lapdev_db_entities::kube_cluster_service::Column::Name.is_in(service_names))
-                .filter(lapdev_db_entities::kube_cluster_service::Column::DeletedAt.is_null())
-                .all(&self.db.conn)
-                .await
-                .map_err(ApiError::from)?
-        } else {
-            Vec::new()
-        };
-
+        // Convert cached services into KubeServiceWithYaml entries
         let mut services_map = HashMap::new();
-        for service_entity in service_entities {
-            let ports: Vec<lapdev_common::kube::KubeServicePort> =
-                serde_json::from_value(service_entity.ports.clone()).unwrap_or_default();
-            let selector: std::collections::BTreeMap<String, String> =
-                serde_json::from_value(service_entity.selector.clone()).unwrap_or_default();
+        for services in services_by_workload.values() {
+            for service in services {
+                if services_map.contains_key(&service.name) {
+                    continue;
+                }
 
-            let service: Service = serde_yaml::from_str(&service_entity.service_yaml)?;
-            let service = clean_service(service);
-            let service_yaml = serde_yaml::to_string(&service)?;
-            services_map.insert(
-                service_entity.name.clone(),
-                KubeServiceWithYaml {
-                    yaml: service_yaml,
-                    details: KubeServiceDetails {
-                        name: service_entity.name,
-                        ports,
-                        selector,
+                let ports = service.ports.clone();
+                let selector = service.selector.clone();
+                let parsed: Service =
+                    serde_yaml::from_str(&service.service_yaml).map_err(|err| {
+                        ApiError::InvalidRequest(format!(
+                            "Failed to parse cached Service '{}' YAML: {}",
+                            service.name, err
+                        ))
+                    })?;
+                let cleaned = clean_service(parsed);
+                let cleaned_yaml = serde_yaml::to_string(&cleaned).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize cleaned Service '{}' YAML: {}",
+                        service.name, err
+                    ))
+                })?;
+
+                services_map.insert(
+                    service.name.clone(),
+                    KubeServiceWithYaml {
+                        yaml: cleaned_yaml,
+                        details: KubeServiceDetails {
+                            name: service.name.clone(),
+                            ports,
+                            selector,
+                        },
                     },
-                },
-            );
+                );
+            }
+        }
+
+        for (workload_id, routes) in proxy_routes.iter() {
+            if let Some(services) = services_by_workload.get(workload_id) {
+                for service in services {
+                    if let Some(entry) = services_map.get_mut(&service.name) {
+                        rewrite_service_for_sidecar(entry, routes)?;
+                    }
+                }
+            }
         }
 
         let dependency_rows = if workload_ids.is_empty() {
@@ -651,4 +720,52 @@ impl KubeController {
 
         Ok(())
     }
+}
+
+fn rewrite_service_for_sidecar(
+    service_entry: &mut KubeServiceWithYaml,
+    routes: &[ProxyPortRoute],
+) -> Result<(), ApiError> {
+    if routes.is_empty() {
+        return Ok(());
+    }
+
+    let mut service: Service = serde_yaml::from_str(&service_entry.yaml).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to parse cached Service '{}' YAML: {}",
+            service_entry.details.name, err
+        ))
+    })?;
+
+    if let Some(spec) = service.spec.as_mut() {
+        if let Some(ports) = spec.ports.as_mut() {
+            for port in ports.iter_mut() {
+                let service_port = port.port;
+                if let Some(route) = routes
+                    .iter()
+                    .find(|route| route.service_port as i32 == service_port)
+                {
+                    port.target_port = Some(IntOrString::Int(route.proxy_port as i32));
+                }
+            }
+        }
+    }
+
+    service_entry.yaml = serde_yaml::to_string(&service).map_err(|err| {
+        ApiError::InvalidRequest(format!(
+            "Failed to serialize Service '{}' YAML after sidecar rewrite: {}",
+            service_entry.details.name, err
+        ))
+    })?;
+
+    for port in service_entry.details.ports.iter_mut() {
+        if let Some(route) = routes
+            .iter()
+            .find(|route| route.service_port as i32 == port.port)
+        {
+            port.target_port = Some(route.proxy_port as i32);
+        }
+    }
+
+    Ok(())
 }

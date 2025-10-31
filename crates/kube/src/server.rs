@@ -1,12 +1,13 @@
 use anyhow::{anyhow, Context as _, Result as AnyResult};
+use chrono::{DateTime, Utc};
 use k8s_openapi::api::{
     apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
     batch::v1::{CronJob, Job},
     core::v1::{PodSpec, Service},
 };
 use lapdev_common::kube::{
-    KubeClusterInfo, KubeContainerImage, KubeContainerInfo, KubeContainerPort, KubeServicePort,
-    KubeWorkloadKind,
+    EnvironmentWorkloadStatusEvent, KubeClusterInfo, KubeContainerImage, KubeContainerInfo,
+    KubeContainerPort, KubeServicePort, KubeWorkloadKind,
 };
 use lapdev_db::api::{CachedClusterService, DbApi};
 use lapdev_db_entities::{
@@ -517,10 +518,44 @@ impl KubeClusterServer {
         };
 
         if matches!(event.change_type, ResourceChangeType::Deleted) {
+            let metadata_labels = if let Some(yaml) = event.resource_yaml.as_ref() {
+                match extract_workload_from_yaml(event.resource_type, yaml)
+                    .map(|extracted| extracted.metadata_labels)
+                {
+                    Ok(labels) => labels,
+                    Err(err) => {
+                        tracing::debug!(
+                            namespace = %event.namespace,
+                            resource_name = %event.resource_name,
+                            error = ?err,
+                            "Failed to parse workload YAML for delete event; will clear ready replicas using namespace lookup"
+                        );
+                        BTreeMap::new()
+                    }
+                }
+            } else {
+                BTreeMap::new()
+            };
+
+            self.update_environment_workload_ready_replicas(
+                &event.namespace,
+                &event.resource_name,
+                &metadata_labels,
+                None,
+                event.timestamp,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to clear environment ready replicas for deleted workload {}/{}",
+                    event.namespace, event.resource_name
+                )
+            })?;
+
             tracing::debug!(
                 namespace = %event.namespace,
                 resource_name = %event.resource_name,
-                "Skipping deleted workload event (not yet handled)"
+                "Cleared environment workload ready replicas after workload deletion"
             );
             return Ok(());
         }
@@ -703,6 +738,7 @@ impl KubeClusterServer {
             &event.resource_name,
             &metadata_labels,
             ready_replicas,
+            event.timestamp,
         )
         .await
         .with_context(|| {
@@ -721,6 +757,7 @@ impl KubeClusterServer {
         resource_name: &str,
         metadata_labels: &BTreeMap<String, String>,
         ready_replicas: Option<i32>,
+        event_timestamp: DateTime<Utc>,
     ) -> AnyResult<()> {
         let branch_environment_id = metadata_labels
             .get("lapdev.io/branch-environment-id")
@@ -815,12 +852,26 @@ impl KubeClusterServer {
         }
 
         let workload_id = workload.id;
+        let organization_id = environment.organization_id;
+        let environment_id = environment.id;
         let mut active_model: kube_environment_workload::ActiveModel = workload.into();
         active_model.ready_replicas = ActiveValue::Set(ready_replicas);
         active_model.update(&self.db.conn).await?;
 
+        let status_event = EnvironmentWorkloadStatusEvent {
+            organization_id,
+            environment_id,
+            workload_id,
+            ready_replicas,
+            updated_at: event_timestamp,
+        };
+
+        self.db
+            .publish_environment_workload_status_event(&status_event)
+            .await;
+
         tracing::debug!(
-            environment_id = %environment.id,
+            environment_id = %environment_id,
             workload_id = %workload_id,
             namespace,
             resource_name,
@@ -1535,4 +1586,101 @@ fn ports_from_cached_services(
     }
 
     ports
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lapdev_kube_rpc::ResourceType;
+
+    #[test]
+    fn extract_workload_from_yaml_reads_ready_replicas_for_deployments() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+status:
+  readyReplicas: 3
+"#;
+
+        let extracted =
+            extract_workload_from_yaml(ResourceType::Deployment, deployment_yaml).unwrap();
+        assert_eq!(extracted.ready_replicas, Some(3));
+    }
+
+    #[test]
+    fn extract_workload_from_yaml_reads_ready_replicas_for_jobs() {
+        let job_yaml = r#"
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-migrate
+  namespace: default
+spec:
+  template:
+    metadata:
+      labels:
+        job-name: data-migrate
+    spec:
+      containers:
+        - name: migrate
+          image: alpine:3
+          command: ["/bin/true"]
+      restartPolicy: Never
+status:
+  succeeded: 1
+"#;
+
+        let extracted = extract_workload_from_yaml(ResourceType::Job, job_yaml).unwrap();
+        assert_eq!(extracted.ready_replicas, Some(1));
+    }
+
+    #[test]
+    fn extract_workload_from_yaml_returns_labels_even_without_status() {
+        let deployment_yaml = format!(
+            r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+  labels:
+    lapdev.io/branch-environment-id: "{env_id}"
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+"#,
+            env_id = Uuid::new_v4()
+        );
+
+        let extracted =
+            extract_workload_from_yaml(ResourceType::Deployment, deployment_yaml.as_str()).unwrap();
+        assert!(extracted.ready_replicas.is_none());
+        assert!(extracted
+            .metadata_labels
+            .contains_key("lapdev.io/branch-environment-id"));
+    }
 }

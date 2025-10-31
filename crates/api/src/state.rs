@@ -10,7 +10,7 @@ use axum_extra::{
 use chrono::{DateTime, Utc};
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
 use lapdev_common::{
-    kube::{AppCatalogStatusEvent, ClusterStatusEvent},
+    kube::{AppCatalogStatusEvent, ClusterStatusEvent, EnvironmentWorkloadStatusEvent},
     utils::resolve_api_host,
     UserRole, LAPDEV_AUTH_STATE_COOKIE, LAPDEV_AUTH_TOKEN_COOKIE, LAPDEV_BASE_HOSTNAME,
 };
@@ -105,6 +105,7 @@ pub struct CoreState {
     pub active_devbox_sessions: Arc<RwLock<HashMap<Uuid, DevboxSessionHandle>>>,
     // Lifecycle notifications for kube environments
     pub environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
+    pub environment_workload_events: broadcast::Sender<EnvironmentWorkloadStatusEvent>,
     pub cluster_events: broadcast::Sender<ClusterStatusEvent>,
     pub app_catalog_events: broadcast::Sender<AppCatalogStatusEvent>,
 }
@@ -141,6 +142,7 @@ impl CoreState {
 
         let db = conductor.db.clone();
         let (environment_events, _) = broadcast::channel(128);
+        let (environment_workload_events, _) = broadcast::channel(256);
         let (cluster_events, _) = broadcast::channel(128);
         let (app_catalog_events, _) = broadcast::channel(128);
         let state = Self {
@@ -159,6 +161,7 @@ impl CoreState {
             pending_cli_auth: Arc::new(RwLock::new(HashMap::new())),
             active_devbox_sessions: Arc::new(RwLock::new(HashMap::new())),
             environment_events,
+            environment_workload_events: environment_workload_events.clone(),
             cluster_events,
             app_catalog_events,
         };
@@ -184,6 +187,15 @@ impl CoreState {
             tokio::spawn(async move {
                 if let Err(e) = state.monitor_environment_events().await {
                     tracing::error!("api monitor environment events error: {e:#}");
+                }
+            });
+        }
+
+        {
+            let state = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = state.monitor_environment_workload_events().await {
+                    tracing::error!("api monitor environment workload events error: {e:#}");
                 }
             });
         }
@@ -289,6 +301,31 @@ impl CoreState {
                         payload = notification.payload(),
                         error = ?err,
                         "failed to deserialize environment lifecycle notification"
+                    );
+                }
+            }
+        }
+    }
+
+    async fn monitor_environment_workload_events(&self) -> Result<()> {
+        let pool = self
+            .db
+            .pool
+            .clone()
+            .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
+        let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
+        listener.listen("environment_workload_status").await?;
+        loop {
+            let notification = listener.recv().await?;
+            match serde_json::from_str::<EnvironmentWorkloadStatusEvent>(notification.payload()) {
+                Ok(event) => {
+                    let _ = self.environment_workload_events.send(event);
+                }
+                Err(err) => {
+                    tracing::error!(
+                        payload = notification.payload(),
+                        error = ?err,
+                        "failed to deserialize environment workload status notification"
                     );
                 }
             }

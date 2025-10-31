@@ -542,3 +542,110 @@ async fn send_event(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::apps::v1::Deployment;
+    use serde_yaml::Value;
+    use std::collections::HashMap;
+
+    #[test]
+    fn build_event_preserves_status_ready_replicas_in_yaml() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+  resourceVersion: "123"
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+status:
+  readyReplicas: 1
+"#;
+        let deployment: Deployment = serde_yaml::from_str(deployment_yaml).unwrap();
+        let mut seen_versions = HashMap::new();
+
+        let event = build_event(
+            "default",
+            ResourceType::Deployment,
+            ResourceChangeType::Created,
+            &mut seen_versions,
+            deployment,
+        )
+        .expect("expected change event");
+
+        assert_eq!(event.resource_name, "web");
+        assert_eq!(event.change_type, ResourceChangeType::Created);
+
+        let yaml = event
+            .resource_yaml
+            .expect("expected serialized resource YAML in change event");
+        let parsed: Value = serde_yaml::from_str(&yaml).expect("YAML should parse");
+
+        let ready_replicas = parsed
+            .get("status")
+            .and_then(|status| status.get("readyReplicas"))
+            .and_then(Value::as_i64);
+
+        assert_eq!(
+            ready_replicas,
+            Some(1),
+            "readyReplicas should round-trip in YAML"
+        );
+    }
+
+    #[test]
+    fn build_event_provides_yaml_for_deleted_workloads() {
+        let deployment_yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+  resourceVersion: "123"
+  labels:
+    lapdev.io/branch-environment-id: "abc"
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+"#;
+        let deployment: Deployment = serde_yaml::from_str(deployment_yaml).unwrap();
+        let mut seen_versions = HashMap::new();
+
+        let event = build_event(
+            "default",
+            ResourceType::Deployment,
+            ResourceChangeType::Deleted,
+            &mut seen_versions,
+            deployment,
+        )
+        .expect("expected delete event");
+
+        assert_eq!(event.change_type, ResourceChangeType::Deleted);
+        assert!(
+            event.resource_yaml.is_some(),
+            "deleted events should still include serialized YAML"
+        );
+    }
+}

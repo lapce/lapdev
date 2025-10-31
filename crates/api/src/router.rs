@@ -148,6 +148,10 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
             get(environment_events::stream_environment_events),
         )
         .route(
+            "/organizations/{org_id}/kube/environments/{environment_id}/workloads/events",
+            get(environment_events::stream_environment_workload_events),
+        )
+        .route(
             "/organizations/{org_id}/kube/environments/events",
             get(environment_events::stream_organization_environment_events),
         )

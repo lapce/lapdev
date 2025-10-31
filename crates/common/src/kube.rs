@@ -65,6 +65,15 @@ pub struct AppCatalogStatusEvent {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentWorkloadStatusEvent {
+    pub organization_id: Uuid,
+    pub environment_id: Uuid,
+    pub workload_id: Uuid,
+    pub ready_replicas: Option<i32>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
 pub enum KubeClusterStatus {
     Ready,

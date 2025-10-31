@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
@@ -11,8 +11,9 @@ use lapdev_common::{
         DevboxWorkloadInterceptSummary,
     },
     kube::{
-        KubeCluster, KubeContainerInfo, KubeEnvironment, KubeEnvironmentService,
-        KubeEnvironmentStatus, KubeEnvironmentSyncStatus, KubeEnvironmentWorkload,
+        EnvironmentWorkloadStatusEvent, KubeCluster, KubeContainerInfo, KubeEnvironment,
+        KubeEnvironmentService, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
+        KubeEnvironmentWorkload,
     },
 };
 use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
@@ -299,7 +300,10 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     let update_counter = RwSignal::new(0usize);
+    let readiness_signals: RwSignal<HashMap<Uuid, RwSignal<Option<i32>>>> =
+        RwSignal::new(HashMap::new());
     let sse_started = StoredValue::new(false);
+    let readiness_sse_started = StoredValue::new(false);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -445,6 +449,91 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
+    Effect::new(move |_| {
+        if readiness_sse_started.get_value() {
+            return;
+        }
+
+        if let Some(org) = org.get() {
+            readiness_sse_started.set_value(true);
+            let org_id = org.id;
+            spawn_local_scoped_with_cancellation({
+                let readiness_signals = readiness_signals.clone();
+                async move {
+                    let url = format!(
+                        "/api/v1/organizations/{}/kube/environments/{}/workloads/events",
+                        org_id, environment_id
+                    );
+
+                    match EventSource::new(&url) {
+                        Ok(mut event_source) => {
+                            match event_source.subscribe("environment_workload") {
+                                Ok(mut stream) => {
+                                    while let Some(event) = stream.next().await {
+                                        match event {
+                                            Ok((_, message)) => {
+                                                if let Some(data) = message.data().as_string() {
+                                                    match serde_json::from_str::<
+                                                        EnvironmentWorkloadStatusEvent,
+                                                    >(&data)
+                                                    {
+                                                        Ok(payload) => {
+                                                            readiness_signals.update(|map| {
+                                                                match map.entry(payload.workload_id) {
+                                                                    std::collections::hash_map::Entry::Occupied(entry) => {
+                                                                        entry.get().set(payload.ready_replicas);
+                                                                    }
+                                                                    std::collections::hash_map::Entry::Vacant(entry) => {
+                                                                        entry.insert(RwSignal::new(payload.ready_replicas));
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                        Err(err) => {
+                                                            web_sys::console::error_1(
+                                                                &format!(
+                                                                    "Failed to parse environment workload event payload: {err}"
+                                                                )
+                                                                .into(),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                web_sys::console::error_1(
+                                                    &format!(
+                                                        "Environment workload event stream error: {err}"
+                                                    )
+                                                    .into(),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    web_sys::console::error_1(
+                                        &format!(
+                                            "Failed to subscribe to environment workload events: {err}"
+                                        )
+                                        .into(),
+                                    );
+                                }
+                            }
+                            event_source.close();
+                        }
+                        Err(err) => {
+                            web_sys::console::error_1(
+                                &format!("Failed to connect to environment workload events: {err}")
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            });
+        }
+    });
+
     let environment_info = Signal::derive(move || environment_result.get().flatten());
     let environment_catalog_version = Signal::derive(move || {
         environment_info
@@ -455,6 +544,25 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
 
     let env_catalog_version_for_filter = environment_catalog_version.clone();
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
+    {
+        let readiness_signals = readiness_signals.clone();
+        Effect::new(move |_| {
+            let workloads = all_workloads.get();
+            readiness_signals.update(|map| {
+                map.retain(|workload_id, _| workloads.iter().any(|w| w.id == *workload_id));
+                for workload in &workloads {
+                    match map.entry(workload.id) {
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            entry.get().set(workload.ready_replicas);
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(RwSignal::new(workload.ready_replicas));
+                        }
+                    }
+                }
+            });
+        });
+    }
     let all_services = Signal::derive(move || services_result.get().unwrap_or_default());
     let all_preview_urls = Signal::derive(move || preview_urls_result.get().unwrap_or_default());
     let all_intercepts = Signal::derive(move || intercepts_result.get().unwrap_or_default());
@@ -604,6 +712,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     active_session
                     update_counter
                     environment_catalog_version
+                    readiness_signals=readiness_signals.clone()
                 />
             </Show>
 
@@ -1093,6 +1202,7 @@ pub fn EnvironmentResourcesTabs(
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
     environment_catalog_version: Signal<i64>,
+    readiness_signals: RwSignal<HashMap<Uuid, RwSignal<Option<i32>>>>,
 ) -> impl IntoView {
     view! {
         <Tabs default_value=RwSignal::new(ResourceTab::Workloads) class="gap-4">
@@ -1128,6 +1238,7 @@ pub fn EnvironmentResourcesTabs(
                     active_session
                     update_counter
                     environment_catalog_version=environment_catalog_version.clone()
+                    readiness_signals=readiness_signals.clone()
                 />
             </TabsContent>
 
@@ -1162,6 +1273,7 @@ pub fn EnvironmentWorkloadsContent(
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
     environment_catalog_version: Signal<i64>,
+    readiness_signals: RwSignal<HashMap<Uuid, RwSignal<Option<i32>>>>,
 ) -> impl IntoView {
     let env_catalog_version_signal = environment_catalog_version.clone();
 
@@ -1198,7 +1310,29 @@ pub fn EnvironmentWorkloadsContent(
                                 key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
                             children=move |workload| {
                                 let env_catalog_version = env_catalog_version_signal.clone();
-                                view! { <EnvironmentWorkloadItem environment_id workload=workload.clone() all_intercepts active_session update_counter env_catalog_version=env_catalog_version /> }
+                                let ready_signal = {
+                                    let readiness_signals = readiness_signals.clone();
+                                    let workload_id = workload.id;
+                                    let fallback_ready = workload.ready_replicas;
+                                    Signal::derive(move || {
+                                        readiness_signals
+                                            .get()
+                                            .get(&workload_id)
+                                            .map(|signal| signal.get())
+                                            .unwrap_or(fallback_ready)
+                                    })
+                                };
+                                view! {
+                                    <EnvironmentWorkloadItem
+                                        environment_id
+                                        workload=workload.clone()
+                                        all_intercepts
+                                        active_session
+                                        update_counter
+                                        env_catalog_version=env_catalog_version
+                                        ready_signal
+                                    />
+                                }
                                 }
                             />
                         </TableBody>
@@ -1261,6 +1395,7 @@ pub fn EnvironmentWorkloadItem(
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
     env_catalog_version: Signal<i64>,
+    ready_signal: Signal<Option<i32>>,
 ) -> impl IntoView {
     let workload_id = workload.id;
     let workload_name = workload.name.clone();
@@ -1351,13 +1486,10 @@ pub fn EnvironmentWorkloadItem(
                     </Badge>
                 </TableCell>
                 <TableCell>
-                    {
-                        format!("{}/1", workload
-                            .ready_replicas
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                        )
-                    }
+                    {move || {
+                        let ready = ready_signal.get().unwrap_or(0);
+                        format!("{ready}/1")
+                    }}
                 </TableCell>
                 <TableCell>
                     {move || {

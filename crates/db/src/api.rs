@@ -4,9 +4,9 @@ use chrono::{DateTime, FixedOffset, Utc};
 use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED,
     kube::{
-        AppCatalogStatusEvent, ClusterStatusEvent, KubeAppCatalogWorkload, KubeClusterStatus,
-        KubeContainerInfo, KubeEnvironmentWorkload, KubeServicePort, KubeWorkloadDetails,
-        KubeWorkloadKind, PagePaginationParams,
+        AppCatalogStatusEvent, ClusterStatusEvent, EnvironmentWorkloadStatusEvent,
+        KubeAppCatalogWorkload, KubeClusterStatus, KubeContainerInfo, KubeEnvironmentWorkload,
+        KubeServicePort, KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams,
     },
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
@@ -753,6 +753,36 @@ impl DbApi {
                 warn!(
                     error = %err,
                     "failed to serialize app catalog status event"
+                );
+            }
+        }
+    }
+
+    pub async fn publish_environment_workload_status_event(
+        &self,
+        event: &EnvironmentWorkloadStatusEvent,
+    ) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+
+        match serde_json::to_string(event) {
+            Ok(payload) => {
+                if let Err(err) = sqlx::query("SELECT pg_notify('environment_workload_status', $1)")
+                    .bind(payload)
+                    .execute(pool)
+                    .await
+                {
+                    warn!(
+                        error = %err,
+                        "failed to publish environment workload status event via NOTIFY"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to serialize environment workload status event"
                 );
             }
         }

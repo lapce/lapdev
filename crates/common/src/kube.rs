@@ -17,6 +17,7 @@ pub const DEFAULT_SIDECAR_PROXY_MANAGER_PORT: u16 = 5001;
 pub const SIDECAR_PROXY_PORT_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_PORT";
 pub const DEFAULT_SIDECAR_PROXY_PORT: u16 = 25001;
 pub const DEFAULT_SIDECAR_PROXY_METRICS_PORT: u16 = 25090;
+pub const SIDECAR_PROXY_DYNAMIC_PORT_START: u16 = DEFAULT_SIDECAR_PROXY_PORT + 1000;
 pub const SIDECAR_PROXY_WORKLOAD_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_WORKLOAD";
 pub const SIDECAR_PROXY_BIND_ADDR_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_BIND_ADDR";
 pub const DEFAULT_SIDECAR_PROXY_BIND_ADDR: &str = "0.0.0.0";
@@ -110,6 +111,7 @@ pub enum KubeEnvironmentStatus {
     Resuming,
     ResumeFailed,
     Deleting,
+    Deleted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,6 +283,7 @@ pub struct KubeEnvironmentWorkload {
     pub ports: Vec<KubeServicePort>,
     pub workload_yaml: String,
     pub catalog_sync_version: i64,
+    pub ready_replicas: Option<i32>,
 }
 
 impl KubeEnvironmentWorkload {
@@ -377,6 +380,8 @@ pub struct KubeServicePort {
     pub target_port: Option<i32>,
     pub protocol: Option<String>,
     pub node_port: Option<i32>,
+    #[serde(default)]
+    pub original_target_port: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

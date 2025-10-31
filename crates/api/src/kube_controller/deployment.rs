@@ -1,13 +1,8 @@
 use std::collections::HashMap;
 
-use k8s_openapi::api::apps::v1::Deployment;
-use lapdev_common::kube::ProxyPortRoute;
+use super::KubeController;
 use lapdev_kube::server::KubeClusterServer;
-use lapdev_kube_rpc::KubeWorkloadYamlOnly;
 use lapdev_rpc::error::ApiError;
-use uuid::Uuid;
-
-use super::{resources, KubeController};
 
 impl KubeController {
     pub(super) async fn deploy_environment_resources(
@@ -17,7 +12,7 @@ impl KubeController {
         workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
         extra_labels: Option<HashMap<String, String>>,
     ) -> Result<(), ApiError> {
-        let mut workloads_with_resources = workloads_with_resources;
+        let workloads_with_resources = workloads_with_resources;
         let namespace = &environment.namespace;
         let environment_name = &environment.name;
 
@@ -37,29 +32,6 @@ impl KubeController {
             workloads_with_resources.workloads.len(),
             environment_name
         );
-
-        if environment.base_environment_id.is_none() {
-            let manager_namespace = self
-                .db
-                .get_kube_cluster(environment.cluster_id)
-                .await
-                .map_err(ApiError::from)?
-                .and_then(|cluster| cluster.manager_namespace);
-            let manager_namespace_ref = manager_namespace.as_deref();
-
-            for workload in workloads_with_resources.workloads.iter_mut() {
-                if let KubeWorkloadYamlOnly::Deployment(yaml) = workload {
-                    inject_sidecar_proxy_into_deployment_yaml(
-                        yaml,
-                        environment.id,
-                        &environment.namespace,
-                        &environment.auth_token,
-                        manager_namespace_ref,
-                        None,
-                    )?;
-                }
-            }
-        }
 
         // Prepare environment-specific labels
         let mut environment_labels = std::collections::HashMap::new();
@@ -113,58 +85,21 @@ impl KubeController {
     }
 }
 
-pub(super) fn inject_sidecar_proxy_into_deployment_yaml(
-    yaml: &mut String,
-    environment_id: Uuid,
-    namespace: &str,
-    auth_token: &str,
-    manager_namespace: Option<&str>,
-    proxy_routes: Option<&[ProxyPortRoute]>,
-) -> Result<(), ApiError> {
-    let mut deployment: Deployment = serde_yaml::from_str(yaml).map_err(|err| {
-        ApiError::InvalidRequest(format!(
-            "Failed to parse deployment YAML for sidecar injection: {}",
-            err
-        ))
-    })?;
-
-    let routes = proxy_routes.unwrap_or_default();
-    let options = resources::SidecarInjectionOptions {
-        environment_id,
-        namespace,
-        auth_token,
-        manager_namespace,
-        proxy_routes: routes,
-    };
-
-    resources::inject_sidecar_proxy_into_deployment(&mut deployment, &options).map_err(|err| {
-        ApiError::InvalidRequest(format!(
-            "Failed to inject sidecar proxy into deployment manifest: {}",
-            err
-        ))
-    })?;
-
-    *yaml = serde_yaml::to_string(&deployment).map_err(|err| {
-        ApiError::InvalidRequest(format!(
-            "Failed to serialize deployment YAML after sidecar injection: {}",
-            err
-        ))
-    })?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::kube_controller::resources;
+
+    use super::super::container_images;
     use super::*;
-    use k8s_openapi::api::apps::v1::DeploymentSpec;
+    use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
     use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
     use lapdev_common::kube::{
         DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_PORT,
-        SIDECAR_PROXY_BIND_ADDR_ENV_VAR, SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ENV_VAR,
+        SIDECAR_PROXY_BIND_ADDR_ENV_VAR, SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR,
+        SIDECAR_PROXY_PORT_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR,
     };
-    use super::super::container_images;
+    use uuid::Uuid;
 
     #[test]
     fn inject_sidecar_proxy_appends_once() {
@@ -189,8 +124,10 @@ mod tests {
         };
 
         let environment_id = Uuid::new_v4();
+        let workload_id = Uuid::new_v4();
         let options = resources::SidecarInjectionOptions {
             environment_id,
+            workload_id,
             namespace: "lapdev-namespace",
             auth_token: "auth-token",
             manager_namespace: Some("lapdev"),
@@ -258,6 +195,17 @@ mod tests {
             manager_addr_var.value.as_deref(),
             Some("lapdev-kube-manager.lapdev.svc:5001"),
             "manager addr env var should default to lapdev namespace"
+        );
+
+        let expected_workload_id = workload_id.to_string();
+        let workload_var = env_vars
+            .iter()
+            .find(|var| var.name == SIDECAR_PROXY_WORKLOAD_ENV_VAR)
+            .expect("workload environment variable should be set");
+        assert_eq!(
+            workload_var.value.as_deref(),
+            Some(expected_workload_id.as_str()),
+            "workload env var should carry the provided workload id"
         );
     }
 }

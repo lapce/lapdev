@@ -70,6 +70,7 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(0),
                     )
+                    .col(ColumnDef::new(KubeEnvironmentWorkload::ReadyReplicas).integer())
                     .foreign_key(
                         ForeignKey::create()
                             .from(
@@ -141,4 +142,5 @@ pub enum KubeEnvironmentWorkload {
     Ports,
     WorkloadYaml,
     CatalogSyncVersion,
+    ReadyReplicas,
 }

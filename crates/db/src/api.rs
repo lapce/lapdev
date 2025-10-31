@@ -107,6 +107,8 @@ struct StoredServicePort {
     pub protocol: Option<String>,
     #[serde(default)]
     pub node_port: Option<i32>,
+    #[serde(default)]
+    pub original_target_port: Option<i32>,
 }
 
 impl StoredServicePort {
@@ -115,6 +117,7 @@ impl StoredServicePort {
             .target_port
             .and_then(|value| value.as_i64())
             .and_then(|v| i32::try_from(v).ok());
+        let original_target_port = self.original_target_port.or(target_port);
 
         Some(KubeServicePort {
             name: self.name,
@@ -122,6 +125,7 @@ impl StoredServicePort {
             target_port,
             protocol: self.protocol,
             node_port: self.node_port,
+            original_target_port,
         })
     }
 }
@@ -694,7 +698,7 @@ impl DbApi {
 
         match serde_json::to_string(&event) {
             Ok(payload) => {
-                if let Err(err) = sqlx::query("NOTIFY cluster_status, $1")
+                if let Err(err) = sqlx::query("SELECT pg_notify('cluster_status', $1)")
                     .bind(payload)
                     .execute(pool)
                     .await
@@ -734,7 +738,7 @@ impl DbApi {
 
         match serde_json::to_string(&event) {
             Ok(payload) => {
-                if let Err(err) = sqlx::query("NOTIFY app_catalog_status, $1")
+                if let Err(err) = sqlx::query("SELECT pg_notify('app_catalog_status', $1)")
                     .bind(payload)
                     .execute(pool)
                     .await
@@ -2617,6 +2621,7 @@ impl DbApi {
                 ports,
                 workload_yaml: workload.workload_yaml,
                 catalog_sync_version: workload.catalog_sync_version,
+                ready_replicas: workload.ready_replicas,
             });
         }
         Ok(result)
@@ -2659,6 +2664,7 @@ impl DbApi {
                 ports,
                 workload_yaml: workload.workload_yaml,
                 catalog_sync_version: workload.catalog_sync_version,
+                ready_replicas: workload.ready_replicas,
             }))
         } else {
             Ok(None)
@@ -2726,6 +2732,7 @@ impl DbApi {
                 ports,
                 workload_yaml: workload.workload_yaml,
                 catalog_sync_version: workload.catalog_sync_version,
+                ready_replicas: workload.ready_replicas,
             });
         }
 
@@ -2875,6 +2882,7 @@ impl DbApi {
                 ports: ActiveValue::Set(ports_json),
                 workload_yaml: ActiveValue::Set(workload_yaml.clone()),
                 catalog_sync_version: ActiveValue::Set(catalog_sync_version),
+                ready_replicas: ActiveValue::Set(None),
             }
             .insert(&txn)
             .await?;

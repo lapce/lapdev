@@ -148,12 +148,24 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
             get(environment_events::stream_environment_events),
         )
         .route(
+            "/organizations/{org_id}/kube/environments/events",
+            get(environment_events::stream_organization_environment_events),
+        )
+        .route(
             "/organizations/{org_id}/kube/clusters/{cluster_id}/events",
             get(cluster_events::stream_cluster_status_events),
         )
         .route(
+            "/organizations/{org_id}/kube/clusters/events",
+            get(cluster_events::stream_organization_cluster_status_events),
+        )
+        .route(
             "/organizations/{org_id}/kube/catalogs/{catalog_id}/events",
             get(app_catalog_events::stream_app_catalog_events),
+        )
+        .route(
+            "/organizations/{org_id}/kube/catalogs/events",
+            get(app_catalog_events::stream_organization_app_catalog_events),
         )
         .route(
             "/organizations/{org_id}/projects",

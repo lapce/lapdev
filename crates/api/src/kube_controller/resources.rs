@@ -19,7 +19,7 @@ use lapdev_common::kube::{
     KubeContainerImage, KubeContainerInfo, KubeWorkloadKind, ProxyPortRoute,
     DEFAULT_SIDECAR_PROXY_BIND_ADDR, DEFAULT_SIDECAR_PROXY_METRICS_PORT,
     DEFAULT_SIDECAR_PROXY_PORT, SIDECAR_PROXY_BIND_ADDR_ENV_VAR,
-    SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ENV_VAR,
+    SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR, SIDECAR_PROXY_PORT_ENV_VAR, SIDECAR_PROXY_WORKLOAD_ENV_VAR,
 };
 use lapdev_kube_rpc::KubeWorkloadYamlOnly;
 use serde_json;
@@ -30,6 +30,7 @@ use super::container_images;
 #[derive(Debug)]
 pub struct SidecarInjectionOptions<'a> {
     pub environment_id: Uuid,
+    pub workload_id: Uuid,
     pub namespace: &'a str,
     pub auth_token: &'a str,
     pub manager_namespace: Option<&'a str>,
@@ -110,6 +111,7 @@ pub fn inject_sidecar_proxy_into_deployment(
     let sidecar_index = ensure_sidecar_proxy_container(
         pod_spec,
         options.environment_id,
+        options.workload_id,
         options.namespace,
         options.auth_token,
         options.manager_namespace,
@@ -295,9 +297,9 @@ fn clean_pod(pod: Pod, workload_containers: &[KubeContainerInfo]) -> Pod {
             dns_policy: original_spec.dns_policy,
             dns_config: original_spec.dns_config,
             node_selector: original_spec.node_selector,
-            service_account_name: original_spec.service_account_name,
-            service_account: original_spec.service_account,
-            automount_service_account_token: original_spec.automount_service_account_token,
+            service_account_name: None,
+            service_account: None,
+            automount_service_account_token: None,
             security_context: original_spec.security_context,
             image_pull_secrets: original_spec.image_pull_secrets,
             affinity: original_spec.affinity,
@@ -386,25 +388,13 @@ fn merge_template_containers(
     workload_containers: &[KubeContainerInfo],
 ) -> PodTemplateSpec {
     let pod_spec = template.spec.map(|original_pod_spec| {
-        let merged_containers = original_pod_spec
-            .containers
-            .into_iter()
-            .map(|container| {
-                if let Some(workload_container) = workload_containers
-                    .iter()
-                    .find(|wc| wc.name == container.name)
-                {
-                    merge_single_container(container, workload_container)
-                } else {
-                    container
-                }
-            })
-            .collect();
-
-        PodSpec {
-            containers: merged_containers,
-            ..original_pod_spec
-        }
+        let mut new_spec = original_pod_spec;
+        let merged_containers = merge_containers(new_spec.containers, workload_containers);
+        new_spec.containers = merged_containers;
+        new_spec.service_account_name = None;
+        new_spec.service_account = None;
+        new_spec.automount_service_account_token = None;
+        new_spec
     });
 
     PodTemplateSpec {
@@ -535,6 +525,7 @@ fn merge_single_container(
 fn ensure_sidecar_proxy_container(
     pod_spec: &mut PodSpec,
     environment_id: Uuid,
+    workload_id: Uuid,
     namespace: &str,
     auth_token: &str,
     manager_namespace: Option<&str>,
@@ -553,6 +544,7 @@ fn ensure_sidecar_proxy_container(
         apply_sidecar_env(
             container,
             environment_id,
+            workload_id,
             namespace,
             auth_token,
             &manager_addr,
@@ -567,8 +559,9 @@ fn ensure_sidecar_proxy_container(
         return index;
     }
 
-    let mut container = build_sidecar_proxy_container(
+    let container = build_sidecar_proxy_container(
         environment_id,
+        workload_id,
         namespace,
         auth_token,
         &manager_addr,
@@ -580,6 +573,7 @@ fn ensure_sidecar_proxy_container(
 
 fn build_sidecar_proxy_container(
     environment_id: Uuid,
+    workload_id: Uuid,
     namespace: &str,
     auth_token: &str,
     manager_addr: &str,
@@ -597,6 +591,7 @@ fn build_sidecar_proxy_container(
     apply_sidecar_env(
         &mut container,
         environment_id,
+        workload_id,
         namespace,
         auth_token,
         manager_addr,
@@ -644,6 +639,7 @@ fn ensure_sidecar_ports(container: &mut Container) {
 fn apply_sidecar_env(
     container: &mut Container,
     environment_id: Uuid,
+    workload_id: Uuid,
     namespace: &str,
     auth_token: &str,
     manager_addr: &str,
@@ -673,6 +669,11 @@ fn apply_sidecar_env(
         container,
         SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR,
         manager_addr.to_string(),
+    );
+    upsert_env_var(
+        container,
+        SIDECAR_PROXY_WORKLOAD_ENV_VAR,
+        workload_id.to_string(),
     );
 
     ensure_hostname_env(container);

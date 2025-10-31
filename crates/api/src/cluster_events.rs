@@ -87,6 +87,44 @@ pub async fn stream_cluster_status_events(
     Ok(Sse::new(stream).keep_alive(keep_alive))
 }
 
+pub async fn stream_organization_cluster_status_events(
+    Path(org_id): Path<Uuid>,
+    State(state): State<Arc<CoreState>>,
+    TypedHeader(cookies): TypedHeader<headers::Cookie>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let user = state.authenticate(&cookies).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+
+    let receiver = state.cluster_events.subscribe();
+    let target_org = org_id;
+
+    let event_stream = BroadcastStream::new(receiver).filter_map(move |result| {
+        let target_org = target_org;
+        async move {
+            match result {
+                Ok(event) if event.organization_id == target_org => {
+                    build_cluster_sse_event(&event).map(Ok)
+                }
+                Ok(_) => None,
+                Err(err) => {
+                    warn!("cluster event stream lagged: {err}");
+                    None
+                }
+            }
+        }
+    });
+
+    let keep_alive = KeepAlive::new()
+        .interval(Duration::from_secs(15))
+        .text("keep-alive");
+
+    Ok(Sse::new(event_stream).keep_alive(keep_alive))
+}
+
 fn build_cluster_sse_event(event: &ClusterStatusEvent) -> Option<Event> {
     Event::default().event("cluster").json_data(event).ok()
 }

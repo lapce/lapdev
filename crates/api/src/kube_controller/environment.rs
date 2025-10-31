@@ -1,12 +1,13 @@
 use chrono::Utc;
 use lapdev_common::{
     kube::{
-        KubeContainerImage, KubeEnvironment, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
-        KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams, PaginatedInfo,
-        PaginatedResult,
+        KubeAppCatalogWorkload, KubeContainerImage, KubeEnvironment, KubeEnvironmentStatus,
+        KubeEnvironmentSyncStatus, KubeServiceWithYaml, KubeWorkloadDetails, KubeWorkloadKind,
+        PagePaginationParams, PaginatedInfo, PaginatedResult,
     },
     utils::rand_string,
 };
+use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
@@ -16,6 +17,7 @@ use sea_orm::{
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
+    time::{Duration, Instant},
 };
 use tracing::{error, warn};
 use uuid::Uuid;
@@ -204,7 +206,7 @@ impl KubeController {
     }
 
     /// Prepare workload details for environment creation by copying from catalog workloads
-    fn prepare_workload_details_from_catalog(
+    pub(super) fn prepare_workload_details_from_catalog(
         workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkload>,
         namespace: &str,
     ) -> Result<Vec<KubeWorkloadDetails>, ApiError> {
@@ -441,12 +443,11 @@ impl KubeController {
         rpc_client: &lapdev_kube_rpc::KubeManagerRpcClient,
         environment: &lapdev_db_entities::kube_environment::Model,
     ) -> Result<(), ApiError> {
+        let mut ctx = tarpc::context::current();
+        ctx.deadline = Instant::now() + Duration::from_secs(300);
+
         match rpc_client
-            .destroy_environment(
-                tarpc::context::current(),
-                environment.id,
-                environment.namespace.clone(),
-            )
+            .destroy_environment(ctx, environment.id, environment.namespace.clone())
             .await
         {
             Ok(Ok(())) => {
@@ -526,25 +527,68 @@ impl KubeController {
                 .await
             {
                 Ok(_) => {
-                    if let Err(err) = controller
+                    match controller
                         .db
                         .delete_kube_environment(env_id)
                         .await
                         .map_err(ApiError::from)
                     {
-                        error!(
-                            environment_id = %env_id,
-                            error = ?err,
-                            "failed to delete environment record after resource cleanup"
-                        );
-                        let _ = controller
-                            .update_environment_status(
-                                env_id,
-                                KubeEnvironmentStatus::Error,
-                                None,
-                                None,
-                            )
-                            .await;
+                        Ok(_) => {
+                            if environment_clone.base_environment_id.is_none() {
+                                match rpc_client_clone
+                                    .remove_namespace_watch(
+                                        tarpc::context::current(),
+                                        environment_clone.namespace.clone(),
+                                    )
+                                    .await
+                                {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(err)) => warn!(
+                                        cluster_id = %environment_clone.cluster_id,
+                                        namespace = %environment_clone.namespace,
+                                        error = %err,
+                                        "Failed to remove namespace watch after environment deletion"
+                                    ),
+                                    Err(err) => warn!(
+                                        cluster_id = %environment_clone.cluster_id,
+                                        namespace = %environment_clone.namespace,
+                                        error = ?err,
+                                        "RPC error while removing namespace watch after environment deletion"
+                                    ),
+                                }
+                            }
+
+                            let event = EnvironmentLifecycleEvent {
+                                organization_id: environment_clone.organization_id,
+                                environment_id: env_id,
+                                status: KubeEnvironmentStatus::Deleted,
+                                paused_at: environment_clone
+                                    .paused_at
+                                    .as_ref()
+                                    .map(|dt| dt.to_string()),
+                                resumed_at: environment_clone
+                                    .resumed_at
+                                    .as_ref()
+                                    .map(|dt| dt.to_string()),
+                                updated_at: Utc::now(),
+                            };
+                            controller.publish_environment_event(event).await;
+                        }
+                        Err(err) => {
+                            error!(
+                                environment_id = %env_id,
+                                error = ?err,
+                                "failed to delete environment record after resource cleanup"
+                            );
+                            let _ = controller
+                                .update_environment_status(
+                                    env_id,
+                                    KubeEnvironmentStatus::Error,
+                                    None,
+                                    None,
+                                )
+                                .await;
+                        }
                     }
                 }
                 Err(err) => {
@@ -768,30 +812,108 @@ impl KubeController {
         name: String,
         is_shared: bool,
     ) -> Result<lapdev_common::kube::KubeEnvironment, ApiError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Environment name cannot be empty".to_string(),
-            ));
-        }
-        let name = name.to_string();
+        let name = Self::normalize_environment_name(name)?;
 
         // Validate catalog and cluster
         let (app_catalog, cluster) = self
             .validate_environment_creation(org_id, app_catalog_id, cluster_id, is_shared)
             .await?;
 
-        // Get a connected KubeClusterServer for deployment
-        let server = self
-            .get_random_kube_cluster_server(cluster_id)
+        let server = self.require_cluster_server(cluster_id).await?;
+        let workloads = self.fetch_catalog_workloads(&app_catalog).await?;
+        let namespace = self
+            .generate_unique_namespace(cluster_id, Self::namespace_kind(is_shared))
+            .await?;
+        let environment_id = Uuid::new_v4();
+        let auth_token = rand_string(32);
+        let environment_namespace = namespace.clone();
+        let (workloads_with_resources, workload_details) = self
+            .prepare_catalog_workloads(
+                &app_catalog,
+                &cluster,
+                workloads,
+                environment_id,
+                &namespace,
+                &auth_token,
+            )
+            .await?;
+        let services_map = workloads_with_resources.services.clone();
+
+        let created_env = self
+            .persist_environment_creation(
+                environment_id,
+                org_id,
+                user_id,
+                app_catalog_id,
+                cluster_id,
+                name,
+                namespace,
+                is_shared,
+                app_catalog.sync_version,
+                workload_details,
+                services_map,
+                auth_token,
+            )
+            .await?;
+
+        // Ensure kube-manager begins watching the new namespace immediately.
+        if let Err(err) = server
+            .add_namespace_watch(environment_namespace.clone())
+            .await
+        {
+            warn!(
+                cluster_id = %cluster_id,
+                namespace = environment_namespace,
+                error = ?err,
+                "Failed to add namespace watch for new environment"
+            );
+        }
+
+        self.spawn_environment_deployment(server, created_env.clone(), workloads_with_resources);
+
+        Ok(Self::build_environment_response(
+            created_env,
+            app_catalog.name,
+            cluster.name,
+            None,
+        ))
+    }
+
+    fn normalize_environment_name(name: String) -> Result<String, ApiError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Environment name cannot be empty".to_string(),
+            ));
+        }
+        Ok(trimmed.to_string())
+    }
+
+    fn namespace_kind(is_shared: bool) -> EnvironmentNamespaceKind {
+        if is_shared {
+            EnvironmentNamespaceKind::Shared
+        } else {
+            EnvironmentNamespaceKind::Personal
+        }
+    }
+
+    async fn require_cluster_server(
+        &self,
+        cluster_id: Uuid,
+    ) -> Result<KubeClusterServer, ApiError> {
+        self.get_random_kube_cluster_server(cluster_id)
             .await
             .ok_or_else(|| {
                 ApiError::InvalidRequest(
                     "No connected KubeManager for the environment target cluster".to_string(),
                 )
-            })?;
+            })
+    }
 
-        // Get workloads from catalog
+    async fn fetch_catalog_workloads(
+        &self,
+        app_catalog: &lapdev_db_entities::kube_app_catalog::Model,
+    ) -> Result<Vec<KubeAppCatalogWorkload>, ApiError> {
         let workloads = self
             .db
             .get_app_catalog_workloads(app_catalog.id)
@@ -805,43 +927,47 @@ impl KubeController {
             )));
         }
 
-        // Generate unique namespace
-        let namespace = self
-            .generate_unique_namespace(
-                cluster_id,
-                if is_shared {
-                    EnvironmentNamespaceKind::Shared
-                } else {
-                    EnvironmentNamespaceKind::Personal
-                },
-            )
-            .await?;
+        Ok(workloads)
+    }
 
-        let environment_id = Uuid::new_v4();
-        let auth_token = rand_string(32);
-        let manager_namespace = cluster.manager_namespace.as_deref();
+    async fn prepare_catalog_workloads(
+        &self,
+        app_catalog: &lapdev_db_entities::kube_app_catalog::Model,
+        cluster: &lapdev_db_entities::kube_cluster::Model,
+        workloads: Vec<KubeAppCatalogWorkload>,
+        environment_id: Uuid,
+        namespace: &str,
+        auth_token: &str,
+    ) -> Result<(KubeWorkloadsWithResources, Vec<KubeWorkloadDetails>), ApiError> {
+        self.get_catalog_workloads_with_yaml_from_db(
+            app_catalog.cluster_id,
+            workloads,
+            &SidecarInjectionContext {
+                environment_id,
+                namespace,
+                auth_token,
+                manager_namespace: cluster.manager_namespace.as_deref(),
+            },
+        )
+        .await
+    }
 
-        // Get workloads YAML to validate before creating in database (with sidecar injection)
-        let workloads_with_resources = self
-            .get_catalog_workloads_with_yaml_from_db(
-                app_catalog.cluster_id,
-                workloads.clone(),
-                &SidecarInjectionContext {
-                    environment_id,
-                    namespace: &namespace,
-                    auth_token: &auth_token,
-                    manager_namespace,
-                },
-            )
-            .await?;
-
-        let services_map = workloads_with_resources.services.clone();
-
-        // Prepare workload details for database
-        let workload_details = Self::prepare_workload_details_from_catalog(workloads, &namespace)?;
-
-        // Create environment in database
-        let created_env = match self
+    async fn persist_environment_creation(
+        &self,
+        environment_id: Uuid,
+        org_id: Uuid,
+        user_id: Uuid,
+        app_catalog_id: Uuid,
+        cluster_id: Uuid,
+        name: String,
+        namespace: String,
+        is_shared: bool,
+        catalog_sync_version: i64,
+        workload_details: Vec<KubeWorkloadDetails>,
+        services_map: HashMap<String, KubeServiceWithYaml>,
+        auth_token: String,
+    ) -> Result<lapdev_db_entities::kube_environment::Model, ApiError> {
+        match self
             .db
             .create_kube_environment(
                 environment_id,
@@ -849,19 +975,19 @@ impl KubeController {
                 user_id,
                 app_catalog_id,
                 cluster_id,
-                name.clone(),
-                namespace.clone(),
+                name,
+                namespace,
                 KubeEnvironmentStatus::Creating.to_string(),
                 is_shared,
-                app_catalog.sync_version,
-                None, // No base environment for regular environments
+                catalog_sync_version,
+                None,
                 workload_details,
                 services_map,
-                auth_token.clone(),
+                auth_token,
             )
             .await
         {
-            Ok(env) => env,
+            Ok(env) => Ok(env),
             Err(db_err) => {
                 if let Some(sea_orm::SqlErr::UniqueConstraintViolation(constraint)) =
                     db_err.sql_err()
@@ -878,10 +1004,17 @@ impl KubeController {
                         ));
                     }
                 }
-                return Err(ApiError::from(anyhow::Error::from(db_err)));
+                Err(ApiError::from(anyhow::Error::from(db_err)))
             }
-        };
+        }
+    }
 
+    fn spawn_environment_deployment(
+        &self,
+        server: KubeClusterServer,
+        created_env: lapdev_db_entities::kube_environment::Model,
+        workloads_with_resources: KubeWorkloadsWithResources,
+    ) {
         let controller = self.clone();
         let server_clone = server.clone();
         let env_for_task = created_env.clone();
@@ -937,13 +1070,6 @@ impl KubeController {
                 }
             }
         });
-
-        Ok(Self::build_environment_response(
-            created_env,
-            app_catalog.name,
-            cluster.name,
-            None,
-        ))
     }
 
     /// Validate base environment for branch creation
@@ -1427,13 +1553,13 @@ impl KubeController {
         catalog: &lapdev_db_entities::kube_app_catalog::Model,
         workloads_to_deploy: &[lapdev_common::kube::KubeAppCatalogWorkload],
         total_workloads: usize,
-    ) -> Result<HashSet<String>, ApiError> {
+    ) -> Result<(HashSet<String>, Vec<KubeWorkloadDetails>), ApiError> {
         if workloads_to_deploy.is_empty() {
             tracing::info!(
                 "No workload changes detected for environment {} - skipping K8s deployment",
                 environment.name
             );
-            return Ok(HashSet::new());
+            return Ok((HashSet::new(), Vec::new()));
         }
 
         tracing::info!(
@@ -1461,7 +1587,7 @@ impl KubeController {
 
         // Get workload YAML from database cache instead of querying Kubernetes
         // Handles workloads from multiple namespaces
-        let workloads_with_resources = self
+        let (workloads_with_resources, workload_details) = self
             .get_catalog_workloads_with_yaml_from_db(
                 catalog.cluster_id,
                 workloads_to_deploy.to_vec(),
@@ -1485,7 +1611,7 @@ impl KubeController {
         )
         .await?;
 
-        Ok(service_names)
+        Ok((service_names, workload_details))
     }
 
     /// Update environment workloads in the database after successful deployment
@@ -1494,7 +1620,7 @@ impl KubeController {
         environment_id: Uuid,
         environment_namespace: &str,
         catalog_workloads: &[lapdev_common::kube::KubeAppCatalogWorkload],
-        workloads_to_deploy: &[lapdev_common::kube::KubeAppCatalogWorkload],
+        workloads_to_deploy: &[KubeWorkloadDetails],
         service_names: HashSet<String>,
         new_catalog_sync_version: i64,
     ) -> Result<(), ApiError> {
@@ -1598,6 +1724,7 @@ impl KubeController {
                 workload_yaml: ActiveValue::Set(workload_yaml),
                 catalog_sync_version: ActiveValue::Set(new_catalog_sync_version),
                 base_workload_id: ActiveValue::Set(None),
+                ready_replicas: ActiveValue::Set(None),
             }
             .insert(&txn)
             .await
@@ -1657,7 +1784,7 @@ impl KubeController {
                 .await?;
 
             // Deploy changed workloads to Kubernetes
-            let service_names = self
+            let (service_names, workload_details) = self
                 .perform_workload_deployment(
                     &environment,
                     &catalog,
@@ -1666,12 +1793,12 @@ impl KubeController {
                 )
                 .await?;
 
-            Ok::<_, ApiError>((catalog_workloads, workloads_to_deploy, service_names))
+            Ok::<_, ApiError>((catalog_workloads, workload_details, service_names))
         }
         .await;
 
         // Handle sync result - reset status on failure
-        let (catalog_workloads, workloads_to_deploy, service_names) = match sync_result {
+        let (catalog_workloads, workload_details, service_names) = match sync_result {
             Ok(result) => result,
             Err(e) => {
                 // Reset sync_status to idle on failure
@@ -1691,7 +1818,7 @@ impl KubeController {
             environment.id,
             &environment.namespace,
             &catalog_workloads,
-            &workloads_to_deploy,
+            &workload_details,
             service_names,
             catalog.sync_version,
         )
@@ -1765,6 +1892,35 @@ impl KubeController {
         Ok(())
     }
 
+    async fn publish_environment_event(&self, event: EnvironmentLifecycleEvent) {
+        match serde_json::to_string(&event) {
+            Ok(payload) => {
+                if let Some(pool) = self.db.pool.clone() {
+                    if let Err(err) = sqlx::query("SELECT pg_notify('environment_lifecycle', $1)")
+                        .bind(payload)
+                        .execute(&pool)
+                        .await
+                    {
+                        warn!(
+                            error = %err,
+                            "failed to publish environment lifecycle event via NOTIFY"
+                        );
+                        let _ = self.environment_events.send(event);
+                    }
+                } else {
+                    warn!("pg pool unavailable; broadcasting environment event locally");
+                    let _ = self.environment_events.send(event);
+                }
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to serialize environment lifecycle event"
+                );
+            }
+        }
+    }
+
     async fn update_environment_status(
         &self,
         environment_id: Uuid,
@@ -1805,32 +1961,7 @@ impl KubeController {
                 updated_at: Utc::now(),
             };
 
-            match serde_json::to_string(&event) {
-                Ok(payload) => {
-                    if let Some(pool) = self.db.pool.clone() {
-                        if let Err(err) = sqlx::query("NOTIFY environment_lifecycle, $1")
-                            .bind(payload)
-                            .execute(&pool)
-                            .await
-                        {
-                            warn!(
-                                error = %err,
-                                "failed to publish environment lifecycle event via NOTIFY"
-                            );
-                            let _ = self.environment_events.send(event);
-                        }
-                    } else {
-                        warn!("pg pool unavailable; broadcasting environment event locally");
-                        let _ = self.environment_events.send(event);
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        "failed to serialize environment lifecycle event"
-                    );
-                }
-            }
+            self.publish_environment_event(event).await;
         }
 
         Ok(())

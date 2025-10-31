@@ -300,6 +300,16 @@ impl KubeManager {
         self.watch_manager.configure_watches(namespaces).await
     }
 
+    pub(crate) async fn add_namespace_watch(&self, namespace: String) -> Result<()> {
+        tracing::info!(namespace = namespace.as_str(), "Adding namespace watch");
+        self.watch_manager.add_namespace_watch(namespace).await
+    }
+
+    pub(crate) async fn remove_namespace_watch(&self, namespace: String) -> Result<()> {
+        tracing::info!(namespace = namespace.as_str(), "Removing namespace watch");
+        self.watch_manager.remove_namespace_watch(namespace).await
+    }
+
     fn parse_memory_resource(
         memory_quantity: Option<&k8s_openapi::apimachinery::pkg::api::resource::Quantity>,
     ) -> i64 {

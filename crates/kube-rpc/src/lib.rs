@@ -452,6 +452,10 @@ pub trait KubeManagerRpc {
 
     async fn configure_watches(namespaces: Vec<String>) -> Result<(), String>;
 
+    async fn add_namespace_watch(namespace: String) -> Result<(), String>;
+
+    async fn remove_namespace_watch(namespace: String) -> Result<(), String>;
+
     // Devbox-proxy management methods
     async fn add_branch_environment(
         base_environment_id: Uuid,

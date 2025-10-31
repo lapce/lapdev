@@ -186,9 +186,9 @@ fn clean_pod(pod: Pod, workload_containers: &[KubeContainerInfo]) -> Pod {
             dns_policy: original_spec.dns_policy,
             dns_config: original_spec.dns_config,
             node_selector: original_spec.node_selector,
-            service_account_name: original_spec.service_account_name,
-            service_account: original_spec.service_account,
-            automount_service_account_token: original_spec.automount_service_account_token,
+            service_account_name: None,
+            service_account: None,
+            automount_service_account_token: None,
             security_context: original_spec.security_context,
             image_pull_secrets: original_spec.image_pull_secrets,
             affinity: original_spec.affinity,
@@ -277,25 +277,13 @@ fn merge_template_containers(
     workload_containers: &[KubeContainerInfo],
 ) -> PodTemplateSpec {
     let pod_spec = template.spec.map(|original_pod_spec| {
-        let merged_containers = original_pod_spec
-            .containers
-            .into_iter()
-            .map(|container| {
-                if let Some(workload_container) = workload_containers
-                    .iter()
-                    .find(|wc| wc.name == container.name)
-                {
-                    merge_single_container(container, workload_container)
-                } else {
-                    container
-                }
-            })
-            .collect();
-
-        PodSpec {
-            containers: merged_containers,
-            ..original_pod_spec
-        }
+        let mut new_spec = original_pod_spec;
+        let merged_containers = merge_containers(new_spec.containers, workload_containers);
+        new_spec.containers = merged_containers;
+        new_spec.service_account_name = None;
+        new_spec.service_account = None;
+        new_spec.automount_service_account_token = None;
+        new_spec
     });
 
     PodTemplateSpec {

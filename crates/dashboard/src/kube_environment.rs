@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
 use chrono::DateTime;
+use futures::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
 use lapdev_common::kube::{
     KubeEnvironment, KubeEnvironmentStatus, PagePaginationParams, PaginatedInfo, PaginatedResult,
 };
-use leptos::prelude::*;
+use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use leptos_router::hooks::use_location;
 
 use crate::{
@@ -107,6 +109,7 @@ pub fn KubeEnvironmentList(
     let current_page = RwSignal::new(1usize);
     let page_size = RwSignal::new(20usize);
     let is_loading = RwSignal::new(false);
+    let sse_started = StoredValue::new(false);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -196,6 +199,50 @@ pub fn KubeEnvironmentList(
         environment_type.track();
         current_page.set(1); // Reset to first page when environment type changes
         environments_result.refetch();
+    });
+
+    Effect::new(move |_| {
+        if sse_started.get_value() {
+            return;
+        }
+
+        if let Some(org) = org.get() {
+            sse_started.set_value(true);
+            let org_id = org.id;
+            let update_counter = update_counter;
+            spawn_local_scoped_with_cancellation(async move {
+                let url = format!("/api/v1/organizations/{}/kube/environments/events", org_id);
+
+                match EventSource::new(&url) {
+                    Ok(mut event_source) => {
+                        match event_source.subscribe("environment") {
+                            Ok(mut stream) => {
+                                while let Some(event) = stream.next().await {
+                                    if event.is_ok() {
+                                        update_counter.update(|c| *c += 1);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                web_sys::console::error_1(
+                                    &format!(
+                                        "Failed to subscribe to organization environment events: {err}"
+                                    )
+                                    .into(),
+                                );
+                            }
+                        }
+                        event_source.close();
+                    }
+                    Err(err) => {
+                        web_sys::console::error_1(
+                            &format!("Failed to connect to organization environment events: {err}")
+                                .into(),
+                        );
+                    }
+                }
+            });
+        }
     });
 
     let environment_list = Signal::derive(move || {
@@ -301,8 +348,22 @@ pub fn EnvironmentContent(
                             each=move || environment_list.get()
                             key=|env| env.id
                             children=move |environment| {
+                                let env_id = environment.id;
+                                let initial_status = environment.status;
+                                let status_signal = Signal::derive(move || {
+                                    environment_list.with(|list| {
+                                        list.iter()
+                                            .find(|env| env.id == env_id)
+                                            .map(|env| env.status)
+                                            .unwrap_or(initial_status)
+                                    })
+                                });
+
                                 view! {
-                                    <KubeEnvironmentItem environment=environment.clone() />
+                                    <KubeEnvironmentItem
+                                        environment=environment.clone()
+                                        status=status_signal
+                                    />
                                 }
                             }
                         />
@@ -344,7 +405,7 @@ pub fn EnvironmentContent(
                                 .into_any()
                         }
                     } else {
-                        view! { <div></div> }.into_any()
+                        ().into_any()
                     }
                 }}
             </div>
@@ -353,7 +414,10 @@ pub fn EnvironmentContent(
 }
 
 #[component]
-pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
+pub fn KubeEnvironmentItem(
+    environment: KubeEnvironment,
+    status: Signal<KubeEnvironmentStatus>,
+) -> impl IntoView {
     let env_name = environment.name.clone();
     let env_name_for_delete = environment.name.clone();
 
@@ -370,18 +434,20 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
     //     leptos::logging::log!("Delete environment: {}", env_name_for_delete);
     // };
 
-    let status_variant = match environment.status {
+    let status_signal = status;
+    let status_variant = Signal::derive(move || match status_signal.get() {
         KubeEnvironmentStatus::Running => BadgeVariant::Secondary,
         KubeEnvironmentStatus::Creating
         | KubeEnvironmentStatus::Pausing
         | KubeEnvironmentStatus::Resuming
         | KubeEnvironmentStatus::Paused
-        | KubeEnvironmentStatus::Deleting => BadgeVariant::Outline,
+        | KubeEnvironmentStatus::Deleting
+        | KubeEnvironmentStatus::Deleted => BadgeVariant::Outline,
         KubeEnvironmentStatus::Failed
         | KubeEnvironmentStatus::Error
         | KubeEnvironmentStatus::PauseFailed
         | KubeEnvironmentStatus::ResumeFailed => BadgeVariant::Destructive,
-    };
+    });
 
     let dropdown_expanded = RwSignal::new(false);
     let env_name_for_delete_clone = env_name_for_delete.clone();
@@ -477,7 +543,7 @@ pub fn KubeEnvironmentItem(environment: KubeEnvironment) -> impl IntoView {
             </TableCell>
             <TableCell>
                 <Badge variant=status_variant>
-                    {environment.status.to_string()}
+                    {move || status_signal.get().to_string()}
                 </Badge>
             </TableCell>
             <TableCell>

@@ -96,6 +96,44 @@ impl WatchManager {
         Ok(())
     }
 
+    pub async fn add_namespace_watch(&self, namespace: String) -> Result<()> {
+        let namespace = namespace.trim().to_string();
+        if namespace.is_empty() {
+            return Ok(());
+        }
+
+        {
+            let namespaces = self.namespaces.read().await;
+            if namespaces.contains(&namespace) {
+                return Ok(());
+            }
+        }
+
+        self.start_namespace(namespace.clone()).await;
+
+        let mut namespaces = self.namespaces.write().await;
+        namespaces.insert(namespace);
+        Ok(())
+    }
+
+    pub async fn remove_namespace_watch(&self, namespace: String) -> Result<()> {
+        let namespace = namespace.trim().to_string();
+        if namespace.is_empty() {
+            return Ok(());
+        }
+
+        let removed = {
+            let mut namespaces = self.namespaces.write().await;
+            namespaces.remove(&namespace)
+        };
+
+        if removed {
+            self.stop_namespace(&namespace).await;
+        }
+
+        Ok(())
+    }
+
     async fn stop_namespace(&self, namespace: &str) {
         let mut tasks = self.tasks.write().await;
         let keys: Vec<WatchKey> = tasks

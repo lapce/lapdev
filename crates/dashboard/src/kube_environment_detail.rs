@@ -264,8 +264,8 @@ fn build_port_overrides_from_workload_ports(
     }
 
     for port in ports {
-        // Use target_port (the actual container port) for intercept, fall back to service port if not specified
-        let target_port = port.target_port.unwrap_or(port.port);
+        // Prefer the original container port when present; otherwise fall back to the current target or service port.
+        let target_port = port.original_target_port.unwrap_or(port.port);
 
         let workload_port = u16::try_from(target_port).map_err(|_| ErrorResponse {
             error: format!("Unsupported workload port: {}", target_port),
@@ -682,7 +682,8 @@ pub fn EnvironmentInfoCard(
                     | KubeEnvironmentStatus::Pausing
                     | KubeEnvironmentStatus::Resuming
                     | KubeEnvironmentStatus::Paused
-                    | KubeEnvironmentStatus::Deleting => BadgeVariant::Outline,
+                    | KubeEnvironmentStatus::Deleting
+                    | KubeEnvironmentStatus::Deleted => BadgeVariant::Outline,
                     KubeEnvironmentStatus::Failed
                     | KubeEnvironmentStatus::Error
                     | KubeEnvironmentStatus::PauseFailed
@@ -817,7 +818,17 @@ pub fn EnvironmentInfoCard(
                                                 </>
                                             }.into_any()}
                                         </Show>
-                                        {let is_deleting = matches!(env_status, KubeEnvironmentStatus::Deleting);
+                                        {let is_deleting = matches!(
+                                            env_status,
+                                            KubeEnvironmentStatus::Deleting | KubeEnvironmentStatus::Deleted
+                                        );
+                                        let delete_button_text = if matches!(env_status, KubeEnvironmentStatus::Deleted) {
+                                            "Deleted".to_string()
+                                        } else if matches!(env_status, KubeEnvironmentStatus::Deleting) {
+                                            "Deleting...".to_string()
+                                        } else {
+                                            "Delete Environment".to_string()
+                                        };
                                         view! {
                                             <Button
                                                 variant=ButtonVariant::Destructive
@@ -825,7 +836,7 @@ pub fn EnvironmentInfoCard(
                                                 disabled=is_deleting
                                             >
                                                 <lucide_leptos::Trash2 />
-                                                {if is_deleting { "Deleting...".to_string() } else { "Delete Environment".to_string() }}
+                                                {delete_button_text}
                                             </Button>
                                         }.into_any()}
                                     </div>
@@ -1174,11 +1185,10 @@ pub fn EnvironmentWorkloadsContent(
                         <TableHeader class="bg-muted">
                             <TableRow>
                                 <TableHead>Name</TableHead>
-                                <TableHead>Namespace</TableHead>
                                 <TableHead>Kind</TableHead>
-                                <TableHead>Containers</TableHead>
+                                <TableHead>Ready</TableHead>
                                 <TableHead>Intercepts</TableHead>
-                                <TableHead>Created</TableHead>
+                                <TableHead>Containers</TableHead>
                                 <TableHead>Actions</TableHead>
                             </TableRow>
                         </TableHeader>
@@ -1336,33 +1346,18 @@ pub fn EnvironmentWorkloadItem(
                     </a>
                 </TableCell>
                 <TableCell>
-                    <Badge variant=BadgeVariant::Secondary>
-                        {workload.namespace}
-                    </Badge>
-                </TableCell>
-                <TableCell>
                     <Badge variant=BadgeVariant::Outline>
                         {workload.kind.to_string()}
                     </Badge>
                 </TableCell>
                 <TableCell>
-                    <div class="text-sm flex flex-col gap-2">
-                        {
-                            let containers = workload.containers.clone();
-                            containers.iter().map(|container| {
-                                view! {
-                                    <ContainerDisplay
-                                        container=container.clone()
-                                    />
-                                }
-                            }).collect::<Vec<_>>()
-                        }
-                        {if workload.containers.clone().is_empty() {
-                            view! { <span class="text-muted-foreground">"No containers"</span> }.into_any()
-                        } else {
-                            ().into_any()
-                        }}
-                    </div>
+                    {
+                        format!("{}/1", workload
+                            .ready_replicas
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                        )
+                    }
                 </TableCell>
                 <TableCell>
                     {move || {
@@ -1419,7 +1414,23 @@ pub fn EnvironmentWorkloadItem(
                     }}
                 </TableCell>
                 <TableCell>
-                    <DatetimeModal time=workload.created_at />
+                    <div class="text-sm flex flex-col gap-2">
+                        {
+                            let containers = workload.containers.clone();
+                            containers.iter().map(|container| {
+                                view! {
+                                    <ContainerDisplay
+                                        container=container.clone()
+                                    />
+                                }
+                            }).collect::<Vec<_>>()
+                        }
+                        {if workload.containers.clone().is_empty() {
+                            view! { <span class="text-muted-foreground">"No containers"</span> }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </div>
                 </TableCell>
                 <TableCell>
                     // Actions removed - workload deletion is no longer available
@@ -1611,10 +1622,8 @@ pub fn EnvironmentServicesContent(
                         <TableHeader class="bg-muted">
                             <TableRow>
                                 <TableHead>Name</TableHead>
-                                <TableHead>Namespace</TableHead>
                                 <TableHead>Ports</TableHead>
                                 <TableHead>Selectors</TableHead>
-                                <TableHead>Created</TableHead>
                                 <TableHead>Actions</TableHead>
                             </TableRow>
                         </TableHeader>
@@ -1679,22 +1688,17 @@ pub fn EnvironmentServiceItem(
                 <div class="font-medium">{service.name.clone()}</div>
             </TableCell>
             <TableCell>
-                <Badge variant=BadgeVariant::Secondary>
-                    {service.namespace.clone()}
-                </Badge>
-            </TableCell>
-            <TableCell>
                 <div class="text-sm flex flex-col gap-1">
                     {if ports.is_empty() {
                         view! { <span class="text-muted-foreground">"No ports"</span> }.into_any()
                     } else {
                         ports.into_iter().map(|port| {
                             let target_port = port
-                                .target_port
+                                .original_target_port
                                 .map(|tp| format!(":{tp}"))
                                 .unwrap_or_default();
                             let protocol = port.protocol.as_deref().unwrap_or("TCP");
-                            let port_text = format!("{}{} ({})", port.port, target_port, protocol);
+                            let port_text = format!("{}{} ({protocol})", port.port, target_port);
                             view! {
                                 <Badge variant=BadgeVariant::Outline class="text-xs">
                                     {port_text}
@@ -1719,9 +1723,6 @@ pub fn EnvironmentServiceItem(
                         }).collect::<Vec<_>>().into_any()
                     }}
                 </div>
-            </TableCell>
-            <TableCell>
-                <DatetimeModal time=service.created_at />
             </TableCell>
             <TableCell>
                 <Button
@@ -1812,13 +1813,12 @@ pub fn EditInterceptModal(
     existing_mappings: Vec<DevboxPortMapping>,
     update_counter: RwSignal<usize>,
 ) -> impl IntoView {
-    // Extract all available ports from workload service ports
-    // Use target_port (the actual container port) for intercept, fall back to service port if not specified
+    // Extract all available ports from workload service ports, preferring the recorded original container port.
     let available_ports: Vec<AvailablePort> = workload_ports
         .iter()
         .map(|port| AvailablePort {
             container_name: String::new(), // Service ports don't have container names
-            port: port.target_port.unwrap_or(port.port),
+            port: port.original_target_port.unwrap_or(port.port),
             port_name: port.name.clone(),
             protocol: port.protocol.clone(),
         })

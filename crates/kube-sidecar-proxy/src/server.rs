@@ -2,7 +2,6 @@ use crate::{
     config::{DevboxConnection, RouteDecision, RoutingTable, SidecarSettings},
     error::Result,
     http2_proxy::handle_http2_proxy,
-    original_dest::get_original_destination,
     otel_routing::{determine_routing_target, extract_routing_context},
     protocol_detector::{detect_protocol, ProtocolDetectionResult, ProtocolType},
     rpc::SidecarProxyRpcServer,
@@ -53,22 +52,23 @@ impl SidecarProxyServer {
                 ))
             })?;
 
-        let workload_id = match std::env::var(SIDECAR_PROXY_WORKLOAD_ENV_VAR) {
-            Ok(value) => Uuid::from_str(&value).map_err(|_| {
-                anyhow!(format!(
-                    "{SIDECAR_PROXY_WORKLOAD_ENV_VAR} isn't a valid uuid"
-                ))
-            })?,
-            Err(_) => {
-                warn!(
-                    "{} not set, defaulting workload identifier to environment id",
-                    SIDECAR_PROXY_WORKLOAD_ENV_VAR
-                );
-                Uuid::parse_str(&environment_id).map_err(|e| {
-                    anyhow!(format!("Failed to parse environment_id as UUID: {}", e))
-                })?
-            }
-        };
+        let raw_workload_id =
+            env::var(SIDECAR_PROXY_WORKLOAD_ENV_VAR).map_err(|err| match err {
+                env::VarError::NotPresent => {
+                    anyhow!(format!(
+                        "{SIDECAR_PROXY_WORKLOAD_ENV_VAR} env var must be set"
+                    ))
+                }
+                env::VarError::NotUnicode(_) => anyhow!(format!(
+                    "{SIDECAR_PROXY_WORKLOAD_ENV_VAR} must be valid UTF-8"
+                )),
+            })?;
+
+        let workload_id = Uuid::from_str(&raw_workload_id).map_err(|_| {
+            anyhow!(format!(
+                "{SIDECAR_PROXY_WORKLOAD_ENV_VAR} isn't a valid uuid"
+            ))
+        })?;
 
         // Parse environment ID - now required
         let env_id = Uuid::parse_str(&environment_id)
@@ -383,21 +383,15 @@ async fn handle_connection(
     client_addr: SocketAddr,
     settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
-    _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+    rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
-    // Extract the original destination from the iptables-redirected connection
-    let original_dest = match get_original_destination(&inbound_stream) {
-        Ok(dest) => dest,
-        Err(e) => {
-            error!(
-                "Failed to get original destination for {}: {}",
-                client_addr, e
-            );
-            return Err(e);
-        }
-    };
+    let local_addr = inbound_stream.local_addr()?;
+    let proxy_port = local_addr.port();
 
-    debug!("Original destination: {} -> {}", client_addr, original_dest);
+    debug!(
+        "Connection from {} accepted on proxy port {}",
+        client_addr, proxy_port
+    );
 
     // Detect protocol by reading initial data with a bounded timeout
     let detection = detect_protocol(&mut inbound_stream, Some(Duration::from_secs(10))).await;
@@ -427,11 +421,11 @@ async fn handle_connection(
             handle_http_proxy(
                 inbound_stream,
                 client_addr,
-                original_dest,
+                proxy_port,
                 initial_data,
                 Arc::clone(&settings),
                 Arc::clone(&routing_table),
-                Arc::clone(&_rpc_client),
+                Arc::clone(&rpc_client),
             )
             .await
         }
@@ -439,18 +433,20 @@ async fn handle_connection(
             handle_http2_proxy(
                 inbound_stream,
                 client_addr,
-                original_dest,
+                proxy_port,
                 initial_data,
                 settings,
                 Arc::clone(&routing_table),
-                Arc::clone(&_rpc_client),
+                Arc::clone(&rpc_client),
             )
             .await
         }
         ProtocolType::Tcp => {
-            let decision = {
+            let (service_port, decision) = {
                 let table = routing_table.read().await;
-                table.resolve_tcp(original_dest.port())
+                let service_port = table.service_port_for_proxy(proxy_port);
+                let decision = table.resolve_tcp(service_port);
+                (service_port, decision)
             };
 
             match decision {
@@ -464,9 +460,10 @@ async fn handle_connection(
                 } => {
                     let metadata = connection.metadata();
                     info!(
-                        "TCP {} -> {} intercepted by Devbox (intercept_id={}, session_id={}, target_port={})",
+                        "TCP {} via proxy port {} (service {}) intercepted by Devbox (intercept_id={}, session_id={}, target_port={})",
                         client_addr,
-                        original_dest,
+                        proxy_port,
+                        service_port,
                         metadata.intercept_id,
                         metadata.session_id,
                         target_port
@@ -474,7 +471,7 @@ async fn handle_connection(
                     handle_devbox_tunnel(
                         inbound_stream,
                         client_addr,
-                        original_dest,
+                        service_port,
                         initial_data,
                         connection,
                         target_port,
@@ -484,17 +481,16 @@ async fn handle_connection(
                 RouteDecision::DefaultLocal { target_port } => {
                     let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), target_port);
                     info!(
-                        "Proxying TCP from {} -> {} (local: {})",
-                        client_addr, original_dest, local_target
+                        "Proxying TCP from {} (proxy port {}, service {}) to {}",
+                        client_addr, proxy_port, service_port, local_target
                     );
                     handle_tcp_proxy(inbound_stream, local_target, initial_data).await
                 }
                 RouteDecision::BranchService { .. } => {
-                    let local_target =
-                        SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
+                    let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), service_port);
                     info!(
-                        "TCP {} -> {} matched branch service route unexpectedly; proxying to local {}",
-                        client_addr, original_dest, local_target
+                        "TCP connection from {} on proxy port {} matched branch service route unexpectedly; proxying to local {}",
+                        client_addr, proxy_port, local_target
                     );
                     handle_tcp_proxy(inbound_stream, local_target, initial_data).await
                 }
@@ -507,7 +503,7 @@ async fn handle_connection(
 async fn handle_http_proxy(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
-    original_dest: SocketAddr,
+    proxy_port: u16,
     mut initial_data: Vec<u8>,
     _settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
@@ -528,7 +524,8 @@ async fn handle_http_proxy(
             );
             let fallback_port = {
                 let table = routing_table.read().await;
-                table.target_port_for_service(original_dest.port())
+                let service_port = table.service_port_for_proxy(proxy_port);
+                table.target_port_for_service(service_port)
             };
             let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), fallback_port);
             return handle_tcp_proxy(inbound_stream, fallback_target, initial_data).await;
@@ -539,25 +536,30 @@ async fn handle_http_proxy(
     let routing_context = extract_routing_context(&http_request.headers);
 
     let branch_id = routing_context.lapdev_environment_id;
-    let decision = {
+    let (service_port, decision) = {
         let table = routing_table.read().await;
-        table.resolve_http(original_dest.port(), branch_id)
+        let service_port = table.service_port_for_proxy(proxy_port);
+        let decision = table.resolve_http(service_port, branch_id);
+        (service_port, decision)
     };
 
-    let mut fallback_port = original_dest.port();
+    let mut fallback_port = service_port;
 
     match decision {
         RouteDecision::BranchService { service } => {
-            let port = original_dest.port();
-            if let Some(service_name) = service.service_name_for_port(port) {
+            if let Some(service_name) = service.service_name_for_port(service_port) {
                 info!(
                     "HTTP {} {} routing to branch {:?} service {}:{}",
-                    http_request.method, http_request.path, branch_id, service_name, port
+                    http_request.method, http_request.path, branch_id, service_name, service_port
                 );
 
-                if let Err(err) =
-                    proxy_branch_stream(&mut inbound_stream, service_name, port, &initial_data)
-                        .await
+                if let Err(err) = proxy_branch_stream(
+                    &mut inbound_stream,
+                    service_name,
+                    service_port,
+                    &initial_data,
+                )
+                .await
                 {
                     warn!(
                         "Branch route {} for env {:?} failed: {}; falling back to shared target",
@@ -569,7 +571,7 @@ async fn handle_http_proxy(
             } else {
                 warn!(
                     "Missing branch service mapping for port {} in env {:?}; falling back to shared target",
-                    port, branch_id
+                    service_port, branch_id
                 );
             }
         }
@@ -590,7 +592,7 @@ async fn handle_http_proxy(
             return handle_devbox_tunnel(
                 inbound_stream,
                 client_addr,
-                original_dest,
+                service_port,
                 initial_data,
                 connection,
                 target_port,
@@ -603,10 +605,11 @@ async fn handle_http_proxy(
         } => {
             let metadata = connection.metadata();
             info!(
-                "HTTP {} {} intercepted by shared devbox (port {}, intercept_id={}, session_id={}, target_port={})",
+                "HTTP {} {} intercepted by shared devbox (proxy port {}, service port {}, intercept_id={}, session_id={}, target_port={})",
                 http_request.method,
                 http_request.path,
-                original_dest.port(),
+                proxy_port,
+                service_port,
                 metadata.intercept_id,
                 metadata.session_id,
                 target_port
@@ -614,7 +617,7 @@ async fn handle_http_proxy(
             return handle_devbox_tunnel(
                 inbound_stream,
                 client_addr,
-                original_dest,
+                service_port,
                 initial_data,
                 connection,
                 target_port,
@@ -629,7 +632,7 @@ async fn handle_http_proxy(
     let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), fallback_port);
 
     // Determine routing target based on headers for fallback logging
-    let routing_target = determine_routing_target(&routing_context, original_dest.port());
+    let routing_target = determine_routing_target(&routing_context, service_port);
     info!(
         "HTTP {} {} -> {} (routing: {}, trace_id: {:?})",
         http_request.method,
@@ -736,16 +739,16 @@ async fn handle_tcp_proxy(
 async fn handle_devbox_tunnel(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
-    original_dest: SocketAddr,
-    mut initial_data: Vec<u8>,
+    service_port: u16,
+    initial_data: Vec<u8>,
     connection: Arc<DevboxConnection>,
     target_port: u16,
 ) -> io::Result<()> {
     let metadata = connection.metadata();
 
     info!(
-        "Routing {} -> {} through devbox tunnel (intercept_id={}, session_id={}, target_port={})",
-        client_addr, original_dest, metadata.intercept_id, metadata.session_id, target_port
+        "Routing {} (service port {}) through devbox tunnel (intercept_id={}, session_id={}, target_port={})",
+        client_addr, service_port, metadata.intercept_id, metadata.session_id, target_port
     );
 
     info!(

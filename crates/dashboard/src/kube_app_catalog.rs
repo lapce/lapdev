@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
+use futures::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
 use lapdev_common::kube::{
     KubeAppCatalog, KubeCluster, KubeClusterStatus, PagePaginationParams, PaginatedInfo,
     PaginatedResult,
 };
-use leptos::prelude::*;
+use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use uuid::Uuid;
 
 use crate::component::hover_card::HoverCardPlacement;
@@ -89,6 +91,7 @@ pub fn AppCatalogList(update_counter: RwSignal<usize>) -> impl IntoView {
     let current_page = RwSignal::new(1usize);
     let page_size = RwSignal::new(20usize);
     let is_loading = RwSignal::new(false);
+    let sse_started = StoredValue::new(false);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -169,6 +172,50 @@ pub fn AppCatalogList(update_counter: RwSignal<usize>) -> impl IntoView {
         page_size.track();
         current_page.set(1); // Reset to first page when page size changes
         catalogs_result.refetch();
+    });
+
+    Effect::new(move |_| {
+        if sse_started.get_value() {
+            return;
+        }
+
+        if let Some(org) = org.get() {
+            sse_started.set_value(true);
+            let org_id = org.id;
+            let update_counter = update_counter;
+            spawn_local_scoped_with_cancellation(async move {
+                let url = format!("/api/v1/organizations/{}/kube/catalogs/events", org_id);
+
+                match EventSource::new(&url) {
+                    Ok(mut event_source) => {
+                        match event_source.subscribe("catalog") {
+                            Ok(mut stream) => {
+                                while let Some(event) = stream.next().await {
+                                    if event.is_ok() {
+                                        update_counter.update(|c| *c += 1);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                web_sys::console::error_1(
+                                    &format!(
+                                        "Failed to subscribe to organization catalog events: {err}"
+                                    )
+                                    .into(),
+                                );
+                            }
+                        }
+                        event_source.close();
+                    }
+                    Err(err) => {
+                        web_sys::console::error_1(
+                            &format!("Failed to connect to organization catalog events: {err}")
+                                .into(),
+                        );
+                    }
+                }
+            });
+        }
     });
 
     // Auto-adjust current page when data changes (e.g., after delete)

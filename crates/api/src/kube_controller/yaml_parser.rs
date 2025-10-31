@@ -244,7 +244,8 @@ fn ports_from_cached_services(
         }
 
         for port in &service.ports {
-            let key = (port.port, port.target_port, port.protocol.clone());
+            let original_target = port.original_target_port.or(port.target_port);
+            let key = (port.port, original_target, port.protocol.clone());
             if seen.insert(key) {
                 ports.push(port.clone());
             }

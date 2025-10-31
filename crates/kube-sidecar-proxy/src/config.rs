@@ -284,6 +284,13 @@ impl RoutingTable {
         self.port_routes.values()
     }
 
+    pub fn service_port_for_proxy(&self, proxy_port: u16) -> u16 {
+        self.port_routes
+            .get(&proxy_port)
+            .map(|route| route.service_port)
+            .unwrap_or(proxy_port)
+    }
+
     pub fn target_port_for_service(&self, service_port: u16) -> u16 {
         self.port_routes
             .values()

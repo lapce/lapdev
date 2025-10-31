@@ -18,6 +18,7 @@ pub struct Model {
     pub ports: Json,
     pub workload_yaml: String,
     pub catalog_sync_version: i64,
+    pub ready_replicas: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

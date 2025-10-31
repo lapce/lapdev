@@ -302,6 +302,34 @@ impl KubeManagerRpc for KubeManagerRpcServer {
             })
     }
 
+    async fn add_namespace_watch(
+        self,
+        _context: ::tarpc::context::Context,
+        namespace: String,
+    ) -> Result<(), String> {
+        self.manager
+            .add_namespace_watch(namespace)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to add namespace watch: {e}");
+                format!("Failed to add namespace watch: {e}")
+            })
+    }
+
+    async fn remove_namespace_watch(
+        self,
+        _context: ::tarpc::context::Context,
+        namespace: String,
+    ) -> Result<(), String> {
+        self.manager
+            .remove_namespace_watch(namespace)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to remove namespace watch: {e}");
+                format!("Failed to remove namespace watch: {e}")
+            })
+    }
+
     async fn add_branch_environment(
         self,
         _context: ::tarpc::context::Context,

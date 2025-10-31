@@ -2,12 +2,15 @@ use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use lapdev_common::kube::{
     KubeAppCatalog, KubeAppCatalogWorkload, KubeAppCatalogWorkloadCreate, KubeServiceDetails,
-    KubeServiceWithYaml, PagePaginationParams, PaginatedInfo, PaginatedResult, ProxyPortRoute,
+    KubeServiceWithYaml, KubeWorkloadDetails, PagePaginationParams, PaginatedInfo, PaginatedResult,
+    ProxyPortRoute, DEFAULT_SIDECAR_PROXY_METRICS_PORT, DEFAULT_SIDECAR_PROXY_PORT,
+    SIDECAR_PROXY_DYNAMIC_PORT_START,
 };
 use lapdev_db::api::CachedClusterService;
 use lapdev_db_entities::kube_app_catalog_workload_dependency;
 use lapdev_kube_rpc::{
     KubeWorkloadYamlOnly, KubeWorkloadsWithResources, NamespacedResourceRequest,
+    NamespacedResourceResponse,
 };
 use lapdev_rpc::error::ApiError;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
@@ -29,6 +32,12 @@ pub struct SidecarInjectionContext<'a> {
     pub namespace: &'a str,
     pub auth_token: &'a str,
     pub manager_namespace: Option<&'a str>,
+}
+
+struct PreparedWorkloads {
+    workload_yamls: Vec<KubeWorkloadYamlOnly>,
+    proxy_routes: HashMap<Uuid, Vec<ProxyPortRoute>>,
+    workloads_for_details: Vec<KubeAppCatalogWorkload>,
 }
 
 impl KubeController {
@@ -105,20 +114,72 @@ impl KubeController {
         cluster_id: Uuid,
         workloads: Vec<KubeAppCatalogWorkload>,
         injection_ctx: &SidecarInjectionContext<'_>,
-    ) -> Result<KubeWorkloadsWithResources, ApiError> {
-        // Get services that select these workloads using the label and selector tables
+    ) -> Result<(KubeWorkloadsWithResources, Vec<KubeWorkloadDetails>), ApiError> {
         let workload_ids: Vec<Uuid> = workloads.iter().map(|w| w.id).collect();
         let services_by_workload = self
-            .db
-            .get_services_for_catalog_workloads(cluster_id, &workload_ids)
+            .load_services_for_catalog_workloads(cluster_id, &workload_ids)
+            .await?;
+
+        let PreparedWorkloads {
+            workload_yamls,
+            proxy_routes,
+            workloads_for_details,
+        } = self.prepare_workloads_from_cache(&workloads, &services_by_workload, injection_ctx)?;
+
+        let services_map =
+            self.prepare_services_from_cache(&services_by_workload, &proxy_routes)?;
+
+        let (configmaps_map, secrets_map) = self
+            .fetch_dependency_resources(cluster_id, &workload_ids)
+            .await?;
+
+        tracing::info!(
+            "Built catalog workload resources from DB: {} workloads, {} services, {} configmaps, {} secrets (cluster: {})",
+            workload_yamls.len(),
+            services_map.len(),
+            configmaps_map.len(),
+            secrets_map.len(),
+            cluster_id,
+        );
+
+        let workload_details = Self::prepare_workload_details_from_catalog(
+            workloads_for_details,
+            injection_ctx.namespace,
+        )?;
+
+        Ok((
+            KubeWorkloadsWithResources {
+                workloads: workload_yamls,
+                services: services_map,
+                configmaps: configmaps_map,
+                secrets: secrets_map,
+            },
+            workload_details,
+        ))
+    }
+
+    async fn load_services_for_catalog_workloads(
+        &self,
+        cluster_id: Uuid,
+        workload_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<CachedClusterService>>, ApiError> {
+        self.db
+            .get_services_for_catalog_workloads(cluster_id, workload_ids)
             .await
-            .map_err(ApiError::from)?;
+            .map_err(ApiError::from)
+    }
 
-        // Build workload YAMLs from database
-        let mut workload_yamls = Vec::new();
+    fn prepare_workloads_from_cache(
+        &self,
+        workloads: &[KubeAppCatalogWorkload],
+        services_by_workload: &HashMap<Uuid, Vec<CachedClusterService>>,
+        injection_ctx: &SidecarInjectionContext<'_>,
+    ) -> Result<PreparedWorkloads, ApiError> {
+        let mut workload_yamls = Vec::with_capacity(workloads.len());
         let mut proxy_routes: HashMap<Uuid, Vec<ProxyPortRoute>> = HashMap::new();
+        let mut workloads_for_details = Vec::with_capacity(workloads.len());
 
-        for workload in &workloads {
+        for workload in workloads {
             if workload.workload_yaml.trim().is_empty() {
                 return Err(ApiError::InvalidRequest(format!(
                     "Workload '{}' has no cached YAML in database",
@@ -126,52 +187,28 @@ impl KubeController {
                 )));
             }
 
-            let mut routes = Vec::new();
-            if let Some(services) = services_by_workload.get(&workload.id) {
-                for service in services {
-                    for port in &service.ports {
-                        let service_port = match u16::try_from(port.port) {
-                            Ok(port) if port > 0 => port,
-                            _ => continue,
-                        };
-
-                        let target_port = match port.target_port {
-                            Some(value) => match u16::try_from(value) {
-                                Ok(tp) if tp > 0 => tp,
-                                _ => continue,
-                            },
-                            None => {
-                                // TODO: support named targetPort values when the service uses port names.
-                                continue;
-                            }
-                        };
-
-                        routes.push(ProxyPortRoute {
-                            proxy_port: service_port,
-                            service_port,
-                            target_port,
-                        });
-                    }
-                }
-            }
+            let routes = Self::build_proxy_routes(
+                services_by_workload
+                    .get(&workload.id)
+                    .map(|services| services.as_slice()),
+            );
 
             let raw_yaml = workload.workload_yaml.clone();
-
             let sidecar_options = SidecarInjectionOptions {
                 environment_id: injection_ctx.environment_id,
+                workload_id: workload.id,
                 namespace: injection_ctx.namespace,
                 auth_token: injection_ctx.auth_token,
                 manager_namespace: injection_ctx.manager_namespace,
-                proxy_routes: &routes,
+                proxy_routes: routes.as_slice(),
             };
-            let rebuilt_yaml = {
-                rebuild_workload_yaml(
-                    &workload.kind,
-                    &raw_yaml,
-                    &workload.containers,
-                    Some(&sidecar_options),
-                )
-            }
+
+            let rebuilt_yaml = rebuild_workload_yaml(
+                &workload.kind,
+                &raw_yaml,
+                &workload.containers,
+                Some(&sidecar_options),
+            )
             .map_err(|err| {
                 ApiError::InvalidRequest(format!(
                     "Failed to reconstruct workload YAML for '{}': {}",
@@ -179,30 +216,11 @@ impl KubeController {
                 ))
             })?;
 
-            let workload_yaml_only = match workload.kind {
-                lapdev_common::kube::KubeWorkloadKind::Deployment => {
-                    KubeWorkloadYamlOnly::Deployment(rebuilt_yaml)
-                }
-                lapdev_common::kube::KubeWorkloadKind::StatefulSet => {
-                    KubeWorkloadYamlOnly::StatefulSet(rebuilt_yaml)
-                }
-                lapdev_common::kube::KubeWorkloadKind::DaemonSet => {
-                    KubeWorkloadYamlOnly::DaemonSet(rebuilt_yaml)
-                }
-                lapdev_common::kube::KubeWorkloadKind::ReplicaSet => {
-                    KubeWorkloadYamlOnly::ReplicaSet(rebuilt_yaml)
-                }
-                lapdev_common::kube::KubeWorkloadKind::Pod => {
-                    KubeWorkloadYamlOnly::Pod(rebuilt_yaml)
-                }
-                lapdev_common::kube::KubeWorkloadKind::Job => {
-                    KubeWorkloadYamlOnly::Job(rebuilt_yaml)
-                }
-                lapdev_common::kube::KubeWorkloadKind::CronJob => {
-                    KubeWorkloadYamlOnly::CronJob(rebuilt_yaml)
-                }
-            };
+            let mut workload_for_details = workload.clone();
+            workload_for_details.workload_yaml = rebuilt_yaml.clone();
+            workloads_for_details.push(workload_for_details);
 
+            let workload_yaml_only = Self::to_workload_yaml_only(&workload.kind, rebuilt_yaml);
             workload_yamls.push(workload_yaml_only);
 
             if !routes.is_empty() {
@@ -210,8 +228,20 @@ impl KubeController {
             }
         }
 
-        // Convert cached services into KubeServiceWithYaml entries
+        Ok(PreparedWorkloads {
+            workload_yamls,
+            proxy_routes,
+            workloads_for_details,
+        })
+    }
+
+    fn prepare_services_from_cache(
+        &self,
+        services_by_workload: &HashMap<Uuid, Vec<CachedClusterService>>,
+        proxy_routes: &HashMap<Uuid, Vec<ProxyPortRoute>>,
+    ) -> Result<HashMap<String, KubeServiceWithYaml>, ApiError> {
         let mut services_map = HashMap::new();
+
         for services in services_by_workload.values() {
             for service in services {
                 if services_map.contains_key(&service.name) {
@@ -249,7 +279,7 @@ impl KubeController {
             }
         }
 
-        for (workload_id, routes) in proxy_routes.iter() {
+        for (workload_id, routes) in proxy_routes {
             if let Some(services) = services_by_workload.get(workload_id) {
                 for service in services {
                     if let Some(entry) = services_map.get_mut(&service.name) {
@@ -259,133 +289,234 @@ impl KubeController {
             }
         }
 
-        let dependency_rows = if workload_ids.is_empty() {
-            Vec::new()
-        } else {
-            kube_app_catalog_workload_dependency::Entity::find()
-                .filter(
-                    kube_app_catalog_workload_dependency::Column::WorkloadId
-                        .is_in(workload_ids.clone()),
-                )
-                .filter(kube_app_catalog_workload_dependency::Column::DeletedAt.is_null())
-                .all(&self.db.conn)
-                .await
-                .map_err(ApiError::from)?
-        };
+        Ok(services_map)
+    }
+
+    async fn fetch_dependency_resources(
+        &self,
+        cluster_id: Uuid,
+        workload_ids: &[Uuid],
+    ) -> Result<(HashMap<String, String>, HashMap<String, String>), ApiError> {
+        if workload_ids.is_empty() {
+            return Ok((HashMap::new(), HashMap::new()));
+        }
+
+        let dependency_rows = kube_app_catalog_workload_dependency::Entity::find()
+            .filter(
+                kube_app_catalog_workload_dependency::Column::WorkloadId
+                    .is_in(workload_ids.to_vec()),
+            )
+            .filter(kube_app_catalog_workload_dependency::Column::DeletedAt.is_null())
+            .all(&self.db.conn)
+            .await
+            .map_err(ApiError::from)?;
 
         let mut dependency_requests: HashMap<String, (HashSet<String>, HashSet<String>)> =
             HashMap::new();
 
         for row in dependency_rows {
-            let namespace = row.namespace.clone();
-            let resource_name = row.resource_name.clone();
-            let entry = dependency_requests.entry(namespace).or_default();
+            let entry = dependency_requests
+                .entry(row.namespace.clone())
+                .or_default();
             match row.resource_type.as_str() {
                 "configmap" => {
-                    entry.0.insert(resource_name);
+                    entry.0.insert(row.resource_name.clone());
                 }
                 "secret" => {
-                    entry.1.insert(resource_name);
+                    entry.1.insert(row.resource_name.clone());
                 }
                 _ => {}
             }
         }
 
-        let mut configmaps_map: HashMap<String, String> = HashMap::new();
-        let mut secrets_map: HashMap<String, String> = HashMap::new();
+        if dependency_requests.is_empty() {
+            return Ok((HashMap::new(), HashMap::new()));
+        }
 
-        if !dependency_requests.is_empty() {
-            let cluster_server = self
-                .get_random_kube_cluster_server(cluster_id)
-                .await
-                .ok_or_else(|| {
-                    ApiError::InvalidRequest(
-                        "No connected KubeManager for the app catalog's source cluster".to_string(),
-                    )
-                })?;
-
-            let requests: Vec<NamespacedResourceRequest> = dependency_requests
-                .into_iter()
-                .map(
-                    |(namespace, (configmaps, secrets))| NamespacedResourceRequest {
-                        namespace,
-                        configmaps: configmaps.into_iter().collect(),
-                        secrets: secrets.into_iter().collect(),
-                    },
+        let cluster_server = self
+            .get_random_kube_cluster_server(cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for the app catalog's source cluster".to_string(),
                 )
-                .collect();
+            })?;
 
-            if !requests.is_empty() {
-                let responses = match cluster_server
-                    .rpc_client
-                    .get_namespaced_resources(tarpc::context::current(), requests)
-                    .await
-                {
-                    Ok(Ok(res)) => res,
-                    Ok(Err(e)) => {
-                        return Err(ApiError::InvalidRequest(format!(
-                            "Failed to fetch ConfigMaps/Secrets: {e}"
-                        )))
-                    }
-                    Err(e) => {
-                        return Err(ApiError::InvalidRequest(format!(
-                            "Connection error to source cluster: {e}"
-                        )))
-                    }
-                };
+        let requests: Vec<NamespacedResourceRequest> = dependency_requests
+            .into_iter()
+            .map(
+                |(namespace, (configmaps, secrets))| NamespacedResourceRequest {
+                    namespace,
+                    configmaps: configmaps.into_iter().collect(),
+                    secrets: secrets.into_iter().collect(),
+                },
+            )
+            .collect();
 
-                for response in responses {
-                    for (name, yaml) in response.configmaps {
-                        let parsed: ConfigMap = serde_yaml::from_str(&yaml).map_err(|err| {
-                            ApiError::InvalidRequest(format!(
-                                "Failed to parse ConfigMap '{name}' from namespace {}: {err}",
-                                response.namespace
-                            ))
-                        })?;
-                        let cleaned = clean_configmap(parsed);
-                        let cleaned_yaml = serde_yaml::to_string(&cleaned).map_err(|err| {
-                            ApiError::InvalidRequest(format!(
-                                "Failed to serialize ConfigMap '{name}' from namespace {}: {err}",
-                                response.namespace
-                            ))
-                        })?;
-                        configmaps_map.insert(name, cleaned_yaml);
-                    }
-                    for (name, yaml) in response.secrets {
-                        let parsed: Secret = serde_yaml::from_str(&yaml).map_err(|err| {
-                            ApiError::InvalidRequest(format!(
-                                "Failed to parse Secret '{name}' from namespace {}: {err}",
-                                response.namespace
-                            ))
-                        })?;
-                        let cleaned = clean_secret(parsed);
-                        let cleaned_yaml = serde_yaml::to_string(&cleaned).map_err(|err| {
-                            ApiError::InvalidRequest(format!(
-                                "Failed to serialize Secret '{name}' from namespace {}: {err}",
-                                response.namespace
-                            ))
-                        })?;
-                        secrets_map.insert(name, cleaned_yaml);
-                    }
+        if requests.is_empty() {
+            return Ok((HashMap::new(), HashMap::new()));
+        }
+
+        let responses = match cluster_server
+            .rpc_client
+            .get_namespaced_resources(tarpc::context::current(), requests)
+            .await
+        {
+            Ok(Ok(res)) => res,
+            Ok(Err(e)) => {
+                return Err(ApiError::InvalidRequest(format!(
+                    "Failed to fetch ConfigMaps/Secrets: {e}"
+                )))
+            }
+            Err(e) => {
+                return Err(ApiError::InvalidRequest(format!(
+                    "Connection error to source cluster: {e}"
+                )))
+            }
+        };
+
+        Self::extract_dependency_resources(responses)
+    }
+
+    fn build_proxy_routes(services: Option<&[CachedClusterService]>) -> Vec<ProxyPortRoute> {
+        let mut routes = Vec::new();
+
+        if let Some(services) = services {
+            let mut assigned_ports: HashMap<(u16, u16), u16> = HashMap::new();
+            let mut used_proxy_ports: HashSet<u16> = HashSet::new();
+            used_proxy_ports.insert(DEFAULT_SIDECAR_PROXY_PORT);
+            used_proxy_ports.insert(DEFAULT_SIDECAR_PROXY_METRICS_PORT);
+            let mut next_proxy_port = u32::from(SIDECAR_PROXY_DYNAMIC_PORT_START);
+
+            for service in services {
+                for port in &service.ports {
+                    let service_port = match u16::try_from(port.port) {
+                        Ok(port) if port > 0 => port,
+                        _ => continue,
+                    };
+
+                    let raw_target = port.original_target_port.or(port.target_port);
+                    let target_port = match raw_target {
+                        Some(value) => match u16::try_from(value) {
+                            Ok(tp) if tp > 0 => tp,
+                            _ => continue,
+                        },
+                        None => {
+                            // TODO: support named targetPort values when the service uses port names.
+                            continue;
+                        }
+                    };
+
+                    let key = (service_port, target_port);
+                    let proxy_port = if let Some(existing) = assigned_ports.get(&key) {
+                        *existing
+                    } else {
+                        let allocated = loop {
+                            if next_proxy_port > u32::from(u16::MAX) {
+                                tracing::warn!(
+                                    service_port,
+                                    target_port,
+                                    "exhausted dynamic proxy port range; reusing service port for proxy"
+                                );
+                                break service_port;
+                            }
+
+                            let candidate = next_proxy_port as u16;
+                            next_proxy_port += 1;
+
+                            if candidate == service_port || candidate == target_port {
+                                continue;
+                            }
+
+                            if !used_proxy_ports.insert(candidate) {
+                                continue;
+                            }
+
+                            break candidate;
+                        };
+
+                        assigned_ports.insert(key, allocated);
+                        allocated
+                    };
+
+                    routes.push(ProxyPortRoute {
+                        proxy_port,
+                        service_port,
+                        target_port,
+                    });
                 }
             }
         }
 
-        tracing::info!(
-            "Built catalog workload resources from DB: {} workloads, {} services, {} configmaps, {} secrets (cluster: {})",
-            workload_yamls.len(),
-            services_map.len(),
-            configmaps_map.len(),
-            secrets_map.len(),
-            cluster_id,
-        );
+        routes
+    }
 
-        Ok(KubeWorkloadsWithResources {
-            workloads: workload_yamls,
-            services: services_map,
-            configmaps: configmaps_map,
-            secrets: secrets_map,
-        })
+    fn to_workload_yaml_only(
+        kind: &lapdev_common::kube::KubeWorkloadKind,
+        yaml: String,
+    ) -> KubeWorkloadYamlOnly {
+        match kind {
+            lapdev_common::kube::KubeWorkloadKind::Deployment => {
+                KubeWorkloadYamlOnly::Deployment(yaml)
+            }
+            lapdev_common::kube::KubeWorkloadKind::StatefulSet => {
+                KubeWorkloadYamlOnly::StatefulSet(yaml)
+            }
+            lapdev_common::kube::KubeWorkloadKind::DaemonSet => {
+                KubeWorkloadYamlOnly::DaemonSet(yaml)
+            }
+            lapdev_common::kube::KubeWorkloadKind::ReplicaSet => {
+                KubeWorkloadYamlOnly::ReplicaSet(yaml)
+            }
+            lapdev_common::kube::KubeWorkloadKind::Pod => KubeWorkloadYamlOnly::Pod(yaml),
+            lapdev_common::kube::KubeWorkloadKind::Job => KubeWorkloadYamlOnly::Job(yaml),
+            lapdev_common::kube::KubeWorkloadKind::CronJob => KubeWorkloadYamlOnly::CronJob(yaml),
+        }
+    }
+
+    fn extract_dependency_resources(
+        responses: Vec<NamespacedResourceResponse>,
+    ) -> Result<(HashMap<String, String>, HashMap<String, String>), ApiError> {
+        let mut configmaps_map: HashMap<String, String> = HashMap::new();
+        let mut secrets_map: HashMap<String, String> = HashMap::new();
+
+        for response in responses {
+            for (name, yaml) in response.configmaps {
+                let parsed: ConfigMap = serde_yaml::from_str(&yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse ConfigMap '{name}' from namespace {}: {err}",
+                        response.namespace
+                    ))
+                })?;
+                let cleaned = clean_configmap(parsed);
+                let cleaned_yaml = serde_yaml::to_string(&cleaned).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize ConfigMap '{name}' from namespace {}: {err}",
+                        response.namespace
+                    ))
+                })?;
+                configmaps_map.insert(name, cleaned_yaml);
+            }
+
+            for (name, yaml) in response.secrets {
+                let parsed: Secret = serde_yaml::from_str(&yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse Secret '{name}' from namespace {}: {err}",
+                        response.namespace
+                    ))
+                })?;
+                let cleaned = clean_secret(parsed);
+                let cleaned_yaml = serde_yaml::to_string(&cleaned).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize Secret '{name}' from namespace {}: {err}",
+                        response.namespace
+                    ))
+                })?;
+                secrets_map.insert(name, cleaned_yaml);
+            }
+        }
+
+        Ok((configmaps_map, secrets_map))
     }
 
     pub async fn create_app_catalog(
@@ -763,9 +894,86 @@ fn rewrite_service_for_sidecar(
             .iter()
             .find(|route| route.service_port as i32 == port.port)
         {
+            if port.original_target_port.is_none() {
+                port.original_target_port = Some(route.target_port as i32);
+            }
             port.target_port = Some(route.proxy_port as i32);
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::core::v1::Service;
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+    use lapdev_common::kube::KubeServicePort;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn rewrite_service_preserves_original_target_port() {
+        let initial_yaml = r#"
+apiVersion: v1
+kind: Service
+metadata:
+  name: test
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: demo
+"#
+        .to_string();
+
+        let mut service_entry = KubeServiceWithYaml {
+            yaml: initial_yaml,
+            details: KubeServiceDetails {
+                name: "test".to_string(),
+                ports: vec![KubeServicePort {
+                    name: None,
+                    port: 80,
+                    target_port: Some(8080),
+                    protocol: Some("TCP".to_string()),
+                    node_port: None,
+                    original_target_port: None,
+                }],
+                selector: BTreeMap::new(),
+            },
+        };
+
+        let routes = vec![ProxyPortRoute {
+            proxy_port: DEFAULT_SIDECAR_PROXY_PORT,
+            service_port: 80,
+            target_port: 8080,
+        }];
+
+        rewrite_service_for_sidecar(&mut service_entry, &routes).unwrap();
+
+        let updated: Service = serde_yaml::from_str(&service_entry.yaml).unwrap();
+        let rewritten_target = updated
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.ports.as_ref())
+            .and_then(|ports| ports.first())
+            .and_then(|port| port.target_port.clone())
+            .expect("target port should be set");
+
+        let target_value = match rewritten_target {
+            IntOrString::Int(value) => value,
+            IntOrString::String(_) => panic!("expected numeric target port"),
+        };
+
+        assert_eq!(target_value, DEFAULT_SIDECAR_PROXY_PORT as i32);
+
+        let details_port = &service_entry.details.ports[0];
+        assert_eq!(
+            details_port.target_port,
+            Some(DEFAULT_SIDECAR_PROXY_PORT as i32)
+        );
+        assert_eq!(details_port.original_target_port, Some(8080));
+    }
 }

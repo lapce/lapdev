@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
+use futures::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
     kube::{CreateKubeClusterResponse, KubeCluster, KubeClusterStatus},
 };
 use leptos::prelude::*;
-use leptos::task::spawn_local;
+use leptos::task::{spawn_local, spawn_local_scoped_with_cancellation};
 use std::rc::Rc;
 
 use crate::{
@@ -77,6 +79,51 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
         clusters.refetch();
     });
     let clusters = Signal::derive(move || clusters.get().unwrap_or_default());
+    let sse_started = StoredValue::new(false);
+
+    Effect::new(move |_| {
+        if sse_started.get_value() {
+            return;
+        }
+
+        if let Some(org) = org.get() {
+            sse_started.set_value(true);
+            let org_id = org.id;
+            let update_counter = update_counter;
+            spawn_local_scoped_with_cancellation(async move {
+                let url = format!("/api/v1/organizations/{}/kube/clusters/events", org_id);
+
+                match EventSource::new(&url) {
+                    Ok(mut event_source) => {
+                        match event_source.subscribe("cluster") {
+                            Ok(mut stream) => {
+                                while let Some(event) = stream.next().await {
+                                    if event.is_ok() {
+                                        update_counter.update(|c| *c += 1);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                web_sys::console::error_1(
+                                    &format!(
+                                        "Failed to subscribe to organization cluster events: {err}"
+                                    )
+                                    .into(),
+                                );
+                            }
+                        }
+                        event_source.close();
+                    }
+                    Err(err) => {
+                        web_sys::console::error_1(
+                            &format!("Failed to connect to organization cluster events: {err}")
+                                .into(),
+                        );
+                    }
+                }
+            });
+        }
+    });
 
     let create_cluster_modal_open = RwSignal::new(false);
     let token_modal_open = RwSignal::new(false);

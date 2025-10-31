@@ -38,17 +38,23 @@ use crate::{
 pub async fn handle_http2_proxy(
     inbound_stream: TcpStream,
     client_addr: SocketAddr,
-    original_dest: SocketAddr,
+    proxy_port: u16,
     initial_data: Vec<u8>,
     settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     _rpc_client: Arc<RwLock<Option<lapdev_kube_rpc::SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
-    let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), original_dest.port());
+    let (service_port, target_port) = {
+        let table = routing_table.read().await;
+        let service_port = table.service_port_for_proxy(proxy_port);
+        let target_port = table.target_port_for_service(service_port);
+        (service_port, target_port)
+    };
+    let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), target_port);
 
     debug!(
-        "HTTP/2 proxy starting for {} -> {} (local target {})",
-        client_addr, original_dest, local_target
+        "HTTP/2 proxy starting for {} on proxy port {} (service {}, local target {})",
+        client_addr, proxy_port, service_port, local_target
     );
 
     // Connect to the local target. Routing decisions will be applied per stream.
@@ -81,8 +87,8 @@ pub async fn handle_http2_proxy(
             Ok(stream) => stream,
             Err(err) => {
                 warn!(
-                    "HTTP/2 accept error for {} -> {}: {}",
-                    client_addr, original_dest, err
+                    "HTTP/2 accept error for {} on proxy port {} (service {}): {}",
+                    client_addr, proxy_port, service_port, err
                 );
                 break;
             }
@@ -95,15 +101,15 @@ pub async fn handle_http2_proxy(
             request,
             &mut respond,
             client_addr,
-            original_dest,
+            proxy_port,
             environment_id,
             routing_table,
         )
         .await
         {
             warn!(
-                "HTTP/2 stream proxy failure for {} -> {}: {}",
-                client_addr, original_dest, err
+                "HTTP/2 stream proxy failure for {} on proxy port {}: {}",
+                client_addr, proxy_port, err
             );
             break;
         }
@@ -117,11 +123,10 @@ async fn proxy_http2_stream(
     request: Request<RecvStream>,
     respond: &mut server::SendResponse<Bytes>,
     client_addr: SocketAddr,
-    original_dest: SocketAddr,
+    proxy_port: u16,
     default_environment_id: Uuid,
     routing_table: Arc<RwLock<RoutingTable>>,
 ) -> io::Result<()> {
-    let port = original_dest.port();
     let (mut parts, body) = request.into_parts();
     let mut body = ReplayableBody::new(body, MAX_HTTP2_FALLBACK_BODY_BYTES);
 
@@ -140,23 +145,25 @@ async fn proxy_http2_stream(
 
     ensure_environment_tracestate(&mut parts.headers, target_environment)?;
 
-    let decision = {
+    let (service_port, decision) = {
         let table = routing_table.read().await;
-        table.resolve_http(port, branch_id)
+        let service_port = table.service_port_for_proxy(proxy_port);
+        let decision = table.resolve_http(service_port, branch_id);
+        (service_port, decision)
     };
 
     match decision {
         RouteDecision::BranchService { service } => {
-            if let Some(service_name) = service.service_name_for_port(port) {
+            if let Some(service_name) = service.service_name_for_port(service_port) {
                 info!(
-                    "HTTP/2 {} {} (authority {}) from {} routing to branch {:?} service {}:{}",
-                    method, path, authority, client_addr, branch_id, service_name, port
+                    "HTTP/2 {} {} (authority {}) from {} routing to branch {:?} service {}:{} (proxy port {})",
+                    method, path, authority, client_addr, branch_id, service_name, service_port, proxy_port
                 );
 
                 let http2_clients = Arc::clone(&service.http2_clients);
                 if let Err(err) = proxy_http2_branch_service(
                     service_name,
-                    port,
+                    service_port,
                     http2_clients,
                     &parts,
                     &mut body,
@@ -183,8 +190,8 @@ async fn proxy_http2_stream(
                 }
             } else {
                 warn!(
-                    "Missing branch service mapping for port {} in env {:?}; using shared target",
-                    port, branch_id
+                    "Missing branch service mapping for service port {} in env {:?}; using shared target",
+                    service_port, branch_id
                 );
             }
         }
@@ -194,12 +201,14 @@ async fn proxy_http2_stream(
         } => {
             let metadata = connection.metadata().clone();
             info!(
-                "HTTP/2 {} {} (authority {}) from {} intercepted by branch devbox (env {:?}, intercept_id={}, session_id={}, target_port={})",
+                "HTTP/2 {} {} (authority {}) from {} intercepted by branch devbox (env {:?}, proxy port {}, service port {}, intercept_id={}, session_id={}, target_port={})",
                 method,
                 path,
                 authority,
                 client_addr,
                 branch_id,
+                proxy_port,
+                service_port,
                 metadata.intercept_id,
                 metadata.session_id,
                 target_port
@@ -239,12 +248,13 @@ async fn proxy_http2_stream(
         } => {
             let metadata = connection.metadata().clone();
             info!(
-                "HTTP/2 {} {} (authority {}) from {} intercepted by shared devbox (port {}, intercept_id={}, session_id={}, target_port={})",
+                "HTTP/2 {} {} (authority {}) from {} intercepted by shared devbox (proxy port {}, service port {}, intercept_id={}, session_id={}, target_port={})",
                 method,
                 path,
                 authority,
                 client_addr,
-                port,
+                proxy_port,
+                service_port,
                 metadata.intercept_id,
                 metadata.session_id,
                 target_port
@@ -281,13 +291,14 @@ async fn proxy_http2_stream(
         RouteDecision::DefaultLocal { target_port: _ } => {}
     }
 
-    let routing_target = determine_routing_target(&routing_context, port);
+    let routing_target = determine_routing_target(&routing_context, service_port);
     info!(
-        "HTTP/2 {} {} (authority {}) from {} -> shared target (routing: {}, trace_id: {:?})",
+        "HTTP/2 {} {} (authority {}) from {} -> shared target (service port {}, routing: {}, trace_id: {:?})",
         method,
         path,
         authority,
         client_addr,
+        service_port,
         routing_target.get_metadata(),
         routing_context.trace_context.trace_id
     );

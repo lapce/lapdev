@@ -300,8 +300,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let search_query = RwSignal::new(String::new());
     let debounced_search = RwSignal::new(String::new());
     let update_counter = RwSignal::new(0usize);
-    let readiness_signals: RwSignal<HashMap<Uuid, RwSignal<Option<i32>>>> =
-        RwSignal::new(HashMap::new());
+    let readiness_map: RwSignal<HashMap<Uuid, Option<i32>>> = RwSignal::new(HashMap::new());
     let sse_started = StoredValue::new(false);
     let readiness_sse_started = StoredValue::new(false);
 
@@ -458,7 +457,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
             readiness_sse_started.set_value(true);
             let org_id = org.id;
             spawn_local_scoped_with_cancellation({
-                let readiness_signals = readiness_signals.clone();
+                let readiness_map = readiness_map.clone();
                 async move {
                     let url = format!(
                         "/api/v1/organizations/{}/kube/environments/{}/workloads/events",
@@ -475,18 +474,15 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                                                 if let Some(data) = message.data().as_string() {
                                                     match serde_json::from_str::<
                                                         EnvironmentWorkloadStatusEvent,
-                                                    >(&data)
-                                                    {
+                                                    >(
+                                                        &data
+                                                    ) {
                                                         Ok(payload) => {
-                                                            readiness_signals.update(|map| {
-                                                                match map.entry(payload.workload_id) {
-                                                                    std::collections::hash_map::Entry::Occupied(entry) => {
-                                                                        entry.get().set(payload.ready_replicas);
-                                                                    }
-                                                                    std::collections::hash_map::Entry::Vacant(entry) => {
-                                                                        entry.insert(RwSignal::new(payload.ready_replicas));
-                                                                    }
-                                                                }
+                                                            readiness_map.update(|map| {
+                                                                map.insert(
+                                                                    payload.workload_id,
+                                                                    payload.ready_replicas,
+                                                                );
                                                             });
                                                         }
                                                         Err(err) => {
@@ -545,20 +541,13 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let env_catalog_version_for_filter = environment_catalog_version.clone();
     let all_workloads = Signal::derive(move || workloads_result.get().unwrap_or_default());
     {
-        let readiness_signals = readiness_signals.clone();
+        let readiness_map = readiness_map.clone();
         Effect::new(move |_| {
             let workloads = all_workloads.get();
-            readiness_signals.update(|map| {
+            readiness_map.update(|map| {
                 map.retain(|workload_id, _| workloads.iter().any(|w| w.id == *workload_id));
                 for workload in &workloads {
-                    match map.entry(workload.id) {
-                        std::collections::hash_map::Entry::Occupied(entry) => {
-                            entry.get().set(workload.ready_replicas);
-                        }
-                        std::collections::hash_map::Entry::Vacant(entry) => {
-                            entry.insert(RwSignal::new(workload.ready_replicas));
-                        }
-                    }
+                    map.insert(workload.id, workload.ready_replicas);
                 }
             });
         });
@@ -712,7 +701,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     active_session
                     update_counter
                     environment_catalog_version
-                    readiness_signals=readiness_signals.clone()
+                    readiness_map=readiness_map.clone()
                 />
             </Show>
 
@@ -1202,7 +1191,7 @@ pub fn EnvironmentResourcesTabs(
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
     environment_catalog_version: Signal<i64>,
-    readiness_signals: RwSignal<HashMap<Uuid, RwSignal<Option<i32>>>>,
+    readiness_map: RwSignal<HashMap<Uuid, Option<i32>>>,
 ) -> impl IntoView {
     view! {
         <Tabs default_value=RwSignal::new(ResourceTab::Workloads) class="gap-4">
@@ -1238,7 +1227,7 @@ pub fn EnvironmentResourcesTabs(
                     active_session
                     update_counter
                     environment_catalog_version=environment_catalog_version.clone()
-                    readiness_signals=readiness_signals.clone()
+                    readiness_map=readiness_map.clone()
                 />
             </TabsContent>
 
@@ -1273,7 +1262,7 @@ pub fn EnvironmentWorkloadsContent(
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
     environment_catalog_version: Signal<i64>,
-    readiness_signals: RwSignal<HashMap<Uuid, RwSignal<Option<i32>>>>,
+    readiness_map: RwSignal<HashMap<Uuid, Option<i32>>>,
 ) -> impl IntoView {
     let env_catalog_version_signal = environment_catalog_version.clone();
 
@@ -1311,15 +1300,16 @@ pub fn EnvironmentWorkloadsContent(
                             children=move |workload| {
                                 let env_catalog_version = env_catalog_version_signal.clone();
                                 let ready_signal = {
-                                    let readiness_signals = readiness_signals.clone();
+                                    let readiness_map = readiness_map.clone();
                                     let workload_id = workload.id;
                                     let fallback_ready = workload.ready_replicas;
                                     Signal::derive(move || {
-                                        readiness_signals
+                                        readiness_map
                                             .get()
                                             .get(&workload_id)
-                                            .map(|signal| signal.get())
-                                            .unwrap_or(fallback_ready)
+                                            .copied()
+                                            .flatten()
+                                            .or(fallback_ready)
                                     })
                                 };
                                 view! {

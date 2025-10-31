@@ -66,7 +66,7 @@ impl KubeController {
     }
 
     pub async fn refresh_cluster_namespace_watches(&self, cluster_id: Uuid) {
-        let namespaces = match self.db.get_cluster_catalog_namespaces(cluster_id).await {
+        let namespaces = match self.db.get_cluster_watch_namespaces(cluster_id).await {
             Ok(namespaces) => namespaces,
             Err(err) => {
                 warn!(

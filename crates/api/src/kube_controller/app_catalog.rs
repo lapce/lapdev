@@ -533,6 +533,11 @@ impl KubeController {
             .enrich_workloads_with_details(cluster_id, workloads)
             .await?;
 
+        let namespaces: HashSet<String> = enriched_workloads
+            .iter()
+            .map(|workload| workload.namespace.clone())
+            .collect();
+
         let catalog_id = self
             .db
             .create_app_catalog_with_enriched_workloads(
@@ -546,7 +551,32 @@ impl KubeController {
             .await
             .map_err(ApiError::from)?;
 
-        self.refresh_cluster_namespace_watches(cluster_id).await;
+        if !namespaces.is_empty() {
+            let cluster_servers = {
+                let servers = self.kube_cluster_servers.read().await;
+                servers.get(&cluster_id).cloned()
+            };
+
+            if let Some(cluster_servers) = cluster_servers {
+                for server in cluster_servers {
+                    for namespace in &namespaces {
+                        if let Err(err) = server.add_namespace_watch(namespace.clone()).await {
+                            tracing::warn!(
+                                cluster_id = %cluster_id,
+                                namespace = namespace.as_str(),
+                                error = ?err,
+                                "Failed to add namespace watch for catalog namespace"
+                            );
+                        }
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    cluster_id = %cluster_id,
+                    "No connected KubeManager instances; skipping namespace watch add"
+                );
+            }
+        }
 
         Ok(catalog_id)
     }

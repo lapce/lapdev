@@ -133,11 +133,15 @@ impl KubeClusterServer {
         }
     }
 
-    pub async fn sync_namespace_watches_from_db(&self) -> AnyResult<()> {
-        let namespaces = self
+    async fn fetch_cluster_namespaces(&self) -> AnyResult<Vec<String>> {
+        Ok(self
             .db
-            .get_cluster_catalog_namespaces(self.cluster_id)
-            .await?;
+            .get_cluster_watch_namespaces(self.cluster_id)
+            .await?)
+    }
+
+    pub async fn sync_namespace_watches_from_db(&self) -> AnyResult<()> {
+        let namespaces = self.fetch_cluster_namespaces().await?;
         self.send_namespace_watch_configuration(namespaces).await
     }
 

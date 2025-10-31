@@ -1565,6 +1565,30 @@ impl DbApi {
         Ok(namespaces)
     }
 
+    pub async fn get_cluster_environment_namespaces(
+        &self,
+        cluster_id: Uuid,
+    ) -> Result<Vec<String>> {
+        let namespaces = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(lapdev_db_entities::kube_environment::Column::ClusterId.eq(cluster_id))
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .select_only()
+            .column(lapdev_db_entities::kube_environment::Column::Namespace)
+            .distinct()
+            .into_tuple::<String>()
+            .all(&self.conn)
+            .await?;
+
+        Ok(namespaces)
+    }
+
+    pub async fn get_cluster_watch_namespaces(&self, cluster_id: Uuid) -> Result<Vec<String>> {
+        let mut namespaces: BTreeSet<String> = BTreeSet::new();
+        namespaces.extend(self.get_cluster_catalog_namespaces(cluster_id).await?);
+        namespaces.extend(self.get_cluster_environment_namespaces(cluster_id).await?);
+        Ok(namespaces.into_iter().collect())
+    }
+
     pub async fn delete_app_catalog_workload(&self, workload_id: Uuid) -> Result<()> {
         lapdev_db_entities::kube_app_catalog_workload::ActiveModel {
             id: ActiveValue::Set(workload_id),

@@ -57,4 +57,4 @@ Dig deeper in the [Architecture docs](https://lapdev.gitbook.io/docs/core-concep
 - [Core concepts](https://lapdev.gitbook.io/docs/core-concepts/README)
 - [Traffic routing architecture](https://lapdev.gitbook.io/docs/core-concepts/architecture/traffic-routing-architecture)
 - [Preview URLs](https://lapdev.gitbook.io/docs/core-concepts/preview-url)
-- [Lapdev Docs](https://docs.lap.dev)
+- [Lapdev Docs](https://lapdev.gitbook.io/docs/)

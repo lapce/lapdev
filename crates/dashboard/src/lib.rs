@@ -7,6 +7,7 @@ pub mod cluster;
 pub mod component;
 pub mod datepicker;
 pub mod git_provider;
+pub mod home;
 pub mod kube_app_catalog;
 pub mod kube_app_catalog_detail;
 pub mod kube_app_catalog_workload;

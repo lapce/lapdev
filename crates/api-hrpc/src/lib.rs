@@ -15,7 +15,9 @@ use lapdev_common::{
 use uuid::Uuid;
 
 pub use lapdev_common::hrpc::HrpcError;
-pub use lapdev_common::kube::{KubeAppCatalog, KubeEnvironment};
+pub use lapdev_common::kube::{
+    KubeAppCatalog, KubeEnvironment, KubeEnvironmentDashboardSummary, KubeEnvironmentStatusCount,
+};
 // For backward compatibility
 pub use lapdev_common::kube::KubeAppCatalog as AppCatalog;
 
@@ -185,6 +187,12 @@ pub trait HrpcService {
         is_branch: bool,
         pagination: Option<PagePaginationParams>,
     ) -> Result<PaginatedResult<KubeEnvironment>, HrpcError>;
+
+    async fn get_environment_dashboard_summary(
+        &self,
+        org_id: Uuid,
+        recent_limit: Option<usize>,
+    ) -> Result<KubeEnvironmentDashboardSummary, HrpcError>;
 
     async fn get_kube_environment(
         &self,

@@ -18,6 +18,7 @@ use crate::{
     cluster::{ClusterSettings, ClusterUsersView, MachineTypeView, WorkspaceHostView},
     component::sidebar::SidebarData,
     git_provider::GitProviderView,
+    home::DashboardHome,
     kube_app_catalog::KubeAppCatalog,
     kube_app_catalog_detail::KubeAppCatalogDetail,
     kube_app_catalog_workload::KubeAppCatalogWorkload,
@@ -47,7 +48,7 @@ pub struct AppConfig {
 #[component]
 fn Root() -> impl IntoView {
     view! {
-        <Workspaces />
+        <DashboardHome />
     }
 }
 

@@ -11,9 +11,10 @@ use lapdev_common::{
     hrpc::HrpcError,
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
-        KubeAppCatalogWorkloadCreate, KubeCluster, KubeEnvironment, KubeEnvironmentWorkload,
-        KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-        PagePaginationParams, PaginatedResult, PaginationParams,
+        KubeAppCatalogWorkloadCreate, KubeCluster, KubeEnvironment,
+        KubeEnvironmentDashboardSummary, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo,
+        KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult,
+        PaginationParams,
     },
     UserRole,
 };
@@ -661,6 +662,20 @@ impl HrpcService for CoreState {
 
         self.kube_controller
             .get_all_kube_environments(org_id, user.id, search, is_shared, is_branch, pagination)
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn get_environment_dashboard_summary(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        recent_limit: Option<usize>,
+    ) -> Result<KubeEnvironmentDashboardSummary, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+
+        self.kube_controller
+            .get_environment_dashboard_summary(org_id, user.id, recent_limit)
             .await
             .map_err(HrpcError::from)
     }

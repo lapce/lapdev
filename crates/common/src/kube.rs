@@ -212,17 +212,33 @@ impl Default for PagePaginationParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedInfo {
+    pub total_count: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginatedResult<T> {
     pub data: Vec<T>,
     pub pagination_info: PaginatedInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PaginatedInfo {
+pub struct KubeEnvironmentStatusCount {
+    pub status: KubeEnvironmentStatus,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KubeEnvironmentDashboardSummary {
+    pub personal_count: usize,
+    pub shared_count: usize,
+    pub branch_count: usize,
     pub total_count: usize,
-    pub page: usize,
-    pub page_size: usize,
-    pub total_pages: usize,
+    pub status_breakdown: Vec<KubeEnvironmentStatusCount>,
+    pub recent_environments: Vec<KubeEnvironment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

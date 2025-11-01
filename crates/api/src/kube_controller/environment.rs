@@ -1,9 +1,10 @@
 use chrono::Utc;
 use lapdev_common::{
     kube::{
-        KubeAppCatalogWorkload, KubeContainerImage, KubeEnvironment, KubeEnvironmentStatus,
-        KubeEnvironmentSyncStatus, KubeServiceWithYaml, KubeWorkloadDetails, KubeWorkloadKind,
-        PagePaginationParams, PaginatedInfo, PaginatedResult,
+        KubeAppCatalogWorkload, KubeContainerImage, KubeEnvironment,
+        KubeEnvironmentDashboardSummary, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
+        KubeServiceWithYaml, KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams,
+        PaginatedInfo, PaginatedResult,
     },
     utils::rand_string,
 };
@@ -120,6 +121,19 @@ impl KubeController {
                 total_pages,
             },
         })
+    }
+
+    pub async fn get_environment_dashboard_summary(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        recent_limit: Option<usize>,
+    ) -> Result<KubeEnvironmentDashboardSummary, ApiError> {
+        let limit = recent_limit.unwrap_or(5);
+        self.db
+            .get_environment_dashboard_summary(org_id, user_id, limit)
+            .await
+            .map_err(ApiError::from)
     }
 
     pub async fn get_kube_environment(

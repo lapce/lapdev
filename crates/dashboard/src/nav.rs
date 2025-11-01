@@ -128,6 +128,11 @@ pub fn SideNavMain() -> impl IntoView {
     view! {
         <ul class="space-y-2">
             <li>
+                <a href="/" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
+                    <span class="ml-3">Dashboard</span>
+                </a>
+            </li>
+            <li>
                 <a href="/workspaces" class="flex items-center p-2 text-base font-normal text-gray-900 rounded-lg hover:bg-gray-100 group">
                     <span class="ml-3">Workspaces</span>
                 </a>

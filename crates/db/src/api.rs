@@ -5,8 +5,10 @@ use lapdev_common::{
     config::LAPDEV_CLUSTER_NOT_INITIATED,
     kube::{
         AppCatalogStatusEvent, ClusterStatusEvent, EnvironmentWorkloadStatusEvent,
-        KubeAppCatalogWorkload, KubeClusterStatus, KubeContainerInfo, KubeEnvironmentWorkload,
-        KubeServicePort, KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams,
+        KubeAppCatalogWorkload, KubeClusterStatus, KubeContainerInfo, KubeEnvironment,
+        KubeEnvironmentDashboardSummary, KubeEnvironmentStatus, KubeEnvironmentStatusCount,
+        KubeEnvironmentSyncStatus, KubeEnvironmentWorkload, KubeServicePort, KubeWorkloadDetails,
+        KubeWorkloadKind, PagePaginationParams,
     },
     AuthProvider, ProviderUser, UserRole, WorkspaceStatus, LAPDEV_BASE_HOSTNAME,
     LAPDEV_ISOLATE_CONTAINER,
@@ -74,6 +76,12 @@ struct KubeEnvironmentWithRelated {
 
     // Base environment fields
     pub base_environment_name: Option<String>,
+}
+
+#[derive(FromQueryResult)]
+struct StatusCountRow {
+    pub status: String,
+    pub count: i64,
 }
 
 pub const LAPDEV_PIN_UNPIN_ERROR: &str = "lapdev-pin-unpin-error";
@@ -1931,6 +1939,283 @@ impl DbApi {
             .collect();
 
         Ok((environments_with_catalogs_and_clusters, total_count))
+    }
+
+    pub async fn get_environment_dashboard_summary(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        recent_limit: usize,
+    ) -> Result<KubeEnvironmentDashboardSummary> {
+        let limited_recent = recent_limit.max(1).min(25) as u64;
+
+        // Counts by environment type
+        let personal_count = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(lapdev_db_entities::kube_environment::Column::OrganizationId.eq(org_id))
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .filter(lapdev_db_entities::kube_environment::Column::IsShared.eq(false))
+            .filter(lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.is_null())
+            .filter(lapdev_db_entities::kube_environment::Column::UserId.eq(user_id))
+            .count(&self.conn)
+            .await? as usize;
+
+        let shared_count = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(lapdev_db_entities::kube_environment::Column::OrganizationId.eq(org_id))
+            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .filter(lapdev_db_entities::kube_environment::Column::IsShared.eq(true))
+            .filter(lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.is_null())
+            .count(&self.conn)
+            .await? as usize;
+
+        let branch_access = Condition::all()
+            .add(lapdev_db_entities::kube_environment::Column::OrganizationId.eq(org_id))
+            .add(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .add(lapdev_db_entities::kube_environment::Column::BaseEnvironmentId.is_not_null())
+            .add(
+                Condition::any()
+                    .add(lapdev_db_entities::kube_environment::Column::IsShared.eq(true))
+                    .add(lapdev_db_entities::kube_environment::Column::UserId.eq(user_id)),
+            );
+
+        let branch_count = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(branch_access.clone())
+            .count(&self.conn)
+            .await? as usize;
+
+        // Accessible environments condition (used for status breakdown & recent list)
+        let accessible_condition = Condition::all()
+            .add(lapdev_db_entities::kube_environment::Column::OrganizationId.eq(org_id))
+            .add(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+            .add(
+                Condition::any()
+                    .add(
+                        Condition::all()
+                            .add(lapdev_db_entities::kube_environment::Column::IsShared.eq(false))
+                            .add(
+                                lapdev_db_entities::kube_environment::Column::BaseEnvironmentId
+                                    .is_null(),
+                            )
+                            .add(lapdev_db_entities::kube_environment::Column::UserId.eq(user_id)),
+                    )
+                    .add(lapdev_db_entities::kube_environment::Column::IsShared.eq(true))
+                    .add(
+                        Condition::all()
+                            .add(
+                                lapdev_db_entities::kube_environment::Column::BaseEnvironmentId
+                                    .is_not_null(),
+                            )
+                            .add(lapdev_db_entities::kube_environment::Column::UserId.eq(user_id)),
+                    ),
+            );
+
+        let status_counts_raw: Vec<StatusCountRow> =
+            lapdev_db_entities::kube_environment::Entity::find()
+                .select_only()
+                .column(lapdev_db_entities::kube_environment::Column::Status)
+                .column_as(
+                    Expr::col((
+                        lapdev_db_entities::kube_environment::Entity,
+                        lapdev_db_entities::kube_environment::Column::Id,
+                    ))
+                    .count(),
+                    "count",
+                )
+                .filter(accessible_condition.clone())
+                .group_by(lapdev_db_entities::kube_environment::Column::Status)
+                .into_model::<StatusCountRow>()
+                .all(&self.conn)
+                .await?;
+
+        let mut status_breakdown: Vec<KubeEnvironmentStatusCount> = status_counts_raw
+            .into_iter()
+            .filter_map(|row| {
+                KubeEnvironmentStatus::from_str(&row.status)
+                    .ok()
+                    .map(|status| KubeEnvironmentStatusCount {
+                        status,
+                        count: row.count as usize,
+                    })
+            })
+            .collect();
+        status_breakdown.sort_by(|a, b| b.count.cmp(&a.count));
+
+        let recent_query = lapdev_db_entities::kube_environment::Entity::find()
+            .filter(accessible_condition)
+            .order_by_desc(lapdev_db_entities::kube_environment::Column::ResumedAt)
+            .order_by_desc(lapdev_db_entities::kube_environment::Column::LastCatalogSyncedAt)
+            .order_by_desc(lapdev_db_entities::kube_environment::Column::PausedAt)
+            .order_by_desc(lapdev_db_entities::kube_environment::Column::CreatedAt)
+            .limit(limited_recent);
+
+        let recent_with_related: Vec<KubeEnvironmentWithRelated> = recent_query
+            .select_only()
+            .column_as(lapdev_db_entities::kube_environment::Column::Id, "env_id")
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::Name,
+                "env_name",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::Namespace,
+                "env_namespace",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::AppCatalogId,
+                "env_app_catalog_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::ClusterId,
+                "env_cluster_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::Status,
+                "env_status",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::CreatedAt,
+                "env_created_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::IsShared,
+                "env_is_shared",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::OrganizationId,
+                "env_organization_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::UserId,
+                "env_user_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::DeletedAt,
+                "env_deleted_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::BaseEnvironmentId,
+                "env_base_environment_id",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::AuthToken,
+                "env_auth_token",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::CatalogSyncVersion,
+                "env_catalog_sync_version",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::LastCatalogSyncedAt,
+                "env_last_catalog_synced_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::PausedAt,
+                "env_paused_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::ResumedAt,
+                "env_resumed_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_environment::Column::SyncStatus,
+                "env_sync_status",
+            )
+            .join(
+                JoinType::LeftJoin,
+                lapdev_db_entities::kube_environment::Relation::KubeAppCatalog.def(),
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::Name,
+                "catalog_name",
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::Description,
+                "catalog_description",
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::SyncVersion,
+                "catalog_sync_version",
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::LastSyncedAt,
+                "catalog_last_synced_at",
+            )
+            .column_as(
+                lapdev_db_entities::kube_app_catalog::Column::LastSyncActorId,
+                "catalog_last_sync_actor_id",
+            )
+            .join(
+                JoinType::LeftJoin,
+                lapdev_db_entities::kube_environment::Relation::KubeCluster.def(),
+            )
+            .column_as(
+                lapdev_db_entities::kube_cluster::Column::Name,
+                "cluster_name",
+            )
+            .join_as(
+                JoinType::LeftJoin,
+                lapdev_db_entities::kube_environment::Relation::SelfRef.def(),
+                Alias::new("base_env"),
+            )
+            .expr_as(
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::Name,
+                )),
+                "base_environment_name",
+            )
+            .into_model::<KubeEnvironmentWithRelated>()
+            .all(&self.conn)
+            .await?;
+
+        let recent_environments = recent_with_related
+            .into_iter()
+            .filter_map(|related| {
+                let catalog_name = related.catalog_name?;
+                let cluster_name = related.cluster_name?;
+                let status = KubeEnvironmentStatus::from_str(&related.env_status)
+                    .unwrap_or(KubeEnvironmentStatus::Creating);
+                let sync_status = KubeEnvironmentSyncStatus::from_str(&related.env_sync_status)
+                    .unwrap_or(KubeEnvironmentSyncStatus::Idle);
+
+                let catalog_update_available = related
+                    .catalog_sync_version
+                    .map(|catalog_version| catalog_version > related.env_catalog_sync_version)
+                    .unwrap_or(false);
+
+                Some(KubeEnvironment {
+                    id: related.env_id,
+                    user_id: related.env_user_id,
+                    name: related.env_name,
+                    namespace: related.env_namespace,
+                    app_catalog_id: related.env_app_catalog_id,
+                    app_catalog_name: catalog_name,
+                    cluster_id: related.env_cluster_id,
+                    cluster_name,
+                    status,
+                    created_at: related.env_created_at.to_string(),
+                    is_shared: related.env_is_shared,
+                    base_environment_id: related.env_base_environment_id,
+                    base_environment_name: related.base_environment_name,
+                    catalog_sync_version: related.env_catalog_sync_version,
+                    last_catalog_synced_at: related
+                        .env_last_catalog_synced_at
+                        .map(|dt| dt.to_string()),
+                    paused_at: related.env_paused_at.map(|dt| dt.to_string()),
+                    resumed_at: related.env_resumed_at.map(|dt| dt.to_string()),
+                    catalog_update_available,
+                    catalog_last_sync_actor_id: related.catalog_last_sync_actor_id,
+                    sync_status,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Ok(KubeEnvironmentDashboardSummary {
+            personal_count,
+            shared_count,
+            branch_count,
+            total_count: personal_count + shared_count + branch_count,
+            status_breakdown,
+            recent_environments,
+        })
     }
 
     pub async fn get_kube_environment(

@@ -23,13 +23,7 @@ use crate::{
 #[component]
 pub fn DashboardHome() -> impl IntoView {
     let org = get_current_org();
-    let config = use_context::<AppConfig>().expect("app config missing");
     let hrpc_client = use_context::<Arc<HrpcServiceClient>>().expect("hrpc client missing");
-
-    Effect::new(move |_| {
-        config.current_page.set("dashboard".to_string());
-        config.header_links.set(Vec::new());
-    });
 
     let summary_resource = LocalResource::new(move || {
         let client = hrpc_client.clone();
@@ -63,32 +57,31 @@ pub fn DashboardHome() -> impl IntoView {
             <section class="flex flex-col gap-4">
                 <H2 class="text-3xl font-semibold">"Kubernetes Dev Environments"</H2>
                 <Lead class="text-muted-foreground max-w-3xl">
-                    "Track the health of your personal, shared, and branch environments, and jump back into the workloads that matter."
+                    "Track the health of your personal, branch, and shared environments. Branch environments borrow every workload from the shared baseline until you override a service, letting you ship feature slices without paying for full clones."
                 </Lead>
                 <div class="flex flex-wrap gap-3">
                     <a href="/kubernetes/environments/personal" class="inline-flex">
-                        <Button size=ButtonSize::Sm>
+                        <Button size=ButtonSize::Sm variant=ButtonVariant::Outline>
                             <lucide_leptos::User attr:class="h-4 w-4" />
                             "Personal environments"
                         </Button>
                     </a>
+                    <a href="/kubernetes/environments/branch" class="inline-flex">
+                        <Button size=ButtonSize::Sm variant=ButtonVariant::Outline>
+                            <lucide_leptos::GitBranch attr:class="h-4 w-4" />
+                            "Branch environments"
+                        </Button>
+                    </a>
                     <a href="/kubernetes/environments/shared" class="inline-flex">
-                        <Button size=ButtonSize::Sm variant=ButtonVariant::Secondary>
+                        <Button size=ButtonSize::Sm variant=ButtonVariant::Outline>
                             <lucide_leptos::Users attr:class="h-4 w-4" />
                             "Shared environments"
                         </Button>
                     </a>
-                    <a href="/kubernetes/environments/branch" class="inline-flex">
-                        <Button size=ButtonSize::Sm variant=ButtonVariant::Ghost>
-                            <lucide_leptos::GitBranch attr:class="h-4 w-4" />
-                            "Branch previews"
-                        </Button>
-                    </a>
                     <a href="/kubernetes/catalogs" class="inline-flex">
-                        <Button size=ButtonSize::Sm variant=ButtonVariant::Link>
+                        <Button size=ButtonSize::Sm variant=ButtonVariant::Outline>
                             <lucide_leptos::BookOpen attr:class="h-4 w-4" />
                             "Browse app catalogs"
-                            <lucide_leptos::ArrowUpRight attr:class="h-3.5 w-3.5" />
                         </Button>
                     </a>
                 </div>
@@ -102,10 +95,10 @@ pub fn DashboardHome() -> impl IntoView {
                     let summary = summary.get().unwrap_or_default();
                     view! {
                         <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                            <MetricCard title="Total environments" value=summary.total_count description="Across personal, shared, and branch spaces." />
-                            <MetricCard title="Personal" value=summary.personal_count description="Environments owned by you." />
-                            <MetricCard title="Shared" value=summary.shared_count description="Team-accessible environments." />
-                            <MetricCard title="Branch" value=summary.branch_count description="Preview namespaces connected to branches." />
+                            <MetricCard title="Total environments" value=summary.total_count description="Across personal, branch, and shared spaces." />
+                            <MetricCard title="Personal" value=summary.personal_count description="Fully isolated namespaces dedicated to you." />
+                            <MetricCard title="Branch" value=summary.branch_count description="Branch copies that inherit shared workloads until you modify them." />
+                            <MetricCard title="Shared" value=summary.shared_count description="Team baselines that power integration tests and branch forks." />
                         </div>
 
                         <div class="grid gap-6 lg:grid-cols-3">
@@ -113,7 +106,7 @@ pub fn DashboardHome() -> impl IntoView {
                                 <CardHeader>
                                     <CardTitle>"Status overview"</CardTitle>
                                     <CardDescription>
-                                        "Current state of environments you can access."
+                                        "Live status for every environment you can access."
                                     </CardDescription>
                                 </CardHeader>
                                 <CardContent class="space-y-3">
@@ -135,11 +128,11 @@ pub fn DashboardHome() -> impl IntoView {
                                     </div>
                                     <div class="flex items-start gap-2">
                                         <lucide_leptos::RefreshCw attr:class="h-4 w-4 text-primary mt-0.5" />
-                                        <span>"Sync with the latest app catalog version to pick up dependency and security fixes."</span>
+                                        <span>"Sync shared baselines with the latest app catalog to pick up dependency and security fixes."</span>
                                     </div>
                                     <div class="flex items-start gap-2">
                                         <lucide_leptos::LifeBuoy attr:class="h-4 w-4 text-primary mt-0.5" />
-                                        <span>"Need a new template? Coordinate with your platform team to publish catalog updates."</span>
+                                        <span>"Need a new template? Coordinate with your platform team to publish catalog updates before cutting new branches."</span>
                                     </div>
                                 </CardContent>
                             </Card>
@@ -149,7 +142,7 @@ pub fn DashboardHome() -> impl IntoView {
                             <CardHeader>
                                 <CardTitle>"Recent environments"</CardTitle>
                                 <CardDescription>
-                                    "Latest activity across personal, shared, and branch namespaces."
+                                    "Latest activity across personal, branch, and shared namespaces."
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>

@@ -65,9 +65,21 @@ pub fn set_context() {
     let login_counter = RwSignal::new_local(0);
     provide_context(login_counter);
 
-    let login = LocalResource::new(|| async move { get_login().await.ok() });
+    let login_fetching = RwSignal::new_local(true);
+    provide_context(login_fetching);
+
+    let login_fetching_for_resource = login_fetching;
+    let login = LocalResource::new(move || {
+        login_fetching_for_resource.set(true);
+        async move {
+            let result = get_login().await.ok();
+            login_fetching_for_resource.set(false);
+            result
+        }
+    });
     Effect::new(move |_| {
         login_counter.track();
+        login_fetching.set(true);
         login.refetch();
     });
     provide_context(login);
@@ -155,11 +167,22 @@ where
     T: IntoView + Copy + 'static + Send + Sync,
 {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
+    let login_fetching = expect_context::<RwSignal<bool, LocalStorage>>();
     let new_org_modal_hidden = RwSignal::new_local(true);
     view! {
         <Show
             when=move || { login.get().flatten().is_some() }
-            fallback=move || view! { <Login /> }
+            fallback=move || {
+                let login_fetching = login_fetching;
+                view! {
+                    <Show
+                        when=move || { !login_fetching.get() }
+                        fallback=move || view! { <AppLoading /> }
+                    >
+                        <Login />
+                    </Show>
+                }
+            }
         >
             <div class="flex flex-col h-screen">
                 <TopNav />
@@ -181,10 +204,21 @@ where
     T: IntoView + Copy + 'static + Send + Sync,
 {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
+    let login_fetching = expect_context::<RwSignal<bool, LocalStorage>>();
     view! {
         <Show
             when=move || { login.get().flatten().is_some() }
-            fallback=move || view! { <Login /> }
+            fallback=move || {
+                let login_fetching = login_fetching;
+                view! {
+                    <Show
+                        when=move || { !login_fetching.get() }
+                        fallback=move || view! { <AppLoading /> }
+                    >
+                        <Login />
+                    </Show>
+                }
+            }
         >
             <div class="flex flex-col h-screen">
                 <TopNav />
@@ -196,5 +230,17 @@ where
                 </div>
             </div>
         </Show>
+    }
+}
+
+#[component]
+fn AppLoading() -> impl IntoView {
+    view! {
+        <div class="flex h-screen items-center justify-center bg-slate-50">
+            <div class="flex flex-col items-center gap-3 text-sm text-slate-500">
+                <span class="inline-block h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-sky-500"></span>
+                Loading your workspace...
+            </div>
+        </div>
     }
 }

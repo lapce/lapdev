@@ -142,9 +142,7 @@ pub fn LoginWithView(auth_providers: Vec<AuthProvider>) -> impl IntoView {
             class="w-full max-w-md"
             class:hidden=move || login.with(|l| l.is_none())
         >
-            <div class="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-10 sm:p-12">
-                <div class="absolute inset-y-0 left-0 w-1 bg-sky-200"></div>
-                <div class="absolute inset-x-0 top-0 h-px bg-slate-200"></div>
+            <div class="rounded-3xl border border-slate-200 bg-white p-10 sm:p-12">
                 <div class="relative">
                     <h1 class="text-center text-2xl font-semibold leading-tight tracking-tight text-slate-900">
                         Sign in to Lapdev
@@ -183,33 +181,7 @@ pub fn LoginWithView(auth_providers: Vec<AuthProvider>) -> impl IntoView {
                             </span>
                         </button>
                     </div>
-                    <div class="mt-10 space-y-4 text-left text-sm text-slate-600">
-                        <div class="flex items-center gap-3">
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-500">
-                                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4.5 12.75l6 6 9-13.5" />
-                                </svg>
-                            </span>
-                            Always-on replicas stay drift-free with production as the source of truth.
-                        </div>
-                        <div class="flex items-center gap-3">
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-sky-100 text-sky-500">
-                                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6v12m6-6H6" />
-                                </svg>
-                            </span>
-                            Devbox routes cluster traffic to your laptop for breakpoint-fast debugging.
-                        </div>
-                        <div class="flex items-center gap-3">
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-500">
-                                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7.5l9-5.25 9 5.25M4.5 10.5v6.75L12 21l7.5-3.75V10.5" />
-                                </svg>
-                            </span>
-                            Preview links ship with TLS, DNS, and SSO guardrails out of the box.
-                        </div>
-                    </div>
-                    <p class="mt-8 text-center text-xs text-slate-500">
+                    <p class="mt-10 text-center text-xs text-slate-500">
                         Need access? Ask your Lapdev admin for an invitation.
                     </p>
                 </div>

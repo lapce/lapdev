@@ -19,7 +19,7 @@
 </div>
 <br>
 
-**Lapdev** gives your team production-accurate development environments that run directly in your Kubernetes cluster. Install the lightweight `lapdev-kube-manager`, choose the workloads you care about, and Lapdev keeps isolated or shared environments in sync with your production manifests. Developers iterate quickly using the [Devbox CLI](https://docs.lap.dev/core-concepts/devbox) for local debugging while staying connected to real cluster resources.
+**Lapdev** gives your team production-accurate development environments that run directly in your Kubernetes cluster. Install the lightweight `lapdev-kube-manager`, choose the workloads you care about, and Lapdev keeps isolated or shared environments in sync with your production manifests. Developers iterate quickly using the [Devbox CLI](https://lapdev.gitbook.io/docs/core-concepts/devbox) for local debugging while staying connected to real cluster resources.
 
 <br>
 
@@ -43,18 +43,18 @@ Lapdev is made of three components that work together:
 2. **Lapdev-Kube-Manager** – In-cluster operator that mirrors production workloads into development namespaces.
 3. **Devbox CLI** – Developer tooling for traffic interception and access to cluster services from your local machine.
 
-Dig deeper in the [Architecture docs](https://docs.lap.dev/core-concepts/architecture/).
+Dig deeper in the [Architecture docs](https://lapdev.gitbook.io/docs/core-concepts/architecture/).
 
 ## Getting Started
 
-1. [Connect your Kubernetes cluster](https://docs.lap.dev/how-to-guides/connect-your-kubernetes-cluster)
-2. [Create an App Catalog](https://docs.lap.dev/how-to-guides/create-an-app-catalog)
-3. [Provision your first environment](https://docs.lap.dev/how-to-guides/create-lapdev-environment)
-4. [Develop locally with Devbox](https://docs.lap.dev/how-to-guides/local-development-with-devbox)
+1. [Connect your Kubernetes cluster](https://lapdev.gitbook.io/docs/how-to-guides/connect-your-kubernetes-cluster)
+2. [Create an App Catalog](https://lapdev.gitbook.io/docs/how-to-guides/create-an-app-catalog)
+3. [Provision your first environment](https://lapdev.gitbook.io/docs/how-to-guides/create-lapdev-environment)
+4. [Develop locally with Devbox](https://lapdev.gitbook.io/docs/how-to-guides/local-development-with-devbox)
 
 ## Resources
 
-- [Core concepts](https://docs.lap.dev/core-concepts/README)
-- [Traffic routing architecture](https://docs.lap.dev/core-concepts/architecture/traffic-routing-architecture)
-- [Preview URLs](https://docs.lap.dev/core-concepts/preview-url)
+- [Core concepts](https://lapdev.gitbook.io/docs/core-concepts/README)
+- [Traffic routing architecture](https://lapdev.gitbook.io/docs/core-concepts/architecture/traffic-routing-architecture)
+- [Preview URLs](https://lapdev.gitbook.io/docs/core-concepts/preview-url)
 - [Lapdev Docs](https://docs.lap.dev)

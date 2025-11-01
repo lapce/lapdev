@@ -18,6 +18,7 @@ use lapdev_common::{
 };
 use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use leptos_router::hooks::use_params_map;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
@@ -36,6 +37,11 @@ use crate::{
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
 };
+
+#[derive(Clone, Debug, Deserialize)]
+struct EnvironmentLifecycleEvent {
+    status: KubeEnvironmentStatus,
+}
 
 #[component]
 pub fn KubeEnvironmentDetail() -> impl IntoView {
@@ -303,6 +309,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     let readiness_map: RwSignal<HashMap<Uuid, Option<i32>>> = RwSignal::new(HashMap::new());
     let sse_started = StoredValue::new(false);
     let readiness_sse_started = StoredValue::new(false);
+    let environment_status = RwSignal::new(KubeEnvironmentStatus::Creating);
 
     // Debounce search input (300ms delay)
     let search_timeout_handle: StoredValue<Option<leptos::leptos_dom::helpers::TimeoutHandle>> =
@@ -408,7 +415,9 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         if let Some(org) = org.get() {
             sse_started.set_value(true);
             let org_id = org.id;
+            let environment_status = environment_status.clone();
             spawn_local_scoped_with_cancellation({
+                let environment_status = environment_status.clone();
                 async move {
                     let url = format!(
                         "/api/v1/organizations/{}/kube/environments/{}/events",
@@ -420,9 +429,37 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                             match event_source.subscribe("environment") {
                                 Ok(mut stream) => {
                                     while let Some(event) = stream.next().await {
-                                        if event.is_ok() {
-                                            environment_result.refetch();
-                                            update_counter.update(|c| *c += 1);
+                                        match event {
+                                            Ok((_, message)) => {
+                                                if let Some(data) = message.data().as_string() {
+                                                    match serde_json::from_str::<
+                                                        EnvironmentLifecycleEvent,
+                                                    >(
+                                                        &data
+                                                    ) {
+                                                        Ok(payload) => {
+                                                            environment_status.set(payload.status);
+                                                            update_counter.update(|c| *c += 1);
+                                                        }
+                                                        Err(err) => {
+                                                            web_sys::console::error_1(
+                                                                &format!(
+                                                                    "Failed to parse environment event payload: {err}"
+                                                                )
+                                                                .into(),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                web_sys::console::error_1(
+                                                    &format!(
+                                                        "Environment event stream error: {err}"
+                                                    )
+                                                    .into(),
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -531,6 +568,14 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
     });
 
     let environment_info = Signal::derive(move || environment_result.get().flatten());
+    {
+        let environment_status = environment_status.clone();
+        Effect::new(move |_| {
+            if let Some(env) = environment_info.get() {
+                environment_status.set(env.status.clone());
+            }
+        });
+    }
     let environment_catalog_version = Signal::derive(move || {
         environment_info
             .get()
@@ -673,6 +718,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
             <Show when=move || environment_info.get().is_some()>
                 <EnvironmentInfoCard
                     environment_info
+                    environment_status=environment_status.into()
                     delete_modal_open
                     delete_action
                     create_branch_modal_open
@@ -726,6 +772,7 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
 #[component]
 pub fn EnvironmentInfoCard(
     environment_info: Signal<Option<KubeEnvironment>>,
+    environment_status: Signal<KubeEnvironmentStatus>,
     delete_modal_open: RwSignal<bool>,
     delete_action: Action<(), Result<(), ErrorResponse>>,
     create_branch_modal_open: RwSignal<bool>,
@@ -740,6 +787,74 @@ pub fn EnvironmentInfoCard(
     let pause_result = pause_action.value();
     let resume_result = resume_action.value();
 
+    let status_text = {
+        let environment_status = environment_status.clone();
+        Signal::derive(move || environment_status.get().to_string())
+    };
+    let status_variant = {
+        let environment_status = environment_status.clone();
+        Signal::derive(move || match environment_status.get() {
+            KubeEnvironmentStatus::Running => BadgeVariant::Secondary,
+            KubeEnvironmentStatus::Creating
+            | KubeEnvironmentStatus::Pausing
+            | KubeEnvironmentStatus::Resuming
+            | KubeEnvironmentStatus::Paused
+            | KubeEnvironmentStatus::Deleting
+            | KubeEnvironmentStatus::Deleted => BadgeVariant::Outline,
+            KubeEnvironmentStatus::Failed
+            | KubeEnvironmentStatus::Error
+            | KubeEnvironmentStatus::PauseFailed
+            | KubeEnvironmentStatus::ResumeFailed => BadgeVariant::Destructive,
+        })
+    };
+    let can_pause = {
+        let environment_status = environment_status.clone();
+        Signal::derive(move || {
+            matches!(
+                environment_status.get(),
+                KubeEnvironmentStatus::Running | KubeEnvironmentStatus::PauseFailed
+            )
+        })
+    };
+    let can_resume = {
+        let environment_status = environment_status.clone();
+        Signal::derive(move || {
+            matches!(
+                environment_status.get(),
+                KubeEnvironmentStatus::Paused
+                    | KubeEnvironmentStatus::PauseFailed
+                    | KubeEnvironmentStatus::ResumeFailed
+            )
+        })
+    };
+    let is_deleting = {
+        let environment_status = environment_status.clone();
+        Signal::derive(move || {
+            matches!(
+                environment_status.get(),
+                KubeEnvironmentStatus::Deleting | KubeEnvironmentStatus::Deleted
+            )
+        })
+    };
+    let delete_button_text = {
+        let environment_status = environment_status.clone();
+        Signal::derive(move || match environment_status.get() {
+            KubeEnvironmentStatus::Deleted => "Deleted".to_string(),
+            KubeEnvironmentStatus::Deleting => "Deleting...".to_string(),
+            _ => "Delete Environment".to_string(),
+        })
+    };
+    let pause_disabled = {
+        let can_pause = can_pause.clone();
+        let pause_pending = pause_pending.clone();
+        Signal::derive(move || !can_pause.get() || pause_pending.get())
+    };
+    let resume_disabled = {
+        let can_resume = can_resume.clone();
+        let resume_pending = resume_pending.clone();
+        Signal::derive(move || !can_resume.get() || resume_pending.get())
+    };
+
     view! {
         <Show when=move || environment_info.get().is_some() fallback=|| view! { <div></div> }>
            {
@@ -747,8 +862,6 @@ pub fn EnvironmentInfoCard(
                 let env_name = environment.name.clone();
                 let env_namespace = environment.namespace.clone();
                 let env_namespace2 = environment.namespace.clone();
-                let env_status = environment.status.clone();
-                let status_text = env_status.to_string();
                 let created_at_str = environment.created_at.clone();
                 let is_shared = environment.is_shared;
                 let is_branch = environment.base_environment_id.is_some();
@@ -773,19 +886,6 @@ pub fn EnvironmentInfoCard(
                     "New cluster changes are ready to apply. Sync the environment to pull the latest workloads from the production cluster."
                 } else {
                     "New catalog changes are ready to apply. Sync the environment to pull the latest workloads."
-                };
-                let status_variant = match env_status {
-                    KubeEnvironmentStatus::Running => BadgeVariant::Secondary,
-                    KubeEnvironmentStatus::Creating
-                    | KubeEnvironmentStatus::Pausing
-                    | KubeEnvironmentStatus::Resuming
-                    | KubeEnvironmentStatus::Paused
-                    | KubeEnvironmentStatus::Deleting
-                    | KubeEnvironmentStatus::Deleted => BadgeVariant::Outline,
-                    KubeEnvironmentStatus::Failed
-                    | KubeEnvironmentStatus::Error
-                    | KubeEnvironmentStatus::PauseFailed
-                    | KubeEnvironmentStatus::ResumeFailed => BadgeVariant::Destructive,
                 };
 
                 let (type_label, type_description) = if is_branch {
@@ -884,23 +984,14 @@ pub fn EnvironmentInfoCard(
                                             </Button>
                                         </Show>
                                         <Show when=move || !is_shared>
-                                            {let can_pause = matches!(
-                                                env_status,
-                                                KubeEnvironmentStatus::Running
-                                                    | KubeEnvironmentStatus::PauseFailed
-                                            );
-                                            let can_resume = matches!(
-                                                env_status,
-                                                KubeEnvironmentStatus::Paused
-                                                    | KubeEnvironmentStatus::PauseFailed
-                                                    | KubeEnvironmentStatus::ResumeFailed,
-                                            );
+                                            {let pause_disabled = pause_disabled.clone();
+                                            let resume_disabled = resume_disabled.clone();
                                             view! {
                                                 <>
                                                     <Button
                                                         variant=ButtonVariant::Outline
                                                         on:click=move |_| { pause_action.dispatch(()); }
-                                                        disabled=!can_pause || pause_pending.get()
+                                                        disabled=pause_disabled.clone()
                                                     >
                                                         <lucide_leptos::Pause />
                                                         {move || if pause_pending.get() { "Pausing...".to_string() } else { "Pause".to_string() }}
@@ -908,7 +999,7 @@ pub fn EnvironmentInfoCard(
                                                     <Button
                                                         variant=ButtonVariant::Outline
                                                         on:click=move |_| { resume_action.dispatch(()); }
-                                                        disabled=!can_resume || resume_pending.get()
+                                                        disabled=resume_disabled.clone()
                                                     >
                                                         <lucide_leptos::Play />
                                                         {move || if resume_pending.get() { "Resuming...".to_string() } else { "Resume".to_string() }}
@@ -916,25 +1007,16 @@ pub fn EnvironmentInfoCard(
                                                 </>
                                             }.into_any()}
                                         </Show>
-                                        {let is_deleting = matches!(
-                                            env_status,
-                                            KubeEnvironmentStatus::Deleting | KubeEnvironmentStatus::Deleted
-                                        );
-                                        let delete_button_text = if matches!(env_status, KubeEnvironmentStatus::Deleted) {
-                                            "Deleted".to_string()
-                                        } else if matches!(env_status, KubeEnvironmentStatus::Deleting) {
-                                            "Deleting...".to_string()
-                                        } else {
-                                            "Delete Environment".to_string()
-                                        };
+                                        {let delete_button_text = delete_button_text.clone();
+                                        let delete_disabled = is_deleting.clone();
                                         view! {
                                             <Button
                                                 variant=ButtonVariant::Destructive
                                                 on:click=move |_| delete_modal_open.set(true)
-                                                disabled=is_deleting
+                                                disabled=delete_disabled
                                             >
                                                 <lucide_leptos::Trash2 />
-                                                {delete_button_text}
+                                                {move || delete_button_text.get()}
                                             </Button>
                                         }.into_any()}
                                     </div>
@@ -1067,8 +1149,8 @@ pub fn EnvironmentInfoCard(
                                     <span>Status</span>
                                 </div>
                                 <div>
-                                    <Badge variant=status_variant class="text-sm">
-                                        {status_text.clone()}
+                                    <Badge variant=status_variant.clone() class="text-sm">
+                                        {move || status_text.get()}
                                     </Badge>
                                 </div>
                             </div>

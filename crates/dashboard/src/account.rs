@@ -64,9 +64,6 @@ pub fn Login() -> impl IntoView {
                             <p class="max-w-lg text-lg text-slate-600">
                                 Lapdev mirrors your live manifests, keeps every dev space in sync, and lets teams ship without wrestling YAML or waiting on pipelines.
                             </p>
-                            <p class="max-w-lg text-sm uppercase tracking-[0.24em] text-slate-500">
-                                Personal workspaces | Branch-safe overlays | Compliant by default
-                            </p>
                         </div>
                         <div class="flex flex-wrap items-center gap-3 text-sm text-slate-600">
                             <span class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2">

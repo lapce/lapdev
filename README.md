@@ -3,7 +3,7 @@
 
   # Lapdev
   
-  **Production-accurate Kubernetes development environments**
+  **Seamless dev environments for your Kubernetes apps**
 </div>
 
 <div align="center">

@@ -98,7 +98,7 @@ pub fn DashboardHome() -> impl IntoView {
                             <MetricCard title="Total environments" value=summary.total_count description="Across personal, branch, and shared spaces." />
                             <MetricCard title="Personal" value=summary.personal_count description="Fully isolated namespaces dedicated to you." />
                             <MetricCard title="Branch" value=summary.branch_count description="Branch copies that inherit shared workloads until you modify them." />
-                            <MetricCard title="Shared" value=summary.shared_count description="Team baselines that power integration tests and branch forks." />
+                            <MetricCard title="Shared" value=summary.shared_count description="Team baselines that power branch environments." />
                         </div>
 
                         <div class="grid gap-6 lg:grid-cols-3">

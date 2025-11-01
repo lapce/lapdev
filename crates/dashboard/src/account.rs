@@ -59,7 +59,7 @@ pub fn Login() -> impl IntoView {
                         </a>
                         <div class="space-y-5">
                             <h1 class="max-w-xl text-4xl font-semibold tracking-tight text-gray-900 sm:text-5xl">
-                                Spin up production-grade Kubernetes environments in minutes.
+                                Spin up production grade Kubernetes environments in minutes.
                             </h1>
                             <p class="max-w-lg text-lg text-gray-600">
                                 Lapdev mirrors your live manifests, keeps every dev space in sync, and lets teams ship without wrestling YAML or waiting on pipelines.
@@ -70,7 +70,7 @@ pub fn Login() -> impl IntoView {
                                 <svg class="h-4 w-4 text-emerald-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4.5 12.75l6 6 9-13.5" />
                                 </svg>
-                                One-click replicas of prod workloads, config, and secrets.
+                                One click replicas of prod workloads, config, and secrets.
                             </span>
                             <span class="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-2">
                                 <svg class="h-4 w-4 text-sky-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -82,7 +82,7 @@ pub fn Login() -> impl IntoView {
                                 <svg class="h-4 w-4 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7.5l9-5.25 9 5.25M4.5 10.5v6.75L12 21l7.5-3.75V10.5" />
                                 </svg>
-                                Instant preview URLs with SSO-gated sharing.
+                                Instant preview URLs with SSO gated sharing.
                             </span>
                         </div>
                     </div>

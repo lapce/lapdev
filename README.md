@@ -3,7 +3,7 @@
 
   # Lapdev
   
-  **Self-hosted remote development enviroment management with ease**
+  **Production-accurate Kubernetes development environments**
 </div>
 
 <div align="center">
@@ -19,13 +19,7 @@
 </div>
 <br>
 
-**Lapdev** is a self hosted application that spins up remote development environments on your own servers or clouds. It scales from a single machine in the corner to a global fleet of servers. It uses [Devcontainer open specification](https://containers.dev/) for defining your development environment as code. If you’re interested in a deep dive into how Lapdev works, you can read about its [architecture](https://docs.lap.dev/administration/architecture) here.
-
-## Cloud
-
-If you don't want to self host, we also have cloud offering of Lapdev using high end Gaming CPU: https://ws.lap.dev/
-
-[Read More](https://lap.dev/blog/a-performance-review-of-cloud-dev-envs/) to know how a Gaming CPU can boost the performance.
+**Lapdev** gives your team production-accurate development environments that run directly in your Kubernetes cluster. Install the lightweight `lapdev-kube-manager`, choose the workloads you care about, and Lapdev keeps isolated or shared environments in sync with your production manifests. Developers iterate quickly using the [Devbox CLI](https://docs.lap.dev/core-concepts/devbox) for local debugging while staying connected to real cluster resources.
 
 <br>
 
@@ -33,24 +27,34 @@ If you don't want to self host, we also have cloud offering of Lapdev using high
 
 <br>
 
-## Features
+## What Lapdev Does
 
-- **Self hosted with ease:** Lapdev is designed to be self hosted with minimum efforts for installation and maintenance. The application is designed to just work, sparing you from digging too deep into the internals for troubleshooting. 
+- **Reads production manifests** – Lapdev builds an App Catalog straight from your production Deployments, StatefulSets, ConfigMaps, Secrets, and Services.
+- **Creates tailored environments** – Launch fully isolated personal namespaces, shared team baselines, or lightweight branch environments with intelligent traffic routing.
+- **Keeps everything in sync** – Monitor production for changes, notify developers, and apply updates when you are ready—no manual YAML drift.
+- **Enables local-style iteration** – Devbox routes cluster traffic to your laptop, so you debug locally while remaining wired into in-cluster dependencies.
+- **Publishes secure preview URLs** – Share HTTPS endpoints for any service without juggling DNS, certificates, or ingress rules.
 
-- **Horizontal scalability:** With a simple yet powerful [architecture](https://docs.lap.dev/administration/architecture), Lapdev can scale from a single machine to a fleet of servers, so that you can have a development environment management system that can grow with your developer teams.
+## Architecture at a Glance
 
-- **Development Environment as Code:** Using the [Devcontainer open specification](https://containers.dev/), Lapdev allows you to define your development environment as code. This empowers you to standardize development environments that can be replicated across different developers, avoiding environment related issues and ensuring a consistent setup for everyone.
+Lapdev is made of three components that work together:
 
-- **Save Onboarding Time:** Onboarding developers to new projects don't need hours or days to prepare the environment on their machines. They can start to code instantly.
+1. **Lapdev API Server** – SaaS control plane that handles auth, orchestration, and secure tunneling.
+2. **Lapdev-Kube-Manager** – In-cluster operator that mirrors production workloads into development namespaces.
+3. **Devbox CLI** – Developer tooling for traffic interception and access to cluster services from your local machine.
 
-## Planned Features
+Dig deeper in the [Architecture docs](https://docs.lap.dev/core-concepts/architecture/).
 
-- **More workspace types:** Currently Lapdev only supports container based workspaces, which has its own limitations for example when you want to run a k8s cluster in your development flow. It's planned to have support for more than containers. VMs and bare metal machine support are on the roadmap. And more OS support is planned as well, e.g. when you are developing a cross platform desktop application for Windows, Linux and macOS, Lapdev can spin up development environments on all of them and you can develop and debug from the same local machine without the need to switch machines.  
+## Getting Started
 
-## Installation
+1. [Connect your Kubernetes cluster](https://docs.lap.dev/how-to-guides/connect-your-kubernetes-cluster)
+2. [Create an App Catalog](https://docs.lap.dev/how-to-guides/create-an-app-catalog)
+3. [Provision your first environment](https://docs.lap.dev/how-to-guides/create-lapdev-environment)
+4. [Develop locally with Devbox](https://docs.lap.dev/how-to-guides/local-development-with-devbox)
 
-You can see the installation steps [here](https://docs.lap.dev/installation/quickstart).
+## Resources
 
-## Build from source
-
-## Contributing
+- [Core concepts](https://docs.lap.dev/core-concepts/README)
+- [Traffic routing architecture](https://docs.lap.dev/core-concepts/architecture/traffic-routing-architecture)
+- [Preview URLs](https://docs.lap.dev/core-concepts/preview-url)
+- [Lapdev Docs](https://docs.lap.dev)

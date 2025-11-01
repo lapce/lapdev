@@ -13,8 +13,8 @@
   <a href="https://discord.gg/DTZNfz3Ung" target="_blank">
     <img src="https://img.shields.io/discord/946858761413328946?logo=discord" />
   </a>
-  <a href="https://docs.lap.dev" target="_blank">
-      <img src="https://img.shields.io/static/v1?label=Docs&message=docs.lap.dev&color=blue" alt="Lapdev Docs">
+  <a href="https://lapdev.gitbook.io/docs/" target="_blank">
+      <img src="https://img.shields.io/static/v1?label=Docs&message=https://lapdev.gitbook.io/docs/&color=blue" alt="Lapdev Docs">
   </a>
 </div>
 <br>

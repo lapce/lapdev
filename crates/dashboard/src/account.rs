@@ -45,10 +45,10 @@ pub fn Login() -> impl IntoView {
     let cluster_info = get_cluster_info();
 
     view! {
-        <section class="bg-slate-50 text-slate-900">
-            <div class="mx-auto flex min-h-screen w-full items-center px-6 py-16 sm:px-10 lg:px-12">
-                <div class="grid w-full max-w-6xl gap-16 lg:grid-cols-[1.05fr_auto] lg:items-center">
-                    <div class="space-y-8">
+        <section class="min-h-screen bg-gray-50 text-slate-900">
+            <div class="mx-auto flex min-h-screen w-full flex-col lg:flex-row">
+                <div class="order-2 flex w-full items-center bg-gray-50 px-8 py-16 sm:px-12 lg:order-1 lg:w-1/2">
+                    <div class="mx-auto w-full max-w-xl space-y-6">
                         <a href="#" class="inline-flex items-center gap-4 text-lg font-semibold text-slate-900">
                             <svg class="h-11 w-11 text-black" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 1024 1024">
                                 <path d="M512 0C390.759 0 279.426 42.2227 191.719 112.656L191.719 612L351.719 612L351.719 332L422 332L431.719 332L431.719 332.344C488.169 334.127 541.249 351.138 581.875 380.625C627.591 413.806 654.875 460.633 654.875 512C654.875 563.367 627.591 610.194 581.875 643.375C541.249 672.862 488.169 689.873 431.719 691.656L431.719 1017.69C457.88 1021.81 484.68 1024 512 1024C794.77 1024 1024 794.77 1024 512C1024 229.23 794.77 0 512 0ZM111.719 192.906C41.8539 280.432 0 391.303 0 512C0 738.766 147.487 930.96 351.719 998.25L351.719 692L151.719 692L151.719 691.844L111.719 691.844L111.719 192.906ZM738.219 372C741.597 372.107 745.042 373.02 748.312 374.812L946.281 483.312C952.311 486.616 956.692 492.393 959.188 499.156C959.821 500.874 960.317 502.641 960.688 504.469C960.764 504.834 960.841 505.196 960.906 505.562C961.12 506.807 961.225 508.071 961.312 509.344C961.378 510.235 961.498 511.112 961.5 512C961.498 512.888 961.378 513.765 961.312 514.656C961.226 515.929 961.12 517.193 960.906 518.438C960.841 518.804 960.764 519.166 960.688 519.531C960.317 521.359 959.821 523.126 959.188 524.844C956.692 531.608 952.311 537.384 946.281 540.688L748.312 649.188C735.232 656.355 719.818 649.367 713.875 633.594C707.932 617.82 713.7 599.23 726.781 592.062L872.875 512L726.781 431.938C713.7 424.771 707.932 406.18 713.875 390.406C718.332 378.576 728.085 371.678 738.219 372ZM431.719 412.344L431.719 611.656C513.56 608.208 574.875 561.985 574.875 512C574.875 462.015 513.56 415.792 431.719 412.344Z" />
@@ -61,10 +61,10 @@ pub fn Login() -> impl IntoView {
                             <h1 class="max-w-xl text-4xl font-semibold tracking-tight text-slate-900 sm:text-5xl">
                                 Spin up production-grade Kubernetes environments in minutes.
                             </h1>
-                            <p class="max-w-xl text-lg text-slate-600">
+                            <p class="max-w-lg text-lg text-slate-600">
                                 Lapdev mirrors your live manifests, keeps every dev space in sync, and lets teams ship without wrestling YAML or waiting on pipelines.
                             </p>
-                            <p class="max-w-xl text-sm uppercase tracking-[0.24em] text-slate-500">
+                            <p class="max-w-lg text-sm uppercase tracking-[0.24em] text-slate-500">
                                 Personal workspaces | Branch-safe overlays | Compliant by default
                             </p>
                         </div>
@@ -89,45 +89,38 @@ pub fn Login() -> impl IntoView {
                             </span>
                         </div>
                     </div>
-                    {
-                        move || match cluster_info.with(|i| i.as_ref().map(|i| i.auth_providers.clone())) {
-                            Some(auth_providers) if !auth_providers.is_empty() => {
-                                view! { <LoginWithView auth_providers /> }.into_any()
-                            }
-                            Some(_) => {
-                                view! {
-                                    <div class="relative w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white p-10">
-                                        <div class="absolute inset-y-0 left-0 w-1 bg-sky-200"></div>
-                                        <h2 class="text-2xl font-semibold text-slate-900">
-                                            Configure your identity provider
-                                        </h2>
-                                        <p class="mt-2 text-sm text-slate-600">
-                                            Connect GitHub or GitLab to unlock Lapdev SSO for your organization.
-                                        </p>
-                                        <div class="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-6">
-                                            <InitAuthProvidersView />
-                                        </div>
+                </div>
+                <div class="order-1 flex w-full items-center bg-white px-8 py-16 shadow sm:px-12 lg:order-2 lg:w-1/2 lg:px-16">
+                    <div class="mx-auto w-full max-w-md">
+                        {move || match cluster_info.with(|i| i.as_ref().map(|i| i.auth_providers.clone())) {
+                            Some(auth_providers) if !auth_providers.is_empty() => view! { <LoginWithView auth_providers /> }.into_any(),
+                            Some(_) => view! {
+                                <div class="space-y-4">
+                                    <h2 class="text-2xl font-semibold text-slate-900">
+                                        Configure your identity provider
+                                    </h2>
+                                    <p class="text-sm text-slate-600">
+                                        Connect GitHub or GitLab to unlock Lapdev SSO for your organization.
+                                    </p>
+                                    <div class="rounded-2xl border border-slate-200 bg-gray-50 p-6">
+                                        <InitAuthProvidersView />
                                     </div>
-                                }.into_any()
-                            }
-                            None => {
-                                view! {
-                                    <div class="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-10">
-                                        <div class="space-y-4 animate-pulse" aria-live="polite">
-                                            <div class="h-4 w-40 rounded bg-slate-200"></div>
-                                            <div class="h-10 rounded bg-slate-100"></div>
-                                            <div class="h-10 rounded bg-slate-100"></div>
-                                            <div class="h-10 w-2/3 rounded bg-slate-100"></div>
-                                            <div class="h-4 w-48 rounded bg-slate-200"></div>
-                                            <p class="pt-2 text-sm text-slate-500">
-                                                Loading cluster SSO providers...
-                                            </p>
-                                        </div>
-                                    </div>
-                                }.into_any()
-                            }
-                        }
-                    }
+                                </div>
+                            }.into_any(),
+                            None => view! {
+                                <div class="space-y-4 animate-pulse" aria-live="polite">
+                                    <div class="h-4 w-40 rounded bg-slate-200"></div>
+                                    <div class="h-10 rounded bg-slate-100"></div>
+                                    <div class="h-10 rounded bg-slate-100"></div>
+                                    <div class="h-10 w-2/3 rounded bg-slate-100"></div>
+                                    <div class="h-4 w-48 rounded bg-slate-200"></div>
+                                    <p class="pt-2 text-sm text-slate-500">
+                                        Loading cluster SSO providers...
+                                    </p>
+                                </div>
+                            }.into_any(),
+                        }}
+                    </div>
                 </div>
             </div>
         </section>
@@ -139,10 +132,10 @@ pub fn LoginWithView(auth_providers: Vec<AuthProvider>) -> impl IntoView {
     let login = use_context::<LocalResource<Option<MeUser>>>().unwrap();
     view! {
         <div
-            class="w-full max-w-md"
+            class="mx-auto w-full max-w-md"
             class:hidden=move || login.with(|l| l.is_none())
         >
-            <div class="rounded-3xl border border-slate-200 bg-white p-10 sm:p-12">
+            <div class="p-10 sm:p-12">
                 <div class="relative">
                     <h1 class="text-center text-2xl font-semibold leading-tight tracking-tight text-slate-900">
                         Sign in to Lapdev
@@ -181,9 +174,6 @@ pub fn LoginWithView(auth_providers: Vec<AuthProvider>) -> impl IntoView {
                             </span>
                         </button>
                     </div>
-                    <p class="mt-10 text-center text-xs text-slate-500">
-                        Need access? Ask your Lapdev admin for an invitation.
-                    </p>
                 </div>
             </div>
         </div>

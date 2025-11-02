@@ -69,7 +69,7 @@ pub fn KubeEnvironment() -> impl IntoView {
             <div class="flex flex-col gap-2 items-start">
                 <H3>{title}</H3>
                 <P>{description}</P>
-                <a href=docs_url(DOCS_ENVIRONMENT_PATH)>
+                <a href=docs_url(DOCS_ENVIRONMENT_PATH) target="_blank" rel="noopener noreferrer">
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
                 </a>
             </div>

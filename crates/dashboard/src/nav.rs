@@ -93,7 +93,7 @@ pub fn TopNav() -> impl IntoView {
                 <li
                     class:hidden=move || !config.show_lapdev_website.get()
                 >
-                    <a href=DOCS_URL>Docs</a>
+                    <a href=DOCS_URL target="_blank" rel="noopener noreferrer">Docs</a>
                 </li>
                 <li
                     class:hidden=move || !login.with(|l| l.as_ref().and_then(|l| l.as_ref().map(|l| l.cluster_admin))).unwrap_or(false)

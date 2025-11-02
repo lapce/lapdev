@@ -65,7 +65,7 @@ pub fn KubeEnvironmentDetail() -> impl IntoView {
                 <P>
                     View and manage details for this Kubernetes development environment.
                 </P>
-                <a href=docs_url(DOCS_ENVIRONMENT_PATH)>
+                <a href=docs_url(DOCS_ENVIRONMENT_PATH) target="_blank" rel="noopener noreferrer">
                     <Badge variant=BadgeVariant::Secondary>
                         Docs <lucide_leptos::ExternalLink />
                     </Badge>

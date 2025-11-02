@@ -47,7 +47,7 @@ pub fn KubeAppCatalogWorkload() -> impl IntoView {
                 <P>
                     View and manage details for this Kubernetes workload.
                 </P>
-                <a href=docs_url(DOCS_APP_CATALOG_PATH)>
+                <a href=docs_url(DOCS_APP_CATALOG_PATH) target="_blank" rel="noopener noreferrer">
                     <Badge variant=BadgeVariant::Secondary>
                         Docs <lucide_leptos::ExternalLink />
                     </Badge>

@@ -52,7 +52,7 @@ pub fn KubeResource() -> impl IntoView {
                 <P>
                     View and manage workloads, services, and configurations in your Kubernetes clusters.
                 </P>
-                <a href=docs_url(DOCS_CLUSTER_PATH)>
+                <a href=docs_url(DOCS_CLUSTER_PATH) target="_blank" rel="noopener noreferrer">
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
                 </a>
             </div>

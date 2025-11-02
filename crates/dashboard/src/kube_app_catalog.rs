@@ -44,7 +44,7 @@ pub fn KubeAppCatalog() -> impl IntoView {
                 <P>
                     {"View and manage your Kubernetes application catalogs. Create collections of workloads that can be deployed as dev environments."}
                 </P>
-                <a href=docs_url(DOCS_APP_CATALOG_PATH)>
+                <a href=docs_url(DOCS_APP_CATALOG_PATH) target="_blank" rel="noopener noreferrer">
                     <Badge variant=BadgeVariant::Secondary>
                         Docs <lucide_leptos::ExternalLink />
                     </Badge>

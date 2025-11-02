@@ -29,10 +29,10 @@ pub mod usage;
 pub mod workspace;
 
 pub const DOCS_URL: &str = "https://lapdev.gitbook.io/docs/";
-pub const DOCS_ENVIRONMENT_PATH: &str = "core-concepts/environment";
-pub const DOCS_APP_CATALOG_PATH: &str = "core-concepts/app-catalog";
-pub const DOCS_CLUSTER_PATH: &str = "core-concepts/cluster";
-pub const DOCS_DEVBOX_PATH: &str = "core-concepts/devbox";
+pub const DOCS_ENVIRONMENT_PATH: &str = "how-to-guides/create-lapdev-environment";
+pub const DOCS_APP_CATALOG_PATH: &str = "how-to-guides/create-an-app-catalog";
+pub const DOCS_CLUSTER_PATH: &str = "how-to-guides/connect-your-kubernetes-cluster";
+pub const DOCS_DEVBOX_PATH: &str = "how-to-guides/local-development-with-devbox";
 
 #[inline]
 pub fn docs_url(path: &str) -> String {

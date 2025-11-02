@@ -1,21 +1,19 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::kube::{
     KubeEnvironment, KubeEnvironmentDashboardSummary, KubeEnvironmentStatus,
-    KubeEnvironmentStatusCount,
 };
 use leptos::prelude::*;
 
 use crate::{
-    app::AppConfig,
     component::{
         badge::{Badge, BadgeVariant},
         button::{Button, ButtonSize, ButtonVariant},
         card::{Card, CardContent, CardDescription, CardHeader, CardTitle},
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
-        typography::{Lead, H2, P},
+        typography::{Lead, H2, H3, P},
     },
     organization::get_current_org,
 };
@@ -53,12 +51,10 @@ pub fn DashboardHome() -> impl IntoView {
     let is_loading = Signal::derive(move || summary_resource.get().is_none());
 
     view! {
-        <div class="flex flex-col gap-8">
-            <section class="flex flex-col gap-4">
-                <H2 class="text-3xl font-semibold">"Kubernetes Dev Environments"</H2>
-                <Lead class="text-muted-foreground max-w-3xl">
-                    "Track the health of your personal, branch, and shared environments. Branch environments borrow every workload from the shared baseline until you override a service, letting you ship feature slices without paying for full clones."
-                </Lead>
+        <div class="flex flex-col gap-6">
+            <section class="flex flex-col gap-2">
+                <H3>{"Kubernetes Dev Environments"}</H3>
+                <P>{"Keep an eye on personal, shared, and branch environments in one place. Branch environments reuse the shared baseline until you override a service, so you ship feature slices without cloning every workload."}</P>
                 <div class="flex flex-wrap gap-3">
                     <a href="/kubernetes/environments/personal" class="inline-flex">
                         <Button size=ButtonSize::Sm variant=ButtonVariant::Outline>
@@ -95,60 +91,25 @@ pub fn DashboardHome() -> impl IntoView {
                     let summary = summary.get().unwrap_or_default();
                     view! {
                         <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                            <MetricCard title="Total environments" value=summary.total_count description="Across personal, branch, and shared spaces." />
-                            <MetricCard title="Personal" value=summary.personal_count description="Fully isolated namespaces dedicated to you." />
-                            <MetricCard title="Branch" value=summary.branch_count description="Branch copies that inherit shared workloads until you modify them." />
-                            <MetricCard title="Shared" value=summary.shared_count description="Team baselines that power branch environments." />
+                            <MetricCard title="Total environments" value=summary.total_count description="Across personal, shared, and branch spaces." />
+                            <MetricCard title="Personal" value=summary.personal_count description="Fully isolated copies of your app, deployed just for you." />
+                            <MetricCard title="Branch" value=summary.branch_count description="Spin up only the services you change while the rest run on the shared baseline." />
+                            <MetricCard title="Shared" value=summary.shared_count description="Team baselines that branch environments inherit from." />
                         </div>
 
-                        <div class="grid gap-6 lg:grid-cols-3">
-                            <Card class="lg:col-span-2">
-                                <CardHeader>
-                                    <CardTitle>"Status overview"</CardTitle>
-                                    <CardDescription>
-                                        "Live status for every environment you can access."
-                                    </CardDescription>
-                                </CardHeader>
-                                <CardContent class="space-y-3">
-                                    {render_status_breakdown(&summary.status_breakdown)}
-                                </CardContent>
-                            </Card>
-
+                        <div class="grid gap-6">
                             <Card>
                                 <CardHeader>
-                                    <CardTitle>"Resource tips"</CardTitle>
+                                    <CardTitle>"Recent environments"</CardTitle>
                                     <CardDescription>
-                                        "Keep environments lean to reduce cluster load."
+                                        "Latest activity across every environment you can access."
                                     </CardDescription>
                                 </CardHeader>
-                                <CardContent class="space-y-3 text-sm text-muted-foreground">
-                                    <div class="flex items-start gap-2">
-                                        <lucide_leptos::Clock attr:class="h-4 w-4 text-primary mt-0.5" />
-                                        <span>"Pause idle environments when you wrap up for the day to release compute."</span>
-                                    </div>
-                                    <div class="flex items-start gap-2">
-                                        <lucide_leptos::RefreshCw attr:class="h-4 w-4 text-primary mt-0.5" />
-                                        <span>"Sync shared baselines with the latest app catalog to pick up dependency and security fixes."</span>
-                                    </div>
-                                    <div class="flex items-start gap-2">
-                                        <lucide_leptos::LifeBuoy attr:class="h-4 w-4 text-primary mt-0.5" />
-                                        <span>"Need a new template? Coordinate with your platform team to publish catalog updates before cutting new branches."</span>
-                                    </div>
+                                <CardContent>
+                                    {render_recent_environments(summary.recent_environments.clone())}
                                 </CardContent>
                             </Card>
                         </div>
-
-                        <Card>
-                            <CardHeader>
-                                <CardTitle>"Recent environments"</CardTitle>
-                                <CardDescription>
-                                    "Latest activity across personal, branch, and shared namespaces."
-                                </CardDescription>
-                            </CardHeader>
-                            <CardContent>
-                                {render_recent_environments(summary.recent_environments.clone())}
-                            </CardContent>
-                        </Card>
                     }
                 }}
             </Show>
@@ -182,51 +143,13 @@ fn DashboardSkeleton() -> impl IntoView {
     }
 }
 
-fn render_status_breakdown(statuses: &[KubeEnvironmentStatusCount]) -> AnyView {
-    let mut counts_by_label: BTreeMap<&'static str, usize> = BTreeMap::new();
-    for status in statuses {
-        let label = status_label(&status.status);
-        *counts_by_label.entry(label).or_default() += status.count;
-    }
-
-    if counts_by_label.is_empty() {
-        return view! {
-            <P class="text-sm text-muted-foreground">
-                "No environments yet. Launch one from the app catalog to get started."
-            </P>
-        }
-        .into_any();
-    }
-
-    let mut totals: Vec<(String, usize)> = counts_by_label
-        .into_iter()
-        .map(|(label, count)| (label.to_string(), count))
-        .collect();
-    totals.sort_by(|a, b| b.1.cmp(&a.1));
-
-    view! {
-        {totals
-            .into_iter()
-            .map(|(label, count)| {
-                view! {
-                    <div class="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-                        <span class="text-sm font-medium">{label}</span>
-                        <span class="text-base font-semibold text-foreground">{count}</span>
-                    </div>
-                }.into_any()
-            })
-            .collect::<Vec<_>>()}
-    }
-    .into_any()
-}
-
 fn render_recent_environments(environments: Vec<KubeEnvironment>) -> AnyView {
     if environments.is_empty() {
         return view! {
             <div class="flex flex-col items-start gap-3 rounded-lg border border-dashed border-border/70 px-6 py-8">
                 <P class="font-medium text-foreground">"No recent activity yet"</P>
                 <P class="text-sm text-muted-foreground">
-                    "Start by deploying a personal environment from an app catalog or invite your team to collaborate on a shared one."
+                    "Create an environment from an App Catalog to get started, then invite your team when you're ready to share."
                 </P>
                 <a href="/kubernetes/catalogs">
                     <Button size=ButtonSize::Sm>
@@ -342,21 +265,6 @@ fn status_badge_variant(status: &KubeEnvironmentStatus) -> BadgeVariant {
         | KubeEnvironmentStatus::Error
         | KubeEnvironmentStatus::PauseFailed
         | KubeEnvironmentStatus::ResumeFailed => BadgeVariant::Destructive,
-    }
-}
-
-fn status_label(status: &KubeEnvironmentStatus) -> &'static str {
-    match status {
-        KubeEnvironmentStatus::Running => "Running",
-        KubeEnvironmentStatus::Creating => "Provisioning",
-        KubeEnvironmentStatus::Resuming => "Resuming",
-        KubeEnvironmentStatus::Pausing => "Pausing",
-        KubeEnvironmentStatus::Paused => "Paused",
-        KubeEnvironmentStatus::Deleting | KubeEnvironmentStatus::Deleted => "Tearing down",
-        KubeEnvironmentStatus::Failed
-        | KubeEnvironmentStatus::Error
-        | KubeEnvironmentStatus::PauseFailed
-        | KubeEnvironmentStatus::ResumeFailed => "Needs attention",
     }
 }
 

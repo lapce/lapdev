@@ -217,12 +217,15 @@ fn render_environment_row(environment: KubeEnvironment) -> AnyView {
     };
     let detail_href = format!("/kubernetes/environments/{}", environment.id);
     let catalog_href = format!("/kubernetes/catalogs/{}", environment.app_catalog_id);
+    let detail_href_for_name = detail_href.clone();
 
     view! {
         <TableRow>
             <TableCell>
                 <div class="flex flex-col gap-1">
-                    <span class="font-medium text-foreground">{environment.name.clone()}</span>
+                    <a href=detail_href_for_name class="font-medium text-foreground hover:underline">
+                        {environment.name.clone()}
+                    </a>
                     <a href=catalog_href class="text-xs text-primary hover:underline">
                         {environment.app_catalog_name.clone()}
                     </a>

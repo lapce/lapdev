@@ -98,14 +98,14 @@ pub fn DashboardHome() -> impl IntoView {
                         </div>
 
                         <div class="grid gap-6">
-                            <Card class="min-h-[22rem]">
+                            <Card class="min-h-[22rem] w-full min-w-0">
                                 <CardHeader>
                                     <CardTitle>"Recent environments"</CardTitle>
                                     <CardDescription>
                                         "Latest activity across every environment you can access."
                                     </CardDescription>
                                 </CardHeader>
-                                <CardContent>
+                                <CardContent class="overflow-x-auto">
                                     {render_recent_environments(summary.recent_environments.clone())}
                                 </CardContent>
                             </Card>
@@ -168,21 +168,23 @@ fn render_recent_environments(environments: Vec<KubeEnvironment>) -> AnyView {
         .collect::<Vec<_>>();
 
     view! {
-        <Table>
-            <TableHeader>
-                <TableRow>
-                    <TableHead>"Name"</TableHead>
-                    <TableHead>"Type"</TableHead>
-                    <TableHead>"Cluster"</TableHead>
-                    <TableHead>"Status"</TableHead>
-                    <TableHead>"Activity"</TableHead>
-                    <TableHead class="text-right">"Actions"</TableHead>
-                </TableRow>
-            </TableHeader>
-            <TableBody>
-                {rows}
-            </TableBody>
-        </Table>
+        <div class="min-w-[48rem] lg:min-w-0">
+            <Table class="w-full">
+                <TableHeader>
+                    <TableRow>
+                        <TableHead>"Name"</TableHead>
+                        <TableHead>"Type"</TableHead>
+                        <TableHead>"Cluster"</TableHead>
+                        <TableHead>"Status"</TableHead>
+                        <TableHead>"Activity"</TableHead>
+                        <TableHead class="text-right">"Actions"</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {rows}
+                </TableBody>
+            </Table>
+        </div>
     }
     .into_any()
 }

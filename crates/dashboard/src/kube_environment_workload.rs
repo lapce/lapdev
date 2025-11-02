@@ -17,10 +17,10 @@ use crate::{
         card::Card,
         typography::{H3, P},
     },
+    docs_url,
     kube_container::{ContainerEditorConfig, ContainersCard},
     modal::{DatetimeModal, ErrorResponse},
     organization::get_current_org,
-    docs_url,
     DOCS_ENVIRONMENT_PATH,
 };
 

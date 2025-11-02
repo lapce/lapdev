@@ -26,10 +26,10 @@ use crate::{
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         typography::{H3, H4, P},
     },
+    docs_url,
     kube_app_catalog::CreateEnvironmentModal,
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
-    docs_url,
     DOCS_APP_CATALOG_PATH,
 };
 

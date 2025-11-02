@@ -24,9 +24,9 @@ use crate::{
         textarea::Textarea,
         typography::{H3, H4, P},
     },
+    docs_url,
     modal::{DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
-    docs_url,
     DOCS_CLUSTER_PATH,
 };
 

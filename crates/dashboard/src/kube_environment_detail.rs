@@ -34,11 +34,10 @@ use crate::{
         tabs::{Tabs, TabsContent, TabsList, TabsTrigger},
         typography::{H3, H4, P},
     },
+    docs_url,
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
-    docs_url,
-    DOCS_DEVBOX_PATH,
-    DOCS_ENVIRONMENT_PATH,
+    DOCS_DEVBOX_PATH, DOCS_ENVIRONMENT_PATH,
 };
 
 #[derive(Clone, Debug, Deserialize)]

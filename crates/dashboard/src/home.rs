@@ -15,6 +15,7 @@ use crate::{
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         typography::{Lead, H2, H3, P},
     },
+    modal::DatetimeModal,
     organization::get_current_org,
 };
 
@@ -76,7 +77,7 @@ pub fn DashboardHome() -> impl IntoView {
                     </a>
                     <a href="/kubernetes/catalogs" class="inline-flex">
                         <Button size=ButtonSize::Sm variant=ButtonVariant::Outline>
-                            <lucide_leptos::BookOpen attr:class="h-4 w-4" />
+                            <lucide_leptos::Shapes attr:class="h-4 w-4" />
                             "Browse app catalogs"
                         </Button>
                     </a>
@@ -194,10 +195,26 @@ fn render_environment_row(environment: KubeEnvironment) -> AnyView {
     let status_variant = status_badge_variant(&environment.status);
     let status_label = environment.status.to_string();
     let (activity_label, activity_time) = last_activity(&environment);
-    let activity_display = activity_time
-        .as_ref()
-        .map(|ts| format!("{} • {}", activity_label, format_timestamp(ts)))
-        .unwrap_or_else(|| activity_label);
+    let activity_view = match activity_time {
+        Some(ts) => {
+            let label = activity_label.clone();
+            view! {
+                <span class="flex items-center gap-1 text-sm text-muted-foreground">
+                    <span>{label}</span>
+                    <span aria-hidden="true">"•"</span>
+                    <DatetimeModal time=ts />
+                </span>
+            }
+            .into_any()
+        }
+        None => {
+            let label = activity_label;
+            view! {
+                <span class="text-sm text-muted-foreground">{label}</span>
+            }
+            .into_any()
+        }
+    };
     let detail_href = format!("/kubernetes/environments/{}", environment.id);
     let catalog_href = format!("/kubernetes/catalogs/{}", environment.app_catalog_id);
 
@@ -230,7 +247,7 @@ fn render_environment_row(environment: KubeEnvironment) -> AnyView {
                 </div>
             </TableCell>
             <TableCell>
-                <span class="text-sm text-muted-foreground">{activity_display}</span>
+                {activity_view}
             </TableCell>
             <TableCell class="text-right">
                 <a href=detail_href class="inline-flex">

@@ -18,10 +18,10 @@ use crate::{
         card::Card,
         typography::{H3, P},
     },
+    docs_url,
     kube_container::{ContainerEditorConfig, ContainersCard},
     modal::{DeleteModal, ErrorResponse},
     organization::get_current_org,
-    docs_url,
     DOCS_APP_CATALOG_PATH,
 };
 

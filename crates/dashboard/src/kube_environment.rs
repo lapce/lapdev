@@ -22,9 +22,9 @@ use crate::{
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         typography::{H3, H4, P},
     },
+    docs_url,
     modal::DatetimeModal,
     organization::get_current_org,
-    docs_url,
     DOCS_ENVIRONMENT_PATH,
 };
 

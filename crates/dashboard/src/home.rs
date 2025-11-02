@@ -98,7 +98,7 @@ pub fn DashboardHome() -> impl IntoView {
                         </div>
 
                         <div class="grid gap-6">
-                            <Card>
+                            <Card class="min-h-[22rem]">
                                 <CardHeader>
                                     <CardTitle>"Recent environments"</CardTitle>
                                     <CardDescription>

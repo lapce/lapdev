@@ -34,6 +34,8 @@ use crate::{
     kube_app_catalog_detail::get_app_catalog,
     modal::{ErrorResponse, Modal},
     organization::get_current_org,
+    docs_url,
+    DOCS_CLUSTER_PATH,
 };
 
 #[component]
@@ -50,7 +52,7 @@ pub fn KubeResource() -> impl IntoView {
                 <P>
                     View and manage workloads, services, and configurations in your Kubernetes clusters.
                 </P>
-                <a href="https://docs.lap.dev/">
+                <a href=docs_url(DOCS_CLUSTER_PATH)>
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
                 </a>
             </div>

@@ -21,6 +21,8 @@ use crate::{
     kube_container::{ContainerEditorConfig, ContainersCard},
     modal::{DeleteModal, ErrorResponse},
     organization::get_current_org,
+    docs_url,
+    DOCS_APP_CATALOG_PATH,
 };
 
 #[component]
@@ -45,7 +47,7 @@ pub fn KubeAppCatalogWorkload() -> impl IntoView {
                 <P>
                     View and manage details for this Kubernetes workload.
                 </P>
-                <a href="https://docs.lap.dev/">
+                <a href=docs_url(DOCS_APP_CATALOG_PATH)>
                     <Badge variant=BadgeVariant::Secondary>
                         Docs <lucide_leptos::ExternalLink />
                     </Badge>

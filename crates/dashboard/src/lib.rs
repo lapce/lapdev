@@ -27,3 +27,14 @@ pub mod quota;
 pub mod ssh_key;
 pub mod usage;
 pub mod workspace;
+
+pub const DOCS_URL: &str = "https://lapdev.gitbook.io/docs/";
+pub const DOCS_ENVIRONMENT_PATH: &str = "core-concepts/environment";
+pub const DOCS_APP_CATALOG_PATH: &str = "core-concepts/app-catalog";
+pub const DOCS_CLUSTER_PATH: &str = "core-concepts/cluster";
+pub const DOCS_DEVBOX_PATH: &str = "core-concepts/devbox";
+
+#[inline]
+pub fn docs_url(path: &str) -> String {
+    format!("{DOCS_URL}{path}")
+}

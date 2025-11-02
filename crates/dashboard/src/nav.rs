@@ -12,6 +12,7 @@ use crate::{
     cluster::get_cluster_info,
     component::badge::{Badge, BadgeVariant},
     organization::OrgSelector,
+    DOCS_URL,
 };
 
 #[derive(Clone, Copy)]
@@ -92,7 +93,7 @@ pub fn TopNav() -> impl IntoView {
                 <li
                     class:hidden=move || !config.show_lapdev_website.get()
                 >
-                    <a href="https://docs.lap.dev/">Docs</a>
+                    <a href=DOCS_URL>Docs</a>
                 </li>
                 <li
                     class:hidden=move || !login.with(|l| l.as_ref().and_then(|l| l.as_ref().map(|l| l.cluster_admin))).unwrap_or(false)

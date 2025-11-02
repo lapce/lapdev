@@ -29,6 +29,8 @@ use crate::{
     kube_app_catalog::CreateEnvironmentModal,
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
+    docs_url,
+    DOCS_APP_CATALOG_PATH,
 };
 
 #[component]
@@ -48,7 +50,7 @@ pub fn KubeAppCatalogDetail() -> impl IntoView {
                 <P>
                     View workloads included in this Kubernetes application catalog.
                 </P>
-                <a href="https://docs.lap.dev/">
+                <a href=docs_url(DOCS_APP_CATALOG_PATH)>
                     <Badge variant=BadgeVariant::Secondary>
                         Docs <lucide_leptos::ExternalLink />
                     </Badge>

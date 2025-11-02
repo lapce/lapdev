@@ -36,6 +36,9 @@ use crate::{
     },
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
+    docs_url,
+    DOCS_DEVBOX_PATH,
+    DOCS_ENVIRONMENT_PATH,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -62,7 +65,7 @@ pub fn KubeEnvironmentDetail() -> impl IntoView {
                 <P>
                     View and manage details for this Kubernetes development environment.
                 </P>
-                <a href="https://docs.lap.dev/">
+                <a href=docs_url(DOCS_ENVIRONMENT_PATH)>
                     <Badge variant=BadgeVariant::Secondary>
                         Docs <lucide_leptos::ExternalLink />
                     </Badge>
@@ -2420,7 +2423,7 @@ pub fn DevboxSessionBanner(
                                                     </div>
                                                 </div>
                                                 <div class="flex gap-2">
-                                                    <a href="https://docs.lap.dev/devbox/getting-started" target="_blank" rel="noopener noreferrer">
+                                                    <a href=docs_url(DOCS_DEVBOX_PATH) target="_blank" rel="noopener noreferrer">
                                                         <Button variant=ButtonVariant::Outline size=ButtonSize::Sm class="text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30">
                                                             <lucide_leptos::BookOpen attr:class="h-4 w-4" />
                                                             "View Documentation"

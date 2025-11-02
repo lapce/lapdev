@@ -20,6 +20,8 @@ use crate::{
     kube_container::{ContainerEditorConfig, ContainersCard},
     modal::{DatetimeModal, ErrorResponse},
     organization::get_current_org,
+    docs_url,
+    DOCS_ENVIRONMENT_PATH,
 };
 
 #[component]
@@ -44,7 +46,7 @@ pub fn KubeEnvironmentWorkload() -> impl IntoView {
                 <P>
                     View and manage details for this environment workload.
                 </P>
-                <a href="https://docs.lap.dev/">
+                <a href=docs_url(DOCS_ENVIRONMENT_PATH)>
                     <Badge variant=BadgeVariant::Secondary>
                         Docs <lucide_leptos::ExternalLink />
                     </Badge>

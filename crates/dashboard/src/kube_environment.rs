@@ -24,6 +24,8 @@ use crate::{
     },
     modal::DatetimeModal,
     organization::get_current_org,
+    docs_url,
+    DOCS_ENVIRONMENT_PATH,
 };
 
 #[component]
@@ -67,7 +69,7 @@ pub fn KubeEnvironment() -> impl IntoView {
             <div class="flex flex-col gap-2 items-start">
                 <H3>{title}</H3>
                 <P>{description}</P>
-                <a href="https://docs.lap.dev/">
+                <a href=docs_url(DOCS_ENVIRONMENT_PATH)>
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
                 </a>
             </div>

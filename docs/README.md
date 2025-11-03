@@ -1,6 +1,6 @@
 # Introduction
 
-Kubernetes makes deploying apps easy, well, sort of. But that 100 microservices app makes the development flow hard. You can't fit the whole app on your workstation, without pain. The most sensible way is probably running the development flow in Kubernetes itself. Have a pipeline to build and deploy your code changes. Ouch, the feedback is slow.&#x20;
+Kubernetes makes deploying apps easy, well, sort of. But that 100 microservices app makes the development flow hard. You can't fit the whole app on your workstation, without pain. The most sensible way is probably running the development flow in Kubernetes itself. Have a pipeline to build and deploy your code changes. Ouch, the feedback is slow.
 
 Tools like Skaffold can sync your code changes to pods directly, and tools like Telepresence can intercept traffic to your local machine which enables you to do local debugging. That makes things feel like good old local development again. But.
 

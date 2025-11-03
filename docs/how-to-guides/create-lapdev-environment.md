@@ -4,7 +4,7 @@ A **Lapdev Environment** is a running instance of your app inside a Kubernetes c
 
 It's created from an existing **App Catalog**, which defines which workloads make up your application.
 
-This guide walks you through how to create personal, shared, and branch environments from an App Catalog.
+This guide shows how to create **personal** and **shared** environments from an App Catalog, and how to create **branch** environments from a shared environment.
 
 > **New to Environments?** Read [**Environment**](../core-concepts/environment.md) to understand environment types and how they work.
 
@@ -17,7 +17,7 @@ Before creating an environment:
 
     > If you haven't created one yet, see [**Create an App Catalog**](create-an-app-catalog.md).
 
-### Start from an App Catalog
+### Start from an App Catalog (Personal or Shared)
 
 1. Go to the **App Catalogs** tab in the Lapdev dashboard.
 2. Select the catalog you want to use as the base for your environment.
@@ -25,9 +25,9 @@ Before creating an environment:
 
 _Example screenshot:_
 
-### Select Environment Type
+### Select Environment Type (Personal or Shared)
 
-Lapdev supports three environment types depending on your workflow and cost needs.
+Lapdev supports three environment types depending on your workflow and cost needs. When you create an environment from an App Catalog you can choose between:
 
 #### **Personal Environment**
 
@@ -39,13 +39,19 @@ Lapdev supports three environment types depending on your workflow and cost need
 * A single shared version of your app that multiple developers can access.
 * Useful for integration testing or a team staging setup.
 
-#### **Branch Environment**
+Branch environments are created from an existing shared environment. See the next section for that workflow.
 
-* Built from an existing **Shared Environment**.
-* Includes only workloads you've changed; unmodified services reuse the shared environment.
-* Created directly from the **Shared Environment details page** — click **Create Branch Environment**.
+### Create a Branch Environment
 
-> **Note:** You must first create a Shared Environment before you can create Branch Environments from it.
+Branch environments reuse an existing shared environment as their baseline.
+
+1. Go to the **Environments** tab in the Lapdev dashboard.
+2. Open the shared environment you want to branch from.
+3. Click **Create Branch Environment**.
+4. Select the services you plan to modify and provide a name/description for the branch.
+5. Click **Create**.
+
+Only the services you modify are duplicated into your branch namespace; everything else continues to run in the shared environment.
 
 > 🧠 Use **branch environments** for feature work — they're lightweight, fast to spin up, and cost-efficient.
 

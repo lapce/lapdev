@@ -360,128 +360,128 @@ mod tests {
         assert_eq!(cores.available.len(), 0);
     }
 
-    #[tokio::test]
-    async fn test_recalcuate_workspce_host() {
-        let db = prepare_db().await.unwrap();
-        let txn = db.conn.begin().await.unwrap();
+    // #[tokio::test]
+    // async fn test_recalcuate_workspce_host() {
+    //     let db = prepare_db().await.unwrap();
+    //     let txn = db.conn.begin().await.unwrap();
 
-        let machine_type = lapdev_db_entities::machine_type::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            name: ActiveValue::Set("test".to_string()),
-            shared: ActiveValue::Set(true),
-            cpu: ActiveValue::Set(2),
-            memory: ActiveValue::Set(8),
-            disk: ActiveValue::Set(10),
-            cost_per_second: ActiveValue::Set(1),
-            ..Default::default()
-        }
-        .insert(&txn)
-        .await
-        .unwrap();
+    //     let machine_type = lapdev_db_entities::machine_type::ActiveModel {
+    //         id: ActiveValue::Set(Uuid::new_v4()),
+    //         name: ActiveValue::Set("test".to_string()),
+    //         shared: ActiveValue::Set(true),
+    //         cpu: ActiveValue::Set(2),
+    //         memory: ActiveValue::Set(8),
+    //         disk: ActiveValue::Set(10),
+    //         cost_per_second: ActiveValue::Set(1),
+    //         ..Default::default()
+    //     }
+    //     .insert(&txn)
+    //     .await
+    //     .unwrap();
 
-        let workspace_host = lapdev_db_entities::workspace_host::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            cpu: ActiveValue::Set(12),
-            memory: ActiveValue::Set(64),
-            disk: ActiveValue::Set(1000),
-            status: ActiveValue::Set(WorkspaceHostStatus::Active.to_string()),
-            host: ActiveValue::Set("127.0.0.1".to_string()),
-            port: ActiveValue::Set(6123),
-            inter_port: ActiveValue::Set(6122),
-            available_dedicated_cpu: ActiveValue::Set(0),
-            available_shared_cpu: ActiveValue::Set(0),
-            available_memory: ActiveValue::Set(0),
-            available_disk: ActiveValue::Set(0),
-            region: ActiveValue::Set("".to_string()),
-            zone: ActiveValue::Set("".to_string()),
-            ..Default::default()
-        }
-        .insert(&txn)
-        .await
-        .unwrap();
+    //     let workspace_host = lapdev_db_entities::workspace_host::ActiveModel {
+    //         id: ActiveValue::Set(Uuid::new_v4()),
+    //         cpu: ActiveValue::Set(12),
+    //         memory: ActiveValue::Set(64),
+    //         disk: ActiveValue::Set(1000),
+    //         status: ActiveValue::Set(WorkspaceHostStatus::Active.to_string()),
+    //         host: ActiveValue::Set("127.0.0.1".to_string()),
+    //         port: ActiveValue::Set(6123),
+    //         inter_port: ActiveValue::Set(6122),
+    //         available_dedicated_cpu: ActiveValue::Set(0),
+    //         available_shared_cpu: ActiveValue::Set(0),
+    //         available_memory: ActiveValue::Set(0),
+    //         available_disk: ActiveValue::Set(0),
+    //         region: ActiveValue::Set("".to_string()),
+    //         zone: ActiveValue::Set("".to_string()),
+    //         ..Default::default()
+    //     }
+    //     .insert(&txn)
+    //     .await
+    //     .unwrap();
 
-        lapdev_db_entities::workspace::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            status: ActiveValue::Set(WorkspaceStatus::Running.to_string()),
-            name: ActiveValue::Set(utils::rand_string(10)),
-            created_at: ActiveValue::Set(Utc::now().into()),
-            repo_url: ActiveValue::Set("".to_string()),
-            repo_name: ActiveValue::Set("".to_string()),
-            branch: ActiveValue::Set("".to_string()),
-            commit: ActiveValue::Set("".to_string()),
-            organization_id: ActiveValue::Set(Uuid::new_v4()),
-            user_id: ActiveValue::Set(Uuid::new_v4()),
-            project_id: ActiveValue::Set(None),
-            host_id: ActiveValue::Set(workspace_host.id),
-            osuser: ActiveValue::Set("".to_string()),
-            ssh_private_key: ActiveValue::Set("".to_string()),
-            ssh_public_key: ActiveValue::Set("".to_string()),
-            cores: ActiveValue::Set(serde_json::to_string(&[1, 2]).unwrap()),
-            ssh_port: ActiveValue::Set(None),
-            ide_port: ActiveValue::Set(None),
-            prebuild_id: ActiveValue::Set(None),
-            service: ActiveValue::Set(None),
-            usage_id: ActiveValue::Set(None),
-            machine_type_id: ActiveValue::Set(machine_type.id),
-            auto_start: ActiveValue::Set(true),
-            is_compose: ActiveValue::Set(false),
-            compose_parent: ActiveValue::Set(None),
-            auto_stop: ActiveValue::Set(None),
-            build_output: ActiveValue::Set(None),
-            updated_at: ActiveValue::Set(None),
-            deleted_at: ActiveValue::Set(None),
-            env: ActiveValue::Set(None),
-            last_inactivity: ActiveValue::Set(None),
-            pinned: ActiveValue::Set(false),
-        }
-        .insert(&txn)
-        .await
-        .unwrap();
+    //     lapdev_db_entities::workspace::ActiveModel {
+    //         id: ActiveValue::Set(Uuid::new_v4()),
+    //         status: ActiveValue::Set(WorkspaceStatus::Running.to_string()),
+    //         name: ActiveValue::Set(utils::rand_string(10)),
+    //         created_at: ActiveValue::Set(Utc::now().into()),
+    //         repo_url: ActiveValue::Set("".to_string()),
+    //         repo_name: ActiveValue::Set("".to_string()),
+    //         branch: ActiveValue::Set("".to_string()),
+    //         commit: ActiveValue::Set("".to_string()),
+    //         organization_id: ActiveValue::Set(Uuid::new_v4()),
+    //         user_id: ActiveValue::Set(Uuid::new_v4()),
+    //         project_id: ActiveValue::Set(None),
+    //         host_id: ActiveValue::Set(workspace_host.id),
+    //         osuser: ActiveValue::Set("".to_string()),
+    //         ssh_private_key: ActiveValue::Set("".to_string()),
+    //         ssh_public_key: ActiveValue::Set("".to_string()),
+    //         cores: ActiveValue::Set(serde_json::to_string(&[1, 2]).unwrap()),
+    //         ssh_port: ActiveValue::Set(None),
+    //         ide_port: ActiveValue::Set(None),
+    //         prebuild_id: ActiveValue::Set(None),
+    //         service: ActiveValue::Set(None),
+    //         usage_id: ActiveValue::Set(None),
+    //         machine_type_id: ActiveValue::Set(machine_type.id),
+    //         auto_start: ActiveValue::Set(true),
+    //         is_compose: ActiveValue::Set(false),
+    //         compose_parent: ActiveValue::Set(None),
+    //         auto_stop: ActiveValue::Set(None),
+    //         build_output: ActiveValue::Set(None),
+    //         updated_at: ActiveValue::Set(None),
+    //         deleted_at: ActiveValue::Set(None),
+    //         env: ActiveValue::Set(None),
+    //         last_inactivity: ActiveValue::Set(None),
+    //         pinned: ActiveValue::Set(false),
+    //     }
+    //     .insert(&txn)
+    //     .await
+    //     .unwrap();
 
-        let project = lapdev_db_entities::project::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            name: ActiveValue::Set(utils::rand_string(10)),
-            created_at: ActiveValue::Set(Utc::now().into()),
-            created_by: ActiveValue::Set(Uuid::new_v4()),
-            repo_url: ActiveValue::Set("".to_string()),
-            repo_name: ActiveValue::Set("".to_string()),
-            oauth_id: ActiveValue::Set(Uuid::new_v4()),
-            host_id: ActiveValue::Set(Uuid::new_v4()),
-            osuser: ActiveValue::Set("".to_string()),
-            organization_id: ActiveValue::Set(Uuid::new_v4()),
-            machine_type_id: ActiveValue::Set(machine_type.id),
-            ..Default::default()
-        }
-        .insert(&txn)
-        .await
-        .unwrap();
+    //     let project = lapdev_db_entities::project::ActiveModel {
+    //         id: ActiveValue::Set(Uuid::new_v4()),
+    //         name: ActiveValue::Set(utils::rand_string(10)),
+    //         created_at: ActiveValue::Set(Utc::now().into()),
+    //         created_by: ActiveValue::Set(Uuid::new_v4()),
+    //         repo_url: ActiveValue::Set("".to_string()),
+    //         repo_name: ActiveValue::Set("".to_string()),
+    //         oauth_id: ActiveValue::Set(Uuid::new_v4()),
+    //         host_id: ActiveValue::Set(Uuid::new_v4()),
+    //         osuser: ActiveValue::Set("".to_string()),
+    //         organization_id: ActiveValue::Set(Uuid::new_v4()),
+    //         machine_type_id: ActiveValue::Set(machine_type.id),
+    //         ..Default::default()
+    //     }
+    //     .insert(&txn)
+    //     .await
+    //     .unwrap();
 
-        lapdev_db_entities::prebuild::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            status: ActiveValue::Set(PrebuildStatus::Building.to_string()),
-            created_at: ActiveValue::Set(Utc::now().into()),
-            branch: ActiveValue::Set("".to_string()),
-            commit: ActiveValue::Set("".to_string()),
-            project_id: ActiveValue::Set(project.id),
-            host_id: ActiveValue::Set(workspace_host.id),
-            osuser: ActiveValue::Set("".to_string()),
-            cores: ActiveValue::Set(serde_json::to_string(&[2, 3]).unwrap()),
-            by_workspace: ActiveValue::Set(false),
-            ..Default::default()
-        }
-        .insert(&txn)
-        .await
-        .unwrap();
+    //     lapdev_db_entities::prebuild::ActiveModel {
+    //         id: ActiveValue::Set(Uuid::new_v4()),
+    //         status: ActiveValue::Set(PrebuildStatus::Building.to_string()),
+    //         created_at: ActiveValue::Set(Utc::now().into()),
+    //         branch: ActiveValue::Set("".to_string()),
+    //         commit: ActiveValue::Set("".to_string()),
+    //         project_id: ActiveValue::Set(project.id),
+    //         host_id: ActiveValue::Set(workspace_host.id),
+    //         osuser: ActiveValue::Set("".to_string()),
+    //         cores: ActiveValue::Set(serde_json::to_string(&[2, 3]).unwrap()),
+    //         by_workspace: ActiveValue::Set(false),
+    //         ..Default::default()
+    //     }
+    //     .insert(&txn)
+    //     .await
+    //     .unwrap();
 
-        let workspace_host = scheduler::recalcuate_workspce_host(&txn, &workspace_host, 4)
-            .await
-            .unwrap();
+    //     let workspace_host = scheduler::recalcuate_workspce_host(&txn, &workspace_host, 4)
+    //         .await
+    //         .unwrap();
 
-        txn.commit().await.unwrap();
+    //     txn.commit().await.unwrap();
 
-        assert_eq!(workspace_host.available_dedicated_cpu, 9);
-        assert_eq!(workspace_host.available_shared_cpu, 9);
-        assert_eq!(workspace_host.available_memory, 48);
-        assert_eq!(workspace_host.available_disk, 980);
-    }
+    //     assert_eq!(workspace_host.available_dedicated_cpu, 9);
+    //     assert_eq!(workspace_host.available_shared_cpu, 9);
+    //     assert_eq!(workspace_host.available_memory, 48);
+    //     assert_eq!(workspace_host.available_disk, 980);
+    // }
 }

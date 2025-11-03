@@ -28,7 +28,7 @@ Before you begin:
 6. In the **Create Preview URL** dialog:
    * Choose the **Service** you want this URL to point to (for example, `frontend`, `api-gateway`, or `admin`).
    * Optionally, enter a **Description** (e.g., “Frontend QA demo”).
-   * Select the **Access Level** (private or public).
+   * Select the **Access Level** (`Organization` by default, or `Public`).
 7. Click **Create**.
 
 Lapdev will:
@@ -45,7 +45,7 @@ Once created:
 * Each entry lists:
   * The **Service name** it targets
   * The **URL** itself
-  * The **Access level** (private or public)
+  * The **Access level** (`Organization` or `Public`)
 
 Click the URL to open it in your browser.
 
@@ -71,12 +71,12 @@ To update it:
 
 1. In the **Preview URLs** section, click the settings icon next to a URL.
 2. Choose who can access it:
-   * **Private (recommended):** Only authenticated Lapdev users can view.
+   * **Organization (recommended, default):** Only authenticated Lapdev users can view.
    * **Public:** Anyone with the link can view.
    * _(Coming soon)_ **Custom rules** for organization-level access.
 3. Click **Save**.
 
-> 🔒 Use private mode for internal branches or unreleased features.
+> 🔒 Use organization access for internal branches or unreleased features.
 
 ### Delete a Preview URL
 

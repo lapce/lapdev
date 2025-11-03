@@ -55,7 +55,7 @@ pub fn DashboardHome() -> impl IntoView {
         <div class="flex flex-col gap-6">
             <section class="flex flex-col gap-2">
                 <H3>{"Kubernetes Dev Environments"}</H3>
-                <P>{"Keep an eye on personal, shared, and branch environments in one place. Branch environments reuse the shared baseline until you override a service, so you ship feature slices without cloning every workload."}</P>
+                <P>{"Keep an eye on personal, shared, and branch environments in one place. Branch environments reuse the shared baseline until you override a service, so you work on your feature without cloning every workload."}</P>
                 <div class="flex flex-wrap gap-3">
                     <a href="/kubernetes/environments/personal" class="inline-flex">
                         <Button size=ButtonSize::Sm variant=ButtonVariant::Outline>

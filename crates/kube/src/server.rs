@@ -12,7 +12,8 @@ use lapdev_common::kube::{
 use lapdev_db::api::{CachedClusterService, DbApi};
 use lapdev_db_entities::{
     kube_app_catalog_workload::{self, Entity as CatalogWorkloadEntity},
-    kube_app_catalog_workload_label, kube_environment, kube_environment_workload,
+    kube_app_catalog_workload_dependency, kube_app_catalog_workload_label, kube_environment,
+    kube_environment_workload,
 };
 use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpc, KubeManagerRpcClient, ProxyBranchRouteConfig,
@@ -522,45 +523,7 @@ impl KubeClusterServer {
         };
 
         if matches!(event.change_type, ResourceChangeType::Deleted) {
-            let metadata_labels = if let Some(yaml) = event.resource_yaml.as_ref() {
-                match extract_workload_from_yaml(event.resource_type, yaml)
-                    .map(|extracted| extracted.metadata_labels)
-                {
-                    Ok(labels) => labels,
-                    Err(err) => {
-                        tracing::debug!(
-                            namespace = %event.namespace,
-                            resource_name = %event.resource_name,
-                            error = ?err,
-                            "Failed to parse workload YAML for delete event; will clear ready replicas using namespace lookup"
-                        );
-                        BTreeMap::new()
-                    }
-                }
-            } else {
-                BTreeMap::new()
-            };
-
-            self.update_environment_workload_ready_replicas(
-                &event.namespace,
-                &event.resource_name,
-                &metadata_labels,
-                None,
-                event.timestamp,
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to clear environment ready replicas for deleted workload {}/{}",
-                    event.namespace, event.resource_name
-                )
-            })?;
-
-            tracing::debug!(
-                namespace = %event.namespace,
-                resource_name = %event.resource_name,
-                "Cleared environment workload ready replicas after workload deletion"
-            );
+            self.handle_workload_deleted(event).await?;
             return Ok(());
         }
 
@@ -576,6 +539,7 @@ impl KubeClusterServer {
             configmap_refs,
             secret_refs,
             ready_replicas,
+            spec_snapshot,
         } = extract_workload_from_yaml(event.resource_type, yaml).with_context(|| {
             format!(
                 "failed to parse workload YAML for {}/{} ({:?})",
@@ -592,6 +556,91 @@ impl KubeClusterServer {
             return Ok(());
         }
 
+        self.sync_catalog_from_workload_event(
+            event,
+            workload_kind,
+            yaml,
+            spec_snapshot.as_ref(),
+            &workload_labels,
+            &new_containers,
+            &configmap_refs,
+            &secret_refs,
+        )
+        .await?;
+
+        self.update_environment_workload_ready_replicas(
+            &event.namespace,
+            &event.resource_name,
+            &metadata_labels,
+            ready_replicas,
+            event.timestamp,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to update environment ready replicas for {}/{}",
+                event.namespace, event.resource_name
+            )
+        })?;
+
+        Ok(())
+    }
+
+    async fn handle_workload_deleted(&self, event: &ResourceChangeEvent) -> AnyResult<()> {
+        let metadata_labels = if let Some(yaml) = event.resource_yaml.as_ref() {
+            match extract_workload_from_yaml(event.resource_type, yaml)
+                .map(|extracted| extracted.metadata_labels)
+            {
+                Ok(labels) => labels,
+                Err(err) => {
+                    tracing::debug!(
+                        namespace = %event.namespace,
+                        resource_name = %event.resource_name,
+                        error = ?err,
+                        "Failed to parse workload YAML for delete event; will clear ready replicas using namespace lookup"
+                    );
+                    BTreeMap::new()
+                }
+            }
+        } else {
+            BTreeMap::new()
+        };
+
+        self.update_environment_workload_ready_replicas(
+            &event.namespace,
+            &event.resource_name,
+            &metadata_labels,
+            None,
+            event.timestamp,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to clear environment ready replicas for deleted workload {}/{}",
+                event.namespace, event.resource_name
+            )
+        })?;
+
+        tracing::debug!(
+            namespace = %event.namespace,
+            resource_name = %event.resource_name,
+            "Cleared environment workload ready replicas after workload deletion"
+        );
+
+        Ok(())
+    }
+
+    async fn sync_catalog_from_workload_event(
+        &self,
+        event: &ResourceChangeEvent,
+        workload_kind: KubeWorkloadKind,
+        yaml: &str,
+        new_spec_snapshot: Option<&serde_json::Value>,
+        workload_labels: &BTreeMap<String, String>,
+        new_containers: &[KubeContainerInfo],
+        configmap_refs: &BTreeSet<String>,
+        secret_refs: &BTreeSet<String>,
+    ) -> AnyResult<()> {
         let workloads = CatalogWorkloadEntity::find()
             .filter(kube_app_catalog_workload::Column::Name.eq(event.resource_name.clone()))
             .filter(kube_app_catalog_workload::Column::Namespace.eq(event.namespace.clone()))
@@ -612,64 +661,80 @@ impl KubeClusterServer {
                 resource_name = %event.resource_name,
                 "Workload not tracked in any catalog; skipping catalog sync update"
             );
-        } else {
-            let matching_services = self
-                .db
-                .get_matching_cluster_services(self.cluster_id, &event.namespace, &workload_labels)
-                .await?;
+            return Ok(());
+        }
 
-            let mut workloads_by_catalog: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        let matching_services = self
+            .db
+            .get_matching_cluster_services(self.cluster_id, &event.namespace, workload_labels)
+            .await?;
+        let service_ports = ports_from_cached_services(workload_labels, &matching_services);
 
-            for workload in workloads {
-                // Ensure the stored kind matches; if not, skip but log.
-                if let Ok(stored_kind) = workload.kind.parse::<KubeWorkloadKind>() {
-                    if stored_kind != workload_kind {
-                        tracing::warn!(
-                            namespace = %event.namespace,
-                            resource_name = %event.resource_name,
-                            stored_kind = %workload.kind,
-                            event_kind = ?workload_kind,
-                            "Catalog workload kind mismatch; skipping update"
-                        );
-                        continue;
-                    }
+        let workload_ids: Vec<Uuid> = workloads.iter().map(|w| w.id).collect();
+        let existing_state = self.load_existing_catalog_state(&workload_ids).await?;
+
+        let mut workloads_by_catalog: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+
+        for workload in workloads {
+            if let Ok(stored_kind) = workload.kind.parse::<KubeWorkloadKind>() {
+                if stored_kind != workload_kind {
+                    tracing::warn!(
+                        namespace = %event.namespace,
+                        resource_name = %event.resource_name,
+                        stored_kind = %workload.kind,
+                        event_kind = ?workload_kind,
+                        "Catalog workload kind mismatch; skipping update"
+                    );
+                    continue;
                 }
+            }
 
-                let merged_containers = merge_containers(&workload.containers, &new_containers)
-                    .with_context(|| {
-                        format!(
-                            "failed to merge container definitions for workload {}",
-                            workload.id
-                        )
-                    })?;
-                let service_ports =
-                    ports_from_cached_services(&workload_labels, &matching_services);
+            let mut update = Self::compute_catalog_workload_update(
+                event,
+                &workload,
+                new_containers,
+                &service_ports,
+                yaml,
+                new_spec_snapshot,
+                workload_labels,
+                existing_state.labels.get(&workload.id),
+                configmap_refs,
+                secret_refs,
+                existing_state.dependencies.get(&workload.id),
+            )?;
 
-                let containers_json = serde_json::to_value(&merged_containers)
-                    .context("failed to serialize merged container definition")?;
-                let ports_json = serde_json::to_value(&service_ports)
-                    .context("failed to serialize workload ports definition")?;
+            let requires_bump = update.requires_catalog_bump();
 
-                let active_model = kube_app_catalog_workload::ActiveModel {
+            if update.has_model_updates() {
+                let mut active_model = kube_app_catalog_workload::ActiveModel {
                     id: ActiveValue::Set(workload.id),
-                    containers: ActiveValue::Set(Json::from(containers_json)),
-                    ports: ActiveValue::Set(Json::from(ports_json)),
-                    workload_yaml: ActiveValue::Set(yaml.clone()),
                     ..Default::default()
                 };
+
+                if let Some(containers_json) = update.containers.take() {
+                    active_model.containers = ActiveValue::Set(containers_json);
+                }
+                if let Some(ports_json) = update.ports.take() {
+                    active_model.ports = ActiveValue::Set(ports_json);
+                }
+                if let Some(updated_yaml) = update.workload_yaml.take() {
+                    active_model.workload_yaml = ActiveValue::Set(updated_yaml);
+                }
 
                 active_model
                     .update(&self.db.conn)
                     .await
                     .with_context(|| format!("failed to update workload {}", workload.id))?;
+            }
 
+            if update.labels_changed {
                 self.db
                     .replace_workload_labels(
                         workload.id,
                         workload.app_catalog_id,
                         workload.cluster_id,
                         &workload.namespace,
-                        &workload_labels,
+                        workload_labels,
                         event.timestamp.into(),
                     )
                     .await
@@ -679,15 +744,17 @@ impl KubeClusterServer {
                             workload.id
                         )
                     })?;
+            }
 
+            if update.dependencies_changed {
                 self.db
                     .replace_workload_dependencies(
                         workload.id,
                         workload.app_catalog_id,
                         workload.cluster_id,
                         &workload.namespace,
-                        &configmap_refs,
-                        &secret_refs,
+                        configmap_refs,
+                        secret_refs,
                         event.timestamp.into(),
                     )
                     .await
@@ -697,62 +764,201 @@ impl KubeClusterServer {
                             workload.id
                         )
                     })?;
+            }
 
+            if requires_bump {
                 tracing::info!(
                     workload_id = %workload.id,
                     namespace = %event.namespace,
                     resource_name = %event.resource_name,
-                    "Updated catalog workload containers from cluster event"
+                    "Recorded catalog workload update from cluster event"
                 );
 
                 workloads_by_catalog
                     .entry(workload.app_catalog_id)
                     .or_default()
                     .push(workload.id);
-            }
-
-            if !workloads_by_catalog.is_empty() {
-                let synced_at: DateTimeWithTimeZone = event.timestamp.into();
-                for (catalog_id, workload_ids) in workloads_by_catalog {
-                    let new_version = self
-                        .db
-                        .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to bump sync version for catalog {} after workload update",
-                                catalog_id
-                            )
-                        })?;
-                    self.db
-                        .update_catalog_workload_versions(&workload_ids, new_version)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to update workload sync version for catalog {}",
-                                catalog_id
-                            )
-                        })?;
-                }
+            } else {
+                tracing::trace!(
+                    workload_id = %workload.id,
+                    namespace = %event.namespace,
+                    resource_name = %event.resource_name,
+                    "No substantive catalog workload change detected; skipping version bump"
+                );
             }
         }
 
-        self.update_environment_workload_ready_replicas(
-            &event.namespace,
-            &event.resource_name,
-            &metadata_labels,
-            ready_replicas,
-            event.timestamp,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to update environment ready replicas for {}/{}",
-                event.namespace, event.resource_name
-            )
-        })?;
+        if !workloads_by_catalog.is_empty() {
+            let synced_at: DateTimeWithTimeZone = event.timestamp.into();
+            for (catalog_id, workload_ids) in workloads_by_catalog {
+                let new_version = self
+                    .db
+                    .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to bump sync version for catalog {} after workload update",
+                            catalog_id
+                        )
+                    })?;
+                self.db
+                    .update_catalog_workload_versions(&workload_ids, new_version)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to update workload sync version for catalog {}",
+                            catalog_id
+                        )
+                    })?;
+            }
+        }
 
         Ok(())
+    }
+
+    async fn load_existing_catalog_state(
+        &self,
+        workload_ids: &[Uuid],
+    ) -> AnyResult<ExistingCatalogState> {
+        let mut state = ExistingCatalogState::default();
+        if workload_ids.is_empty() {
+            return Ok(state);
+        }
+
+        let id_list: Vec<Uuid> = workload_ids.to_vec();
+
+        let label_rows = kube_app_catalog_workload_label::Entity::find()
+            .filter(kube_app_catalog_workload_label::Column::WorkloadId.is_in(id_list.clone()))
+            .filter(kube_app_catalog_workload_label::Column::DeletedAt.is_null())
+            .all(&self.db.conn)
+            .await?;
+
+        for row in label_rows {
+            state
+                .labels
+                .entry(row.workload_id)
+                .or_default()
+                .insert(row.label_key, row.label_value);
+        }
+
+        let dependency_rows = kube_app_catalog_workload_dependency::Entity::find()
+            .filter(kube_app_catalog_workload_dependency::Column::WorkloadId.is_in(id_list))
+            .filter(kube_app_catalog_workload_dependency::Column::DeletedAt.is_null())
+            .all(&self.db.conn)
+            .await?;
+
+        for row in dependency_rows {
+            let entry = state
+                .dependencies
+                .entry(row.workload_id)
+                .or_insert_with(|| (BTreeSet::new(), BTreeSet::new()));
+
+            match row.resource_type.to_ascii_lowercase().as_str() {
+                "configmap" => {
+                    entry.0.insert(row.resource_name);
+                }
+                "secret" => {
+                    entry.1.insert(row.resource_name);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(state)
+    }
+
+    fn compute_catalog_workload_update(
+        event: &ResourceChangeEvent,
+        workload: &kube_app_catalog_workload::Model,
+        new_containers: &[KubeContainerInfo],
+        service_ports: &[KubeServicePort],
+        yaml: &str,
+        new_spec_snapshot: Option<&serde_json::Value>,
+        new_labels: &BTreeMap<String, String>,
+        existing_labels: Option<&BTreeMap<String, String>>,
+        new_configmaps: &BTreeSet<String>,
+        new_secrets: &BTreeSet<String>,
+        existing_dependencies: Option<&(BTreeSet<String>, BTreeSet<String>)>,
+    ) -> AnyResult<CatalogWorkloadUpdate> {
+        let merged_containers = merge_containers(&workload.containers, new_containers)
+            .with_context(|| {
+                format!(
+                    "failed to merge container definitions for workload {}",
+                    workload.id
+                )
+            })?;
+
+        let containers_json = Json::from(
+            serde_json::to_value(&merged_containers)
+                .context("failed to serialize merged container definition")?,
+        );
+        let containers_changed = containers_json != workload.containers;
+
+        let ports_json = Json::from(
+            serde_json::to_value(service_ports)
+                .context("failed to serialize workload ports definition")?,
+        );
+        let ports_changed = ports_json != workload.ports;
+
+        let (stored_spec_snapshot, stored_spec_failed) =
+            match spec_section_from_yaml(&workload.workload_yaml) {
+                Ok(snapshot) => (snapshot, false),
+                Err(err) => {
+                    tracing::debug!(
+                        workload_id = %workload.id,
+                        namespace = %event.namespace,
+                        resource_name = %event.resource_name,
+                        error = ?err,
+                        "Failed to extract stored spec from workload YAML"
+                    );
+                    (None, true)
+                }
+            };
+
+        let spec_changed = if stored_spec_failed {
+            true
+        } else {
+            match (new_spec_snapshot, stored_spec_snapshot.as_ref()) {
+                (Some(new_spec), Some(existing_spec)) => new_spec != existing_spec,
+                (None, None) => false,
+                _ => true,
+            }
+        };
+
+        let labels_changed = match existing_labels {
+            Some(current_labels) => current_labels != new_labels,
+            None => !new_labels.is_empty(),
+        };
+
+        let dependencies_changed = match existing_dependencies {
+            Some((existing_configmaps, existing_secrets)) => {
+                existing_configmaps != new_configmaps || existing_secrets != new_secrets
+            }
+            None => !(new_configmaps.is_empty() && new_secrets.is_empty()),
+        };
+
+        Ok(CatalogWorkloadUpdate {
+            containers: if containers_changed {
+                Some(containers_json)
+            } else {
+                None
+            },
+            ports: if ports_changed {
+                Some(ports_json)
+            } else {
+                None
+            },
+            workload_yaml: if spec_changed {
+                Some(yaml.to_owned())
+            } else {
+                None
+            },
+            containers_changed,
+            ports_changed,
+            spec_changed,
+            labels_changed,
+            dependencies_changed,
+        })
     }
 
     async fn update_environment_workload_ready_replicas(
@@ -1161,6 +1367,37 @@ impl KubeClusterServer {
     }
 }
 
+#[derive(Default)]
+struct ExistingCatalogState {
+    labels: HashMap<Uuid, BTreeMap<String, String>>,
+    dependencies: HashMap<Uuid, (BTreeSet<String>, BTreeSet<String>)>,
+}
+
+struct CatalogWorkloadUpdate {
+    containers: Option<Json>,
+    ports: Option<Json>,
+    workload_yaml: Option<String>,
+    containers_changed: bool,
+    ports_changed: bool,
+    spec_changed: bool,
+    labels_changed: bool,
+    dependencies_changed: bool,
+}
+
+impl CatalogWorkloadUpdate {
+    fn has_model_updates(&self) -> bool {
+        self.containers.is_some() || self.ports.is_some() || self.workload_yaml.is_some()
+    }
+
+    fn requires_catalog_bump(&self) -> bool {
+        self.containers_changed
+            || self.ports_changed
+            || self.spec_changed
+            || self.labels_changed
+            || self.dependencies_changed
+    }
+}
+
 fn workload_kind_for(resource_type: ResourceType) -> Option<KubeWorkloadKind> {
     match resource_type {
         ResourceType::Deployment => Some(KubeWorkloadKind::Deployment),
@@ -1180,6 +1417,7 @@ struct ExtractedWorkload {
     configmap_refs: BTreeSet<String>,
     secret_refs: BTreeSet<String>,
     ready_replicas: Option<i32>,
+    spec_snapshot: Option<serde_json::Value>,
 }
 
 fn extract_workload_from_yaml(
@@ -1205,6 +1443,12 @@ fn extract_workload_from_yaml(
                 .status
                 .as_ref()
                 .and_then(|status| status.ready_replicas);
+            let spec_snapshot = deployment
+                .spec
+                .as_ref()
+                .map(|spec| serde_json::to_value(spec))
+                .transpose()
+                .context("failed to serialize deployment spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
             let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
             Ok(ExtractedWorkload {
@@ -1214,6 +1458,7 @@ fn extract_workload_from_yaml(
                 configmap_refs,
                 secret_refs,
                 ready_replicas,
+                spec_snapshot,
             })
         }
         ResourceType::StatefulSet => {
@@ -1234,6 +1479,12 @@ fn extract_workload_from_yaml(
                 .status
                 .as_ref()
                 .and_then(|status| status.ready_replicas);
+            let spec_snapshot = statefulset
+                .spec
+                .as_ref()
+                .map(|spec| serde_json::to_value(spec))
+                .transpose()
+                .context("failed to serialize statefulset spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
             let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
             Ok(ExtractedWorkload {
@@ -1243,6 +1494,7 @@ fn extract_workload_from_yaml(
                 configmap_refs,
                 secret_refs,
                 ready_replicas,
+                spec_snapshot,
             })
         }
         ResourceType::DaemonSet => {
@@ -1260,6 +1512,12 @@ fn extract_workload_from_yaml(
                 .unwrap_or_default();
             let metadata_labels = daemonset.metadata.labels.clone().unwrap_or_default();
             let ready_replicas = daemonset.status.as_ref().map(|status| status.number_ready);
+            let spec_snapshot = daemonset
+                .spec
+                .as_ref()
+                .map(|spec| serde_json::to_value(spec))
+                .transpose()
+                .context("failed to serialize daemonset spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
             let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
             Ok(ExtractedWorkload {
@@ -1269,6 +1527,7 @@ fn extract_workload_from_yaml(
                 configmap_refs,
                 secret_refs,
                 ready_replicas,
+                spec_snapshot,
             })
         }
         ResourceType::ReplicaSet => {
@@ -1291,6 +1550,12 @@ fn extract_workload_from_yaml(
                 .status
                 .as_ref()
                 .and_then(|status| status.ready_replicas);
+            let spec_snapshot = replicaset
+                .spec
+                .as_ref()
+                .map(|spec| serde_json::to_value(spec))
+                .transpose()
+                .context("failed to serialize replicaset spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
             let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
             Ok(ExtractedWorkload {
@@ -1300,6 +1565,7 @@ fn extract_workload_from_yaml(
                 configmap_refs,
                 secret_refs,
                 ready_replicas,
+                spec_snapshot,
             })
         }
         ResourceType::Job => {
@@ -1317,6 +1583,12 @@ fn extract_workload_from_yaml(
                 .unwrap_or_default();
             let metadata_labels = job.metadata.labels.clone().unwrap_or_default();
             let ready_replicas = job.status.as_ref().and_then(|status| status.succeeded);
+            let spec_snapshot = job
+                .spec
+                .as_ref()
+                .map(|spec| serde_json::to_value(spec))
+                .transpose()
+                .context("failed to serialize job spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
             let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
             Ok(ExtractedWorkload {
@@ -1326,6 +1598,7 @@ fn extract_workload_from_yaml(
                 configmap_refs,
                 secret_refs,
                 ready_replicas,
+                spec_snapshot,
             })
         }
         ResourceType::CronJob => {
@@ -1345,6 +1618,12 @@ fn extract_workload_from_yaml(
             let metadata_labels = cron_job.metadata.labels.clone().unwrap_or_default();
             let containers = extract_pod_spec_containers(pod_spec)?;
             let (configmap_refs, secret_refs) = extract_pod_spec_dependencies(pod_spec);
+            let spec_snapshot = cron_job
+                .spec
+                .as_ref()
+                .map(|spec| serde_json::to_value(spec))
+                .transpose()
+                .context("failed to serialize cronjob spec")?;
             Ok(ExtractedWorkload {
                 containers,
                 pod_labels,
@@ -1352,6 +1631,7 @@ fn extract_workload_from_yaml(
                 configmap_refs,
                 secret_refs,
                 ready_replicas: Some(1),
+                spec_snapshot,
             })
         }
         ResourceType::ConfigMap | ResourceType::Secret | ResourceType::Service => {
@@ -1362,6 +1642,7 @@ fn extract_workload_from_yaml(
                 configmap_refs: BTreeSet::new(),
                 secret_refs: BTreeSet::new(),
                 ready_replicas: None,
+                spec_snapshot: None,
             })
         }
     }
@@ -1515,6 +1796,15 @@ fn extract_pod_spec_dependencies(pod_spec: &PodSpec) -> (BTreeSet<String>, BTree
     (configmaps, secrets)
 }
 
+fn spec_section_from_yaml(yaml: &str) -> AnyResult<Option<serde_json::Value>> {
+    let document: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+
+    match document.get("spec") {
+        Some(spec_value) => Ok(Some(serde_json::to_value(spec_value)?)),
+        None => Ok(None),
+    }
+}
+
 fn merge_containers(
     existing: &Json,
     new_containers: &[KubeContainerInfo],
@@ -1593,98 +1883,4 @@ fn ports_from_cached_services(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use lapdev_kube_rpc::ResourceType;
-
-    #[test]
-    fn extract_workload_from_yaml_reads_ready_replicas_for_deployments() {
-        let deployment_yaml = r#"
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web
-  namespace: default
-spec:
-  selector:
-    matchLabels:
-      app: web
-  template:
-    metadata:
-      labels:
-        app: web
-    spec:
-      containers:
-        - name: web
-          image: nginx:1.27
-status:
-  readyReplicas: 3
-"#;
-
-        let extracted =
-            extract_workload_from_yaml(ResourceType::Deployment, deployment_yaml).unwrap();
-        assert_eq!(extracted.ready_replicas, Some(3));
-    }
-
-    #[test]
-    fn extract_workload_from_yaml_reads_ready_replicas_for_jobs() {
-        let job_yaml = r#"
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: data-migrate
-  namespace: default
-spec:
-  template:
-    metadata:
-      labels:
-        job-name: data-migrate
-    spec:
-      containers:
-        - name: migrate
-          image: alpine:3
-          command: ["/bin/true"]
-      restartPolicy: Never
-status:
-  succeeded: 1
-"#;
-
-        let extracted = extract_workload_from_yaml(ResourceType::Job, job_yaml).unwrap();
-        assert_eq!(extracted.ready_replicas, Some(1));
-    }
-
-    #[test]
-    fn extract_workload_from_yaml_returns_labels_even_without_status() {
-        let deployment_yaml = format!(
-            r#"
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web
-  namespace: default
-  labels:
-    lapdev.io/branch-environment-id: "{env_id}"
-spec:
-  selector:
-    matchLabels:
-      app: web
-  template:
-    metadata:
-      labels:
-        app: web
-    spec:
-      containers:
-        - name: web
-          image: nginx:1.27
-"#,
-            env_id = Uuid::new_v4()
-        );
-
-        let extracted =
-            extract_workload_from_yaml(ResourceType::Deployment, deployment_yaml.as_str()).unwrap();
-        assert!(extracted.ready_replicas.is_none());
-        assert!(extracted
-            .metadata_labels
-            .contains_key("lapdev.io/branch-environment-id"));
-    }
-}
+mod tests;

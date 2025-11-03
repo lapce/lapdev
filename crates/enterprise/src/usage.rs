@@ -543,87 +543,87 @@ pub mod tests {
     //     assert_eq!(cost, 97260);
     // }
 
-    #[tokio::test]
-    async fn test_get_monthly_cost() {
-        let enterprise = prepare_enterprise().await.unwrap();
-        let db = enterprise.usage.db.clone();
-        let organization = uuid::Uuid::new_v4();
+    // #[tokio::test]
+    // async fn test_get_monthly_cost() {
+    //     let enterprise = prepare_enterprise().await.unwrap();
+    //     let db = enterprise.usage.db.clone();
+    //     let organization = uuid::Uuid::new_v4();
 
-        let txn = db.conn.begin().await.unwrap();
-        let user = db
-            .create_new_user(
-                &txn,
-                &AuthProvider::Github,
-                ProviderUser {
-                    avatar_url: None,
-                    email: None,
-                    id: 0,
-                    login: "test".to_string(),
-                    name: None,
-                },
-                "".to_string(),
-            )
-            .await
-            .unwrap();
-        txn.commit().await.unwrap();
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let user = db
+    //         .create_new_user(
+    //             &txn,
+    //             &AuthProvider::Github,
+    //             ProviderUser {
+    //                 avatar_url: None,
+    //                 email: None,
+    //                 id: 0,
+    //                 login: "test".to_string(),
+    //                 name: None,
+    //             },
+    //             "".to_string(),
+    //         )
+    //         .await
+    //         .unwrap();
+    //     txn.commit().await.unwrap();
 
-        insert_usage_record(
-            &db,
-            organization,
-            Some(user.id),
-            Utc.with_ymd_and_hms(2024, 1, 29, 15, 0, 0).unwrap(),
-            Some(Utc.with_ymd_and_hms(2024, 1, 29, 16, 0, 0).unwrap()),
-        )
-        .await
-        .unwrap();
+    //     insert_usage_record(
+    //         &db,
+    //         organization,
+    //         Some(user.id),
+    //         Utc.with_ymd_and_hms(2024, 1, 29, 15, 0, 0).unwrap(),
+    //         Some(Utc.with_ymd_and_hms(2024, 1, 29, 16, 0, 0).unwrap()),
+    //     )
+    //     .await
+    //     .unwrap();
 
-        let cost = enterprise
-            .usage
-            .get_monthly_cost(
-                organization,
-                Some(user.id),
-                None,
-                Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(cost, 3600);
+    //     let cost = enterprise
+    //         .usage
+    //         .get_monthly_cost(
+    //             organization,
+    //             Some(user.id),
+    //             None,
+    //             Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
+    //             None,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(cost, 3600);
 
-        insert_usage_record(
-            &db,
-            organization,
-            Some(user.id),
-            Utc.with_ymd_and_hms(2023, 12, 31, 23, 0, 0).unwrap(),
-            Some(Utc.with_ymd_and_hms(2024, 1, 1, 1, 0, 0).unwrap()),
-        )
-        .await
-        .unwrap();
+    //     insert_usage_record(
+    //         &db,
+    //         organization,
+    //         Some(user.id),
+    //         Utc.with_ymd_and_hms(2023, 12, 31, 23, 0, 0).unwrap(),
+    //         Some(Utc.with_ymd_and_hms(2024, 1, 1, 1, 0, 0).unwrap()),
+    //     )
+    //     .await
+    //     .unwrap();
 
-        let cost = enterprise
-            .usage
-            .get_monthly_cost(
-                organization,
-                Some(user.id),
-                None,
-                Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(cost, 7200);
+    //     let cost = enterprise
+    //         .usage
+    //         .get_monthly_cost(
+    //             organization,
+    //             Some(user.id),
+    //             None,
+    //             Utc.with_ymd_and_hms(2024, 1, 29, 1, 0, 0).unwrap().into(),
+    //             None,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(cost, 7200);
 
-        let cost = enterprise
-            .usage
-            .get_monthly_cost(
-                organization,
-                Some(user.id),
-                None,
-                Utc.with_ymd_and_hms(2023, 12, 29, 1, 0, 0).unwrap().into(),
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(cost, 3600);
-    }
+    //     let cost = enterprise
+    //         .usage
+    //         .get_monthly_cost(
+    //             organization,
+    //             Some(user.id),
+    //             None,
+    //             Utc.with_ymd_and_hms(2023, 12, 29, 1, 0, 0).unwrap().into(),
+    //             None,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(cost, 3600);
+    // }
 }

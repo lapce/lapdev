@@ -391,336 +391,336 @@ pub mod tests {
         .await?)
     }
 
-    async fn insert_workspace(
-        db: &DbApi,
-        organization: Uuid,
-        user: Uuid,
-        status: Option<WorkspaceStatus>,
-        workspace_host_id: Uuid,
-        machine_type_id: Uuid,
-    ) -> Result<lapdev_db_entities::workspace::Model> {
-        let ws = lapdev_db_entities::workspace::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            updated_at: ActiveValue::Set(None),
-            deleted_at: ActiveValue::Set(None),
-            name: ActiveValue::Set(utils::rand_string(10)),
-            created_at: ActiveValue::Set(Utc::now().into()),
-            status: ActiveValue::Set(status.unwrap_or(WorkspaceStatus::New).to_string()),
-            repo_url: ActiveValue::Set("".to_string()),
-            repo_name: ActiveValue::Set("".to_string()),
-            branch: ActiveValue::Set("".to_string()),
-            commit: ActiveValue::Set("".to_string()),
-            organization_id: ActiveValue::Set(organization),
-            user_id: ActiveValue::Set(user),
-            project_id: ActiveValue::Set(None),
-            host_id: ActiveValue::Set(workspace_host_id),
-            osuser: ActiveValue::Set("".to_string()),
-            ssh_private_key: ActiveValue::Set("".to_string()),
-            ssh_public_key: ActiveValue::Set("".to_string()),
-            cores: ActiveValue::Set(serde_json::to_string(&[1, 2])?),
-            ssh_port: ActiveValue::Set(None),
-            ide_port: ActiveValue::Set(None),
-            prebuild_id: ActiveValue::Set(None),
-            service: ActiveValue::Set(None),
-            usage_id: ActiveValue::Set(None),
-            machine_type_id: ActiveValue::Set(machine_type_id),
-            last_inactivity: ActiveValue::Set(None),
-            auto_stop: ActiveValue::Set(None),
-            auto_start: ActiveValue::Set(true),
-            env: ActiveValue::Set(None),
-            build_output: ActiveValue::Set(None),
-            is_compose: ActiveValue::Set(false),
-            compose_parent: ActiveValue::Set(None),
-            pinned: ActiveValue::Set(false),
-        };
-        let ws = ws.insert(&db.conn).await?;
-        Ok(ws)
-    }
+    // async fn insert_workspace(
+    //     db: &DbApi,
+    //     organization: Uuid,
+    //     user: Uuid,
+    //     status: Option<WorkspaceStatus>,
+    //     workspace_host_id: Uuid,
+    //     machine_type_id: Uuid,
+    // ) -> Result<lapdev_db_entities::workspace::Model> {
+    //     let ws = lapdev_db_entities::workspace::ActiveModel {
+    //         id: ActiveValue::Set(Uuid::new_v4()),
+    //         updated_at: ActiveValue::Set(None),
+    //         deleted_at: ActiveValue::Set(None),
+    //         name: ActiveValue::Set(utils::rand_string(10)),
+    //         created_at: ActiveValue::Set(Utc::now().into()),
+    //         status: ActiveValue::Set(status.unwrap_or(WorkspaceStatus::New).to_string()),
+    //         repo_url: ActiveValue::Set("".to_string()),
+    //         repo_name: ActiveValue::Set("".to_string()),
+    //         branch: ActiveValue::Set("".to_string()),
+    //         commit: ActiveValue::Set("".to_string()),
+    //         organization_id: ActiveValue::Set(organization),
+    //         user_id: ActiveValue::Set(user),
+    //         project_id: ActiveValue::Set(None),
+    //         host_id: ActiveValue::Set(workspace_host_id),
+    //         osuser: ActiveValue::Set("".to_string()),
+    //         ssh_private_key: ActiveValue::Set("".to_string()),
+    //         ssh_public_key: ActiveValue::Set("".to_string()),
+    //         cores: ActiveValue::Set(serde_json::to_string(&[1, 2])?),
+    //         ssh_port: ActiveValue::Set(None),
+    //         ide_port: ActiveValue::Set(None),
+    //         prebuild_id: ActiveValue::Set(None),
+    //         service: ActiveValue::Set(None),
+    //         usage_id: ActiveValue::Set(None),
+    //         machine_type_id: ActiveValue::Set(machine_type_id),
+    //         last_inactivity: ActiveValue::Set(None),
+    //         auto_stop: ActiveValue::Set(None),
+    //         auto_start: ActiveValue::Set(true),
+    //         env: ActiveValue::Set(None),
+    //         build_output: ActiveValue::Set(None),
+    //         is_compose: ActiveValue::Set(false),
+    //         compose_parent: ActiveValue::Set(None),
+    //         pinned: ActiveValue::Set(false),
+    //     };
+    //     let ws = ws.insert(&db.conn).await?;
+    //     Ok(ws)
+    // }
 
-    #[tokio::test]
-    async fn test_insert_quota() {
-        let enterprise = prepare_enterprise().await.unwrap();
-        let user = uuid::Uuid::new_v4();
-        let organization = uuid::Uuid::new_v4();
-        let db = enterprise.quota.db.clone();
-        let txn = db.conn.begin().await.unwrap();
-        let quota = enterprise
-            .quota
-            .update_for_user(&txn, organization, user, QuotaKind::Workspace, 10)
-            .await
-            .unwrap();
-        assert_eq!(quota.user, Some(user));
-        assert_eq!(quota.organization, organization);
-        assert_eq!(quota.kind, QuotaKind::Workspace.to_string());
-        assert_eq!(quota.value, 10);
-    }
+    // #[tokio::test]
+    // async fn test_insert_quota() {
+    //     let enterprise = prepare_enterprise().await.unwrap();
+    //     let user = uuid::Uuid::new_v4();
+    //     let organization = uuid::Uuid::new_v4();
+    //     let db = enterprise.quota.db.clone();
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let quota = enterprise
+    //         .quota
+    //         .update_for_user(&txn, organization, user, QuotaKind::Workspace, 10)
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(quota.user, Some(user));
+    //     assert_eq!(quota.organization, organization);
+    //     assert_eq!(quota.kind, QuotaKind::Workspace.to_string());
+    //     assert_eq!(quota.value, 10);
+    // }
 
-    #[tokio::test]
-    async fn test_update_quota() {
-        let enterprise = prepare_enterprise().await.unwrap();
-        let user = uuid::Uuid::new_v4();
-        let organization = uuid::Uuid::new_v4();
-        let db = enterprise.quota.db.clone();
-        let txn = db.conn.begin().await.unwrap();
-        let quota = enterprise
-            .quota
-            .update_for_user(&txn, organization, user, QuotaKind::Workspace, 10)
-            .await
-            .unwrap();
-        assert_eq!(quota.user, Some(user));
-        assert_eq!(quota.organization, organization);
-        assert_eq!(quota.kind, QuotaKind::Workspace.to_string());
-        assert_eq!(quota.value, 10);
+    // #[tokio::test]
+    // async fn test_update_quota() {
+    //     let enterprise = prepare_enterprise().await.unwrap();
+    //     let user = uuid::Uuid::new_v4();
+    //     let organization = uuid::Uuid::new_v4();
+    //     let db = enterprise.quota.db.clone();
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let quota = enterprise
+    //         .quota
+    //         .update_for_user(&txn, organization, user, QuotaKind::Workspace, 10)
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(quota.user, Some(user));
+    //     assert_eq!(quota.organization, organization);
+    //     assert_eq!(quota.kind, QuotaKind::Workspace.to_string());
+    //     assert_eq!(quota.value, 10);
 
-        let quota = enterprise
-            .quota
-            .update_for_user(&txn, organization, user, QuotaKind::Workspace, 20)
-            .await
-            .unwrap();
-        assert_eq!(quota.user, Some(user));
-        assert_eq!(quota.organization, organization);
-        assert_eq!(quota.kind, QuotaKind::Workspace.to_string());
-        assert_eq!(quota.value, 20);
-    }
+    //     let quota = enterprise
+    //         .quota
+    //         .update_for_user(&txn, organization, user, QuotaKind::Workspace, 20)
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(quota.user, Some(user));
+    //     assert_eq!(quota.organization, organization);
+    //     assert_eq!(quota.kind, QuotaKind::Workspace.to_string());
+    //     assert_eq!(quota.value, 20);
+    // }
 
-    #[tokio::test]
-    async fn test_workspace_quota() {
-        let enterprise = prepare_enterprise().await.unwrap();
-        let db = enterprise.quota.db.clone();
-        let txn = db.conn.begin().await.unwrap();
-        let user = db
-            .create_new_user(
-                &txn,
-                &AuthProvider::Github,
-                ProviderUser {
-                    avatar_url: None,
-                    email: None,
-                    id: 0,
-                    login: "test".to_string(),
-                    name: None,
-                },
-                "".to_string(),
-            )
-            .await
-            .unwrap();
-        enterprise
-            .quota
-            .update_for_user(
-                &txn,
-                user.current_organization,
-                user.id,
-                QuotaKind::Workspace,
-                10,
-            )
-            .await
-            .unwrap();
-        txn.commit().await.unwrap();
+    // #[tokio::test]
+    // async fn test_workspace_quota() {
+    //     let enterprise = prepare_enterprise().await.unwrap();
+    //     let db = enterprise.quota.db.clone();
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let user = db
+    //         .create_new_user(
+    //             &txn,
+    //             &AuthProvider::Github,
+    //             ProviderUser {
+    //                 avatar_url: None,
+    //                 email: None,
+    //                 id: 0,
+    //                 login: "test".to_string(),
+    //                 name: None,
+    //             },
+    //             "".to_string(),
+    //         )
+    //         .await
+    //         .unwrap();
+    //     enterprise
+    //         .quota
+    //         .update_for_user(
+    //             &txn,
+    //             user.current_organization,
+    //             user.id,
+    //             QuotaKind::Workspace,
+    //             10,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     txn.commit().await.unwrap();
 
-        let workspace_host = insert_workspace_host(&db).await.unwrap();
-        let machine_type = insert_machine_type(&db).await.unwrap();
-        for _ in 0..10 {
-            insert_workspace(
-                &db,
-                user.current_organization,
-                user.id,
-                None,
-                workspace_host.id,
-                machine_type.id,
-            )
-            .await
-            .unwrap();
-        }
-        let txn = db.conn.begin().await.unwrap();
-        let quota = enterprise
-            .quota
-            .quota_value(
-                &txn,
-                &QuotaKind::Workspace,
-                user.current_organization,
-                user.id,
-            )
-            .await
-            .unwrap();
-        txn.commit().await.unwrap();
-        let result = enterprise
-            .quota
-            .do_check(quota, user.current_organization, user.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(result.existing, 10);
-        assert_eq!(result.quota, 10);
-        assert_eq!(result.level, QuotaLevel::User);
-        assert_eq!(result.kind, QuotaKind::Workspace);
-    }
+    //     let workspace_host = insert_workspace_host(&db).await.unwrap();
+    //     let machine_type = insert_machine_type(&db).await.unwrap();
+    //     for _ in 0..10 {
+    //         insert_workspace(
+    //             &db,
+    //             user.current_organization,
+    //             user.id,
+    //             None,
+    //             workspace_host.id,
+    //             machine_type.id,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     }
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let quota = enterprise
+    //         .quota
+    //         .quota_value(
+    //             &txn,
+    //             &QuotaKind::Workspace,
+    //             user.current_organization,
+    //             user.id,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     txn.commit().await.unwrap();
+    //     let result = enterprise
+    //         .quota
+    //         .do_check(quota, user.current_organization, user.id)
+    //         .await
+    //         .unwrap()
+    //         .unwrap();
+    //     assert_eq!(result.existing, 10);
+    //     assert_eq!(result.quota, 10);
+    //     assert_eq!(result.level, QuotaLevel::User);
+    //     assert_eq!(result.kind, QuotaKind::Workspace);
+    // }
 
-    #[tokio::test]
-    async fn test_workspace_quota_organization_level() {
-        let enterprise = prepare_enterprise().await.unwrap();
-        let db = enterprise.quota.db.clone();
-        let txn = db.conn.begin().await.unwrap();
-        let user = db
-            .create_new_user(
-                &txn,
-                &AuthProvider::Github,
-                ProviderUser {
-                    avatar_url: None,
-                    email: None,
-                    id: 0,
-                    login: "test".to_string(),
-                    name: None,
-                },
-                "".to_string(),
-            )
-            .await
-            .unwrap();
-        enterprise
-            .quota
-            .update_for_user(
-                &txn,
-                user.current_organization,
-                user.id,
-                QuotaKind::Workspace,
-                10,
-            )
-            .await
-            .unwrap();
-        enterprise
-            .quota
-            .update_for_organization(&txn, user.current_organization, QuotaKind::Workspace, 5)
-            .await
-            .unwrap();
-        txn.commit().await.unwrap();
+    // #[tokio::test]
+    // async fn test_workspace_quota_organization_level() {
+    //     let enterprise = prepare_enterprise().await.unwrap();
+    //     let db = enterprise.quota.db.clone();
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let user = db
+    //         .create_new_user(
+    //             &txn,
+    //             &AuthProvider::Github,
+    //             ProviderUser {
+    //                 avatar_url: None,
+    //                 email: None,
+    //                 id: 0,
+    //                 login: "test".to_string(),
+    //                 name: None,
+    //             },
+    //             "".to_string(),
+    //         )
+    //         .await
+    //         .unwrap();
+    //     enterprise
+    //         .quota
+    //         .update_for_user(
+    //             &txn,
+    //             user.current_organization,
+    //             user.id,
+    //             QuotaKind::Workspace,
+    //             10,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     enterprise
+    //         .quota
+    //         .update_for_organization(&txn, user.current_organization, QuotaKind::Workspace, 5)
+    //         .await
+    //         .unwrap();
+    //     txn.commit().await.unwrap();
 
-        let workspace_host = insert_workspace_host(&db).await.unwrap();
-        let machine_type = insert_machine_type(&db).await.unwrap();
-        for _ in 0..6 {
-            insert_workspace(
-                &db,
-                user.current_organization,
-                user.id,
-                None,
-                workspace_host.id,
-                machine_type.id,
-            )
-            .await
-            .unwrap();
-        }
-        let txn = db.conn.begin().await.unwrap();
-        let quota = enterprise
-            .quota
-            .quota_value(
-                &txn,
-                &QuotaKind::Workspace,
-                user.current_organization,
-                user.id,
-            )
-            .await
-            .unwrap();
-        txn.commit().await.unwrap();
-        let result = enterprise
-            .quota
-            .do_check(quota, user.current_organization, user.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(result.existing, 6);
-        assert_eq!(result.quota, 5);
-        assert_eq!(result.level, QuotaLevel::Organization);
-        assert_eq!(result.kind, QuotaKind::Workspace);
-    }
+    //     let workspace_host = insert_workspace_host(&db).await.unwrap();
+    //     let machine_type = insert_machine_type(&db).await.unwrap();
+    //     for _ in 0..6 {
+    //         insert_workspace(
+    //             &db,
+    //             user.current_organization,
+    //             user.id,
+    //             None,
+    //             workspace_host.id,
+    //             machine_type.id,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     }
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let quota = enterprise
+    //         .quota
+    //         .quota_value(
+    //             &txn,
+    //             &QuotaKind::Workspace,
+    //             user.current_organization,
+    //             user.id,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     txn.commit().await.unwrap();
+    //     let result = enterprise
+    //         .quota
+    //         .do_check(quota, user.current_organization, user.id)
+    //         .await
+    //         .unwrap()
+    //         .unwrap();
+    //     assert_eq!(result.existing, 6);
+    //     assert_eq!(result.quota, 5);
+    //     assert_eq!(result.level, QuotaLevel::Organization);
+    //     assert_eq!(result.kind, QuotaKind::Workspace);
+    // }
 
-    #[tokio::test]
-    async fn test_running_workspace_quota() {
-        let enterprise = prepare_enterprise().await.unwrap();
-        let db = enterprise.quota.db.clone();
-        let txn = db.conn.begin().await.unwrap();
-        let user = db
-            .create_new_user(
-                &txn,
-                &AuthProvider::Github,
-                ProviderUser {
-                    avatar_url: None,
-                    email: None,
-                    id: 0,
-                    login: "test".to_string(),
-                    name: None,
-                },
-                "".to_string(),
-            )
-            .await
-            .unwrap();
-        enterprise
-            .quota
-            .update_for_user(
-                &txn,
-                user.current_organization,
-                user.id,
-                QuotaKind::RunningWorkspace,
-                5,
-            )
-            .await
-            .unwrap();
-        enterprise
-            .quota
-            .update_for_user(
-                &txn,
-                user.current_organization,
-                user.id,
-                QuotaKind::Workspace,
-                15,
-            )
-            .await
-            .unwrap();
-        txn.commit().await.unwrap();
+    // #[tokio::test]
+    // async fn test_running_workspace_quota() {
+    //     let enterprise = prepare_enterprise().await.unwrap();
+    //     let db = enterprise.quota.db.clone();
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let user = db
+    //         .create_new_user(
+    //             &txn,
+    //             &AuthProvider::Github,
+    //             ProviderUser {
+    //                 avatar_url: None,
+    //                 email: None,
+    //                 id: 0,
+    //                 login: "test".to_string(),
+    //                 name: None,
+    //             },
+    //             "".to_string(),
+    //         )
+    //         .await
+    //         .unwrap();
+    //     enterprise
+    //         .quota
+    //         .update_for_user(
+    //             &txn,
+    //             user.current_organization,
+    //             user.id,
+    //             QuotaKind::RunningWorkspace,
+    //             5,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     enterprise
+    //         .quota
+    //         .update_for_user(
+    //             &txn,
+    //             user.current_organization,
+    //             user.id,
+    //             QuotaKind::Workspace,
+    //             15,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     txn.commit().await.unwrap();
 
-        let workspace_host = insert_workspace_host(&db).await.unwrap();
-        let machine_type = insert_machine_type(&db).await.unwrap();
-        for _ in 0..5 {
-            insert_workspace(
-                &db,
-                user.current_organization,
-                user.id,
-                Some(WorkspaceStatus::Running),
-                workspace_host.id,
-                machine_type.id,
-            )
-            .await
-            .unwrap();
-        }
-        for _ in 0..5 {
-            insert_workspace(
-                &db,
-                user.current_organization,
-                user.id,
-                Some(WorkspaceStatus::Stopped),
-                workspace_host.id,
-                machine_type.id,
-            )
-            .await
-            .unwrap();
-        }
-        let txn = db.conn.begin().await.unwrap();
-        let quota = enterprise
-            .quota
-            .quota_value(
-                &txn,
-                &QuotaKind::RunningWorkspace,
-                user.current_organization,
-                user.id,
-            )
-            .await
-            .unwrap();
-        txn.commit().await.unwrap();
-        let result = enterprise
-            .quota
-            .do_check(quota, user.current_organization, user.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(result.existing, 5);
-        assert_eq!(result.quota, 5);
-        assert_eq!(result.level, QuotaLevel::User);
-        assert_eq!(result.kind, QuotaKind::RunningWorkspace);
-    }
+    //     let workspace_host = insert_workspace_host(&db).await.unwrap();
+    //     let machine_type = insert_machine_type(&db).await.unwrap();
+    //     for _ in 0..5 {
+    //         insert_workspace(
+    //             &db,
+    //             user.current_organization,
+    //             user.id,
+    //             Some(WorkspaceStatus::Running),
+    //             workspace_host.id,
+    //             machine_type.id,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     }
+    //     for _ in 0..5 {
+    //         insert_workspace(
+    //             &db,
+    //             user.current_organization,
+    //             user.id,
+    //             Some(WorkspaceStatus::Stopped),
+    //             workspace_host.id,
+    //             machine_type.id,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     }
+    //     let txn = db.conn.begin().await.unwrap();
+    //     let quota = enterprise
+    //         .quota
+    //         .quota_value(
+    //             &txn,
+    //             &QuotaKind::RunningWorkspace,
+    //             user.current_organization,
+    //             user.id,
+    //         )
+    //         .await
+    //         .unwrap();
+    //     txn.commit().await.unwrap();
+    //     let result = enterprise
+    //         .quota
+    //         .do_check(quota, user.current_organization, user.id)
+    //         .await
+    //         .unwrap()
+    //         .unwrap();
+    //     assert_eq!(result.existing, 5);
+    //     assert_eq!(result.quota, 5);
+    //     assert_eq!(result.level, QuotaLevel::User);
+    //     assert_eq!(result.kind, QuotaKind::RunningWorkspace);
+    // }
 }

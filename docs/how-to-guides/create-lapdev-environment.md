@@ -51,7 +51,7 @@ Branch environments reuse an existing shared environment as their baseline.
 4. Select the services you plan to modify and provide a name/description for the branch.
 5. Click **Create**.
 
-Only the services you modify are duplicated into your branch namespace; everything else continues to run in the shared environment.
+Only the services you modify are duplicated alongside the shared workloads in the same namespace; everything else continues to run on the shared versions.
 
 > 🧠 Use **branch environments** for feature work — they're lightweight, fast to spin up, and cost-efficient.
 

@@ -68,6 +68,7 @@ When you create a branch environment:
 
 * Initially, it references all workloads from the shared environment
 * Only when you modify a service does Lapdev create a branched copy
+* The branched copy runs alongside the shared version inside the shared environment's namespace, and Lapdev handles routing between them
 * Unmodified services continue using the shared environment
 * Multiple developers can work simultaneously without conflicts
 

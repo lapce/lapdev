@@ -50,7 +50,7 @@ One shared environment runs all your services:
 
 When you create a branch, you specify which service(s) you're modifying:
 
-* Only those services run in your branch namespace
+* Only those services run as branched workloads alongside the shared copies in the same namespace
 * Everything else routes to the shared environment
 
 #### Traffic Routing Overview

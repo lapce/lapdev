@@ -1,35 +1,47 @@
 {
   "$schema": "https://mintlify.com/docs.json",
+  "name": "Lapdev Docs",
+  "description": "Guides, how-tos, and core concepts for operating Lapdev developer environments on Kubernetes.",
   "theme": "maple",
-  "name": "Example Co.",
-  "description": "Example Co. is a company that provides example content and placeholder text.",
   "colors": {
     "primary": "#3B82F6",
     "light": "#F8FAFC",
     "dark": "#0F172A"
   },
-  "navigation": {
-    "groups": [
-      {
-        "group": "Getting started",
-        "pages": [
-          "index",
-          "test"
-        ]
-      }
-    ]
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Community",
-        "href": "https://example.com/community"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Get Started",
-      "href": "https://example.com/start"
+  "navigation": [
+    {
+      "group": "Introduction",
+      "pages": [
+        "index"
+      ]
+    },
+    {
+      "group": "How-to guides",
+      "pages": [
+        "how-to-guides/connect-your-kubernetes-cluster",
+        "how-to-guides/create-an-app-catalog",
+        "how-to-guides/create-lapdev-environment",
+        "how-to-guides/local-development-with-devbox",
+        "how-to-guides/use-preview-urls"
+      ]
+    },
+    {
+      "group": "Core concepts",
+      "pages": [
+        {
+          "section": "Architecture",
+            "pages": [
+            "core-concepts/architecture/index",
+            "core-concepts/architecture/traffic-routing-architecture",
+            "core-concepts/architecture/branch-environment-architecture"
+          ]
+        },
+        "core-concepts/cluster",
+        "core-concepts/app-catalog",
+        "core-concepts/environment",
+        "core-concepts/devbox",
+        "core-concepts/preview-url"
+      ]
     }
-  }
+  ]
 }

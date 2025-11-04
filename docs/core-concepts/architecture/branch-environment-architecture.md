@@ -4,7 +4,7 @@ Branch environments are a cost-effective way to run development environments in 
 
 ### Architecture Diagram
 
-<img src="../../.gitbook/assets/file.excalidraw (3).svg" alt="" class="gitbook-drawing">
+<img src="../../.gitbook/assets/file.excalidraw (3).svg" alt="" class="gitbook-drawing" />
 
 ### Concept
 

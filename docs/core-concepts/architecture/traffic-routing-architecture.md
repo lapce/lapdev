@@ -13,7 +13,7 @@ Both patterns use secure tunnels through the Lapdev cloud service, eliminating t
 
 ### Architecture Diagram
 
-<img src="../../.gitbook/assets/file.excalidraw (2).svg" alt="" class="gitbook-drawing">
+<img src="../../.gitbook/assets/file.excalidraw (2).svg" alt="" class="gitbook-drawing" />
 
 ### Components
 

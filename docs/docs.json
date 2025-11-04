@@ -8,40 +8,42 @@
     "light": "#F8FAFC",
     "dark": "#0F172A"
   },
-  "navigation": [
-    {
-      "group": "Introduction",
-      "pages": [
-        "index"
-      ]
-    },
-    {
-      "group": "How-to guides",
-      "pages": [
-        "how-to-guides/connect-your-kubernetes-cluster",
-        "how-to-guides/create-an-app-catalog",
-        "how-to-guides/create-lapdev-environment",
-        "how-to-guides/local-development-with-devbox",
-        "how-to-guides/use-preview-urls"
-      ]
-    },
-    {
-      "group": "Core concepts",
-      "pages": [
-        {
-          "section": "Architecture",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Introduction",
+        "pages": [
+          "index"
+        ]
+      },
+      {
+        "group": "How-to guides",
+        "pages": [
+          "how-to-guides/connect-your-kubernetes-cluster",
+          "how-to-guides/create-an-app-catalog",
+          "how-to-guides/create-lapdev-environment",
+          "how-to-guides/local-development-with-devbox",
+          "how-to-guides/use-preview-urls"
+        ]
+      },
+      {
+        "group": "Core concepts",
+        "pages": [
+          {
+            "section": "Architecture",
             "pages": [
-            "core-concepts/architecture/index",
-            "core-concepts/architecture/traffic-routing-architecture",
-            "core-concepts/architecture/branch-environment-architecture"
-          ]
-        },
-        "core-concepts/cluster",
-        "core-concepts/app-catalog",
-        "core-concepts/environment",
-        "core-concepts/devbox",
-        "core-concepts/preview-url"
-      ]
-    }
-  ]
+              "core-concepts/architecture/index",
+              "core-concepts/architecture/traffic-routing-architecture",
+              "core-concepts/architecture/branch-environment-architecture"
+            ]
+          },
+          "core-concepts/cluster",
+          "core-concepts/app-catalog",
+          "core-concepts/environment",
+          "core-concepts/devbox",
+          "core-concepts/preview-url"
+        ]
+      }
+    ]
+  }
 }

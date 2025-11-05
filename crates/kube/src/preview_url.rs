@@ -53,18 +53,16 @@ impl PreviewUrlResolver {
         Self { db }
     }
 
-    /// Parse subdomain format: service-port-hash.app.lap.dev
+    /// Parse subdomain format: port-service-hash.app.lap.dev
     pub fn parse_preview_url(subdomain: &str) -> Result<PreviewUrlInfo, PreviewUrlError> {
-        // Expected format: "webapp-8080-abc123"
+        // Expected format: "8080-webapp-abc123"
         let parts: Vec<&str> = subdomain.split('-').collect();
         if parts.len() < 3 {
             return Err(PreviewUrlError::InvalidFormat);
         }
 
-        let service_name = parts[0..parts.len() - 2].join("-"); // Handle multi-part service names
-        let port: u16 = parts[parts.len() - 2]
-            .parse()
-            .map_err(|_| PreviewUrlError::InvalidPort)?;
+        let port: u16 = parts[0].parse().map_err(|_| PreviewUrlError::InvalidPort)?;
+        let service_name = parts[1..parts.len() - 1].join("-"); // Handle multi-part service names
         let env_hash = parts[parts.len() - 1];
 
         Ok(PreviewUrlInfo {
@@ -143,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_parse_preview_url_simple() {
-        let result = PreviewUrlResolver::parse_preview_url("webapp-8080-abc123");
+        let result = PreviewUrlResolver::parse_preview_url("8080-webapp-abc123");
         assert!(result.is_ok());
         let info = result.unwrap();
         assert_eq!(info.service_name, "webapp");
@@ -153,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_parse_preview_url_multi_part_service() {
-        let result = PreviewUrlResolver::parse_preview_url("my-web-app-8080-abc123");
+        let result = PreviewUrlResolver::parse_preview_url("8080-my-web-app-abc123");
         assert!(result.is_ok());
         let info = result.unwrap();
         assert_eq!(info.service_name, "my-web-app");
@@ -163,13 +161,13 @@ mod tests {
 
     #[test]
     fn test_parse_preview_url_invalid_format() {
-        let result = PreviewUrlResolver::parse_preview_url("webapp-8080");
+        let result = PreviewUrlResolver::parse_preview_url("8080-webapp");
         assert!(matches!(result, Err(PreviewUrlError::InvalidFormat)));
     }
 
     #[test]
     fn test_parse_preview_url_invalid_port() {
-        let result = PreviewUrlResolver::parse_preview_url("webapp-abc-xyz123");
+        let result = PreviewUrlResolver::parse_preview_url("abc-webapp-xyz123");
         assert!(matches!(result, Err(PreviewUrlError::InvalidPort)));
     }
 }

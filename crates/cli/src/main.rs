@@ -68,7 +68,8 @@ async fn main() -> anyhow::Result<()> {
     // Filter out tarpc internal tracing
     let filter = EnvFilter::from_default_env()
         .add_directive(log_level.into())
-        .add_directive("tarpc=warn".parse().unwrap()); // Only show tarpc warnings/errors
+        .add_directive("tarpc=warn".parse().unwrap())
+        .add_directive("tarpc::client=warn".parse().unwrap()); // Only show tarpc warnings/errors
 
     tracing_subscriber::registry()
         .with(filter)

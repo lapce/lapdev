@@ -114,7 +114,7 @@ pub async fn execute(api_host: &str, device_name: Option<String>) -> Result<()> 
                 tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECONDS)).await;
             }
             Err(e) => {
-                eprintln!("{}", format!("Error polling for token: {}", e).red());
+                eprintln!("{}", format!("Error polling for token: {:?}", e).red());
                 anyhow::bail!("Failed to authenticate: {}", e);
             }
         }

@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context, Result};
-use std::{fs::OpenOptions, path::PathBuf};
+#[cfg(unix)]
+const EBUSY_ERRNO: i32 = 16;
+use std::{fs::OpenOptions as StdOpenOptions, path::PathBuf};
 use tempfile::NamedTempFile;
-use tokio::io::AsyncWriteExt;
+use tokio::{fs::OpenOptions as AsyncOpenOptions, io::AsyncWriteExt};
 
 #[cfg(windows)]
 use std::path::Path;
@@ -164,13 +166,53 @@ impl HostsManager {
 
         #[cfg(not(windows))]
         {
-            temp_file.persist(&self.hosts_path).map_err(|err| {
-                anyhow!(
-                    "Failed to replace hosts file at {:?}: {}",
-                    self.hosts_path,
-                    err.error
-                )
-            })?;
+            if let Err(err) = temp_file.persist(&self.hosts_path) {
+                #[cfg(unix)]
+                let is_busy = err.error.raw_os_error() == Some(EBUSY_ERRNO);
+                #[cfg(not(unix))]
+                let is_busy = false;
+
+                if is_busy {
+                    // Fall back to truncating the hosts file in-place when some Linux distros
+                    // reject atomic renames with EBUSY (e.g. immutable bind mounts).
+                    let mut fallback = AsyncOpenOptions::new()
+                        .write(true)
+                        .truncate(true)
+                        .open(&self.hosts_path)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to open hosts file for fallback write: {:?}",
+                                self.hosts_path
+                            )
+                        })?;
+
+                    fallback
+                        .write_all(content.as_bytes())
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to write hosts file during fallback: {:?}",
+                                self.hosts_path
+                            )
+                        })?;
+                    fallback.sync_all().await.with_context(|| {
+                        format!(
+                            "Failed to sync hosts file during fallback: {:?}",
+                            self.hosts_path
+                        )
+                    })?;
+
+                    drop(fallback);
+                    let _ = err.file.close();
+                } else {
+                    return Err(anyhow!(
+                        "Failed to replace hosts file at {:?}: {}",
+                        self.hosts_path,
+                        err.error
+                    ));
+                }
+            }
         }
 
         #[cfg(unix)]
@@ -183,7 +225,7 @@ impl HostsManager {
 
     /// Check if we have permission to write to hosts file
     pub fn check_permissions(&self) -> bool {
-        OpenOptions::new()
+        StdOpenOptions::new()
             .write(true)
             .append(true)
             .open(&self.hosts_path)

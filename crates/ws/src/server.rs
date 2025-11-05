@@ -1607,7 +1607,7 @@ async fn setup_log(
         .build(folder)?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let var = std::env::var("RUST_LOG").unwrap_or_default();
-    let var = format!("error,lapdev_ws=info,lapdev_rpc=info,lapdev_common=info,{var}");
+    let var = format!("error,tarpc=warn,tarpc::client=warn,lapdev_ws=info,lapdev_rpc=info,lapdev_common=info,{var}");
     let filter = tracing_subscriber::EnvFilter::builder().parse_lossy(var);
     tracing_subscriber::fmt()
         .with_ansi(false)

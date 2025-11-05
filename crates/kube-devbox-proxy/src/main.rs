@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use lapdev_common::{utils::resolve_api_host, LAPDEV_API_HOST};
 use tracing::info;
-use tracing_subscriber;
+use tracing_subscriber::{fmt, EnvFilter};
 use uuid::Uuid;
 
 mod branch_config;
@@ -42,10 +42,14 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing subscriber
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(false)
-        .init();
+    let filter = EnvFilter::builder()
+        .with_default_directive(tracing::Level::DEBUG.into())
+        .from_env_lossy();
+
+    let filter = filter.add_directive("tarpc=warn".parse()?)?;
+    let filter = filter.add_directive("tarpc::client=warn".parse()?)?;
+
+    fmt().with_env_filter(filter).with_target(false).init();
 
     let args = Args::parse();
 

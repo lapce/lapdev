@@ -893,18 +893,16 @@ impl DevboxTunnelManager {
                         Ok(()) => {
                             tracing::info!(
                                 %session_id,
-                                tunnel_kind = kind.as_str(),
                                 intercept_id = intercept_id_str.as_deref(),
-                                "Devbox tunnel closed gracefully"
+                                "Devbox {} tunnel closed gracefully", kind.as_str()
                             );
                             backoff = Duration::from_secs(1);
                         }
                         Err(err) => {
                             tracing::warn!(
                                 %session_id,
-                                tunnel_kind = kind.as_str(),
                                 intercept_id = intercept_id_str.as_deref(),
-                                "Devbox tunnel disconnected: {}",
+                                "Devbox {} tunnel disconnected: {}", kind.as_str(),
                                 err
                             );
                             backoff = (backoff.saturating_mul(2)).min(Duration::from_secs(30));
@@ -915,9 +913,8 @@ impl DevboxTunnelManager {
                         _ = &mut shutdown_rx => {
                             tracing::info!(
                                 %session_id,
-                                tunnel_kind = kind.as_str(),
                                 intercept_id = intercept_id_str.as_deref(),
-                                "Devbox tunnel shutdown signal received"
+                                "Devbox {} tunnel shutdown signal received", kind.as_str()
                             );
                             break;
                         }
@@ -949,7 +946,7 @@ impl DevboxTunnelManager {
             .await
             .map_err(tunnel_transport_error)?;
 
-        tracing::info!("Devbox tunnel connected: {}", ws_url);
+        tracing::info!("Devbox {} tunnel connected: {}", kind.as_str(), ws_url);
 
         let transport = TunnelWebSocketTransport::new(stream);
 

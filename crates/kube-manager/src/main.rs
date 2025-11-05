@@ -5,7 +5,7 @@ pub async fn main() {
     // Initialize tracing with journald
     let var = std::env::var("RUST_LOG").unwrap_or_default();
     let var = format!(
-        "error,lapdev_kube_manager=info,lapdev_kube=info,lapdev_rpc=info,lapdev_common=info,{var}"
+        "error,tarpc=warn,tarpc::client=warn,lapdev_kube_manager=info,lapdev_kube=info,lapdev_rpc=info,lapdev_common=info,{var}"
     );
     let filter = tracing_subscriber::EnvFilter::builder().parse_lossy(var);
 

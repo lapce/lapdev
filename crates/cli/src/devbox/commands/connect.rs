@@ -237,7 +237,7 @@ impl DevboxTunnelManager {
         // Construct WebSocket URL
         let ws_url = format!("{}/api/v1/kube/devbox/rpc", self.ws_base());
 
-        tracing::info!(api_host = %self.api_host(), "Connecting to: {}", ws_url);
+        tracing::info!("Connecting to: {}", ws_url);
 
         // Create WebSocket request with authentication
         let mut request = ws_url

@@ -350,6 +350,11 @@ impl KubeClusterRpc for KubeClusterServer {
         Ok(())
     }
 
+    async fn heartbeat(self, _context: ::tarpc::context::Context) -> Result<(), String> {
+        tracing::trace!("Received heartbeat from cluster {}", self.cluster_id);
+        Ok(())
+    }
+
     async fn tunnel_heartbeat(self, _context: ::tarpc::context::Context) -> Result<(), String> {
         tracing::debug!("Received heartbeat from cluster {}", self.cluster_id);
 

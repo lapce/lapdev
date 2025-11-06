@@ -374,6 +374,7 @@ pub struct KubeRawWorkloadYaml {
 #[tarpc::service]
 pub trait KubeClusterRpc {
     async fn report_cluster_info(cluster_info: KubeClusterInfo) -> Result<(), String>;
+    async fn heartbeat() -> Result<(), String>;
 
     // Tunnel lifecycle management
     async fn tunnel_heartbeat() -> Result<(), String>;

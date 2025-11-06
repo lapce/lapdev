@@ -24,7 +24,10 @@ use lapdev_kube_rpc::{
 };
 use lapdev_rpc::spawn_twoway;
 use tarpc::server::{BaseChannel, Channel};
-use tokio::time::{sleep, Duration};
+use tokio::{
+    task::JoinHandle,
+    time::{sleep, Duration, MissedTickBehavior},
+};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
@@ -35,6 +38,8 @@ use crate::{
     sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager, watch_manager::WatchManager,
     websocket_transport::WebSocketTransport,
 };
+
+const CLUSTER_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
 #[derive(Clone)]
 pub struct KubeManager {
@@ -180,10 +185,14 @@ impl KubeManager {
             tracing::info!("Successfully reported cluster info");
         }
 
+        let heartbeat_task = Self::spawn_cluster_heartbeat_task(rpc_client.clone());
+
         let websocket_result = websocket_server_task.await;
 
         self.watch_manager.clear_rpc_client().await;
         self.proxy_manager.clear_cluster_rpc_client().await;
+        heartbeat_task.abort();
+        let _ = heartbeat_task.await;
 
         if let Err(e) = websocket_result {
             return Err(anyhow!("WebSocket RPC server task failed: {}", e));
@@ -218,6 +227,39 @@ impl KubeManager {
 }
 
 impl KubeManager {
+    fn spawn_cluster_heartbeat_task(rpc_client: KubeClusterRpcClient) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(CLUSTER_HEARTBEAT_INTERVAL_SECS));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            if !Self::send_cluster_heartbeat(&rpc_client).await {
+                return;
+            }
+
+            loop {
+                interval.tick().await;
+                if !Self::send_cluster_heartbeat(&rpc_client).await {
+                    break;
+                }
+            }
+        })
+    }
+
+    async fn send_cluster_heartbeat(rpc_client: &KubeClusterRpcClient) -> bool {
+        match rpc_client.heartbeat(tarpc::context::current()).await {
+            Ok(Ok(())) => true,
+            Ok(Err(err)) => {
+                tracing::warn!("Cluster heartbeat rejected by API: {}", err);
+                false
+            }
+            Err(err) => {
+                tracing::debug!("Cluster heartbeat stopped: {}", err);
+                false
+            }
+        }
+    }
+
     pub(crate) async fn collect_cluster_info(&self) -> Result<KubeClusterInfo> {
         let client = &self.kube_client;
 

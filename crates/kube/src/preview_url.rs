@@ -77,26 +77,41 @@ impl PreviewUrlResolver {
         &self,
         info: PreviewUrlInfo,
     ) -> Result<PreviewUrlTarget, PreviewUrlError> {
-        // 1. Find environment by hash (using name field as hash for now)
+        // Reconstruct the preview slug (port-service-random)
+        let preview_name = format!(
+            "{}-{}-{}",
+            info.port, info.service_name, info.environment_hash
+        );
+
+        // 1. Load preview URL configuration by unique name
+        let preview_url = self
+            .db
+            .find_preview_url_by_name(&preview_name)
+            .await?
+            .ok_or(PreviewUrlError::PreviewUrlNotConfigured)?;
+
+        if preview_url.port != info.port as i32 {
+            return Err(PreviewUrlError::PreviewUrlNotConfigured);
+        }
+
+        // 2. Load environment referenced by the preview URL
         let environment = self
             .db
-            .find_environment_by_hash(&info.environment_hash)
-            .await?
+            .get_kube_environment(preview_url.environment_id)
+            .await
+            .map_err(PreviewUrlError::SeaOrm)?
             .ok_or(PreviewUrlError::EnvironmentNotFound)?;
 
-        // 2. Find matching service in kube_environment_service table
+        // 3. Load the service referenced by the preview URL and validate the name matches
         let service = self
             .db
-            .find_environment_service(environment.id, &info.service_name)
+            .get_kube_environment_service_by_id(preview_url.service_id)
             .await?
             .ok_or(PreviewUrlError::ServiceNotFound)?;
 
-        // 3. Find preview URL configuration in kube_environment_preview_url table
-        let preview_url = self
-            .db
-            .find_preview_url_by_service_port(environment.id, service.id, info.port as i32)
-            .await?
-            .ok_or(PreviewUrlError::PreviewUrlNotConfigured)?;
+        if service.environment_id != environment.id || service.name != info.service_name {
+            return Err(PreviewUrlError::ServiceNotFound);
+        }
 
         // 4. Validate access level and permissions (basic validation)
         let access_level = self.parse_access_level(&preview_url.access_level)?;

@@ -399,57 +399,60 @@ pub async fn devbox_client_tunnel_websocket(
         .active_environment_id
         .ok_or_else(|| ApiError::InvalidRequest("No active environment selected".to_string()))?;
 
-    let environment = state
-        .db
-        .get_kube_environment(environment_id)
-        .await?
-        .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+    let environment = state.db.get_kube_environment(environment_id).await?;
 
     tracing::info!(
         "Devbox client tunnel session {} targeting environment {}",
         session.session_id,
         environment_id
     );
+    let cluster_id = environment.map(|e| e.cluster_id);
 
     let session_id = session.session_id;
     let tunnel_registry = state.kube_controller.tunnel_registry.clone();
-    let cluster_id = environment.cluster_id;
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        if let Some(cluster_client) = tunnel_registry.get_client(cluster_id).await {
-            if cluster_client.is_closed() {
-                tracing::warn!(
-                    session_id = %session_id,
-                    cluster_id = %cluster_id,
-                    "Cluster tunnel is closed; dropping devbox client connection"
-                );
-                return;
-            }
+        let transport = WebSocketTransport::new(socket);
+        let registry = tunnel_registry.clone();
 
-            let connector = move |target: TunnelTarget| {
-                let cluster_client = cluster_client.clone();
-                async move {
-                    let stream = cluster_client
-                        .connect_tcp(target.host.clone(), target.port)
-                        .await?;
-                    Ok::<DynTunnelStream, TunnelError>(Box::new(stream) as DynTunnelStream)
+        let connector = move |target: TunnelTarget| {
+            let registry = registry.clone();
+            async move {
+                let Some(cluster_id) = cluster_id else {
+                    return Err(TunnelError::Remote("active environment is not set".into()));
+                };
+
+                match registry.get_client(cluster_id).await {
+                    Some(cluster_client) if !cluster_client.is_closed() => {
+                        let TunnelTarget { host, port } = target;
+                        let stream = cluster_client.connect_tcp(host, port).await?;
+                        Ok::<DynTunnelStream, TunnelError>(Box::new(stream) as DynTunnelStream)
+                    }
+                    Some(_) => {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            cluster_id = %cluster_id,
+                            "Cluster tunnel is closed; rejecting devbox client request"
+                        );
+                        Err(TunnelError::Remote("cluster tunnel is closed".into()))
+                    }
+                    None => {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            cluster_id = %cluster_id,
+                            "No cluster tunnel available for devbox client request"
+                        );
+                        Err(TunnelError::Remote("cluster tunnel unavailable".into()))
+                    }
                 }
-            };
-
-            let transport = WebSocketTransport::new(socket);
-            if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
-                tracing::warn!(
-                    session_id = %session_id,
-                    cluster_id = %cluster_id,
-                    error = %err,
-                    "Devbox client tunnel terminated with error"
-                );
             }
-        } else {
+        };
+
+        if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
             tracing::warn!(
                 session_id = %session_id,
-                cluster_id = %cluster_id,
-                "No cluster tunnel available for devbox client connection"
+                error = %err,
+                "Devbox client tunnel terminated with error"
             );
         }
     }))

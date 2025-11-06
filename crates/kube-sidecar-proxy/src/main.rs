@@ -58,10 +58,10 @@ async fn main() -> Result<()> {
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
 
-    let filter = filter.add_directive("tarpc=warn".parse()?)?;
-    let filter = filter.add_directive("tarpc::client=warn".parse()?)?;
+    let filter = filter.add_directive("tarpc=warn".parse()?);
+    let filter = filter.add_directive("tarpc::client=warn".parse()?);
     let filter =
-        filter.add_directive(format!("lapdev_kube_sidecar_proxy={}", args.log_level).parse()?)?;
+        filter.add_directive(format!("lapdev_kube_sidecar_proxy={}", args.log_level).parse()?);
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())

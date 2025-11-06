@@ -3460,19 +3460,17 @@ impl DbApi {
     }
 
     // Methods for preview URL resolution
-    pub async fn find_environment_by_hash(
+    pub async fn find_preview_url_by_name(
         &self,
-        hash: &str,
-    ) -> Result<Option<lapdev_db_entities::kube_environment::Model>> {
-        // For now, we'll use the environment name as the hash
-        // In future implementations, this could be a dedicated hash field
-        let environment = lapdev_db_entities::kube_environment::Entity::find()
-            .filter(lapdev_db_entities::kube_environment::Column::Name.contains(hash))
-            .filter(lapdev_db_entities::kube_environment::Column::DeletedAt.is_null())
+        name: &str,
+    ) -> Result<Option<lapdev_db_entities::kube_environment_preview_url::Model>> {
+        let preview_url = lapdev_db_entities::kube_environment_preview_url::Entity::find()
+            .filter(lapdev_db_entities::kube_environment_preview_url::Column::Name.eq(name))
+            .filter(lapdev_db_entities::kube_environment_preview_url::Column::DeletedAt.is_null())
             .one(&self.conn)
             .await
             .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-        Ok(environment)
+        Ok(preview_url)
     }
 
     pub async fn find_environment_service(
@@ -3488,27 +3486,6 @@ impl DbApi {
             .await
             .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
         Ok(service)
-    }
-
-    pub async fn find_preview_url_by_service_port(
-        &self,
-        env_id: Uuid,
-        service_id: Uuid,
-        port: i32,
-    ) -> Result<Option<lapdev_db_entities::kube_environment_preview_url::Model>> {
-        let preview_url = lapdev_db_entities::kube_environment_preview_url::Entity::find()
-            .filter(
-                lapdev_db_entities::kube_environment_preview_url::Column::EnvironmentId.eq(env_id),
-            )
-            .filter(
-                lapdev_db_entities::kube_environment_preview_url::Column::ServiceId.eq(service_id),
-            )
-            .filter(lapdev_db_entities::kube_environment_preview_url::Column::Port.eq(port))
-            .filter(lapdev_db_entities::kube_environment_preview_url::Column::DeletedAt.is_null())
-            .one(&self.conn)
-            .await
-            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-        Ok(preview_url)
     }
 
     pub async fn update_preview_url_access(

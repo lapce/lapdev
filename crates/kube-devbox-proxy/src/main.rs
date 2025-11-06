@@ -46,8 +46,8 @@ async fn main() -> Result<()> {
         .with_default_directive(tracing::Level::DEBUG.into())
         .from_env_lossy();
 
-    let filter = filter.add_directive("tarpc=warn".parse()?)?;
-    let filter = filter.add_directive("tarpc::client=warn".parse()?)?;
+    let filter = filter.add_directive("tarpc=warn".parse()?);
+    let filter = filter.add_directive("tarpc::client=warn".parse()?);
 
     fmt().with_env_filter(filter).with_target(false).init();
 

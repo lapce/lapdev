@@ -1,4 +1,4 @@
-use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     extract::{Path, State},
@@ -6,7 +6,7 @@ use axum::{
 };
 use axum_extra::{headers, TypedHeader};
 use chrono::{DateTime, Utc};
-use futures::{stream, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use lapdev_common::kube::{EnvironmentWorkloadStatusEvent, KubeEnvironmentStatus};
 use lapdev_rpc::error::ApiError;
 use serde::{Deserialize, Serialize};
@@ -48,24 +48,7 @@ pub async fn stream_environment_events(
         return Err(ApiError::Unauthorized);
     }
 
-    let status = KubeEnvironmentStatus::from_str(&environment.status)
-        .unwrap_or(KubeEnvironmentStatus::Creating);
-    let initial_event = EnvironmentLifecycleEvent {
-        organization_id: environment.organization_id,
-        environment_id,
-        status,
-        paused_at: environment.paused_at.map(|dt| dt.to_string()),
-        resumed_at: environment.resumed_at.map(|dt| dt.to_string()),
-        updated_at: Utc::now(),
-    };
-
     let receiver = state.environment_events.subscribe();
-
-    let initial_stream = stream::iter(
-        build_sse_event(&initial_event)
-            .into_iter()
-            .map(Ok::<Event, Infallible>),
-    );
 
     let target_org = org_id;
     let target_env = environment_id;
@@ -90,12 +73,11 @@ pub async fn stream_environment_events(
         }
     });
 
-    let stream = initial_stream.chain(event_stream);
     let keep_alive = KeepAlive::new()
         .interval(Duration::from_secs(15))
         .text("keep-alive");
 
-    Ok(Sse::new(stream).keep_alive(keep_alive))
+    Ok(Sse::new(event_stream).keep_alive(keep_alive))
 }
 
 pub async fn stream_organization_environment_events(

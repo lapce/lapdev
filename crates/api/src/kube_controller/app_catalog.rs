@@ -563,7 +563,9 @@ impl KubeController {
         if !namespaces.is_empty() {
             let cluster_servers = {
                 let servers = self.kube_cluster_servers.read().await;
-                servers.get(&cluster_id).cloned()
+                servers
+                    .get(&cluster_id)
+                    .map(|entries| entries.values().cloned().collect::<Vec<_>>())
             };
 
             if let Some(cluster_servers) = cluster_servers {

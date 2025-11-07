@@ -25,7 +25,10 @@ use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilt
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -38,7 +41,9 @@ pub struct KubeClusterServer {
     cluster_id: Uuid,
     pub rpc_client: KubeManagerRpcClient,
     db: DbApi,
-    kube_cluster_servers: Arc<RwLock<HashMap<Uuid, Vec<KubeClusterServer>>>>,
+    kube_cluster_servers: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, KubeClusterServer>>>>,
+    generation_counter: Arc<AtomicU64>,
+    connection_generation: Arc<RwLock<Option<u64>>>,
     tunnel_registry: Arc<TunnelRegistry>,
 }
 
@@ -47,7 +52,8 @@ impl KubeClusterServer {
         cluster_id: Uuid,
         client: KubeManagerRpcClient,
         db: DbApi,
-        kube_cluster_servers: Arc<RwLock<HashMap<Uuid, Vec<KubeClusterServer>>>>,
+        kube_cluster_servers: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, KubeClusterServer>>>>,
+        generation_counter: Arc<AtomicU64>,
         tunnel_registry: Arc<TunnelRegistry>,
     ) -> Self {
         Self {
@@ -55,6 +61,8 @@ impl KubeClusterServer {
             rpc_client: client,
             db,
             kube_cluster_servers,
+            generation_counter,
+            connection_generation: Arc::new(RwLock::new(None)),
             tunnel_registry,
         }
     }
@@ -64,12 +72,18 @@ impl KubeClusterServer {
     }
 
     pub async fn register(&self) {
+        let generation = self.generation_counter.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut guard = self.connection_generation.write().await;
+            *guard = Some(generation);
+        }
+
         {
             let mut servers = self.kube_cluster_servers.write().await;
             servers
                 .entry(self.cluster_id)
-                .or_insert_with(Vec::new)
-                .push(self.clone());
+                .or_insert_with(BTreeMap::new)
+                .insert(generation, self.clone());
         }
         tracing::info!(
             "Registered KubeClusterServer for cluster {}",
@@ -86,20 +100,25 @@ impl KubeClusterServer {
     }
 
     pub async fn unregister(&self) {
+        let generation = { *self.connection_generation.read().await };
+        let Some(generation) = generation else {
+            tracing::warn!(
+                cluster_id = %self.cluster_id,
+                "KubeClusterServer unregister called without recorded generation"
+            );
+            return;
+        };
+
         let mut servers = self.kube_cluster_servers.write().await;
         if let Some(cluster_servers) = servers.get_mut(&self.cluster_id) {
-            // Remove servers with matching cluster_id (in case there are multiple connections)
-            let initial_len = cluster_servers.len();
-            cluster_servers.retain(|s| s.cluster_id != self.cluster_id || !std::ptr::eq(s, self));
-
-            if cluster_servers.len() < initial_len {
+            if cluster_servers.remove(&generation).is_some() {
                 tracing::info!(
-                    "Unregistered KubeClusterServer for cluster {}",
-                    self.cluster_id
+                    "Unregistered KubeClusterServer for cluster {} generation {}",
+                    self.cluster_id,
+                    generation
                 );
             }
 
-            // Remove empty entries
             if cluster_servers.is_empty() {
                 servers.remove(&self.cluster_id);
             }

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{atomic::AtomicU64, Arc},
+};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
@@ -35,7 +38,8 @@ pub(crate) enum EnvironmentNamespaceKind {
 #[derive(Clone)]
 pub struct KubeController {
     // KubeManager connections per cluster
-    pub kube_cluster_servers: Arc<RwLock<HashMap<Uuid, Vec<KubeClusterServer>>>>,
+    pub kube_cluster_servers: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, KubeClusterServer>>>>,
+    pub kube_cluster_server_generation: Arc<AtomicU64>,
     // Tunnel registry for preview URL functionality
     pub tunnel_registry: Arc<TunnelRegistry>,
     // Database API
@@ -51,6 +55,7 @@ impl KubeController {
     ) -> Self {
         Self {
             kube_cluster_servers: Arc::new(RwLock::new(HashMap::new())),
+            kube_cluster_server_generation: Arc::new(AtomicU64::new(1)),
             tunnel_registry: Arc::new(TunnelRegistry::new()),
             db,
             environment_events,
@@ -62,7 +67,11 @@ impl KubeController {
         cluster_id: Uuid,
     ) -> Option<KubeClusterServer> {
         let servers = self.kube_cluster_servers.read().await;
-        servers.get(&cluster_id)?.last().cloned()
+        servers
+            .get(&cluster_id)?
+            .iter()
+            .next_back()
+            .map(|(_, server)| server.clone())
     }
 
     pub async fn refresh_cluster_namespace_watches(&self, cluster_id: Uuid) {
@@ -87,7 +96,7 @@ impl KubeController {
             return;
         };
 
-        for server in cluster_servers {
+        for server in cluster_servers.values() {
             if let Err(err) = server
                 .send_namespace_watch_configuration(namespaces.clone())
                 .await
@@ -116,7 +125,7 @@ impl KubeController {
         };
 
         let mut last_err: Option<String> = None;
-        for server in cluster_servers {
+        for server in cluster_servers.values() {
             match server
                 .set_devbox_routes(environment_id, routes.clone())
                 .await
@@ -146,7 +155,7 @@ impl KubeController {
         };
 
         let mut last_err: Option<String> = None;
-        for server in cluster_servers {
+        for server in cluster_servers.values() {
             match server
                 .clear_devbox_routes(environment_id, branch_environment_id)
                 .await
@@ -177,7 +186,7 @@ impl KubeController {
         };
 
         let mut last_err: Option<String> = None;
-        for server in cluster_servers {
+        for server in cluster_servers.values() {
             match server
                 .rpc_client
                 .update_branch_service_route(
@@ -216,7 +225,7 @@ impl KubeController {
         };
 
         let mut last_err: Option<String> = None;
-        for server in cluster_servers {
+        for server in cluster_servers.values() {
             match server
                 .rpc_client
                 .remove_branch_service_route(

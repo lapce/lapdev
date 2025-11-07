@@ -31,6 +31,18 @@ impl SidecarProxyManagerRpcServer {
             peer_addr,
         }
     }
+
+    pub async fn handle_disconnect(&self) {
+        let env = self.environment.read().await.clone();
+        let workload = self.workload.read().await.clone();
+        let generation = self.connection_generation.read().await.clone();
+
+        if let (Some(environment_id), Some(workload_id), Some(gen)) = (env, workload, generation) {
+            self.manager
+                .remove_sidecar(environment_id, workload_id, gen)
+                .await;
+        }
+    }
 }
 
 impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {

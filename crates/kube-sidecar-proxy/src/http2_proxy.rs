@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     io,
     net::SocketAddr,
     pin::Pin,
@@ -21,20 +20,51 @@ use tokio::{
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-const MAX_HTTP2_FALLBACK_BODY_BYTES: usize = 4 * 1024 * 1024;
-
 use crate::{
     config::{DevboxConnection, RouteDecision, RoutingTable, SidecarSettings},
     connection_registry::ConnectionRegistry,
-    http2_client::{ConnectResult, Http2ClientActor},
-    otel_routing::{determine_routing_target, extract_routing_context, TRACESTATE_HEADER},
+    otel_routing::{extract_routing_context, TRACESTATE_HEADER},
 };
 
-/// Handle HTTP/2 traffic by establishing server and client handshakes.
-///
-/// This initial version performs transparent proxying to the default local
-/// destination. Future iterations will incorporate branch routing using HTTP/2
-/// header inspection.
+/// Connection-level routing plan derived from the first HTTP/2 stream.
+struct ConnectionRoutePlan {
+    upstream: UpstreamConnector,
+    service_port: u16,
+    branch_id: Option<Uuid>,
+    target_environment_id: Uuid,
+    description: String,
+}
+
+/// Represents how the sidecar should connect upstream for the lifetime of a
+/// single HTTP/2 connection from the workload.
+enum UpstreamConnector {
+    Local {
+        target: SocketAddr,
+    },
+    BranchService {
+        service_name: String,
+        port: u16,
+    },
+    Devbox {
+        connection: Arc<DevboxConnection>,
+        target_port: u16,
+        label: &'static str,
+    },
+}
+
+#[derive(Clone)]
+struct ConnectionContext {
+    client_addr: SocketAddr,
+    proxy_port: u16,
+    service_port: u16,
+    branch_id: Option<Uuid>,
+    description: Arc<str>,
+    target_environment_id: Uuid,
+}
+
+/// Handle an inbound HTTP/2 connection using connection-level routing. Once we
+/// inspect the first stream to determine the routing target, all subsequent
+/// streams on the same connection are forwarded to that same upstream.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_http2_proxy(
     inbound_stream: TcpStream,
@@ -46,46 +76,75 @@ pub async fn handle_http2_proxy(
     _rpc_client: Arc<RwLock<Option<lapdev_kube_rpc::SidecarProxyManagerRpcClient>>>,
     connection_registry: Arc<ConnectionRegistry>,
 ) -> io::Result<()> {
-    let (service_port, target_port) = {
-        let table = routing_table.read().await;
-        let service_port = table.service_port_for_proxy(proxy_port);
-        let target_port = table.target_port_for_service(service_port);
-        (service_port, target_port)
-    };
-    let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), target_port);
-
-    debug!(
-        "HTTP/2 proxy starting for {} on proxy port {} (service {}, local target {})",
-        client_addr, proxy_port, service_port, local_target
-    );
-
-    // Connect to the local target. Routing decisions will be applied per stream.
-    let outbound_stream = TcpStream::connect(&local_target).await?;
-
-    // Replay any bytes already read during protocol detection before delegating
-    // the rest of the connection to `h2`.
+    // Prepare the inbound HTTP/2 connection (server side).
     let inbound_prefaced = PrefacedStream::new(inbound_stream, initial_data);
     let mut inbound_connection = server::handshake(inbound_prefaced)
         .await
         .map_err(map_h2_err)?;
 
-    let (mut outbound_sender, outbound_connection) = client::handshake(outbound_stream)
-        .await
-        .map_err(map_h2_err)?;
+    // We need the first stream to determine the routing decision for the whole
+    // connection. If the client closes the connection before sending a stream,
+    // we can exit early.
+    let first_stream = match inbound_connection.accept().await {
+        Some(Ok(stream)) => stream,
+        Some(Err(err)) => {
+            warn!(
+                "HTTP/2 accept error for {} on proxy port {}: {}",
+                client_addr, proxy_port, err
+            );
+            return Err(map_h2_err(err));
+        }
+        None => return Ok(()),
+    };
 
-    // Drive the outbound connection in the background so response frames and
-    // settings are processed.
+    let route_plan = determine_connection_route(
+        &first_stream,
+        proxy_port,
+        Arc::clone(&routing_table),
+        settings.environment_id,
+    )
+    .await?;
+
+    debug!(
+        target = %route_plan.description,
+        service_port = route_plan.service_port,
+        branch = ?route_plan.branch_id,
+        "HTTP/2 connection from {} (proxy port {}) routed",
+        client_addr,
+        proxy_port
+    );
+
+    let (outbound_sender, _driver_task) = establish_upstream_connection(&route_plan).await?;
+
+    let connection_context = Arc::new(ConnectionContext {
+        client_addr,
+        proxy_port,
+        service_port: route_plan.service_port,
+        branch_id: route_plan.branch_id,
+        description: Arc::from(route_plan.description.into_boxed_str()),
+        target_environment_id: route_plan.target_environment_id,
+    });
+
+    // Process the first stream immediately using the newly established upstream.
+    let mut stream_sender = outbound_sender.clone();
+    let (first_request, mut first_respond) = first_stream;
+    let context_clone = Arc::clone(&connection_context);
     tokio::spawn(async move {
-        if let Err(err) = outbound_connection.await {
-            warn!("Outbound HTTP/2 connection ended with error: {}", err);
+        if let Err(err) = proxy_http2_stream(
+            &mut stream_sender,
+            first_request,
+            &mut first_respond,
+            context_clone,
+        )
+        .await
+        {
+            warn!("HTTP/2 stream proxy failure: {}", err);
         }
     });
 
-    let _ = _rpc_client;
-    let environment_id = settings.environment_id;
-
     let mut shutdown_rx = connection_registry.subscribe(None).await;
 
+    // Forward the remaining streams (if any) to the same upstream target.
     loop {
         tokio::select! {
             biased;
@@ -107,32 +166,27 @@ pub async fn handle_http2_proxy(
                     Ok(stream) => stream,
                     Err(err) => {
                         warn!(
-                            "HTTP/2 accept error for {} on proxy port {} (service {}): {}",
-                            client_addr, proxy_port, service_port, err
+                            "HTTP/2 accept error for {} on proxy port {}: {}",
+                            client_addr, proxy_port, err
                         );
                         break;
                     }
                 };
 
-                let routing_table = Arc::clone(&routing_table);
-
-                if let Err(err) = proxy_http2_stream(
-                    &mut outbound_sender,
-                    request,
-                    &mut respond,
-                    client_addr,
-                    proxy_port,
-                    environment_id,
-                    routing_table,
-                )
-                .await
-                {
-                    warn!(
-                        "HTTP/2 stream proxy failure for {} on proxy port {}: {}",
-                        client_addr, proxy_port, err
-                    );
-                    break;
-                }
+                let mut stream_sender = outbound_sender.clone();
+                let context_clone = Arc::clone(&connection_context);
+                tokio::spawn(async move {
+                    if let Err(err) = proxy_http2_stream(
+                        &mut stream_sender,
+                        request,
+                        &mut respond,
+                        context_clone,
+                    )
+                    .await
+                    {
+                        warn!("HTTP/2 stream proxy failure: {}", err);
+                    }
+                });
             }
         }
     }
@@ -140,32 +194,17 @@ pub async fn handle_http2_proxy(
     Ok(())
 }
 
-async fn proxy_http2_stream(
-    outbound_sender: &mut client::SendRequest<Bytes>,
-    request: Request<RecvStream>,
-    respond: &mut server::SendResponse<Bytes>,
-    client_addr: SocketAddr,
+async fn determine_connection_route(
+    first_stream: &(Request<RecvStream>, server::SendResponse<Bytes>),
     proxy_port: u16,
-    default_environment_id: Uuid,
     routing_table: Arc<RwLock<RoutingTable>>,
-) -> io::Result<()> {
-    let (mut parts, body) = request.into_parts();
-    let mut body = ReplayableBody::new(body, MAX_HTTP2_FALLBACK_BODY_BYTES);
-
-    let method = parts.method.clone();
-    let path = parts.uri.path().to_string();
-    let authority = parts
-        .uri
-        .authority()
-        .map(|auth| auth.to_string())
-        .unwrap_or_default();
-
-    let header_pairs = header_map_to_vec(&parts.headers);
+    default_environment_id: Uuid,
+) -> io::Result<ConnectionRoutePlan> {
+    let (request, _) = first_stream;
+    let header_pairs = header_map_to_vec(request.headers());
     let routing_context = extract_routing_context(&header_pairs);
     let branch_id = routing_context.lapdev_environment_id;
-    let target_environment = branch_id.unwrap_or(default_environment_id);
-
-    ensure_environment_tracestate(&mut parts.headers, target_environment)?;
+    let target_environment_id = branch_id.unwrap_or(default_environment_id);
 
     let (service_port, decision) = {
         let table = routing_table.read().await;
@@ -174,164 +213,176 @@ async fn proxy_http2_stream(
         (service_port, decision)
     };
 
-    match decision {
+    let (upstream, description) = match decision {
         RouteDecision::BranchService { service } => {
-            if let Some(service_name) = service.service_name_for_port(service_port) {
-                info!(
-                    "HTTP/2 {} {} (authority {}) from {} routing to branch {:?} service {}:{} (proxy port {})",
-                    method, path, authority, client_addr, branch_id, service_name, service_port, proxy_port
-                );
+            let Some(service_name) = service.service_name_for_port(service_port) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "missing branch service mapping for port {} (branch {:?})",
+                        service_port, branch_id
+                    ),
+                ));
+            };
 
-                let http2_clients = Arc::clone(&service.http2_clients);
-                if let Err(err) = proxy_http2_branch_service(
-                    service_name,
-                    service_port,
-                    http2_clients,
-                    &parts,
-                    &mut body,
-                    respond,
-                )
-                .await
-                {
-                    warn!(
-                        "HTTP/2 branch route {} for env {:?} failed: {}; falling back to shared target",
-                        service_name, branch_id, err
-                    );
-                    if !body.supports_retry() {
-                        warn!(
-                            "HTTP/2 request from {} {} cannot be replayed for fallback",
-                            method, path
-                        );
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "request body cannot be replayed for fallback",
-                        ));
-                    }
-                } else {
-                    return Ok(());
-                }
-            } else {
-                warn!(
-                    "Missing branch service mapping for service port {} in env {:?}; using shared target",
-                    service_port, branch_id
-                );
-            }
+            let description = format!(
+                "branch service {}:{} (branch {:?})",
+                service_name, service_port, branch_id
+            );
+
+            (
+                UpstreamConnector::BranchService {
+                    service_name: service_name.to_string(),
+                    port: service_port,
+                },
+                description,
+            )
         }
         RouteDecision::BranchDevbox {
             connection,
             target_port,
         } => {
             let metadata = connection.metadata().clone();
-            info!(
-                "HTTP/2 {} {} (authority {}) from {} intercepted by branch devbox (env {:?}, proxy port {}, service port {}, intercept_id={}, session_id={}, target_port={})",
-                method,
-                path,
-                authority,
-                client_addr,
-                branch_id,
-                proxy_port,
-                service_port,
-                metadata.intercept_id,
-                metadata.session_id,
-                target_port
+            let description = format!(
+                "branch devbox intercept_id={} session_id={} target_port={} (branch {:?})",
+                metadata.intercept_id, metadata.session_id, target_port, branch_id
             );
-
-            if let Err(err) = proxy_http2_devbox(
-                Arc::clone(&connection),
-                target_port,
-                &parts,
-                &mut body,
-                respond,
+            (
+                UpstreamConnector::Devbox {
+                    connection,
+                    target_port,
+                    label: "branch-devbox",
+                },
+                description,
             )
-            .await
-            {
-                warn!(
-                        "HTTP/2 branch devbox route intercept_id={} failed: {}; falling back to shared target",
-                        metadata.intercept_id, err
-                    );
-                connection.clear_client().await;
-                if !body.supports_retry() {
-                    warn!(
-                        "HTTP/2 request from {} {} cannot be replayed for fallback",
-                        method, path
-                    );
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "request body cannot be replayed for fallback",
-                    ));
-                }
-            } else {
-                return Ok(());
-            }
         }
         RouteDecision::DefaultDevbox {
             connection,
             target_port,
         } => {
             let metadata = connection.metadata().clone();
-            info!(
-                "HTTP/2 {} {} (authority {}) from {} intercepted by shared devbox (proxy port {}, service port {}, intercept_id={}, session_id={}, target_port={})",
-                method,
-                path,
-                authority,
-                client_addr,
-                proxy_port,
-                service_port,
-                metadata.intercept_id,
-                metadata.session_id,
-                target_port
+            let description = format!(
+                "shared devbox intercept_id={} session_id={} target_port={}",
+                metadata.intercept_id, metadata.session_id, target_port
             );
-
-            if let Err(err) = proxy_http2_devbox(
-                Arc::clone(&connection),
-                target_port,
-                &parts,
-                &mut body,
-                respond,
+            (
+                UpstreamConnector::Devbox {
+                    connection,
+                    target_port,
+                    label: "shared-devbox",
+                },
+                description,
             )
+        }
+        RouteDecision::DefaultLocal { target_port } => {
+            let target = SocketAddr::new("127.0.0.1".parse().unwrap(), target_port);
+            let description = format!("shared target {}", target);
+            (UpstreamConnector::Local { target }, description)
+        }
+    };
+
+    Ok(ConnectionRoutePlan {
+        upstream,
+        service_port,
+        branch_id,
+        target_environment_id,
+        description,
+    })
+}
+
+async fn establish_upstream_connection(
+    plan: &ConnectionRoutePlan,
+) -> io::Result<(client::SendRequest<Bytes>, tokio::task::JoinHandle<()>)> {
+    match &plan.upstream {
+        UpstreamConnector::Local { target } => {
+            let stream = TcpStream::connect(target).await?;
+            spawn_upstream_driver(client::handshake(stream).await.map_err(map_h2_err)?, plan)
+        }
+        UpstreamConnector::BranchService { service_name, port } => {
+            let stream = TcpStream::connect((service_name.as_str(), *port)).await?;
+            spawn_upstream_driver(client::handshake(stream).await.map_err(map_h2_err)?, plan)
+        }
+        UpstreamConnector::Devbox {
+            connection,
+            target_port,
+            label,
+        } => match connection
+            .connect_tcp_stream("127.0.0.1", *target_port)
             .await
-            {
+        {
+            Ok(stream) => match client::handshake(stream).await {
+                Ok(res) => spawn_upstream_driver(res, plan),
+                Err(err) => {
+                    warn!("HTTP/2 handshake with {} failed: {}", label, err);
+                    connection.clear_client().await;
+                    Err(map_h2_err(err))
+                }
+            },
+            Err(err) => {
                 warn!(
-                    "HTTP/2 shared devbox route intercept_id={} failed: {}; falling back to shared target",
-                    metadata.intercept_id, err
+                    "Failed to connect to {} target_port={}: {}",
+                    label, target_port, err
                 );
                 connection.clear_client().await;
-                if !body.supports_retry() {
-                    warn!(
-                        "HTTP/2 request from {} {} cannot be replayed for fallback",
-                        method, path
-                    );
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "request body cannot be replayed for fallback",
-                    ));
-                }
-            } else {
-                return Ok(());
+                Err(err)
             }
-        }
-        RouteDecision::DefaultLocal { target_port: _ } => {}
+        },
     }
+}
 
-    let routing_target = determine_routing_target(&routing_context, service_port);
+fn spawn_upstream_driver<T>(
+    pair: (client::SendRequest<Bytes>, client::Connection<T, Bytes>),
+    plan: &ConnectionRoutePlan,
+) -> io::Result<(client::SendRequest<Bytes>, tokio::task::JoinHandle<()>)>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (sender, connection) = pair;
+    let description = plan.description.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(err) = connection.await {
+            warn!(target = %description, "Upstream HTTP/2 connection ended: {}", err);
+        }
+    });
+    Ok((sender, handle))
+}
+
+async fn proxy_http2_stream(
+    outbound_sender: &mut client::SendRequest<Bytes>,
+    request: Request<RecvStream>,
+    respond: &mut server::SendResponse<Bytes>,
+    context: Arc<ConnectionContext>,
+) -> io::Result<()> {
+    let (mut parts, body) = request.into_parts();
+    let method = parts.method.clone();
+    let path = parts.uri.path().to_string();
+    let authority = parts
+        .uri
+        .authority()
+        .map(|auth| auth.to_string())
+        .unwrap_or_default();
+
+    ensure_environment_tracestate(&mut parts.headers, context.target_environment_id)?;
+
     info!(
-        "HTTP/2 {} {} (authority {}) from {} -> shared target (service port {}, routing: {}, trace_id: {:?})",
+        target = %context.description,
+        branch = ?context.branch_id,
+        client = %context.client_addr,
+        proxy_port = context.proxy_port,
+        service_port = context.service_port,
+        "HTTP/2 {} {} (authority {}) forwarded",
         method,
         path,
-        authority,
-        client_addr,
-        service_port,
-        routing_target.get_metadata(),
-        routing_context.trace_context.trace_id
+        authority
     );
 
-    forward_http2_via_sender(outbound_sender, &parts, &mut body, respond).await
+    forward_http2_via_sender(outbound_sender, &parts, body, respond).await
 }
 
 async fn forward_http2_via_sender(
     sender: &mut client::SendRequest<Bytes>,
     parts: &http::request::Parts,
-    body: &mut ReplayableBody,
+    body: RecvStream,
     respond: &mut server::SendResponse<Bytes>,
 ) -> io::Result<()> {
     let outbound_request = build_outbound_request(parts)?;
@@ -339,335 +390,38 @@ async fn forward_http2_via_sender(
 
     let mut ready_sender = sender.clone().ready().await.map_err(map_h2_err)?;
 
-    let (response_future, mut outbound_stream) = ready_sender
+    let (response_future, outbound_stream) = ready_sender
         .send_request(outbound_request, end_of_stream)
         .map_err(map_h2_err)?;
     *sender = ready_sender;
 
-    if !end_of_stream {
-        body.forward(&mut outbound_stream).await?;
-    }
+    let request_forward = async move {
+        if end_of_stream {
+            Ok(())
+        } else {
+            forward_request_body(body, outbound_stream).await
+        }
+    };
 
-    let response = response_future.await.map_err(map_h2_err)?;
-    let (response_parts, mut response_body) = response.into_parts();
-    let response_end_of_stream = response_body.is_end_stream();
-    let head = Response::from_parts(response_parts, ());
-    let mut inbound_stream = respond
-        .send_response(head, response_end_of_stream)
-        .map_err(map_h2_err)?;
+    let response_forward = async move {
+        let response = response_future.await.map_err(map_h2_err)?;
+        let (response_parts, mut response_body) = response.into_parts();
+        let response_end_of_stream = response_body.is_end_stream();
+        let head = Response::from_parts(response_parts, ());
+        let mut inbound_stream = respond
+            .send_response(head, response_end_of_stream)
+            .map_err(map_h2_err)?;
 
-    if !response_end_of_stream {
-        forward_response_body(&mut response_body, &mut inbound_stream).await?;
-    }
+        if !response_end_of_stream {
+            forward_response_body(&mut response_body, &mut inbound_stream).await?;
+        }
+
+        Ok(())
+    };
+
+    tokio::try_join!(request_forward, response_forward)?;
 
     Ok(())
-}
-
-enum ReplayableBodyState {
-    Streaming(RecvStream),
-    Buffered,
-    Unbuffered,
-}
-
-struct ReplayableBody {
-    state: ReplayableBodyState,
-    buffered_chunks: Vec<Bytes>,
-    buffered_trailers: Option<HeaderMap>,
-    initial_end_of_stream: bool,
-    max_buffer_bytes: usize,
-    total_buffered_bytes: usize,
-    replayable: bool,
-    overflow_warned: bool,
-}
-
-impl ReplayableBody {
-    fn new(stream: RecvStream, max_buffer_bytes: usize) -> Self {
-        let initial_end_of_stream = stream.is_end_stream();
-        Self {
-            state: ReplayableBodyState::Streaming(stream),
-            buffered_chunks: Vec::new(),
-            buffered_trailers: None,
-            initial_end_of_stream,
-            max_buffer_bytes,
-            total_buffered_bytes: 0,
-            replayable: true,
-            overflow_warned: false,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.initial_end_of_stream
-    }
-
-    fn supports_retry(&self) -> bool {
-        if self.initial_end_of_stream {
-            return true;
-        }
-
-        if !self.replayable {
-            return false;
-        }
-
-        !matches!(self.state, ReplayableBodyState::Unbuffered)
-    }
-
-    async fn forward(&mut self, outbound_stream: &mut SendStream<Bytes>) -> io::Result<()> {
-        if self.initial_end_of_stream {
-            return Ok(());
-        }
-
-        for chunk in &self.buffered_chunks {
-            outbound_stream
-                .send_data(chunk.clone(), false)
-                .map_err(map_h2_err)?;
-        }
-
-        match &mut self.state {
-            ReplayableBodyState::Streaming(body) => {
-                let mut trailers = None;
-                {
-                    let body_ref = body;
-                    while let Some(chunk_result) = body_ref.data().await {
-                        let data = chunk_result.map_err(map_h2_err)?;
-                        let len = data.len();
-
-                        if self.replayable {
-                            let attempted_total = self.total_buffered_bytes + len;
-                            if attempted_total > self.max_buffer_bytes {
-                                self.replayable = false;
-                                self.buffered_chunks.clear();
-                                self.buffered_trailers = None;
-                                self.total_buffered_bytes = 0;
-                                if !self.overflow_warned {
-                                    warn!(
-                                        "HTTP/2 request body exceeded replay buffer ({} bytes > {}); fallback replay disabled",
-                                        attempted_total,
-                                        self.max_buffer_bytes
-                                    );
-                                    self.overflow_warned = true;
-                                }
-                            } else {
-                                self.total_buffered_bytes += len;
-                                self.buffered_chunks.push(data.clone());
-                            }
-                        }
-
-                        outbound_stream.send_data(data, false).map_err(map_h2_err)?;
-                        if let Err(err) = body_ref.flow_control().release_capacity(len) {
-                            warn!("Failed to release HTTP/2 request capacity: {}", err);
-                        }
-                    }
-
-                    trailers = body_ref.trailers().await.map_err(map_h2_err)?;
-                }
-
-                if let Some(trailers) = trailers {
-                    if self.replayable {
-                        self.buffered_trailers = Some(trailers.clone());
-                    }
-                    outbound_stream
-                        .send_trailers(trailers)
-                        .map_err(map_h2_err)?;
-                } else {
-                    outbound_stream
-                        .send_data(Bytes::new(), true)
-                        .map_err(map_h2_err)?;
-                }
-
-                self.state = if self.replayable {
-                    ReplayableBodyState::Buffered
-                } else {
-                    ReplayableBodyState::Unbuffered
-                };
-
-                Ok(())
-            }
-            ReplayableBodyState::Buffered => {
-                if let Some(trailers) = &self.buffered_trailers {
-                    outbound_stream
-                        .send_trailers(trailers.clone())
-                        .map_err(map_h2_err)?;
-                } else {
-                    outbound_stream
-                        .send_data(Bytes::new(), true)
-                        .map_err(map_h2_err)?;
-                }
-                Ok(())
-            }
-            ReplayableBodyState::Unbuffered => Err(io::Error::new(
-                io::ErrorKind::Other,
-                "request body not replayable",
-            )),
-        }
-    }
-}
-
-async fn proxy_http2_branch_service(
-    service_name: &str,
-    port: u16,
-    clients: Arc<RwLock<HashMap<u16, Arc<Http2ClientActor>>>>,
-    parts: &http::request::Parts,
-    body: &mut ReplayableBody,
-    respond: &mut server::SendResponse<Bytes>,
-) -> io::Result<()> {
-    let client = {
-        let guard = clients.read().await;
-        if let Some(existing) = guard.get(&port) {
-            Arc::clone(existing)
-        } else {
-            drop(guard);
-
-            let service_name_arc = Arc::new(service_name.to_string());
-            let label = format!("branch-http2:{}:{}", service_name, port);
-            let connect = Http2ClientActor::connector({
-                let service_name = Arc::clone(&service_name_arc);
-                move || {
-                    let service_name = Arc::clone(&service_name);
-                    async move {
-                        let branch_stream =
-                            TcpStream::connect((service_name.as_str(), port)).await?;
-                        let (sender, connection) =
-                            client::handshake(branch_stream).await.map_err(map_h2_err)?;
-                        let driver = Box::pin(async move { connection.await });
-                        Ok(ConnectResult::new(sender, driver))
-                    }
-                }
-            });
-
-            let mut guard = clients.write().await;
-            guard
-                .entry(port)
-                .or_insert_with(|| Http2ClientActor::spawn(label, connect))
-                .clone()
-        }
-    };
-
-    let mut lease = match client.acquire().await {
-        Ok(lease) => lease,
-        Err(err) => {
-            warn!(
-                "Branch HTTP/2 acquire for {}:{} failed: {}",
-                service_name, port, err
-            );
-            remove_branch_http2_client(&clients, port).await;
-            return Err(err);
-        }
-    };
-
-    match forward_http2_via_sender(lease.sender_mut(), parts, body, respond).await {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            lease.mark_broken();
-            warn!(
-                "HTTP/2 branch proxy to {}:{} failed mid-stream: {}",
-                service_name, port, err
-            );
-            remove_branch_http2_client(&clients, port).await;
-            Err(err)
-        }
-    }
-}
-
-async fn remove_branch_http2_client(
-    clients: &Arc<RwLock<HashMap<u16, Arc<Http2ClientActor>>>>,
-    port: u16,
-) {
-    let client = {
-        let mut guard = clients.write().await;
-        guard.remove(&port)
-    };
-
-    if let Some(client) = client {
-        client.shutdown().await;
-    }
-}
-
-async fn proxy_http2_devbox(
-    connection: Arc<DevboxConnection>,
-    target_port: u16,
-    parts: &http::request::Parts,
-    body: &mut ReplayableBody,
-    respond: &mut server::SendResponse<Bytes>,
-) -> io::Result<()> {
-    let metadata = Arc::new(connection.metadata().clone());
-
-    let client = connection
-        .get_or_create_http2_client(target_port, {
-            let connection = Arc::clone(&connection);
-            let metadata = Arc::clone(&metadata);
-            move || {
-                let connection = Arc::clone(&connection);
-                let metadata = Arc::clone(&metadata);
-                let label = format!(
-                    "devbox-http2:{}:{}",
-                    metadata.intercept_id, target_port
-                );
-                let connect = Http2ClientActor::connector(move || {
-                    let connection = Arc::clone(&connection);
-                    let metadata = Arc::clone(&metadata);
-                    async move {
-                        let devbox_stream = match connection
-                            .connect_tcp_stream("127.0.0.1", target_port)
-                            .await
-                        {
-                            Ok(stream) => stream,
-                            Err(err) => {
-                                warn!(
-                                    "Failed to connect to devbox intercept_id={} target_port={}: {}",
-                                    metadata.intercept_id, target_port, err
-                                );
-                                connection.clear_client().await;
-                                return Err(io::Error::from(err));
-                            }
-                        };
-
-                        let (sender, devbox_connection) =
-                            match client::handshake(devbox_stream).await {
-                                Ok(pair) => pair,
-                                Err(err) => {
-                                    warn!(
-                                        "HTTP/2 handshake with devbox intercept_id={} failed: {}",
-                                        metadata.intercept_id, err
-                                    );
-                                    connection.clear_client().await;
-                                    return Err(map_h2_err(err));
-                                }
-                            };
-
-                        let driver = Box::pin(async move { devbox_connection.await });
-                        Ok(ConnectResult::new(sender, driver))
-                    }
-                });
-
-                Http2ClientActor::spawn(label, connect)
-            }
-        })
-        .await;
-
-    let mut lease = match client.acquire().await {
-        Ok(lease) => lease,
-        Err(err) => {
-            warn!(
-                "Devbox HTTP/2 sender unavailable for intercept_id={}, removing pooled client: {}",
-                metadata.intercept_id, err
-            );
-            connection.remove_http2_client(target_port).await;
-            return Err(err);
-        }
-    };
-
-    match forward_http2_via_sender(lease.sender_mut(), parts, body, respond).await {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            lease.mark_broken();
-            warn!(
-                "HTTP/2 proxy via devbox intercept_id={} failed mid-stream: {}",
-                metadata.intercept_id, err
-            );
-            connection.remove_http2_client(target_port).await;
-            Err(err)
-        }
-    }
 }
 
 fn build_outbound_request(parts: &http::request::Parts) -> io::Result<Request<()>> {
@@ -709,6 +463,32 @@ async fn forward_response_body(
     Ok(())
 }
 
+async fn forward_request_body(
+    mut body: RecvStream,
+    mut outbound_stream: SendStream<Bytes>,
+) -> io::Result<()> {
+    while let Some(chunk_result) = body.data().await {
+        let data = chunk_result.map_err(map_h2_err)?;
+        let len = data.len();
+        outbound_stream.send_data(data, false).map_err(map_h2_err)?;
+        if let Err(err) = body.flow_control().release_capacity(len) {
+            warn!("Failed to release HTTP/2 request capacity: {}", err);
+        }
+    }
+
+    if let Some(trailers) = body.trailers().await.map_err(map_h2_err)? {
+        outbound_stream
+            .send_trailers(trailers)
+            .map_err(map_h2_err)?;
+    } else {
+        outbound_stream
+            .send_data(Bytes::new(), true)
+            .map_err(map_h2_err)?;
+    }
+
+    Ok(())
+}
+
 fn header_map_to_vec(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -726,40 +506,38 @@ fn ensure_environment_tracestate(headers: &mut HeaderMap, environment_id: Uuid) 
     let env_id_str = environment_id.to_string();
     let target_entry = format!("lapdev-env-id={}", env_id_str);
 
-    if let Some(existing_value) = headers.get(TRACESTATE_HEADER) {
+    let new_value = if let Some(existing_value) = headers.get(TRACESTATE_HEADER) {
         let existing = existing_value
             .to_str()
             .map(|s| s.to_string())
             .unwrap_or_else(|_| String::from_utf8_lossy(existing_value.as_bytes()).to_string());
 
-        let already_present = existing.split(',').any(|entry| {
-            let trimmed = entry.trim();
-            if let Some((key, value)) = trimmed.split_once('=') {
-                key.eq_ignore_ascii_case("lapdev-env-id")
-                    && value.trim().eq_ignore_ascii_case(&env_id_str)
-            } else {
-                false
-            }
-        });
+        let mut entries: Vec<String> = Vec::new();
 
-        if already_present {
-            return Ok(());
+        for entry in existing.split(',') {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some((key, _)) = trimmed.split_once('=') {
+                if key.trim().eq_ignore_ascii_case("lapdev-env-id") {
+                    continue;
+                }
+            }
+
+            entries.push(trimmed.to_string());
         }
 
-        let new_value = if existing.trim().is_empty() {
-            target_entry
-        } else {
-            format!("{},{}", existing.trim(), target_entry)
-        };
-
-        let header_value = HeaderValue::from_str(&new_value)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-        headers.insert(HeaderName::from_static(TRACESTATE_HEADER), header_value);
+        entries.push(target_entry);
+        entries.join(",")
     } else {
-        let header_value = HeaderValue::from_str(&target_entry)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-        headers.insert(HeaderName::from_static(TRACESTATE_HEADER), header_value);
-    }
+        target_entry
+    };
+
+    let header_value = HeaderValue::from_str(&new_value)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    headers.insert(HeaderName::from_static(TRACESTATE_HEADER), header_value);
 
     Ok(())
 }
@@ -823,5 +601,49 @@ where
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_tracestate_inserted_when_missing() {
+        let mut headers = HeaderMap::new();
+        let env_id = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+
+        ensure_environment_tracestate(&mut headers, env_id).unwrap();
+
+        let expected = format!("lapdev-env-id={}", env_id);
+        assert_eq!(
+            headers
+                .get(TRACESTATE_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn ensure_tracestate_replaces_existing_entry() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(TRACESTATE_HEADER),
+            HeaderValue::from_static("foo=bar, lapdev-env-id=old-env ,baz=qux"),
+        );
+
+        let env_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+
+        ensure_environment_tracestate(&mut headers, env_id).unwrap();
+
+        let expected = format!("foo=bar,baz=qux,lapdev-env-id={}", env_id);
+        assert_eq!(
+            headers
+                .get(TRACESTATE_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap(),
+            expected
+        );
     }
 }

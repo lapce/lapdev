@@ -3,10 +3,7 @@ use lapdev_kube_rpc::{
     DevboxRouteConfig, ProxyBranchRouteConfig, ProxyRouteAccessLevel, SidecarProxyManagerRpcClient,
     SidecarProxyRpc,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -95,7 +92,6 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
                     requires_auth: route.requires_auth,
                     access_level: access_level_from_proxy(route.access_level),
                     timeout_ms: route.timeout_ms,
-                    http2_clients: Arc::new(RwLock::new(HashMap::new())),
                 };
                 updates.push((branch_id, service_route));
             }
@@ -239,7 +235,6 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             requires_auth: route.requires_auth,
             access_level: access_level_from_proxy(route.access_level),
             timeout_ms: route.timeout_ms,
-            http2_clients: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let devbox_override = route.devbox_route.map(devbox_connection_from_config);

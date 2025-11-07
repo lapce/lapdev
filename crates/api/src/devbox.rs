@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{
     extract::{ws::WebSocket, Path, Query, State, WebSocketUpgrade},
@@ -102,21 +102,28 @@ pub async fn devbox_rpc_websocket(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::days(30));
 
-    // Check for existing active session and notify it before displacing
-    if let Some(old_handle) = state.active_devbox_sessions.read().await.get(&ctx.user.id) {
-        tracing::info!(
-            "Displacing existing session {} on device {} for user {}",
-            old_handle.session_id,
-            old_handle.device_name,
-            ctx.user.id
-        );
+    // Check for existing active sessions and notify them before displacing
+    if let Some(existing_handles) = state
+        .active_devbox_sessions
+        .read()
+        .await
+        .get(&ctx.user.id)
+        .map(|entries| entries.values().cloned().collect::<Vec<_>>())
+    {
+        for old_handle in existing_handles {
+            tracing::info!(
+                "Displacing existing session {} on device {} for user {}",
+                old_handle.session_id,
+                old_handle.device_name,
+                ctx.user.id
+            );
 
-        // Notify old session that it's being displaced
-        let _ = old_handle
-            .notify_tx
-            .send(crate::state::DevboxSessionNotification::Displaced {
-                new_device_name: ctx.device_name.clone(),
-            });
+            let _ = old_handle
+                .notify_tx
+                .send(crate::state::DevboxSessionNotification::Displaced {
+                    new_device_name: ctx.device_name.clone(),
+                });
+        }
     }
 
     // Create or update devbox session
@@ -195,16 +202,22 @@ async fn handle_devbox_rpc(
 
     // Register this session as active
     let connection_id = Uuid::new_v4();
-    state.active_devbox_sessions.write().await.insert(
-        user_id,
-        crate::state::DevboxSessionHandle {
-            session_id,
-            device_name: device_name.clone(),
-            notify_tx,
-            rpc_client: rpc_client.clone(),
-            connection_id,
-        },
-    );
+    {
+        let mut sessions = state.active_devbox_sessions.write().await;
+        sessions
+            .entry(user_id)
+            .or_insert_with(BTreeMap::new)
+            .insert(
+                connection_id,
+                crate::state::DevboxSessionHandle {
+                    session_id,
+                    device_name: device_name.clone(),
+                    notify_tx,
+                    rpc_client: rpc_client.clone(),
+                    connection_id,
+                },
+            );
+    }
 
     // Create RPC server (for CLI to call our methods)
     let rpc_server = DevboxSessionRpcServer::new(
@@ -254,12 +267,11 @@ async fn handle_devbox_rpc(
     // Cleanup: unregister session and stop notification listener
     {
         let mut sessions = state.active_devbox_sessions.write().await;
-        if sessions
-            .get(&user_id)
-            .map(|handle| handle.connection_id == connection_id)
-            .unwrap_or(false)
-        {
-            sessions.remove(&user_id);
+        if let Some(entries) = sessions.get_mut(&user_id) {
+            entries.remove(&connection_id);
+            if entries.is_empty() {
+                sessions.remove(&user_id);
+            }
         }
     }
     notification_task.abort();
@@ -603,8 +615,11 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 
         {
             let mut sessions = self.state.active_devbox_sessions.write().await;
-            if let Some(handle) = sessions.get_mut(&self.user_id) {
-                if handle.session_id == self.session_id {
+            if let Some(entries) = sessions.get_mut(&self.user_id) {
+                if let Some(handle) = entries
+                    .values_mut()
+                    .find(|handle| handle.session_id == self.session_id)
+                {
                     handle.device_name = device_name.clone();
                 }
             }
@@ -914,7 +929,7 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .read()
             .await
             .get(&self.user_id)
-            .map(|handle| handle.session_id)
+            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
         {
             let state = self.state.clone();
             let user_id = self.user_id;
@@ -967,7 +982,7 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .read()
             .await
             .get(&self.user_id)
-            .map(|handle| handle.session_id)
+            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
         {
             let state = self.state.clone();
             let user_id = self.user_id;

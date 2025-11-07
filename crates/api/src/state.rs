@@ -1,4 +1,8 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+    sync::Arc,
+};
 
 use anyhow::{anyhow, Context, Result};
 use axum::{body::Body, extract::FromRequestParts, http::request::Parts, RequestPartsExt};
@@ -102,7 +106,7 @@ pub struct CoreState {
     // Pending CLI authentication tokens (session_id -> token)
     pub pending_cli_auth: Arc<RwLock<HashMap<Uuid, PendingCliAuth>>>,
     // Active devbox sessions (user_id -> DevboxSessionHandle)
-    pub active_devbox_sessions: Arc<RwLock<HashMap<Uuid, DevboxSessionHandle>>>,
+    pub active_devbox_sessions: Arc<RwLock<HashMap<Uuid, BTreeMap<Uuid, DevboxSessionHandle>>>>,
     // Lifecycle notifications for kube environments
     pub environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
     pub environment_workload_events: broadcast::Sender<EnvironmentWorkloadStatusEvent>,
@@ -111,6 +115,7 @@ pub struct CoreState {
 }
 
 /// Handle for an active devbox session
+#[derive(Clone)]
 pub struct DevboxSessionHandle {
     pub session_id: Uuid,
     pub device_name: String,

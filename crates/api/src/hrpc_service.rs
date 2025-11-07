@@ -84,24 +84,22 @@ impl HrpcService for CoreState {
 
         let session_notification = {
             let sessions = self.active_devbox_sessions.read().await;
-            sessions.get(&user.id).and_then(|handle| {
-                if handle.session_id == session_id {
-                    Some(handle.rpc_client.clone())
-                } else {
-                    None
-                }
+            sessions.get(&user.id).and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|(_, handle)| handle.session_id == session_id)
+                    .map(|(connection_id, handle)| (*connection_id, handle.rpc_client.clone()))
             })
         };
 
-        if let Some(client) = session_notification {
+        if let Some((connection_id, client)) = session_notification {
             {
                 let mut sessions = self.active_devbox_sessions.write().await;
-                if sessions
-                    .get(&user.id)
-                    .map(|handle| handle.session_id == session_id)
-                    .unwrap_or(false)
-                {
-                    sessions.remove(&user.id);
+                if let Some(entries) = sessions.get_mut(&user.id) {
+                    entries.remove(&connection_id);
+                    if entries.is_empty() {
+                        sessions.remove(&user.id);
+                    }
                 }
             }
             tokio::spawn(async move {
@@ -198,9 +196,12 @@ impl HrpcService for CoreState {
         // Get the RPC client for the active session
         let rpc_client = {
             let sessions = self.active_devbox_sessions.read().await;
-            sessions
-                .get(&ctx.user.id)
-                .map(|handle| handle.rpc_client.clone())
+            sessions.get(&ctx.user.id).and_then(|entries| {
+                entries
+                    .values()
+                    .next_back()
+                    .map(|handle| handle.rpc_client.clone())
+            })
         };
 
         if let Some(client) = rpc_client {
@@ -373,7 +374,7 @@ impl HrpcService for CoreState {
             .read()
             .await
             .get(&user.id)
-            .map(|handle| handle.session_id)
+            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
         {
             let state = self.clone();
             let user_id = user.id;
@@ -417,7 +418,7 @@ impl HrpcService for CoreState {
             .read()
             .await
             .get(&user.id)
-            .map(|handle| handle.session_id)
+            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
         {
             let state = self.clone();
             let environment_id = intercept.environment_id;

@@ -68,44 +68,26 @@ pub fn parse_http_request_from_buffer(buffer: &[u8]) -> io::Result<HttpParseResu
     Ok((parsed_request, body_start))
 }
 
-/// Try to parse a complete HTTP request, reading more data if needed
-/// Uses optimized header boundary detection to minimize parsing attempts
-pub async fn parse_complete_http_request<R>(
-    stream: &mut R,
-    buffer: &mut Vec<u8>,
-) -> io::Result<HttpParseResult>
+/// Read from the stream until complete HTTP headers are buffered.
+/// Returns Ok(()) once `buffer` contains the full header block (ending with CRLFCRLF).
+pub async fn read_http_headers<R>(stream: &mut R, buffer: &mut Vec<u8>) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
 {
-    const MAX_HEADER_SIZE: usize = 8192; // Maximum size for HTTP headers
+    const MAX_HEADER_SIZE: usize = 8192;
     const READ_CHUNK_SIZE: usize = 1024;
     const HEADER_END_MARKER: &[u8] = b"\r\n\r\n";
 
-    // First check if we already have complete headers in the buffer
-    if let Some(_header_end_pos) = buffer
-        .windows(HEADER_END_MARKER.len())
-        .position(|window| window == HEADER_END_MARKER)
-    {
-        // We have complete headers, try parsing
-        match parse_http_request_from_buffer(buffer) {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to parse HTTP request: {}", e),
-                ))
-            }
-        }
+    if headers_complete(buffer, HEADER_END_MARKER) {
+        return Ok(());
     }
 
-    // Read more data until we find the header end marker or reach max size
     while buffer.len() < MAX_HEADER_SIZE {
         let prev_len = buffer.len();
         let mut temp_buffer = vec![0u8; READ_CHUNK_SIZE];
         let bytes_read = stream.read(&mut temp_buffer).await?;
 
         if bytes_read == 0 {
-            // EOF reached, return incomplete request error
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "Connection closed before complete HTTP headers received",
@@ -115,37 +97,21 @@ where
         temp_buffer.truncate(bytes_read);
         buffer.extend_from_slice(&temp_buffer);
 
-        // Only search in the newly added data plus a small overlap to catch markers spanning the boundary
         let search_start = if prev_len >= HEADER_END_MARKER.len() - 1 {
             prev_len - (HEADER_END_MARKER.len() - 1)
         } else {
             0
         };
 
-        if let Some(_relative_pos) = buffer[search_start..]
-            .windows(HEADER_END_MARKER.len())
-            .position(|window| window == HEADER_END_MARKER)
-        {
-            // We have complete headers, parse once
-            match parse_http_request_from_buffer(buffer) {
-                Ok(result) => {
-                    debug!(
-                        "Successfully parsed HTTP request after reading {} total bytes",
-                        buffer.len()
-                    );
-                    return Ok(result);
-                }
-                Err(e) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Failed to parse HTTP request: {}", e),
-                    ));
-                }
-            }
+        if headers_complete(&buffer[search_start..], HEADER_END_MARKER) {
+            debug!(
+                "Successfully read HTTP headers after buffering {} bytes",
+                buffer.len()
+            );
+            return Ok(());
         }
     }
 
-    // Reached max header size without finding complete headers
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         format!(
@@ -153,6 +119,10 @@ where
             MAX_HEADER_SIZE
         ),
     ))
+}
+
+fn headers_complete(buffer: &[u8], marker: &[u8]) -> bool {
+    buffer.windows(marker.len()).any(|window| window == marker)
 }
 
 /// Extract Content-Length from parsed headers if present
@@ -389,13 +359,14 @@ mod tests {
         let mut mock_stream = ChunkedMockStream::new(chunks);
         let mut buffer = Vec::new();
 
-        let result = parse_complete_http_request(&mut mock_stream, &mut buffer).await;
+        let read_result = read_http_headers(&mut mock_stream, &mut buffer).await;
         assert!(
-            result.is_ok(),
-            "Should successfully parse request with boundary-spanning marker"
+            read_result.is_ok(),
+            "Should successfully read request with boundary-spanning marker"
         );
 
-        let (parsed_request, _body_start) = result.unwrap();
+        let (parsed_request, _body_start) =
+            parse_http_request_from_buffer(&buffer).expect("Failed to parse request");
         assert_eq!(parsed_request.method, "GET");
         assert_eq!(parsed_request.path, "/test");
         assert_eq!(
@@ -413,10 +384,14 @@ mod tests {
         let mut mock_stream2 = ChunkedMockStream::new(chunks2);
         let mut buffer2 = Vec::new();
 
-        let result2 = parse_complete_http_request(&mut mock_stream2, &mut buffer2).await;
-        assert!(result2.is_ok(), "Should handle different boundary split");
+        let read_result2 = read_http_headers(&mut mock_stream2, &mut buffer2).await;
+        assert!(
+            read_result2.is_ok(),
+            "Should handle different boundary split"
+        );
 
-        let (parsed_request2, _) = result2.unwrap();
+        let (parsed_request2, _) =
+            parse_http_request_from_buffer(&buffer2).expect("Failed to parse request");
         assert_eq!(parsed_request2.method, "POST");
         assert_eq!(parsed_request2.path, "/api");
         assert_eq!(
@@ -437,13 +412,14 @@ mod tests {
         let mut mock_stream3 = ChunkedMockStream::new(chunks3);
         let mut buffer3 = Vec::new();
 
-        let result3 = parse_complete_http_request(&mut mock_stream3, &mut buffer3).await;
+        let read_result3 = read_http_headers(&mut mock_stream3, &mut buffer3).await;
         assert!(
-            result3.is_ok(),
+            read_result3.is_ok(),
             "Should handle extremely fragmented boundary marker"
         );
 
-        let (parsed_request3, _) = result3.unwrap();
+        let (parsed_request3, _) =
+            parse_http_request_from_buffer(&buffer3).expect("Failed to parse request");
         assert_eq!(parsed_request3.method, "PUT");
         assert_eq!(parsed_request3.path, "/upload");
         assert_eq!(
@@ -514,15 +490,16 @@ mod tests {
             let mut mock_stream = ChunkedMockStream::new(chunks);
             let mut buffer = Vec::new();
 
-            let result = parse_complete_http_request(&mut mock_stream, &mut buffer).await;
+            let read_result = read_http_headers(&mut mock_stream, &mut buffer).await;
             assert!(
-                result.is_ok(),
+                read_result.is_ok(),
                 "Should handle boundary split at position {} ({})",
                 split_pos,
                 description
             );
 
-            let (parsed_request, _) = result.unwrap();
+            let (parsed_request, _) =
+                parse_http_request_from_buffer(&buffer).expect("Failed to parse request");
             assert_eq!(parsed_request.method, "HEAD");
             assert_eq!(parsed_request.path, "/status");
             assert_eq!(
@@ -581,14 +558,15 @@ mod tests {
             let mut mock_stream = ChunkedMockStream::new(chunks);
             let mut buffer = Vec::new();
 
-            let result = parse_complete_http_request(&mut mock_stream, &mut buffer).await;
+            let read_result = read_http_headers(&mut mock_stream, &mut buffer).await;
             assert!(
-                result.is_ok(),
+                read_result.is_ok(),
                 "Should handle complex boundary split: {}",
                 description
             );
 
-            let (parsed_request, _) = result.unwrap();
+            let (parsed_request, _) =
+                parse_http_request_from_buffer(&buffer).expect("Failed to parse request");
             assert_eq!(parsed_request.method, "HEAD");
             assert_eq!(parsed_request.path, "/status");
             assert_eq!(

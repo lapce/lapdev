@@ -1,4 +1,4 @@
-use lapdev_common::utils::resolve_api_host;
+use lapdev_common::{kube::KUBE_ENVIRONMENT_TOKEN_HEADER, utils::resolve_api_host};
 use lapdev_kube_rpc::{BranchEnvironmentInfo, DevboxProxyRpc};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -224,7 +224,7 @@ impl DevboxProxyRpcServer {
             // Create custom headers with auth token
             let request = match http::Request::builder()
                 .uri(&ws_url)
-                .header("X-Lapdev-Environment-Token", &auth_token)
+                .header(KUBE_ENVIRONMENT_TOKEN_HEADER, &auth_token)
                 .body(())
             {
                 Ok(req) => req,

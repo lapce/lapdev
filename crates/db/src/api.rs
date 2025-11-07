@@ -41,6 +41,12 @@ use std::str::FromStr;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+#[derive(Clone, Debug)]
+pub struct NewEnvironmentWorkload {
+    pub id: Uuid,
+    pub details: KubeWorkloadDetails,
+}
+
 // Custom result structure for multi-table join
 #[derive(FromQueryResult)]
 struct KubeEnvironmentWithRelated {
@@ -3149,7 +3155,7 @@ impl DbApi {
         is_shared: bool,
         catalog_sync_version: i64,
         base_environment_id: Option<Uuid>,
-        workloads: Vec<KubeWorkloadDetails>,
+        workloads: Vec<NewEnvironmentWorkload>,
         services: std::collections::HashMap<String, lapdev_common::kube::KubeServiceWithYaml>,
         auth_token: String,
     ) -> Result<lapdev_db_entities::kube_environment::Model, sea_orm::DbErr> {
@@ -3183,6 +3189,10 @@ impl DbApi {
 
         // Create all associated workloads
         for workload in workloads {
+            let NewEnvironmentWorkload {
+                id: new_workload_id,
+                details,
+            } = workload;
             let KubeWorkloadDetails {
                 name,
                 namespace: workload_namespace,
@@ -3191,9 +3201,7 @@ impl DbApi {
                 ports,
                 workload_yaml,
                 base_workload_id,
-            } = workload;
-
-            let new_workload_id = Uuid::new_v4();
+            } = details;
             let effective_base_workload_id = base_workload_id.unwrap_or(new_workload_id);
 
             // Serialize all containers

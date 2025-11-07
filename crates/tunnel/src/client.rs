@@ -12,9 +12,10 @@ use tokio::{
     io::{self, AsyncRead, AsyncWrite},
     sync::{mpsc, oneshot, Notify},
     task::JoinHandle,
+    time::{Duration, MissedTickBehavior},
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 use uuid::Uuid;
 
 use crate::{
@@ -199,6 +200,8 @@ impl Inner {
     }
 }
 
+const TUNNEL_HEARTBEAT_INTERVAL_SECS: u64 = 30;
+
 /// Client capable of multiplexing TCP streams over an abstract transport.
 pub struct TunnelClient {
     inner: Arc<Inner>,
@@ -271,6 +274,29 @@ impl TunnelClient {
 
             reader_inner.fail_all("connection closed").await;
             reader_notify.notify_waiters();
+        });
+
+        let heartbeat_inner = Arc::clone(&inner);
+        let heartbeat_notify = Arc::clone(&close_notify);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(TUNNEL_HEARTBEAT_INTERVAL_SECS));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    _ = heartbeat_notify.notified() => {
+                        trace!("Tunnel heartbeat task exiting due to shutdown");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        if heartbeat_inner.send_message(WireMessage::Heartbeat).is_err() {
+                            trace!("Tunnel heartbeat task stopping; connection closed");
+                            break;
+                        }
+                    }
+                }
+            }
         });
 
         Self {
@@ -540,6 +566,9 @@ async fn handle_incoming(inner: &Arc<Inner>, payload: Bytes) {
                     .await;
             }
             inner.close_stream(&tunnel_id).await;
+        }
+        Ok(WireMessage::Heartbeat) => {
+            // No-op; keep-alive frame.
         }
         Ok(WireMessage::Open { .. }) => {
             debug!("Received unexpected Open message from server");

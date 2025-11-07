@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use axum::extract::ws::WebSocket;
 use lapdev_tunnel::{
@@ -11,38 +17,72 @@ use uuid::Uuid;
 use crate::websocket_transport::WebSocketTransport;
 
 pub struct DevboxTunnelRegistry {
-    sessions: Arc<RwLock<HashMap<Uuid, Arc<TunnelClient>>>>,
+    sessions: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, Arc<TunnelClient>>>>>,
+    generation_counter: AtomicU64,
 }
 
 impl DevboxTunnelRegistry {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            generation_counter: AtomicU64::new(1),
         }
+    }
+
+    fn next_generation(&self) -> u64 {
+        self.generation_counter.fetch_add(1, Ordering::SeqCst)
     }
 
     pub async fn register_cli(&self, session_id: Uuid, socket: WebSocket) {
         let transport = WebSocketTransport::new(socket);
         let client = Arc::new(TunnelClient::connect(transport));
+        let generation = self.next_generation();
 
         {
             let mut sessions = self.sessions.write().await;
-            if sessions.insert(session_id, client.clone()).is_some() {
+            let entry = sessions.entry(session_id).or_insert_with(BTreeMap::new);
+            if entry.insert(generation, client.clone()).is_some() {
                 warn!(
-                    "Replacing existing Devbox CLI tunnel for session {}",
-                    session_id
+                    "Overwrote Devbox CLI tunnel generation {} for session {}",
+                    generation, session_id
                 );
-            } else {
-                info!("Registered Devbox CLI tunnel for session {}", session_id);
             }
+            info!(
+                "Registered Devbox CLI tunnel for session {} generation {}; active entries {}",
+                session_id,
+                generation,
+                entry.len()
+            );
         }
 
         let sessions = Arc::clone(&self.sessions);
         tokio::spawn(async move {
             client.closed().await;
             let mut sessions = sessions.write().await;
-            sessions.remove(&session_id);
-            info!("Devbox CLI tunnel closed for session {}", session_id);
+            if let Some(entry) = sessions.get_mut(&session_id) {
+                if entry.remove(&generation).is_some() {
+                    info!(
+                        "Devbox CLI tunnel closed for session {} generation {}; remaining {}",
+                        session_id,
+                        generation,
+                        entry.len()
+                    );
+                    if entry.is_empty() {
+                        sessions.remove(&session_id);
+                    }
+                } else {
+                    info!(
+                        "Skip removing Devbox CLI tunnel for session {} due to generation mismatch (requested {})",
+                        session_id,
+                        generation
+                    );
+                }
+            } else {
+                info!(
+                    "Devbox CLI tunnel cleanup found no session {} for generation {}",
+                    session_id, generation
+                );
+            }
         });
     }
 
@@ -53,7 +93,13 @@ impl DevboxTunnelRegistry {
     ) -> Result<(), TunnelError> {
         let cli_client = {
             let sessions = self.sessions.read().await;
-            sessions.get(&session_id).cloned()
+            sessions.get(&session_id).and_then(|entry| {
+                entry
+                    .values()
+                    .rev()
+                    .find(|client| !client.is_closed())
+                    .cloned()
+            })
         };
 
         let Some(cli_client) = cli_client else {

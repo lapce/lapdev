@@ -6,6 +6,8 @@ use tracing::debug;
 
 /// Maximum bytes to read while attempting to detect HTTP.
 const MAX_DETECTION_BYTES: usize = 8192;
+const READ_CHUNK_SIZE: usize = 1024;
+const HEADER_END_MARKER: &[u8] = b"\r\n\r\n";
 
 /// HTTP/2 client preface sent at the start of cleartext connections.
 const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -42,28 +44,20 @@ where
             break;
         }
 
-        let mut chunk = [0u8; 1024];
-        let read_result = if let Some(deadline) = deadline {
-            let now = Instant::now();
-            if now >= deadline {
-                timed_out = true;
-                break;
-            }
-            let remaining = deadline - now;
-            match timeout(remaining, reader.read(&mut chunk)).await {
-                Ok(result) => result,
-                Err(_) => {
-                    timed_out = true;
-                    break;
-                }
-            }
-        } else {
-            reader.read(&mut chunk).await
-        };
+        let remaining_capacity = MAX_DETECTION_BYTES - buffer.len();
+        if remaining_capacity == 0 {
+            break;
+        }
+
+        let mut chunk = [0u8; READ_CHUNK_SIZE];
+        let read_len = remaining_capacity.min(READ_CHUNK_SIZE);
+        let read_result =
+            read_chunk_with_deadline(reader, &mut chunk[..read_len], deadline, &mut timed_out)
+                .await?;
 
         let bytes_read = match read_result {
-            Ok(n) => n,
-            Err(e) => return Err(e),
+            Some(n) => n,
+            None => break,
         };
 
         if bytes_read == 0 {
@@ -102,6 +96,7 @@ where
     // Check if it starts with an HTTP method (HTTP/1.x)
     if let Some(protocol) = detect_http_in_buffer(&buffer) {
         debug!("Detected HTTP protocol: {:?}", protocol);
+        ensure_http_headers_complete(reader, &mut buffer, deadline, &mut timed_out).await?;
         Ok(ProtocolDetectionResult {
             protocol,
             buffer,
@@ -150,6 +145,90 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
     } else {
         None
     }
+}
+
+/// Return true if the buffer already contains the HTTP header terminator.
+fn has_complete_http_headers(buffer: &[u8]) -> bool {
+    buffer
+        .windows(HEADER_END_MARKER.len())
+        .any(|window| window == HEADER_END_MARKER)
+}
+
+async fn read_chunk_with_deadline<R>(
+    reader: &mut R,
+    chunk: &mut [u8],
+    deadline: Option<Instant>,
+    timed_out: &mut bool,
+) -> std::io::Result<Option<usize>>
+where
+    R: AsyncRead + Unpin,
+{
+    if chunk.is_empty() {
+        return Ok(Some(0));
+    }
+
+    if let Some(deadline) = deadline {
+        let now = Instant::now();
+        if now >= deadline {
+            *timed_out = true;
+            return Ok(None);
+        }
+
+        let remaining = deadline - now;
+        match timeout(remaining, reader.read(chunk)).await {
+            Ok(result) => result.map(Some),
+            Err(_) => {
+                *timed_out = true;
+                Ok(None)
+            }
+        }
+    } else {
+        reader.read(chunk).await.map(Some)
+    }
+}
+
+/// Continue reading until the HTTP header terminator is found or limits are exceeded.
+async fn ensure_http_headers_complete<R>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+    deadline: Option<Instant>,
+    timed_out: &mut bool,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    if has_complete_http_headers(buffer) || buffer.len() >= MAX_DETECTION_BYTES {
+        return Ok(());
+    }
+
+    loop {
+        if has_complete_http_headers(buffer) || buffer.len() >= MAX_DETECTION_BYTES {
+            break;
+        }
+
+        let remaining_capacity = MAX_DETECTION_BYTES - buffer.len();
+        if remaining_capacity == 0 {
+            break;
+        }
+
+        let mut chunk = [0u8; READ_CHUNK_SIZE];
+        let read_len = remaining_capacity.min(READ_CHUNK_SIZE);
+
+        let read_result =
+            read_chunk_with_deadline(reader, &mut chunk[..read_len], deadline, timed_out).await?;
+        let bytes_read = match read_result {
+            Some(n) => n,
+            None => break,
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -233,6 +312,45 @@ mod tests {
                 assert_eq!(path, "/calendar");
             }
             _ => panic!("Expected HTTP detection for PROPFIND"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_reads_until_headers_complete() {
+        let headers = b"GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test\r\n\r\n";
+        let mut data = headers.to_vec();
+        data.extend_from_slice(b"body-should-remain");
+        let mut reader = ChunkedReader::new(data, headers.len());
+
+        let detection = detect_protocol(&mut reader, None).await.unwrap();
+        let ProtocolDetectionResult {
+            protocol, buffer, ..
+        } = detection;
+
+        match protocol {
+            ProtocolType::Http { .. } => {
+                assert_eq!(buffer.len(), headers.len());
+                assert_eq!(buffer, headers.to_vec());
+            }
+            _ => panic!("Expected HTTP detection"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_gathers_headers_across_chunks() {
+        let headers =
+            b"POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/plain\r\n\r\n";
+        let mut reader = ChunkedReader::new(headers.to_vec(), 7);
+        let detection = detect_protocol(&mut reader, None).await.unwrap();
+        let ProtocolDetectionResult {
+            protocol, buffer, ..
+        } = detection;
+
+        match protocol {
+            ProtocolType::Http { .. } => {
+                assert!(buffer.ends_with(b"\r\n\r\n"));
+            }
+            _ => panic!("Expected HTTP detection"),
         }
     }
 

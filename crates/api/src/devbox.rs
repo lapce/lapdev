@@ -194,6 +194,7 @@ async fn handle_devbox_rpc(
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // Register this session as active
+    let connection_id = Uuid::new_v4();
     state.active_devbox_sessions.write().await.insert(
         user_id,
         crate::state::DevboxSessionHandle {
@@ -201,6 +202,7 @@ async fn handle_devbox_rpc(
             device_name: device_name.clone(),
             notify_tx,
             rpc_client: rpc_client.clone(),
+            connection_id,
         },
     );
 
@@ -250,7 +252,16 @@ async fn handle_devbox_rpc(
         .await;
 
     // Cleanup: unregister session and stop notification listener
-    state.active_devbox_sessions.write().await.remove(&user_id);
+    {
+        let mut sessions = state.active_devbox_sessions.write().await;
+        if sessions
+            .get(&user_id)
+            .map(|handle| handle.connection_id == connection_id)
+            .unwrap_or(false)
+        {
+            sessions.remove(&user_id);
+        }
+    }
     notification_task.abort();
 
     if let Ok(Some(session)) = state.db.get_devbox_session(session_id).await {
@@ -593,7 +604,9 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         {
             let mut sessions = self.state.active_devbox_sessions.write().await;
             if let Some(handle) = sessions.get_mut(&self.user_id) {
-                handle.device_name = device_name.clone();
+                if handle.session_id == self.session_id {
+                    handle.device_name = device_name.clone();
+                }
             }
         }
 
@@ -603,6 +616,11 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             device_name
         );
 
+        Ok(())
+    }
+
+    async fn heartbeat(self, _context: tarpc::context::Context) -> Result<(), String> {
+        tracing::trace!("Heartbeat received for session {}", self.session_id);
         Ok(())
     }
 

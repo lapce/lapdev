@@ -1,5 +1,11 @@
 use lapdev_tunnel::TunnelClient;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -13,7 +19,8 @@ pub struct TunnelMetrics {
 
 pub struct TunnelRegistry {
     metrics: Arc<RwLock<HashMap<Uuid, TunnelMetrics>>>,
-    clients: Arc<RwLock<HashMap<Uuid, Arc<TunnelClient>>>>,
+    clients: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, Arc<TunnelClient>>>>>,
+    generation_counter: AtomicU64,
 }
 
 impl TunnelRegistry {
@@ -21,6 +28,7 @@ impl TunnelRegistry {
         Self {
             metrics: Arc::new(RwLock::new(HashMap::new())),
             clients: Arc::new(RwLock::new(HashMap::new())),
+            generation_counter: AtomicU64::new(1),
         }
     }
 
@@ -47,7 +55,12 @@ impl TunnelRegistry {
         Ok(())
     }
 
-    pub async fn register_client(&self, cluster_id: Uuid, client: Arc<TunnelClient>) {
+    fn next_generation(&self) -> u64 {
+        self.generation_counter.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub async fn register_client(&self, cluster_id: Uuid, client: Arc<TunnelClient>) -> u64 {
+        let generation = self.next_generation();
         {
             let mut metrics = self.metrics.write().await;
             metrics
@@ -56,24 +69,78 @@ impl TunnelRegistry {
         }
 
         let mut clients = self.clients.write().await;
-        clients.insert(cluster_id, client);
-        tracing::info!("Registered tunnel client for cluster {}", cluster_id);
+        let cluster_clients = clients.entry(cluster_id).or_insert_with(BTreeMap::new);
+        let replaced = cluster_clients
+            .insert(generation, Arc::clone(&client))
+            .is_some();
+        if replaced {
+            tracing::warn!(
+                "Overwrote existing tunnel client entry for cluster {} at generation {}; this should be rare",
+                cluster_id,
+                generation
+            );
+        }
+        tracing::info!(
+            "Registered tunnel client for cluster {}; generation {}; active entries {}",
+            cluster_id,
+            generation,
+            cluster_clients.len()
+        );
+        generation
     }
 
-    pub async fn remove_client(&self, cluster_id: Uuid) {
+    pub async fn remove_client(&self, cluster_id: Uuid, generation: u64) {
+        let mut removed = false;
+        let mut cluster_empty_after = false;
         {
             let mut clients = self.clients.write().await;
-            clients.remove(&cluster_id);
+            match clients.get_mut(&cluster_id) {
+                Some(cluster_clients) => {
+                    removed = cluster_clients.remove(&generation).is_some();
+                    if removed {
+                        tracing::info!(
+                            "Removed tunnel client for cluster {} with generation {}; remaining {}",
+                            cluster_id,
+                            generation,
+                            cluster_clients.len()
+                        );
+                        if cluster_clients.is_empty() {
+                            clients.remove(&cluster_id);
+                            cluster_empty_after = true;
+                        }
+                    } else {
+                        let latest_generation = cluster_clients.keys().next_back().copied();
+                        tracing::info!(
+                            "Skip removing tunnel client for cluster {} due to generation mismatch (requested {}, latest {:?})",
+                            cluster_id,
+                            generation,
+                            latest_generation
+                        );
+                    }
+                }
+                None => {
+                    tracing::info!(
+                        "No tunnel clients registered for cluster {}; requested removal generation {}",
+                        cluster_id,
+                        generation
+                    );
+                }
+            }
         }
-        {
+        if removed && cluster_empty_after {
             let mut metrics = self.metrics.write().await;
             metrics.remove(&cluster_id);
         }
-        tracing::info!("Removed tunnel client for cluster {}", cluster_id);
     }
 
     pub async fn get_client(&self, cluster_id: Uuid) -> Option<Arc<TunnelClient>> {
         let clients = self.clients.read().await;
-        clients.get(&cluster_id).cloned()
+        clients.get(&cluster_id).and_then(|cluster_clients| {
+            cluster_clients
+                .values()
+                .rev()
+                .find(|client| !client.is_closed())
+                .cloned()
+        })
     }
 }

@@ -94,7 +94,16 @@ impl HrpcService for CoreState {
         };
 
         if let Some(client) = session_notification {
-            self.active_devbox_sessions.write().await.remove(&user.id);
+            {
+                let mut sessions = self.active_devbox_sessions.write().await;
+                if sessions
+                    .get(&user.id)
+                    .map(|handle| handle.session_id == session_id)
+                    .unwrap_or(false)
+                {
+                    sessions.remove(&user.id);
+                }
+            }
             tokio::spawn(async move {
                 let _ = client
                     .session_displaced(

@@ -38,6 +38,10 @@ impl SidecarProxyRpcServer {
         }
     }
 
+    pub(crate) fn manager_client(&self) -> SidecarProxyManagerRpcClient {
+        self.rpc_client.clone()
+    }
+
     pub(crate) async fn register_sidecar_proxy(&self) -> Result<()> {
         let _ = self
             .rpc_client

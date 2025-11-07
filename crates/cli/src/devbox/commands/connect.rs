@@ -17,7 +17,7 @@ use tokio::{
     signal,
     sync::{mpsc, oneshot, Mutex, RwLock},
     task::JoinHandle,
-    time::sleep,
+    time::{sleep, MissedTickBehavior},
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
@@ -30,6 +30,8 @@ use crate::{
         SyntheticIpAllocator,
     },
 };
+
+const DEVBOX_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
 /// Execute the devbox connect command
 pub async fn execute(api_host: &str) -> Result<()> {
@@ -409,9 +411,23 @@ impl DevboxTunnelManager {
 
         let mut server_task = server_task;
         let mut should_exit = false;
+        let mut heartbeat_interval =
+            tokio::time::interval(Duration::from_secs(DEVBOX_HEARTBEAT_INTERVAL_SECS));
+        heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Err(err) = Self::send_session_heartbeat(&rpc_client).await {
+                        tracing::warn!(
+                            session_id = %session_info.session_id,
+                            "Devbox session heartbeat failed: {}",
+                            err
+                        );
+                        eprintln!("{} Connection heartbeat lost, reconnecting...", "⚠".yellow());
+                        break;
+                    }
+                }
                 res = &mut server_task => {
                     match res {
                         Ok(()) => {
@@ -743,6 +759,14 @@ impl DevboxTunnelManager {
         }
         self.service_bridge.stop().await;
         self.ip_allocator.lock().await.clear();
+    }
+
+    async fn send_session_heartbeat(rpc_client: &DevboxSessionRpcClient) -> Result<(), String> {
+        match rpc_client.heartbeat(tarpc::context::current()).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err),
+            Err(err) => Err(err.to_string()),
+        }
     }
 }
 

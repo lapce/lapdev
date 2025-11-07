@@ -8,7 +8,8 @@ use k8s_openapi::api::{
     core::v1::Pod,
 };
 use lapdev_common::kube::{
-    KubeContainerImage, KubeContainerInfo, KubeContainerPort, KubeServicePort, KubeWorkloadKind,
+    KubeContainerImage, KubeContainerInfo, KubeContainerPort, KubeServicePort, KubeWorkloadDetails,
+    KubeWorkloadKind,
 };
 use lapdev_db::api::CachedClusterService;
 use lapdev_kube_rpc::KubeRawWorkloadYaml;
@@ -16,7 +17,7 @@ use lapdev_kube_rpc::KubeRawWorkloadYaml;
 pub fn build_workload_details_from_yaml(
     raw: KubeRawWorkloadYaml,
     services: &[CachedClusterService],
-) -> anyhow::Result<lapdev_common::kube::KubeWorkloadDetails> {
+) -> anyhow::Result<KubeWorkloadDetails> {
     let KubeRawWorkloadYaml {
         name,
         namespace,
@@ -27,7 +28,7 @@ pub fn build_workload_details_from_yaml(
     let (containers, labels) = extract_containers_and_labels(&kind, &workload_yaml)?;
     let ports = ports_from_cached_services(&labels, services);
 
-    Ok(lapdev_common::kube::KubeWorkloadDetails {
+    Ok(KubeWorkloadDetails {
         name,
         namespace,
         kind,

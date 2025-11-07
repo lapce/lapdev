@@ -8,6 +8,7 @@ use lapdev_common::{
     },
     utils::rand_string,
 };
+use lapdev_db::api::NewEnvironmentWorkload;
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
 use lapdev_rpc::error::ApiError;
@@ -223,7 +224,8 @@ impl KubeController {
     pub(super) fn prepare_workload_details_from_catalog(
         workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkload>,
         namespace: &str,
-    ) -> Result<Vec<KubeWorkloadDetails>, ApiError> {
+        env_workload_ids: &HashMap<Uuid, Uuid>,
+    ) -> Result<Vec<NewEnvironmentWorkload>, ApiError> {
         workloads
             .into_iter()
             .map(|workload| {
@@ -233,6 +235,12 @@ impl KubeController {
                         workload.name
                     )));
                 }
+                let env_workload_id = env_workload_ids.get(&workload.id).ok_or_else(|| {
+                    ApiError::InvalidRequest(format!(
+                        "Missing generated workload id for catalog workload {}",
+                        workload.name
+                    ))
+                })?;
                 let workload_yaml = workload.workload_yaml.clone();
                 let mut containers = workload.containers;
                 for container in &mut containers {
@@ -252,14 +260,17 @@ impl KubeController {
                         }
                     }
                 }
-                Ok(lapdev_common::kube::KubeWorkloadDetails {
-                    name: workload.name,
-                    namespace: namespace.to_string(),
-                    kind: workload.kind,
-                    containers,
-                    ports: workload.ports,
-                    workload_yaml,
-                    base_workload_id: None,
+                Ok(NewEnvironmentWorkload {
+                    id: *env_workload_id,
+                    details: KubeWorkloadDetails {
+                        name: workload.name,
+                        namespace: namespace.to_string(),
+                        kind: workload.kind,
+                        containers,
+                        ports: workload.ports,
+                        workload_yaml,
+                        base_workload_id: None,
+                    },
                 })
             })
             .collect()
@@ -952,7 +963,7 @@ impl KubeController {
         environment_id: Uuid,
         namespace: &str,
         auth_token: &str,
-    ) -> Result<(KubeWorkloadsWithResources, Vec<KubeWorkloadDetails>), ApiError> {
+    ) -> Result<(KubeWorkloadsWithResources, Vec<NewEnvironmentWorkload>), ApiError> {
         self.get_catalog_workloads_with_yaml_from_db(
             app_catalog.cluster_id,
             workloads,
@@ -977,7 +988,7 @@ impl KubeController {
         namespace: String,
         is_shared: bool,
         catalog_sync_version: i64,
-        workload_details: Vec<KubeWorkloadDetails>,
+        workload_details: Vec<NewEnvironmentWorkload>,
         services_map: HashMap<String, KubeServiceWithYaml>,
         auth_token: String,
     ) -> Result<lapdev_db_entities::kube_environment::Model, ApiError> {
@@ -1152,7 +1163,7 @@ impl KubeController {
         branch_environment_id: Uuid,
     ) -> Result<
         (
-            Vec<KubeWorkloadDetails>,
+            Vec<NewEnvironmentWorkload>,
             HashMap<String, String>, // base workload name -> branch workload name
         ),
         ApiError,
@@ -1209,14 +1220,19 @@ impl KubeController {
                     }
                 }
 
-                Ok(lapdev_common::kube::KubeWorkloadDetails {
-                    name: base_name,
-                    namespace: namespace.to_string(),
-                    kind,
-                    containers,
-                    ports: workload.ports,
-                    workload_yaml: workload_yaml_string,
-                    base_workload_id: Some(workload.id),
+                let env_workload_id = Uuid::new_v4();
+
+                Ok(NewEnvironmentWorkload {
+                    id: env_workload_id,
+                    details: KubeWorkloadDetails {
+                        name: base_name,
+                        namespace: namespace.to_string(),
+                        kind,
+                        containers,
+                        ports: workload.ports,
+                        workload_yaml: workload_yaml_string,
+                        base_workload_id: Some(workload.id),
+                    },
                 })
             })
             .collect::<Result<Vec<_>, ApiError>>()?;
@@ -1567,7 +1583,7 @@ impl KubeController {
         catalog: &lapdev_db_entities::kube_app_catalog::Model,
         workloads_to_deploy: &[lapdev_common::kube::KubeAppCatalogWorkload],
         total_workloads: usize,
-    ) -> Result<(HashSet<String>, Vec<KubeWorkloadDetails>), ApiError> {
+    ) -> Result<(HashSet<String>, Vec<NewEnvironmentWorkload>), ApiError> {
         if workloads_to_deploy.is_empty() {
             tracing::info!(
                 "No workload changes detected for environment {} - skipping K8s deployment",
@@ -1634,7 +1650,7 @@ impl KubeController {
         environment_id: Uuid,
         environment_namespace: &str,
         catalog_workloads: &[lapdev_common::kube::KubeAppCatalogWorkload],
-        workloads_to_deploy: &[KubeWorkloadDetails],
+        workloads_to_deploy: &[NewEnvironmentWorkload],
         service_names: HashSet<String>,
         new_catalog_sync_version: i64,
     ) -> Result<(), ApiError> {
@@ -1697,13 +1713,14 @@ impl KubeController {
 
         // Only insert/update workloads that were actually deployed
         for workload in workloads_to_deploy {
-            let containers_json = serde_json::to_value(&workload.containers)
+            let details = &workload.details;
+            let containers_json = serde_json::to_value(&details.containers)
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
-            let ports_json = serde_json::to_value(&workload.ports)
+            let ports_json = serde_json::to_value(&details.ports)
                 .map(Json::from)
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
-            let workload_yaml = workload.workload_yaml.clone();
+            let workload_yaml = details.workload_yaml.clone();
 
             // First, soft-delete any existing workload with the same name
             lapdev_db_entities::kube_environment_workload::Entity::update_many()
@@ -1713,7 +1730,7 @@ impl KubeController {
                 )
                 .filter(
                     lapdev_db_entities::kube_environment_workload::Column::Name
-                        .eq(workload.name.clone()),
+                        .eq(details.name.clone()),
                 )
                 .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
                 .col_expr(
@@ -1726,18 +1743,18 @@ impl KubeController {
 
             // Then insert the new version
             lapdev_db_entities::kube_environment_workload::ActiveModel {
-                id: ActiveValue::Set(Uuid::new_v4()),
+                id: ActiveValue::Set(workload.id),
                 created_at: ActiveValue::Set(now),
                 deleted_at: ActiveValue::Set(None),
                 environment_id: ActiveValue::Set(environment_id),
-                name: ActiveValue::Set(workload.name.clone()),
+                name: ActiveValue::Set(details.name.clone()),
                 namespace: ActiveValue::Set(environment_namespace.to_string()),
-                kind: ActiveValue::Set(workload.kind.to_string()),
+                kind: ActiveValue::Set(details.kind.to_string()),
                 containers: ActiveValue::Set(containers_json),
                 ports: ActiveValue::Set(ports_json),
                 workload_yaml: ActiveValue::Set(workload_yaml),
                 catalog_sync_version: ActiveValue::Set(new_catalog_sync_version),
-                base_workload_id: ActiveValue::Set(None),
+                base_workload_id: ActiveValue::Set(details.base_workload_id),
                 ready_replicas: ActiveValue::Set(None),
             }
             .insert(&txn)

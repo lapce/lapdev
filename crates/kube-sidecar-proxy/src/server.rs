@@ -19,11 +19,13 @@ use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
-    sync::{mpsc, RwLock},
-    time::{sleep, Duration},
+    sync::{mpsc, watch, RwLock},
+    time::{sleep, Duration, MissedTickBehavior},
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+const SIDECAR_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
 /// Main sidecar proxy server
 #[derive(Clone)]
@@ -69,6 +71,17 @@ impl SidecarProxyServer {
                 "{SIDECAR_PROXY_WORKLOAD_ENV_VAR} isn't a valid uuid"
             ))
         })?;
+
+        info!(
+            workload_id = %workload_id,
+            namespace = namespace
+                .as_deref()
+                .unwrap_or("unknown"),
+            pod_name = pod_name
+                .as_deref()
+                .unwrap_or("unknown"),
+            "Starting sidecar proxy workload"
+        );
 
         // Parse environment ID - now required
         let env_id = Uuid::parse_str(&environment_id)
@@ -286,11 +299,43 @@ impl SidecarProxyServer {
                 .await;
         });
 
-        let _ = rpc_server.register_sidecar_proxy().await;
+        let register_result = rpc_server.register_sidecar_proxy().await;
+        if let Err(err) = register_result {
+            rpc_server_task.abort();
+            let _ = rpc_server_task.await;
+            return Err(err.into());
+        }
 
         info!("RPC client connected to kube manager");
 
-        let _ = rpc_server_task.await;
+        let (hb_shutdown_tx, hb_shutdown_rx) = watch::channel(false);
+        let mut heartbeat_task = Box::pin(run_manager_heartbeat(
+            hb_shutdown_rx,
+            rpc_server.manager_client(),
+            self.workload_id,
+            self.settings.as_ref().environment_id,
+        ));
+
+        tokio::pin!(rpc_server_task);
+
+        tokio::select! {
+            res = &mut rpc_server_task => {
+                let _ = hb_shutdown_tx.send(true);
+                if let Err(join_err) = heartbeat_task.await {
+                    warn!("Heartbeat task ended: {}", join_err);
+                }
+                res.map_err(|e| anyhow!("sidecar RPC server task failed: {}", e))?;
+            }
+            res = &mut heartbeat_task => {
+                let _ = hb_shutdown_tx.send(true);
+                rpc_server_task.abort();
+                let _ = rpc_server_task.await;
+                match res {
+                    Ok(()) => return Err(anyhow!("Sidecar heartbeat stopped unexpectedly").into()),
+                    Err(err) => return Err(err.into()),
+                }
+            }
+        }
 
         // Clear RPC client when connection ends
         {
@@ -373,6 +418,34 @@ async fn run_listener(
                     return Err(e);
                 }
             },
+        }
+    }
+}
+
+async fn run_manager_heartbeat(
+    mut shutdown_rx: watch::Receiver<bool>,
+    client: SidecarProxyManagerRpcClient,
+    workload_id: Uuid,
+    environment_id: Uuid,
+) -> anyhow::Result<()> {
+    let mut interval = tokio::time::interval(Duration::from_secs(SIDECAR_HEARTBEAT_INTERVAL_SECS));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed(), if *shutdown_rx.borrow() => {
+                return Ok(());
+            }
+            _ = interval.tick() => {
+                match client
+                    .heartbeat(tarpc::context::current(), workload_id, environment_id)
+                    .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => return Err(anyhow!("Heartbeat rejected by kube-manager: {}", err)),
+                    Err(err) => return Err(anyhow!("Heartbeat RPC failed: {}", err)),
+                }
+            }
         }
     }
 }
@@ -504,33 +577,29 @@ async fn handle_http_proxy(
     mut inbound_stream: TcpStream,
     client_addr: SocketAddr,
     proxy_port: u16,
-    mut initial_data: Vec<u8>,
+    initial_data: Vec<u8>,
     _settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 ) -> io::Result<()> {
-    // Try to parse the HTTP request, reading more data if needed
-    let (http_request, _body_start) = match http_parser::parse_complete_http_request(
-        &mut inbound_stream,
-        &mut initial_data,
-    )
-    .await
-    {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            warn!(
-                "Failed to parse HTTP request: {}, falling back to TCP proxy",
-                e
-            );
-            let fallback_port = {
-                let table = routing_table.read().await;
-                let service_port = table.service_port_for_proxy(proxy_port);
-                table.target_port_for_service(service_port)
-            };
-            let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), fallback_port);
-            return handle_tcp_proxy(inbound_stream, fallback_target, initial_data).await;
-        }
-    };
+    // Try to parse the HTTP request from the buffered data that protocol detection accumulated
+    let (http_request, _body_start) =
+        match http_parser::parse_http_request_from_buffer(&initial_data) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                warn!(
+                    "Failed to parse HTTP request: {}, falling back to TCP proxy",
+                    e
+                );
+                let fallback_port = {
+                    let table = routing_table.read().await;
+                    let service_port = table.service_port_for_proxy(proxy_port);
+                    table.target_port_for_service(service_port)
+                };
+                let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), fallback_port);
+                return handle_tcp_proxy(inbound_stream, fallback_target, initial_data).await;
+            }
+        };
 
     // Extract OpenTelemetry and routing context from headers
     let routing_context = extract_routing_context(&http_request.headers);

@@ -1,5 +1,5 @@
-use http::header::AUTHORIZATION;
-use lapdev_common::kube::ProxyPortRoute;
+use http::header::HeaderName;
+use lapdev_common::kube::{ProxyPortRoute, KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER};
 use lapdev_tunnel::{
     TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
 };
@@ -453,10 +453,15 @@ impl DevboxConnection {
             .into_client_request()
             .map_err(tunnel_transport_error)?;
 
-        let header_value = format!("Bearer {}", self.metadata.auth_token)
+        let env_header_value = self
+            .metadata
+            .auth_token
             .parse()
             .map_err(tunnel_transport_error)?;
-        request.headers_mut().insert(AUTHORIZATION, header_value);
+        request.headers_mut().insert(
+            HeaderName::from_static(KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER),
+            env_header_value,
+        );
 
         let (stream, _) = connect_async(request)
             .await

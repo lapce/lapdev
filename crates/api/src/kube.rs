@@ -6,7 +6,10 @@ use axum::{
     response::Response,
 };
 use futures::StreamExt;
-use lapdev_common::{kube::KUBE_CLUSTER_TOKEN_HEADER, token::HashedToken};
+use lapdev_common::{
+    kube::{KUBE_CLUSTER_TOKEN_HEADER, KUBE_ENVIRONMENT_TOKEN_HEADER},
+    token::HashedToken,
+};
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
@@ -145,7 +148,7 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
     let transport = WebSocketTransport::new(socket);
     let tunnel_client = Arc::new(TunnelClient::connect(transport));
 
-    state
+    let generation = state
         .kube_controller
         .tunnel_registry
         .register_client(cluster_id, Arc::clone(&tunnel_client))
@@ -162,7 +165,7 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
     state
         .kube_controller
         .tunnel_registry
-        .remove_client(cluster_id)
+        .remove_client(cluster_id, generation)
         .await;
 }
 
@@ -180,12 +183,7 @@ pub async fn sidecar_tunnel_websocket(
     );
 
     // Get the environment auth token from headers
-    const KUBE_ENVIRONMENT_TOKEN_HEADER: &str = "X-Lapdev-Environment-Token";
-    let auth_token = headers
-        .get(KUBE_ENVIRONMENT_TOKEN_HEADER)
-        .ok_or(ApiError::Unauthenticated)?
-        .to_str()
-        .map_err(|_| ApiError::Unauthenticated)?;
+    let auth_token = extract_environment_token(&headers)?;
 
     // Get the environment and validate auth token
     let environment = state
@@ -219,6 +217,14 @@ pub async fn sidecar_tunnel_websocket(
     }))
 }
 
+fn extract_environment_token<'a>(headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
+    headers
+        .get(KUBE_ENVIRONMENT_TOKEN_HEADER)
+        .ok_or(ApiError::Unauthenticated)?
+        .to_str()
+        .map_err(|_| ApiError::Unauthenticated)
+}
+
 pub async fn devbox_proxy_tunnel_websocket(
     Path(environment_id): Path<Uuid>,
     headers: HeaderMap,
@@ -231,7 +237,6 @@ pub async fn devbox_proxy_tunnel_websocket(
     );
 
     // Get the environment auth token from headers
-    const KUBE_ENVIRONMENT_TOKEN_HEADER: &str = "X-Lapdev-Environment-Token";
     let auth_token = headers
         .get(KUBE_ENVIRONMENT_TOKEN_HEADER)
         .ok_or(ApiError::Unauthenticated)?

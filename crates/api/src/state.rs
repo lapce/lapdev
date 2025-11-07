@@ -116,6 +116,7 @@ pub struct DevboxSessionHandle {
     pub device_name: String,
     pub notify_tx: tokio::sync::mpsc::UnboundedSender<DevboxSessionNotification>,
     pub rpc_client: lapdev_devbox_rpc::DevboxClientRpcClient,
+    pub connection_id: Uuid,
 }
 
 /// Notifications that can be sent to active devbox sessions
@@ -432,22 +433,20 @@ impl CoreState {
             .await
         {
             Ok((cluster_id, base_environment_id, routes)) => {
-                if !routes.is_empty() {
-                    if let Err(err) = self
-                        .kube_controller
-                        .set_devbox_routes(
-                            cluster_id,
-                            base_environment_id.unwrap_or(environment_id),
-                            routes,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            environment_id = %environment_id,
-                            error = %err,
-                            "Failed to push devbox routes to kube-manager"
-                        );
-                    }
+                if let Err(err) = self
+                    .kube_controller
+                    .set_devbox_routes(
+                        cluster_id,
+                        base_environment_id.unwrap_or(environment_id),
+                        routes,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        environment_id = %environment_id,
+                        error = %err,
+                        "Failed to push devbox routes to kube-manager"
+                    );
                 }
             }
             Err(err) => {

@@ -37,6 +37,7 @@ pub enum WireMessage {
         tunnel_id: String,
         reason: Option<String>,
     },
+    Heartbeat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

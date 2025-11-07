@@ -6,7 +6,7 @@ use lapdev_common::kube::{
     ProxyPortRoute, DEFAULT_SIDECAR_PROXY_METRICS_PORT, DEFAULT_SIDECAR_PROXY_PORT,
     SIDECAR_PROXY_DYNAMIC_PORT_START,
 };
-use lapdev_db::api::CachedClusterService;
+use lapdev_db::api::{CachedClusterService, NewEnvironmentWorkload};
 use lapdev_db_entities::kube_app_catalog_workload_dependency;
 use lapdev_kube_rpc::{
     KubeWorkloadYamlOnly, KubeWorkloadsWithResources, NamespacedResourceRequest,
@@ -38,6 +38,7 @@ struct PreparedWorkloads {
     workload_yamls: Vec<KubeWorkloadYamlOnly>,
     proxy_routes: HashMap<Uuid, Vec<ProxyPortRoute>>,
     workloads_for_details: Vec<KubeAppCatalogWorkload>,
+    env_workload_ids: HashMap<Uuid, Uuid>,
 }
 
 impl KubeController {
@@ -45,7 +46,7 @@ impl KubeController {
         &self,
         cluster_id: Uuid,
         workloads: Vec<lapdev_common::kube::KubeAppCatalogWorkloadCreate>,
-    ) -> Result<Vec<lapdev_common::kube::KubeWorkloadDetails>, ApiError> {
+    ) -> Result<Vec<KubeWorkloadDetails>, ApiError> {
         // Get cluster connection
         let cluster_server = self
             .get_random_kube_cluster_server(cluster_id)
@@ -114,7 +115,7 @@ impl KubeController {
         cluster_id: Uuid,
         workloads: Vec<KubeAppCatalogWorkload>,
         injection_ctx: &SidecarInjectionContext<'_>,
-    ) -> Result<(KubeWorkloadsWithResources, Vec<KubeWorkloadDetails>), ApiError> {
+    ) -> Result<(KubeWorkloadsWithResources, Vec<NewEnvironmentWorkload>), ApiError> {
         let workload_ids: Vec<Uuid> = workloads.iter().map(|w| w.id).collect();
         let services_by_workload = self
             .load_services_for_catalog_workloads(cluster_id, &workload_ids)
@@ -124,6 +125,7 @@ impl KubeController {
             workload_yamls,
             proxy_routes,
             workloads_for_details,
+            env_workload_ids,
         } = self.prepare_workloads_from_cache(&workloads, &services_by_workload, injection_ctx)?;
 
         let services_map =
@@ -145,6 +147,7 @@ impl KubeController {
         let workload_details = Self::prepare_workload_details_from_catalog(
             workloads_for_details,
             injection_ctx.namespace,
+            &env_workload_ids,
         )?;
 
         Ok((
@@ -178,6 +181,7 @@ impl KubeController {
         let mut workload_yamls = Vec::with_capacity(workloads.len());
         let mut proxy_routes: HashMap<Uuid, Vec<ProxyPortRoute>> = HashMap::new();
         let mut workloads_for_details = Vec::with_capacity(workloads.len());
+        let mut env_workload_ids: HashMap<Uuid, Uuid> = HashMap::with_capacity(workloads.len());
 
         for workload in workloads {
             if workload.workload_yaml.trim().is_empty() {
@@ -193,10 +197,14 @@ impl KubeController {
                     .map(|services| services.as_slice()),
             );
 
+            let env_workload_id = *env_workload_ids
+                .entry(workload.id)
+                .or_insert_with(Uuid::new_v4);
+
             let raw_yaml = workload.workload_yaml.clone();
             let sidecar_options = SidecarInjectionOptions {
                 environment_id: injection_ctx.environment_id,
-                workload_id: workload.id,
+                workload_id: env_workload_id,
                 namespace: injection_ctx.namespace,
                 auth_token: injection_ctx.auth_token,
                 manager_namespace: injection_ctx.manager_namespace,
@@ -232,6 +240,7 @@ impl KubeController {
             workload_yamls,
             proxy_routes,
             workloads_for_details,
+            env_workload_ids,
         })
     }
 

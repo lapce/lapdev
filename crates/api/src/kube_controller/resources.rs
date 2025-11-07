@@ -190,7 +190,7 @@ fn clean_deployment(
         let template = merge_template_containers(original_spec.template, workload_containers);
 
         DeploymentSpec {
-            replicas: original_spec.replicas,
+            replicas: Some(1),
             selector: original_spec.selector,
             template,
             min_ready_seconds: original_spec.min_ready_seconds,
@@ -217,7 +217,7 @@ fn clean_statefulset(
 
         StatefulSetSpec {
             service_name: original_spec.service_name,
-            replicas: original_spec.replicas,
+            replicas: Some(1),
             selector: original_spec.selector,
             template,
             volume_claim_templates: original_spec.volume_claim_templates,
@@ -268,7 +268,7 @@ fn clean_replicaset(
             .map(|t| merge_template_containers(t, workload_containers));
 
         ReplicaSetSpec {
-            replicas: original_spec.replicas,
+            replicas: Some(1),
             selector: original_spec.selector,
             template,
             min_ready_seconds: original_spec.min_ready_seconds,
@@ -584,6 +584,7 @@ fn build_sidecar_proxy_container(
     let mut container = Container {
         name: "lapdev-sidecar-proxy".to_string(),
         image: Some(sidecar_image),
+        image_pull_policy: Some("Always".to_string()),
         ..Default::default()
     };
 
@@ -777,4 +778,108 @@ pub fn set_daemonset_paused(workload: &mut KubeWorkloadYamlOnly, paused: bool) -
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_yaml::Value;
+
+    fn base_container(name: &str) -> KubeContainerInfo {
+        KubeContainerInfo {
+            name: name.to_string(),
+            original_image: "example:image".to_string(),
+            image: KubeContainerImage::FollowOriginal,
+            cpu_request: None,
+            cpu_limit: None,
+            memory_request: None,
+            memory_limit: None,
+            env_vars: Vec::new(),
+            original_env_vars: Vec::new(),
+            ports: Vec::new(),
+        }
+    }
+
+    fn assert_replica_clamped(kind: KubeWorkloadKind, yaml: &str) {
+        let containers = vec![base_container("app")];
+        let rebuilt = rebuild_workload_yaml(&kind, yaml, &containers, None).unwrap();
+        let parsed: Value = serde_yaml::from_str(&rebuilt).unwrap();
+        let replicas = parsed
+            .get("spec")
+            .and_then(|spec| spec.get("replicas"))
+            .and_then(|value| value.as_i64());
+        assert_eq!(
+            replicas,
+            Some(1),
+            "replica count not clamped for {:?}",
+            kind
+        );
+    }
+
+    #[test]
+    fn rebuild_workload_yaml_clamps_replicas_for_supported_kinds() {
+        let deployment = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-deploy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: nginx
+"#;
+        assert_replica_clamped(KubeWorkloadKind::Deployment, deployment);
+
+        let statefulset = r#"
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: test-sts
+spec:
+  serviceName: svc
+  replicas: 4
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: nginx
+"#;
+        assert_replica_clamped(KubeWorkloadKind::StatefulSet, statefulset);
+
+        let replicaset = r#"
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: test-rs
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: nginx
+"#;
+        assert_replica_clamped(KubeWorkloadKind::ReplicaSet, replicaset);
+    }
 }

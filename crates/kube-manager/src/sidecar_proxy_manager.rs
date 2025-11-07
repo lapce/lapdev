@@ -6,7 +6,10 @@ use lapdev_kube_rpc::{
     SidecarProxyRpcClient,
 };
 use lapdev_rpc::spawn_twoway;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicU64, atomic::Ordering, Arc},
+};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -16,8 +19,10 @@ use crate::sidecar_proxy_manager_rpc::SidecarProxyManagerRpcServer;
 
 #[derive(Clone)]
 pub struct SidecarProxyManager {
-    pub(crate) sidecar_proxies: Arc<RwLock<HashMap<Uuid, HashMap<Uuid, SidecarProxyRpcClient>>>>,
+    pub(crate) sidecar_proxies:
+        Arc<RwLock<HashMap<Uuid, HashMap<Uuid, (u64, SidecarProxyRpcClient)>>>>,
     kube_cluster_rpc_client: Arc<RwLock<Option<KubeClusterRpcClient>>>,
+    generation_counter: Arc<AtomicU64>,
 }
 
 impl SidecarProxyManager {
@@ -40,23 +45,28 @@ impl SidecarProxyManager {
         let m = Self {
             sidecar_proxies: Arc::new(RwLock::new(HashMap::new())),
             kube_cluster_rpc_client: Arc::new(RwLock::new(None)),
+            generation_counter: Arc::new(AtomicU64::new(1)),
         };
 
         {
-            let m = m.clone();
+            let manager = m.clone();
             tokio::spawn(async move {
                 while let Some(conn) = listener.next().await {
                     if let Ok(conn) = conn {
-                        let m = m.clone();
+                        let manager = manager.clone();
                         tokio::spawn(async move {
+                            let peer_addr = conn.peer_addr().ok();
                             let (server_chan, client_chan, _) = spawn_twoway(conn);
                             let rpc_client = SidecarProxyRpcClient::new(
                                 tarpc::client::Config::default(),
                                 client_chan,
                             )
                             .spawn();
-                            let rpc_server =
-                                SidecarProxyManagerRpcServer::new(m.clone(), rpc_client);
+                            let rpc_server = SidecarProxyManagerRpcServer::new(
+                                manager.clone(),
+                                rpc_client,
+                                peer_addr,
+                            );
                             BaseChannel::with_defaults(server_chan)
                                 .execute(rpc_server.serve())
                                 .for_each(|resp| async move {
@@ -73,10 +83,57 @@ impl SidecarProxyManager {
         Ok(m)
     }
 
+    fn next_generation(&self) -> u64 {
+        self.generation_counter.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub async fn register_sidecar(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        client: SidecarProxyRpcClient,
+    ) -> u64 {
+        let mut map = self.sidecar_proxies.write().await;
+        let generation = self.next_generation();
+        map.entry(environment_id)
+            .or_default()
+            .insert(workload_id, (generation, client));
+        generation
+    }
+
+    pub async fn remove_sidecar(&self, environment_id: Uuid, workload_id: Uuid, generation: u64) {
+        let mut map = self.sidecar_proxies.write().await;
+        if let Some(workloads) = map.get_mut(&environment_id) {
+            let should_remove = workloads
+                .get(&workload_id)
+                .map(|(current_generation, _)| *current_generation == generation)
+                .unwrap_or(false);
+
+            if should_remove {
+                workloads.remove(&workload_id);
+                if workloads.is_empty() {
+                    map.remove(&environment_id);
+                }
+            }
+        }
+    }
+
+    pub async fn record_sidecar_heartbeat(&self, environment_id: Uuid, workload_id: Uuid) -> bool {
+        let map = self.sidecar_proxies.read().await;
+        map.get(&environment_id)
+            .and_then(|workloads| workloads.get(&workload_id))
+            .is_some()
+    }
+
     pub async fn set_service_routes_if_registered(&self, environment_id: Uuid) -> Result<()> {
         let connections = {
             let map = self.sidecar_proxies.read().await;
-            map.get(&environment_id).cloned()
+            map.get(&environment_id).map(|entry| {
+                entry
+                    .iter()
+                    .map(|(k, (_gen, client))| (*k, client.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
         };
 
         let Some(connections) = connections else {
@@ -143,7 +200,12 @@ impl SidecarProxyManager {
     ) -> Result<(), String> {
         let connections = {
             let map = self.sidecar_proxies.read().await;
-            map.get(&environment_id).cloned()
+            map.get(&environment_id).map(|entry| {
+                entry
+                    .iter()
+                    .map(|(k, (_gen, client))| (*k, client.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
         };
 
         let Some(connections) = connections else {
@@ -155,6 +217,7 @@ impl SidecarProxyManager {
         };
 
         for (workload_id, client) in connections {
+            let client = client.clone();
             if let Some(route) = routes.remove(&workload_id) {
                 if let Err(e) = client
                     .set_devbox_route(tarpc::context::current(), route)
@@ -191,7 +254,12 @@ impl SidecarProxyManager {
     ) -> Result<(), String> {
         let connections = {
             let map = self.sidecar_proxies.read().await;
-            map.get(&base_environment_id).cloned()
+            map.get(&base_environment_id).map(|entry| {
+                entry
+                    .iter()
+                    .map(|(k, (_gen, client))| (*k, client.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
         };
 
         let Some(connections) = connections else {
@@ -231,7 +299,12 @@ impl SidecarProxyManager {
     ) -> Result<(), String> {
         let connections = {
             let map = self.sidecar_proxies.read().await;
-            map.get(&base_environment_id).cloned()
+            map.get(&base_environment_id).map(|entry| {
+                entry
+                    .iter()
+                    .map(|(k, (_gen, client))| (*k, client.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
         };
 
         let Some(connections) = connections else {
@@ -262,7 +335,12 @@ impl SidecarProxyManager {
     ) -> Result<(), String> {
         let connections = {
             let map = self.sidecar_proxies.read().await;
-            map.get(&environment_id).cloned()
+            map.get(&environment_id).map(|entry| {
+                entry
+                    .iter()
+                    .map(|(k, (_gen, client))| (*k, client.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
         };
 
         let Some(connections) = connections else {

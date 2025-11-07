@@ -7,9 +7,10 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::{mpsc, watch},
+    time::{Duration, MissedTickBehavior},
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     error::TunnelError,
@@ -17,6 +18,8 @@ use crate::{
     util::spawn_detached,
     TunnelTarget,
 };
+
+const TUNNEL_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
 #[derive(Clone)]
 struct ConnectionManager {
@@ -248,6 +251,29 @@ where
     let (send_tx, mut send_rx) = mpsc::unbounded_channel::<WireMessage>();
     let manager = ConnectionManager::new(send_tx.clone());
 
+    let (hb_shutdown_tx, mut hb_shutdown_rx) = watch::channel(false);
+    let heartbeat_sender = send_tx.clone();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(TUNNEL_HEARTBEAT_INTERVAL_SECS));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = hb_shutdown_rx.changed(), if *hb_shutdown_rx.borrow() => {
+                    trace!("Tunnel server heartbeat task exiting due to shutdown");
+                    break;
+                }
+                _ = interval.tick() => {
+                    if heartbeat_sender.send(WireMessage::Heartbeat).is_err() {
+                        trace!("Tunnel server heartbeat task stopping; channel closed");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
     let writer_task = tokio::spawn({
         let manager = manager.clone();
         async move {
@@ -298,6 +324,9 @@ where
                 Ok(WireMessage::Close { tunnel_id, .. }) => {
                     terminate_connection(&manager, &tunnel_id);
                 }
+                Ok(WireMessage::Heartbeat) => {
+                    // No-op; keep-alive frame.
+                }
                 Ok(WireMessage::OpenResult { .. }) => {
                     warn!("Server received unexpected OpenResult message");
                 }
@@ -316,6 +345,8 @@ where
     let reason = shutdown_reason.unwrap_or_else(|| "server shutdown".to_string());
     manager.shutdown(Some(reason));
     drop(send_tx);
+    let _ = hb_shutdown_tx.send(true);
+    let _ = heartbeat_task.await;
     let _ = writer_task.await;
     Ok(())
 }

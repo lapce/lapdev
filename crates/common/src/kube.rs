@@ -11,6 +11,9 @@ pub const KUBE_CLUSTER_TUNNEL_URL_ENV_VAR: &str = "LAPDEV_KUBE_CLUSTER_TUNNEL_UR
 pub const DEFAULT_KUBE_CLUSTER_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/rpc";
 pub const DEFAULT_KUBE_CLUSTER_TUNNEL_URL: &str = "wss://ws.lap.dev/api/v1/kube/cluster/tunnel";
 
+pub const KUBE_ENVIRONMENT_TOKEN_HEADER: &str = "X-Lapdev-Environment-Token";
+pub const KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER: &str = "x-lapdev-environment-token";
+
 pub const SIDECAR_PROXY_MANAGER_ADDR_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAGER_ADDR";
 pub const SIDECAR_PROXY_MANAGER_PORT_ENV_VAR: &str = "LAPDEV_SIDECAR_PROXY_MANAGER_PORT";
 pub const DEFAULT_SIDECAR_PROXY_MANAGER_PORT: u16 = 5001;

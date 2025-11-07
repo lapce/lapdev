@@ -477,7 +477,7 @@ pub trait SidecarProxyManagerRpc {
         namespace: String,
     ) -> Result<(), String>;
 
-    async fn heartbeat() -> Result<(), String>;
+    async fn heartbeat(workload_id: Uuid, environment_id: Uuid) -> Result<(), String>;
 
     async fn report_routing_metrics(
         request_count: u64,

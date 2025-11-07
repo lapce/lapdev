@@ -98,71 +98,78 @@ impl PreviewUrlProxy {
         // Use the shared HTTP parser that handles incremental reading
         let mut buffer = Vec::new();
 
-        match http_parser::parse_complete_http_request(&mut stream, &mut buffer).await {
-            Ok((parsed_request, headers_len)) => {
-                debug!(
-                    "Parsed request: {} {}",
-                    parsed_request.method, parsed_request.path
-                );
+        match http_parser::read_http_headers(&mut stream, &mut buffer).await {
+            Ok(()) => match http_parser::parse_http_request_from_buffer(&buffer) {
+                Ok((parsed_request, headers_len)) => {
+                    debug!(
+                        "Parsed request: {} {}",
+                        parsed_request.method, parsed_request.path
+                    );
 
-                // Extract Host header using the shared utility
-                let host = http_parser::get_host_header(&parsed_request.headers)
-                    .ok_or_else(|| ProxyError::InvalidUrl("Missing Host header".to_string()))?;
+                    // Extract Host header using the shared utility
+                    let host = http_parser::get_host_header(&parsed_request.headers)
+                        .ok_or_else(|| ProxyError::InvalidUrl("Missing Host header".to_string()))?;
 
-                let subdomain = host
-                    .split('.')
-                    .next()
-                    .ok_or_else(|| ProxyError::InvalidUrl("Invalid host format".to_string()))?
-                    .to_string();
+                    let subdomain = host
+                        .split('.')
+                        .next()
+                        .ok_or_else(|| ProxyError::InvalidUrl("Invalid host format".to_string()))?
+                        .to_string();
 
-                debug!("Extracted subdomain: {} from host: {}", subdomain, host);
+                    debug!("Extracted subdomain: {} from host: {}", subdomain, host);
 
-                // Resolve preview URL target
-                let target = match self.resolve_preview_url_target(&subdomain).await {
-                    Ok(target) => target,
-                    Err(err) => {
+                    // Resolve preview URL target
+                    let target = match self.resolve_preview_url_target(&subdomain).await {
+                        Ok(target) => target,
+                        Err(err) => {
+                            self.respond_with_proxy_error(&mut stream, err).await?;
+                            return Ok(());
+                        }
+                    };
+
+                    // Enforce access controls based on preview URL configuration
+                    if let Err(err) = self.authorize_request(&parsed_request, &target).await {
                         self.respond_with_proxy_error(&mut stream, err).await?;
                         return Ok(());
                     }
-                };
 
-                // Enforce access controls based on preview URL configuration
-                if let Err(err) = self.authorize_request(&parsed_request, &target).await {
-                    self.respond_with_proxy_error(&mut stream, err).await?;
-                    return Ok(());
+                    info!(
+                        "Resolved target: service={}:{} in cluster={}",
+                        target.service_name, target.service_port, target.cluster_id
+                    );
+
+                    // Modify the initial request data to add environment ID to tracestate header
+                    let initial_request_data = self.add_environment_id_to_headers(
+                        &buffer,
+                        headers_len,
+                        target.environment_id,
+                    )?;
+
+                    // Start direct TCP proxying
+                    self.start_tcp_proxy(stream, target, initial_request_data)
+                        .await
                 }
-
-                info!(
-                    "Resolved target: service={}:{} in cluster={}",
-                    target.service_name, target.service_port, target.cluster_id
-                );
-
-                // Modify the initial request data to add environment ID to tracestate header
-                let initial_request_data = self.add_environment_id_to_headers(
-                    &buffer,
-                    headers_len,
-                    target.environment_id,
-                )?;
-
-                // Start direct TCP proxying
-                self.start_tcp_proxy(stream, target, initial_request_data)
-                    .await
-            }
-            Err(e)
+                Err(e) => {
+                    debug!("Failed to parse buffered HTTP request: {}", e);
+                    self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR)
+                        .await
+                }
+            },
+            Err(e) => {
+                debug!("Failed to read complete HTTP headers from client: {}", e);
                 if e.kind() == io::ErrorKind::InvalidData
-                    && e.to_string().contains("exceed maximum size") =>
-            {
-                // Request headers are too large - reject it
-                self.send_error_page(
-                    &mut stream,
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    PAGE_GENERIC_ERROR,
-                )
-                .await
-            }
-            Err(_) => {
-                self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR)
+                    && e.to_string().contains("exceed maximum size")
+                {
+                    self.send_error_page(
+                        &mut stream,
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        PAGE_GENERIC_ERROR,
+                    )
                     .await
+                } else {
+                    self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR)
+                        .await
+                }
             }
         }
     }

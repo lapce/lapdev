@@ -1,4 +1,5 @@
 pub mod config;
+pub mod connection_registry;
 pub mod error;
 pub mod http2_client;
 pub mod http2_proxy;

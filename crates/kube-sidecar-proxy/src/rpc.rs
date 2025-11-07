@@ -3,13 +3,19 @@ use lapdev_kube_rpc::{
     DevboxRouteConfig, ProxyBranchRouteConfig, ProxyRouteAccessLevel, SidecarProxyManagerRpcClient,
     SidecarProxyRpc,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::config::{
-    AccessLevel, BranchServiceRoute, DevboxConnection, DevboxRouteMetadata, RoutingTable,
+use crate::{
+    config::{
+        AccessLevel, BranchServiceRoute, DevboxConnection, DevboxRouteMetadata, RoutingTable,
+    },
+    connection_registry::ConnectionRegistry,
 };
 
 #[derive(Clone)]
@@ -19,6 +25,7 @@ pub(crate) struct SidecarProxyRpcServer {
     namespace: String,
     rpc_client: SidecarProxyManagerRpcClient,
     routing_table: Arc<RwLock<RoutingTable>>,
+    connection_registry: Arc<ConnectionRegistry>,
 }
 
 impl SidecarProxyRpcServer {
@@ -28,6 +35,7 @@ impl SidecarProxyRpcServer {
         namespace: String,
         rpc_client: SidecarProxyManagerRpcClient,
         routing_table: Arc<RwLock<RoutingTable>>,
+        connection_registry: Arc<ConnectionRegistry>,
     ) -> Self {
         Self {
             workload_id,
@@ -35,6 +43,7 @@ impl SidecarProxyRpcServer {
             namespace,
             rpc_client,
             routing_table,
+            connection_registry,
         }
     }
 
@@ -71,10 +80,12 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
         routes: Vec<ProxyBranchRouteConfig>,
     ) -> Result<(), String> {
         let mut routing_table = self.routing_table.write().await;
+        let previous_branches: HashSet<Uuid> =
+            routing_table.branch_routes.keys().copied().collect();
         let mut updates: Vec<(Uuid, BranchServiceRoute)> = Vec::new();
         let mut devbox_overrides: Vec<(Uuid, Arc<DevboxConnection>)> = Vec::new();
 
-        for route in routes {
+        for route in &routes {
             let branch_id = route.branch_environment_id;
 
             if !route.service_names.is_empty() {
@@ -109,6 +120,20 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             "Updated branch routes; total routes: {}",
             routing_table.branch_routes.len()
         );
+
+        let mut updated_branches: HashSet<Uuid> = routes
+            .iter()
+            .map(|route| route.branch_environment_id)
+            .collect();
+        for branch in previous_branches {
+            if !updated_branches.contains(&branch) {
+                updated_branches.insert(branch);
+            }
+        }
+        drop(routing_table);
+        self.connection_registry
+            .shutdown_branches(updated_branches.into_iter().map(Some))
+            .await;
 
         Ok(())
     }
@@ -153,6 +178,10 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             }
         }
 
+        drop(routing_table);
+        let key = route.branch_environment_id;
+        self.connection_registry.shutdown_branch(key).await;
+
         Ok(())
     }
 
@@ -185,6 +214,11 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
                 );
             }
         }
+
+        drop(routing_table);
+        self.connection_registry
+            .shutdown_branch(branch_environment)
+            .await;
 
         Ok(())
     }
@@ -224,6 +258,11 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             branch_id, self.workload_id
         );
 
+        drop(routing_table);
+        self.connection_registry
+            .shutdown_branch(Some(branch_id))
+            .await;
+
         Ok(())
     }
 
@@ -247,6 +286,11 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
                 branch_environment_id, self.workload_id
             );
         }
+
+        drop(routing_table);
+        self.connection_registry
+            .shutdown_branch(Some(branch_environment_id))
+            .await;
 
         Ok(())
     }

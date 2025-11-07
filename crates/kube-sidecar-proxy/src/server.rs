@@ -1,5 +1,6 @@
 use crate::{
     config::{DevboxConnection, RouteDecision, RoutingTable, SidecarSettings},
+    connection_registry::ConnectionRegistry,
     error::Result,
     http2_proxy::handle_http2_proxy,
     otel_routing::{determine_routing_target, extract_routing_context},
@@ -17,7 +18,7 @@ use lapdev_rpc::spawn_twoway;
 use std::{collections::HashSet, env, io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
-    io::copy_bidirectional,
+    io::{copy_bidirectional, AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     sync::{mpsc, watch, RwLock},
     time::{sleep, Duration, MissedTickBehavior},
@@ -34,6 +35,7 @@ pub struct SidecarProxyServer {
     sidecar_proxy_manager_addr: String,
     settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
+    connection_registry: Arc<ConnectionRegistry>,
     /// RPC client to kube-manager (None until connection established)
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 }
@@ -141,6 +143,7 @@ impl SidecarProxyServer {
             sidecar_proxy_manager_addr,
             settings: Arc::new(settings),
             routing_table: Arc::new(RwLock::new(routing_table)),
+            connection_registry: Arc::new(ConnectionRegistry::default()),
             rpc_client: Arc::new(RwLock::new(None)),
         };
 
@@ -189,11 +192,19 @@ impl SidecarProxyServer {
             let routing_table = Arc::clone(&self.routing_table);
             let rpc_client = Arc::clone(&self.rpc_client);
             let settings = Arc::clone(&self.settings);
+            let connection_registry = Arc::clone(&self.connection_registry);
             let err_tx = listener_err_tx.clone();
 
             let handle = tokio::spawn(async move {
-                if let Err(err) =
-                    run_listener(listener, addr, settings, routing_table, rpc_client).await
+                if let Err(err) = run_listener(
+                    listener,
+                    addr,
+                    settings,
+                    routing_table,
+                    rpc_client,
+                    connection_registry,
+                )
+                .await
                 {
                     let _ = err_tx.send((addr, err.to_string()));
                 }
@@ -288,6 +299,7 @@ impl SidecarProxyServer {
             namespace,
             rpc_client,
             Arc::clone(&self.routing_table),
+            Arc::clone(&self.connection_registry),
         );
         let rpc_server_clone = rpc_server.clone();
         let rpc_server_task = tokio::spawn(async move {
@@ -360,6 +372,7 @@ async fn run_listener(
     settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+    connection_registry: Arc<ConnectionRegistry>,
 ) -> io::Result<()> {
     loop {
         match listener.accept().await {
@@ -371,6 +384,7 @@ async fn run_listener(
                 let routing_table = Arc::clone(&routing_table);
                 let rpc_client = Arc::clone(&rpc_client);
                 let settings = Arc::clone(&settings);
+                let connection_registry = Arc::clone(&connection_registry);
 
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(
@@ -379,10 +393,18 @@ async fn run_listener(
                         settings,
                         routing_table,
                         rpc_client,
+                        connection_registry,
                     )
                     .await
                     {
-                        error!("Error handling connection from {}: {}", client_addr, e);
+                        if is_route_update_error(&e) {
+                            debug!(
+                                "Connection from {} closed due to routing update",
+                                client_addr
+                            );
+                        } else {
+                            error!("Error handling connection from {}: {}", client_addr, e);
+                        }
                     }
                 });
             }
@@ -457,6 +479,7 @@ async fn handle_connection(
     settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+    connection_registry: Arc<ConnectionRegistry>,
 ) -> io::Result<()> {
     let local_addr = inbound_stream.local_addr()?;
     let proxy_port = local_addr.port();
@@ -499,6 +522,7 @@ async fn handle_connection(
                 Arc::clone(&settings),
                 Arc::clone(&routing_table),
                 Arc::clone(&rpc_client),
+                Arc::clone(&connection_registry),
             )
             .await
         }
@@ -511,6 +535,7 @@ async fn handle_connection(
                 settings,
                 Arc::clone(&routing_table),
                 Arc::clone(&rpc_client),
+                Arc::clone(&connection_registry),
             )
             .await
         }
@@ -531,6 +556,7 @@ async fn handle_connection(
                     connection,
                     target_port,
                 } => {
+                    let shutdown_rx = connection_registry.subscribe(None).await;
                     let metadata = connection.metadata();
                     info!(
                         "TCP {} via proxy port {} (service {}) intercepted by Devbox (intercept_id={}, session_id={}, target_port={})",
@@ -548,24 +574,27 @@ async fn handle_connection(
                         initial_data,
                         connection,
                         target_port,
+                        shutdown_rx,
                     )
                     .await
                 }
                 RouteDecision::DefaultLocal { target_port } => {
+                    let shutdown_rx = connection_registry.subscribe(None).await;
                     let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), target_port);
                     info!(
                         "Proxying TCP from {} (proxy port {}, service {}) to {}",
                         client_addr, proxy_port, service_port, local_target
                     );
-                    handle_tcp_proxy(inbound_stream, local_target, initial_data).await
+                    handle_tcp_proxy(inbound_stream, local_target, initial_data, shutdown_rx).await
                 }
                 RouteDecision::BranchService { .. } => {
+                    let shutdown_rx = connection_registry.subscribe(None).await;
                     let local_target = SocketAddr::new("127.0.0.1".parse().unwrap(), service_port);
                     info!(
                         "TCP connection from {} on proxy port {} matched branch service route unexpectedly; proxying to local {}",
                         client_addr, proxy_port, local_target
                     );
-                    handle_tcp_proxy(inbound_stream, local_target, initial_data).await
+                    handle_tcp_proxy(inbound_stream, local_target, initial_data, shutdown_rx).await
                 }
             }
         }
@@ -581,6 +610,7 @@ async fn handle_http_proxy(
     _settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     _rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
+    connection_registry: Arc<ConnectionRegistry>,
 ) -> io::Result<()> {
     // Try to parse the HTTP request from the buffered data that protocol detection accumulated
     let (http_request, _body_start) =
@@ -597,7 +627,14 @@ async fn handle_http_proxy(
                     table.target_port_for_service(service_port)
                 };
                 let fallback_target = SocketAddr::new("127.0.0.1".parse().unwrap(), fallback_port);
-                return handle_tcp_proxy(inbound_stream, fallback_target, initial_data).await;
+                let shutdown_rx = connection_registry.subscribe(None).await;
+                return handle_tcp_proxy(
+                    inbound_stream,
+                    fallback_target,
+                    initial_data,
+                    shutdown_rx,
+                )
+                .await;
             }
         };
 
@@ -622,14 +659,19 @@ async fn handle_http_proxy(
                     http_request.method, http_request.path, branch_id, service_name, service_port
                 );
 
+                let shutdown_rx = connection_registry.subscribe(branch_id).await;
                 if let Err(err) = proxy_branch_stream(
                     &mut inbound_stream,
                     service_name,
                     service_port,
                     &initial_data,
+                    shutdown_rx,
                 )
                 .await
                 {
+                    if is_route_update_error(&err) {
+                        return Err(err);
+                    }
                     warn!(
                         "Branch route {} for env {:?} failed: {}; falling back to shared target",
                         service_name, branch_id, err
@@ -658,6 +700,7 @@ async fn handle_http_proxy(
                 metadata.session_id,
                 target_port
             );
+            let shutdown_rx = connection_registry.subscribe(branch_id).await;
             return handle_devbox_tunnel(
                 inbound_stream,
                 client_addr,
@@ -665,6 +708,7 @@ async fn handle_http_proxy(
                 initial_data,
                 connection,
                 target_port,
+                shutdown_rx,
             )
             .await;
         }
@@ -683,6 +727,7 @@ async fn handle_http_proxy(
                 metadata.session_id,
                 target_port
             );
+            let shutdown_rx = connection_registry.subscribe(None).await;
             return handle_devbox_tunnel(
                 inbound_stream,
                 client_addr,
@@ -690,6 +735,7 @@ async fn handle_http_proxy(
                 initial_data,
                 connection,
                 target_port,
+                shutdown_rx,
             )
             .await;
         }
@@ -711,13 +757,21 @@ async fn handle_http_proxy(
         routing_context.trace_context.trace_id
     );
 
-    proxy_stream(&mut inbound_stream, fallback_target, &initial_data).await
+    let shutdown_rx = connection_registry.subscribe(None).await;
+    proxy_stream(
+        &mut inbound_stream,
+        fallback_target,
+        &initial_data,
+        shutdown_rx,
+    )
+    .await
 }
 
 async fn proxy_stream(
     inbound_stream: &mut TcpStream,
     target: SocketAddr,
     initial_data: &[u8],
+    shutdown_rx: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let mut outbound_stream = TcpStream::connect(target).await?;
 
@@ -725,15 +779,23 @@ async fn proxy_stream(
         tokio::io::AsyncWriteExt::write_all(&mut outbound_stream, initial_data).await?;
     }
 
-    match copy_bidirectional(inbound_stream, &mut outbound_stream).await {
+    match bidirectional_with_shutdown(inbound_stream, &mut outbound_stream, shutdown_rx).await {
         Ok((bytes_tx, bytes_rx)) => {
             debug!(
                 "HTTP connection completed via {}: {} bytes tx, {} bytes rx",
                 target, bytes_tx, bytes_rx
             );
         }
+        Err(err) if is_route_update_error(&err) => {
+            debug!(
+                "HTTP connection via {} closed due to routing update",
+                target
+            );
+            return Err(err);
+        }
         Err(e) => {
             debug!("HTTP connection via {} ended: {}", target, e);
+            return Err(e);
         }
     }
 
@@ -745,6 +807,7 @@ async fn proxy_branch_stream(
     service_name: &str,
     port: u16,
     initial_data: &[u8],
+    shutdown_rx: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let mut outbound_stream = TcpStream::connect((service_name, port)).await?;
 
@@ -752,18 +815,26 @@ async fn proxy_branch_stream(
         tokio::io::AsyncWriteExt::write_all(&mut outbound_stream, initial_data).await?;
     }
 
-    match copy_bidirectional(inbound_stream, &mut outbound_stream).await {
+    match bidirectional_with_shutdown(inbound_stream, &mut outbound_stream, shutdown_rx).await {
         Ok((bytes_tx, bytes_rx)) => {
             debug!(
                 "HTTP connection completed via branch service {}:{}: {} bytes tx, {} bytes rx",
                 service_name, port, bytes_tx, bytes_rx
             );
         }
+        Err(err) if is_route_update_error(&err) => {
+            debug!(
+                "HTTP connection via branch service {}:{} closed due to routing update",
+                service_name, port
+            );
+            return Err(err);
+        }
         Err(e) => {
             debug!(
                 "HTTP connection via branch service {}:{} ended: {}",
                 service_name, port, e
             );
+            return Err(e);
         }
     }
 
@@ -775,6 +846,7 @@ async fn handle_tcp_proxy(
     mut inbound_stream: TcpStream,
     local_target: SocketAddr,
     initial_data: Vec<u8>,
+    shutdown_rx: watch::Receiver<bool>,
 ) -> io::Result<()> {
     // Connect to the local service
     let mut outbound_stream = TcpStream::connect(&local_target).await?;
@@ -785,15 +857,24 @@ async fn handle_tcp_proxy(
     }
 
     // Start bidirectional copying for the rest of the connection
-    match copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+    match bidirectional_with_shutdown(&mut inbound_stream, &mut outbound_stream, shutdown_rx).await
+    {
         Ok((bytes_tx, bytes_rx)) => {
             debug!(
                 "TCP connection completed: {} bytes tx, {} bytes rx",
                 bytes_tx, bytes_rx
             );
         }
+        Err(err) if is_route_update_error(&err) => {
+            debug!(
+                "TCP connection via {} closed due to routing update",
+                local_target
+            );
+            return Err(err);
+        }
         Err(e) => {
             debug!("TCP connection ended: {}", e);
+            return Err(e);
         }
     }
 
@@ -812,6 +893,7 @@ async fn handle_devbox_tunnel(
     initial_data: Vec<u8>,
     connection: Arc<DevboxConnection>,
     target_port: u16,
+    shutdown_rx: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let metadata = connection.metadata();
 
@@ -844,12 +926,19 @@ async fn handle_devbox_tunnel(
         tokio::io::AsyncWriteExt::write_all(&mut devbox_stream, &initial_data).await?;
     }
 
-    match copy_bidirectional(&mut inbound_stream, &mut devbox_stream).await {
+    match bidirectional_with_shutdown(&mut inbound_stream, &mut devbox_stream, shutdown_rx).await {
         Ok((bytes_tx, bytes_rx)) => {
             info!(
                 "Devbox tunnel completed: {} bytes sent, {} bytes received (intercept_id={})",
                 bytes_tx, bytes_rx, metadata.intercept_id
             );
+        }
+        Err(err) if is_route_update_error(&err) => {
+            info!(
+                "Devbox tunnel for intercept_id={} closed due to routing update",
+                metadata.intercept_id
+            );
+            return Err(err);
         }
         Err(err) => {
             warn!(
@@ -867,3 +956,48 @@ async fn handle_devbox_tunnel(
 
     Ok(())
 }
+
+async fn bidirectional_with_shutdown<Inbound, Outbound>(
+    inbound_stream: &mut Inbound,
+    outbound_stream: &mut Outbound,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> io::Result<(u64, u64)>
+where
+    Inbound: AsyncRead + AsyncWrite + Unpin + ?Sized,
+    Outbound: AsyncRead + AsyncWrite + Unpin + ?Sized,
+{
+    let copy_future = copy_bidirectional(inbound_stream, outbound_stream);
+    tokio::pin!(copy_future);
+    tokio::select! {
+        res = &mut copy_future => res,
+        recv = shutdown_rx.changed() => {
+            match recv {
+                Ok(_) => Err(route_update_error()),
+                Err(_) => Err(route_update_error()),
+            }
+        }
+    }
+}
+
+fn route_update_error() -> io::Error {
+    io::Error::new(io::ErrorKind::ConnectionAborted, RouteUpdateError)
+}
+
+fn is_route_update_error(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::ConnectionAborted
+        && err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<RouteUpdateError>())
+            .is_some()
+}
+
+#[derive(Debug)]
+struct RouteUpdateError;
+
+impl std::fmt::Display for RouteUpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "connection closed due to routing update")
+    }
+}
+
+impl std::error::Error for RouteUpdateError {}

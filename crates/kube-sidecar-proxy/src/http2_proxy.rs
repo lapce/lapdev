@@ -25,6 +25,7 @@ const MAX_HTTP2_FALLBACK_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 use crate::{
     config::{DevboxConnection, RouteDecision, RoutingTable, SidecarSettings},
+    connection_registry::ConnectionRegistry,
     http2_client::{ConnectResult, Http2ClientActor},
     otel_routing::{determine_routing_target, extract_routing_context, TRACESTATE_HEADER},
 };
@@ -43,6 +44,7 @@ pub async fn handle_http2_proxy(
     settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     _rpc_client: Arc<RwLock<Option<lapdev_kube_rpc::SidecarProxyManagerRpcClient>>>,
+    connection_registry: Arc<ConnectionRegistry>,
 ) -> io::Result<()> {
     let (service_port, target_port) = {
         let table = routing_table.read().await;
@@ -82,36 +84,56 @@ pub async fn handle_http2_proxy(
     let _ = _rpc_client;
     let environment_id = settings.environment_id;
 
-    while let Some(result) = inbound_connection.accept().await {
-        let (request, mut respond) = match result {
-            Ok(stream) => stream,
-            Err(err) => {
-                warn!(
-                    "HTTP/2 accept error for {} on proxy port {} (service {}): {}",
-                    client_addr, proxy_port, service_port, err
-                );
-                break;
+    let mut shutdown_rx = connection_registry.subscribe(None).await;
+
+    loop {
+        tokio::select! {
+            biased;
+            recv = shutdown_rx.changed() => {
+                if recv.is_ok() || recv.is_err() {
+                    info!(
+                        "HTTP/2 connection for {} on proxy port {} closing due to routing update",
+                        client_addr, proxy_port
+                    );
+                    break;
+                }
             }
-        };
+            result = inbound_connection.accept() => {
+                let Some(result) = result else {
+                    break;
+                };
 
-        let routing_table = Arc::clone(&routing_table);
+                let (request, mut respond) = match result {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        warn!(
+                            "HTTP/2 accept error for {} on proxy port {} (service {}): {}",
+                            client_addr, proxy_port, service_port, err
+                        );
+                        break;
+                    }
+                };
 
-        if let Err(err) = proxy_http2_stream(
-            &mut outbound_sender,
-            request,
-            &mut respond,
-            client_addr,
-            proxy_port,
-            environment_id,
-            routing_table,
-        )
-        .await
-        {
-            warn!(
-                "HTTP/2 stream proxy failure for {} on proxy port {}: {}",
-                client_addr, proxy_port, err
-            );
-            break;
+                let routing_table = Arc::clone(&routing_table);
+
+                if let Err(err) = proxy_http2_stream(
+                    &mut outbound_sender,
+                    request,
+                    &mut respond,
+                    client_addr,
+                    proxy_port,
+                    environment_id,
+                    routing_table,
+                )
+                .await
+                {
+                    warn!(
+                        "HTTP/2 stream proxy failure for {} on proxy port {}: {}",
+                        client_addr, proxy_port, err
+                    );
+                    break;
+                }
+            }
         }
     }
 

@@ -13,7 +13,7 @@ use crate::{
     tunnel::TunnelRegistry,
 };
 use lapdev_common::{
-    error_page::LazyErrorPage, kube::PreviewUrlAccessLevel, LAPDEV_AUTH_TOKEN_COOKIE,
+    error_page::render_error_page, kube::PreviewUrlAccessLevel, LAPDEV_AUTH_TOKEN_COOKIE,
 };
 use lapdev_db::api::DbApi;
 use lapdev_kube_rpc::http_parser;
@@ -21,17 +21,6 @@ use lapdev_tunnel::TunnelError;
 use pasetors::{
     claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
 };
-
-static PAGE_NOT_AUTHORISED: LazyErrorPage =
-    LazyErrorPage::new("You don't have access to this preview yet.");
-static PAGE_NOT_FOUND: LazyErrorPage =
-    LazyErrorPage::new("We couldn't find an environment or service for this Preview URL.");
-static PAGE_NOT_FORWARDED: LazyErrorPage =
-    LazyErrorPage::new("The environment hasn't exposed the requested service port.");
-static PAGE_NOT_RUNNING: LazyErrorPage =
-    LazyErrorPage::new("The environment powering this Preview URL isn't running right now.");
-static PAGE_GENERIC_ERROR: LazyErrorPage =
-    LazyErrorPage::new("Something unexpected happened while loading the preview.");
 
 pub struct PreviewUrlProxy {
     url_resolver: PreviewUrlResolver,
@@ -100,13 +89,23 @@ impl PreviewUrlProxy {
                     );
 
                     // Extract Host header using the shared utility
-                    let host = http_parser::get_host_header(&parsed_request.headers)
-                        .ok_or_else(|| ProxyError::InvalidUrl("Missing Host header".to_string()))?;
+                    let host =
+                        http_parser::get_host_header(&parsed_request.headers).ok_or_else(|| {
+                            ProxyError::InvalidUrl(
+                                "Lapdev didn’t receive a Host header for this preview request."
+                                    .to_string(),
+                            )
+                        })?;
 
                     let subdomain = host
                         .split('.')
                         .next()
-                        .ok_or_else(|| ProxyError::InvalidUrl("Invalid host format".to_string()))?
+                        .ok_or_else(|| {
+                            ProxyError::InvalidUrl(
+                                "The preview hostname is invalid. Double-check the URL."
+                                    .to_string(),
+                            )
+                        })?
                         .to_string();
 
                     debug!("Extracted subdomain: {} from host: {}", subdomain, host);
@@ -151,12 +150,11 @@ impl PreviewUrlProxy {
                 }
                 Err(e) => {
                     debug!("Failed to parse buffered HTTP request: {}", e);
-                    self.send_error_page(
-                        &mut stream,
-                        StatusCode::BAD_REQUEST,
-                        PAGE_GENERIC_ERROR.get(),
-                    )
-                    .await
+                    let page = render_error_page(
+                        "Lapdev couldn’t understand the HTTP request for this preview. Refresh and try again.",
+                    );
+                    self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, &page)
+                        .await
                 }
             },
             Err(e) => {
@@ -164,19 +162,17 @@ impl PreviewUrlProxy {
                 if e.kind() == io::ErrorKind::InvalidData
                     && e.to_string().contains("exceed maximum size")
                 {
-                    self.send_error_page(
-                        &mut stream,
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        PAGE_GENERIC_ERROR.get(),
-                    )
-                    .await
+                    let page = render_error_page(
+                        "The preview request headers exceeded Lapdev’s size limit. Reduce header size and try again.",
+                    );
+                    self.send_error_page(&mut stream, StatusCode::PAYLOAD_TOO_LARGE, &page)
+                        .await
                 } else {
-                    self.send_error_page(
-                        &mut stream,
-                        StatusCode::BAD_REQUEST,
-                        PAGE_GENERIC_ERROR.get(),
-                    )
-                    .await
+                    let page = render_error_page(
+                        "Lapdev couldn’t finish reading the HTTP request for this preview.",
+                    );
+                    self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, &page)
+                        .await
                 }
             }
         }
@@ -228,10 +224,29 @@ impl PreviewUrlProxy {
         subdomain: &str,
     ) -> Result<PreviewUrlTarget, ProxyError> {
         // Parse subdomain
-        let url_info = PreviewUrlResolver::parse_preview_url(subdomain)
-            .map_err(|e| ProxyError::InvalidUrl(e.to_string()))?;
+        let url_info = PreviewUrlResolver::parse_preview_url(subdomain).map_err(|e| {
+            let message = match e {
+                PreviewUrlError::InvalidFormat => {
+                    "Preview links must follow the pattern <port>-<service>-<hash>.".to_string()
+                }
+                PreviewUrlError::InvalidPort => {
+                    "The preview link starts with an invalid port number.".to_string()
+                }
+                _ => format!("Lapdev couldn’t parse this preview link: {e}"),
+            };
+            ProxyError::InvalidUrl(message)
+        })?;
 
         debug!("Parsed URL info: {:?}", url_info);
+
+        let service_name_for_error = url_info.service_name.clone();
+        let port_for_error = url_info.port;
+        let preview_summary = format!(
+            "service `{}` on port {} (preview link `{}`)",
+            service_name_for_error.as_str(),
+            port_for_error,
+            subdomain
+        );
 
         // Resolve preview URL target
         let target = self
@@ -240,15 +255,29 @@ impl PreviewUrlProxy {
             .await
             .map_err(|e| match e {
                 PreviewUrlError::EnvironmentNotFound => {
-                    ProxyError::NotFound("Environment not found".to_string())
+                    ProxyError::NotFound(format!(
+                        "Lapdev couldn’t find any environment that matches {}.",
+                        preview_summary.clone()
+                    ))
                 }
                 PreviewUrlError::ServiceNotFound => {
-                    ProxyError::NotFound("Service not found".to_string())
+                    ProxyError::NotFound(format!(
+                        "The environment behind this preview doesn’t expose service `{}` on port {}.",
+                        service_name_for_error.as_str(),
+                        port_for_error
+                    ))
                 }
                 PreviewUrlError::PreviewUrlNotConfigured => {
-                    ProxyError::NotFound("Preview URL not configured".to_string())
+                    ProxyError::NotFound(format!(
+                        "This preview link hasn’t been configured yet for service `{}` on port {}. Recreate it from the Lapdev dashboard.",
+                        service_name_for_error.as_str(),
+                        port_for_error
+                    ))
                 }
-                PreviewUrlError::AccessDenied => ProxyError::Forbidden("Access denied".to_string()),
+                PreviewUrlError::AccessDenied => ProxyError::Forbidden(format!(
+                    "You don’t have permission to view {}. Ask the environment owner to grant you access.",
+                    preview_summary.clone()
+                )),
                 _ => ProxyError::Internal(e.to_string()),
             })?;
 
@@ -269,23 +298,54 @@ impl PreviewUrlProxy {
         stream: &mut TcpStream,
         error: ProxyError,
     ) -> Result<(), ProxyError> {
-        let (status, page) = match &error {
-            ProxyError::Forbidden(_) => (StatusCode::FORBIDDEN, PAGE_NOT_AUTHORISED.get()),
-            ProxyError::NotFound(_) => (StatusCode::NOT_FOUND, PAGE_NOT_FOUND.get()),
-            ProxyError::TunnelNotAvailable(_) => {
-                (StatusCode::SERVICE_UNAVAILABLE, PAGE_NOT_FORWARDED.get())
-            }
-            ProxyError::Timeout(_) => (StatusCode::GATEWAY_TIMEOUT, PAGE_NOT_RUNNING.get()),
-            ProxyError::InvalidUrl(_) => (StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR.get()),
-            ProxyError::NetworkError(_) => (StatusCode::BAD_GATEWAY, PAGE_GENERIC_ERROR.get()),
-            ProxyError::Internal(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, PAGE_GENERIC_ERROR.get())
-            }
+        let (status, reason) = match &error {
+            ProxyError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            ProxyError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+            ProxyError::TunnelNotAvailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                if msg.is_empty() {
+                    "Lapdev couldn’t reach the preview environment right now. Please retry in a few seconds."
+                        .to_string()
+                } else {
+                    msg.clone()
+                },
+            ),
+            ProxyError::Timeout(msg) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                if msg.is_empty() {
+                    "The preview environment took too long to answer. Refresh the page or restart the environment."
+                        .to_string()
+                } else {
+                    msg.clone()
+                },
+            ),
+            ProxyError::InvalidUrl(msg) => (
+                StatusCode::BAD_REQUEST,
+                if msg.is_empty() {
+                    "This preview link was malformed. Double-check the URL and try again.".to_string()
+                } else {
+                    msg.clone()
+                },
+            ),
+            ProxyError::NetworkError(msg) => (
+                StatusCode::BAD_GATEWAY,
+                if msg.is_empty() {
+                    "Lapdev couldn’t proxy the request to the environment. Try again shortly."
+                        .to_string()
+                } else {
+                    msg.clone()
+                },
+            ),
+            ProxyError::Internal(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Lapdev hit an unexpected error while loading this preview. Please retry or recreate the Preview URL."
+                    .to_string(),
+            ),
         };
 
         warn!("Responding with error page: {:?} ({})", status, error);
-
-        self.send_error_page(stream, status, page).await
+        let page = render_error_page(&reason);
+        self.send_error_page(stream, status, &page).await
     }
 
     /// Ensure the caller is authorized to access the resolved preview target
@@ -299,7 +359,11 @@ impl PreviewUrlProxy {
             PreviewUrlAccessLevel::Organization => {
                 let token = self
                     .extract_cookie_value(&request.headers, LAPDEV_AUTH_TOKEN_COOKIE)
-                    .ok_or_else(|| ProxyError::Forbidden("Authentication required".to_string()))?;
+                    .ok_or_else(|| {
+                        ProxyError::Forbidden(
+                            "Sign in to Lapdev to view this Preview URL.".to_string(),
+                        )
+                    })?;
 
                 let user_id = self.user_id_from_token(&token)?;
 
@@ -332,8 +396,11 @@ impl PreviewUrlProxy {
     }
 
     fn user_id_from_token(&self, token: &str) -> Result<Uuid, ProxyError> {
+        let invalid_token_msg =
+            "Your preview session expired. Please sign in again to refresh your access.";
+
         let untrusted = UntrustedToken::try_from(token)
-            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+            .map_err(|_| ProxyError::Forbidden(invalid_token_msg.to_string()))?;
 
         let trusted = local::decrypt(
             self.auth_token_key.as_ref(),
@@ -342,21 +409,20 @@ impl PreviewUrlProxy {
             None,
             None,
         )
-        .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+        .map_err(|_| ProxyError::Forbidden(invalid_token_msg.to_string()))?;
 
         let claims = trusted
             .payload_claims()
-            .ok_or_else(|| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+            .ok_or_else(|| ProxyError::Forbidden(invalid_token_msg.to_string()))?;
 
         let user_id_value = claims
             .get_claim("user_id")
-            .ok_or_else(|| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+            .ok_or_else(|| ProxyError::Forbidden(invalid_token_msg.to_string()))?;
 
         let user_id: String = serde_json::from_value(user_id_value.clone())
-            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))?;
+            .map_err(|_| ProxyError::Forbidden(invalid_token_msg.to_string()))?;
 
-        Uuid::parse_str(&user_id)
-            .map_err(|_| ProxyError::Forbidden("Invalid authentication token".to_string()))
+        Uuid::parse_str(&user_id).map_err(|_| ProxyError::Forbidden(invalid_token_msg.to_string()))
     }
 
     async fn ensure_org_membership(
@@ -373,7 +439,10 @@ impl PreviewUrlProxy {
                     .to_string()
                     .contains("no organization member found")
                 {
-                    ProxyError::Forbidden("Organization membership required".to_string())
+                    ProxyError::Forbidden(
+                        "You need to be a member of the organization that owns this preview."
+                            .to_string(),
+                    )
                 } else {
                     error!(
                         "Failed to verify organization membership for user {} in organization {}: {}",
@@ -403,17 +472,17 @@ impl PreviewUrlProxy {
             .get_client(target.cluster_id)
             .await
             .ok_or_else(|| {
-                ProxyError::TunnelNotAvailable(format!(
-                    "No active tunnel connection for cluster {}",
-                    target.cluster_id
-                ))
+                ProxyError::TunnelNotAvailable(
+                    "Lapdev can’t reach the Kubernetes cluster that hosts this preview. Make sure the cluster agent is running."
+                        .to_string(),
+                )
             })?;
 
         if tunnel_client.is_closed() {
-            return Err(ProxyError::TunnelNotAvailable(format!(
-                "Tunnel connection for cluster {} is closed",
-                target.cluster_id
-            )));
+            return Err(ProxyError::TunnelNotAvailable(
+                "Lapdev’s connection to the preview cluster closed unexpectedly. Refresh the page or restart the environment."
+                    .to_string(),
+            ));
         }
 
         // Build the target host for the service inside the cluster
@@ -527,7 +596,7 @@ impl PreviewUrlProxy {
                     ProxyError::Timeout(format!("Tunnel closed remotely: {}", reason))
                 }
                 TunnelError::ConnectionClosed => ProxyError::TunnelNotAvailable(
-                    "Tunnel connection closed unexpectedly".to_string(),
+                    "Lapdev’s tunnel to the preview environment closed unexpectedly.".to_string(),
                 ),
                 TunnelError::Serialization(inner) => {
                     ProxyError::Internal(format!("Tunnel serialization error: {}", inner))

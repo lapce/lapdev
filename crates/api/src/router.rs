@@ -12,7 +12,7 @@ use axum_client_ip::ClientIpSource;
 use axum_extra::{extract::Host, headers, TypedHeader};
 use hyper::StatusCode;
 use lapdev_api_hrpc::{HrpcService, HrpcServiceResponse};
-use lapdev_common::{error_page::LazyErrorPage, WorkspaceStatus};
+use lapdev_common::{error_page::render_error_page, WorkspaceStatus};
 use lapdev_proxy_http::{forward::ProxyForward, proxy::WorkspaceForwardError};
 use lapdev_rpc::error::ApiError;
 use serde::Deserialize;
@@ -38,14 +38,11 @@ use crate::{
 
 static STATIC_DIR: include_dir::Dir =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/../dashboard/dist");
-static PAGE_NOT_FOUND: LazyErrorPage =
-    LazyErrorPage::new("We couldn't find an environment or service for this Preview URL.");
-static PAGE_NOT_AUTHORISED: LazyErrorPage =
-    LazyErrorPage::new("You don't have access to this preview yet.");
-static PAGE_NOT_RUNNING: LazyErrorPage =
-    LazyErrorPage::new("The environment powering this Preview URL isn't running right now.");
-static PAGE_NOT_FORWARDED: LazyErrorPage =
-    LazyErrorPage::new("The environment hasn't exposed the requested service port.");
+
+fn preview_error_response(message: impl Into<String>) -> axum::response::Html<String> {
+    let message = message.into();
+    axum::response::Html(render_error_page(&message))
+}
 
 fn private_routes() -> Router<Arc<CoreState>> {
     Router::new()
@@ -667,12 +664,22 @@ async fn forward_middleware(
     match lapdev_proxy_http::proxy::forward_workspace(hostname, &state.db, user.as_ref()).await {
         Ok((ws, port)) => {
             if ws.status != WorkspaceStatus::Running.to_string() {
-                return Ok(axum::response::Html(PAGE_NOT_RUNNING.get()).into_response());
+                return Ok(
+                    preview_error_response(format!(
+                        "Preview host `{hostname}` points to environment `{}` which isn’t running right now.",
+                        ws.name
+                    ))
+                    .into_response(),
+                );
             }
 
             let Some(workspace_host) = state.db.get_workspace_host(ws.host_id).await.ok().flatten()
             else {
-                return Ok(axum::response::Html(PAGE_NOT_RUNNING.get()).into_response());
+                return Ok(preview_error_response(format!(
+                    "Lapdev couldn’t find a compute host for environment `{}`.",
+                    ws.name
+                ))
+                .into_response());
             };
 
             let port = port
@@ -703,17 +710,31 @@ async fn forward_middleware(
                     }
                 }
             } else {
-                Ok(axum::response::Html(PAGE_NOT_FOUND.get()).into_response())
+                Ok(preview_error_response(format!(
+                    "Lapdev couldn’t find anything to serve at `{}{}{}`.",
+                    hostname,
+                    if path_query.starts_with('/') { "" } else { "/" },
+                    path_query
+                ))
+                .into_response())
             }
         }
         Err(e) => {
-            let page = match e {
-                WorkspaceForwardError::WorkspaceNotFound => PAGE_NOT_FOUND.get(),
-                WorkspaceForwardError::PortNotForwarded => PAGE_NOT_FORWARDED.get(),
-                WorkspaceForwardError::InvalidHostname => PAGE_NOT_RUNNING.get(),
-                WorkspaceForwardError::Unauthorised => PAGE_NOT_AUTHORISED.get(),
+            let message = match e {
+                WorkspaceForwardError::WorkspaceNotFound => format!(
+                    "Lapdev couldn’t find any environment for preview host `{hostname}`."
+                ),
+                WorkspaceForwardError::PortNotForwarded => format!(
+                    "Preview host `{hostname}` isn’t exposing the requested service port right now. Publish the port from Lapdev and try again."
+                ),
+                WorkspaceForwardError::InvalidHostname => format!(
+                    "`{hostname}` isn’t a valid preview host."
+                ),
+                WorkspaceForwardError::Unauthorised => format!(
+                    "You don’t have access to preview host `{hostname}`. Sign in with the correct organization."
+                ),
             };
-            Ok(axum::response::Html(page).into_response())
+            Ok(preview_error_response(message).into_response())
         }
     }
 }

@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 const TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/pages/error_page.html"
@@ -9,27 +7,6 @@ const MESSAGE_PLACEHOLDER: &str = "{{MESSAGE}}";
 /// Render the shared error page template with the provided message.
 pub fn render_error_page(message: &str) -> String {
     TEMPLATE.replace(MESSAGE_PLACEHOLDER, &escape_html(message))
-}
-
-/// Lazily renders a specific error page message once and reuses the HTML.
-pub struct LazyErrorPage {
-    message: &'static str,
-    html: OnceLock<String>,
-}
-
-impl LazyErrorPage {
-    pub const fn new(message: &'static str) -> Self {
-        Self {
-            message,
-            html: OnceLock::new(),
-        }
-    }
-
-    pub fn get(&'static self) -> &'static str {
-        self.html
-            .get_or_init(|| render_error_page(self.message))
-            .as_str()
-    }
 }
 
 fn escape_html(input: &str) -> String {

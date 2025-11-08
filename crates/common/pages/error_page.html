@@ -85,17 +85,34 @@
         color: #991b1b;
       }
       .tips {
+        list-style: none;
+        padding: 0;
         margin: 0;
-        padding-left: 1.1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
         color: #4b5563;
-        line-height: 1.6;
       }
-      .tips li + li {
-        margin-top: 0.4rem;
+      .tips li {
+        display: flex;
+        gap: 0.4rem;
+      }
+      .tips li::before {
+        content: "•";
+        color: #9ca3af;
+      }
+      .note {
+        margin: 0.75rem 0 0;
+        font-size: 0.95rem;
+        color: #374151;
+        line-height: 1.5;
+      }
+      .note strong {
+        color: #1f2937;
       }
       .help {
-        margin: 0.5rem 0 0;
-        font-size: 0.95rem;
+        margin: 0.75rem 0 0;
+        font-size: 0.92rem;
         color: #6b7280;
       }
       @media (min-width: 768px) {
@@ -117,22 +134,26 @@
           Lapdev
         </a>
         <p class="eyebrow">Preview URL issue</p>
-        <h1>We couldn&rsquo;t open this preview link</h1>
+        <h1>We couldn&rsquo;t reach this preview</h1>
         <p class="lead">
-          We ran into a problem while loading the Preview URL you requested. The reported reason is below, along with a few quick checks that usually fix it.
+          Lapdev tried to route your Preview URL but the backing environment didn&rsquo;t respond as expected. Review the reported reason below and follow the steps to get things moving again.
         </p>
         <div class="reason">
-          <span class="reason-label">Reported reason</span>
+          <span class="reason-label">What went wrong</span>
           <p class="reason-message">{{MESSAGE}}</p>
         </div>
         <ul class="tips">
-          <li>Ensure the backing environment is running and healthy.</li>
-          <li>Confirm the service/port exposed by this Preview URL is still published.</li>
-          <li>Make sure you&rsquo;re signed into the Lapdev organization that owns this link.</li>
+          <li>Confirm the environment is running and the correct revision is deployed.</li>
+          <li>Verify this Preview URL still publishes the service/port you expect.</li>
+          <li>Ensure you&rsquo;re signed into the Lapdev organization that owns this link.</li>
         </ul>
-        <p class="help">
-          Still stuck? Ask the environment owner to restart it or recreate the Preview URL from the dashboard.
+        <p class="note">
+          <strong>If you manage this environment:</strong> restart or redeploy it, then recreate the Preview URL if the issue persists.
         </p>
+        <p class="note">
+          <strong>If you&rsquo;re viewing someone else&rsquo;s link:</strong> share this page with the owner so they can republish the service or grant access.
+        </p>
+        <p class="help">Need a hand? Ask a Lapdev admin or teammate to review the environment status from the dashboard.</p>
       </div>
     </section>
   </body>

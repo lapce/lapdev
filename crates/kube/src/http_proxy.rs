@@ -448,6 +448,16 @@ impl PreviewUrlProxy {
             .await
             .map_err(Self::map_tunnel_runtime_error)?;
 
+        if bytes_rx == 0 {
+            warn!(
+                "Tunnel to {}:{} closed before any downstream bytes were sent (cluster={})",
+                target.service_name, target.service_port, target.cluster_id
+            );
+            return Err(ProxyError::Timeout(
+                "Target service did not produce a response".to_string(),
+            ));
+        }
+
         info!(
             "Tunnel proxied {} bytes upstream and {} bytes downstream (cluster={})",
             bytes_tx, bytes_rx, target.cluster_id

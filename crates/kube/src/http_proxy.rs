@@ -12,7 +12,9 @@ use crate::{
     preview_url::{PreviewUrlError, PreviewUrlResolver, PreviewUrlTarget},
     tunnel::TunnelRegistry,
 };
-use lapdev_common::{kube::PreviewUrlAccessLevel, LAPDEV_AUTH_TOKEN_COOKIE};
+use lapdev_common::{
+    error_page::LazyErrorPage, kube::PreviewUrlAccessLevel, LAPDEV_AUTH_TOKEN_COOKIE,
+};
 use lapdev_db::api::DbApi;
 use lapdev_kube_rpc::http_parser;
 use lapdev_tunnel::TunnelError;
@@ -20,26 +22,11 @@ use pasetors::{
     claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
 };
 
-const PAGE_NOT_AUTHORISED: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../api/pages/not_authorised.html"
-));
-const PAGE_NOT_FOUND: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../api/pages/not_found.html"
-));
-const PAGE_NOT_FORWARDED: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../api/pages/not_forwarded.html"
-));
-const PAGE_NOT_RUNNING: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../api/pages/not_running.html"
-));
-const PAGE_GENERIC_ERROR: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../api/pages/generic_error.html"
-));
+static PAGE_NOT_AUTHORISED: LazyErrorPage = LazyErrorPage::new("Not authorised");
+static PAGE_NOT_FOUND: LazyErrorPage = LazyErrorPage::new("Workspace not found");
+static PAGE_NOT_FORWARDED: LazyErrorPage = LazyErrorPage::new("Workspace port not forwarded");
+static PAGE_NOT_RUNNING: LazyErrorPage = LazyErrorPage::new("Workspace not running");
+static PAGE_GENERIC_ERROR: LazyErrorPage = LazyErrorPage::new("Something went wrong");
 
 pub struct PreviewUrlProxy {
     url_resolver: PreviewUrlResolver,
@@ -159,8 +146,12 @@ impl PreviewUrlProxy {
                 }
                 Err(e) => {
                     debug!("Failed to parse buffered HTTP request: {}", e);
-                    self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR)
-                        .await
+                    self.send_error_page(
+                        &mut stream,
+                        StatusCode::BAD_REQUEST,
+                        PAGE_GENERIC_ERROR.get(),
+                    )
+                    .await
                 }
             },
             Err(e) => {
@@ -171,12 +162,16 @@ impl PreviewUrlProxy {
                     self.send_error_page(
                         &mut stream,
                         StatusCode::PAYLOAD_TOO_LARGE,
-                        PAGE_GENERIC_ERROR,
+                        PAGE_GENERIC_ERROR.get(),
                     )
                     .await
                 } else {
-                    self.send_error_page(&mut stream, StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR)
-                        .await
+                    self.send_error_page(
+                        &mut stream,
+                        StatusCode::BAD_REQUEST,
+                        PAGE_GENERIC_ERROR.get(),
+                    )
+                    .await
                 }
             }
         }
@@ -187,7 +182,7 @@ impl PreviewUrlProxy {
         &self,
         stream: &mut TcpStream,
         status: StatusCode,
-        body: &'static str,
+        body: &str,
     ) -> Result<(), ProxyError> {
         let status_line = format!(
             "HTTP/1.1 {} {}\r\n",
@@ -270,15 +265,17 @@ impl PreviewUrlProxy {
         error: ProxyError,
     ) -> Result<(), ProxyError> {
         let (status, page) = match &error {
-            ProxyError::Forbidden(_) => (StatusCode::FORBIDDEN, PAGE_NOT_AUTHORISED),
-            ProxyError::NotFound(_) => (StatusCode::NOT_FOUND, PAGE_NOT_FOUND),
+            ProxyError::Forbidden(_) => (StatusCode::FORBIDDEN, PAGE_NOT_AUTHORISED.get()),
+            ProxyError::NotFound(_) => (StatusCode::NOT_FOUND, PAGE_NOT_FOUND.get()),
             ProxyError::TunnelNotAvailable(_) => {
-                (StatusCode::SERVICE_UNAVAILABLE, PAGE_NOT_FORWARDED)
+                (StatusCode::SERVICE_UNAVAILABLE, PAGE_NOT_FORWARDED.get())
             }
-            ProxyError::Timeout(_) => (StatusCode::GATEWAY_TIMEOUT, PAGE_NOT_RUNNING),
-            ProxyError::InvalidUrl(_) => (StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR),
-            ProxyError::NetworkError(_) => (StatusCode::BAD_GATEWAY, PAGE_GENERIC_ERROR),
-            ProxyError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, PAGE_GENERIC_ERROR),
+            ProxyError::Timeout(_) => (StatusCode::GATEWAY_TIMEOUT, PAGE_NOT_RUNNING.get()),
+            ProxyError::InvalidUrl(_) => (StatusCode::BAD_REQUEST, PAGE_GENERIC_ERROR.get()),
+            ProxyError::NetworkError(_) => (StatusCode::BAD_GATEWAY, PAGE_GENERIC_ERROR.get()),
+            ProxyError::Internal(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, PAGE_GENERIC_ERROR.get())
+            }
         };
 
         warn!("Responding with error page: {:?} ({})", status, error);

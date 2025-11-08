@@ -12,7 +12,7 @@ use axum_client_ip::ClientIpSource;
 use axum_extra::{extract::Host, headers, TypedHeader};
 use hyper::StatusCode;
 use lapdev_api_hrpc::{HrpcService, HrpcServiceResponse};
-use lapdev_common::WorkspaceStatus;
+use lapdev_common::{error_page::LazyErrorPage, WorkspaceStatus};
 use lapdev_proxy_http::{forward::ProxyForward, proxy::WorkspaceForwardError};
 use lapdev_rpc::error::ApiError;
 use serde::Deserialize;
@@ -38,11 +38,10 @@ use crate::{
 
 static STATIC_DIR: include_dir::Dir =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/../dashboard/dist");
-const PAGE_NOT_FOUND: &[u8] = include_bytes!("../pages/not_found.html");
-const PAGE_NOT_AUTHORISED: &[u8] = include_bytes!("../pages/not_authorised.html");
-const PAGE_NOT_RUNNING: &[u8] = include_bytes!("../pages/not_running.html");
-const PAGE_NOT_FORWARDED: &[u8] = include_bytes!("../pages/not_forwarded.html");
-const PAGE_CSS: &[u8] = include_bytes!("../pages/main.css");
+static PAGE_NOT_FOUND: LazyErrorPage = LazyErrorPage::new("Workspace not found");
+static PAGE_NOT_AUTHORISED: LazyErrorPage = LazyErrorPage::new("Not authorised");
+static PAGE_NOT_RUNNING: LazyErrorPage = LazyErrorPage::new("Workspace not running");
+static PAGE_NOT_FORWARDED: LazyErrorPage = LazyErrorPage::new("Workspace port not forwarded");
 
 fn private_routes() -> Router<Arc<CoreState>> {
     Router::new()
@@ -660,30 +659,16 @@ async fn forward_middleware(
         return Ok(next.run(Request::from_parts(parts, body)).await);
     }
 
-    if path.starts_with("/error-page/lapdev-main.css") {
-        return Ok((
-            [
-                (axum::http::header::CONTENT_TYPE, "text/css"),
-                (
-                    axum::http::header::CACHE_CONTROL,
-                    "public, max-age=31536000",
-                ),
-            ],
-            PAGE_CSS,
-        )
-            .into_response());
-    }
-
     let user = state.authenticate(&cookie).await.ok();
     match lapdev_proxy_http::proxy::forward_workspace(hostname, &state.db, user.as_ref()).await {
         Ok((ws, port)) => {
             if ws.status != WorkspaceStatus::Running.to_string() {
-                return Ok(axum::response::Html::from(PAGE_NOT_RUNNING).into_response());
+                return Ok(axum::response::Html(PAGE_NOT_RUNNING.get()).into_response());
             }
 
             let Some(workspace_host) = state.db.get_workspace_host(ws.host_id).await.ok().flatten()
             else {
-                return Ok(axum::response::Html::from(PAGE_NOT_RUNNING).into_response());
+                return Ok(axum::response::Html(PAGE_NOT_RUNNING.get()).into_response());
             };
 
             let port = port
@@ -714,17 +699,17 @@ async fn forward_middleware(
                     }
                 }
             } else {
-                Ok(axum::response::Html::from(PAGE_NOT_FOUND).into_response())
+                Ok(axum::response::Html(PAGE_NOT_FOUND.get()).into_response())
             }
         }
         Err(e) => {
-            let b = match e {
-                WorkspaceForwardError::WorkspaceNotFound => PAGE_NOT_FOUND,
-                WorkspaceForwardError::PortNotForwarded => PAGE_NOT_FORWARDED,
-                WorkspaceForwardError::InvalidHostname => PAGE_NOT_RUNNING,
-                WorkspaceForwardError::Unauthorised => PAGE_NOT_AUTHORISED,
+            let page = match e {
+                WorkspaceForwardError::WorkspaceNotFound => PAGE_NOT_FOUND.get(),
+                WorkspaceForwardError::PortNotForwarded => PAGE_NOT_FORWARDED.get(),
+                WorkspaceForwardError::InvalidHostname => PAGE_NOT_RUNNING.get(),
+                WorkspaceForwardError::Unauthorised => PAGE_NOT_AUTHORISED.get(),
             };
-            Ok(axum::response::Html::from(b).into_response())
+            Ok(axum::response::Html(page).into_response())
         }
     }
 }

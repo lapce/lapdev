@@ -2,6 +2,7 @@ pub mod config;
 pub mod console;
 pub mod devbox;
 pub mod devcontainer;
+pub mod error_page;
 pub mod hrpc;
 pub mod kube;
 pub mod token;

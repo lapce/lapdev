@@ -15,6 +15,7 @@ use crate::{
 use lapdev_common::{kube::PreviewUrlAccessLevel, LAPDEV_AUTH_TOKEN_COOKIE};
 use lapdev_db::api::DbApi;
 use lapdev_kube_rpc::http_parser;
+use lapdev_tunnel::TunnelError;
 use pasetors::{
     claims::ClaimsValidationRules, keys::SymmetricKey, local, token::UntrustedToken, version4::V4,
 };
@@ -145,9 +146,16 @@ impl PreviewUrlProxy {
                         target.environment_id,
                     )?;
 
-                    // Start direct TCP proxying
-                    self.start_tcp_proxy(stream, target, initial_request_data)
+                    // Start direct TCP proxying; on errors respond with a friendly page
+                    match self
+                        .start_tcp_proxy(&mut stream, target, initial_request_data)
                         .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(proxy_err) => {
+                            self.respond_with_proxy_error(&mut stream, proxy_err).await
+                        }
+                    }
                 }
                 Err(e) => {
                     debug!("Failed to parse buffered HTTP request: {}", e);
@@ -379,7 +387,7 @@ impl PreviewUrlProxy {
     /// Start direct TCP proxying between client and target service
     async fn start_tcp_proxy(
         &self,
-        mut client_stream: TcpStream,
+        client_stream: &mut TcpStream,
         target: PreviewUrlTarget,
         initial_request_data: Vec<u8>,
     ) -> Result<(), ProxyError> {
@@ -414,8 +422,14 @@ impl PreviewUrlProxy {
         let mut tunnel_stream = tunnel_client
             .connect_tcp(target_host.clone(), target.service_port)
             .await
-            .map_err(|e| {
-                ProxyError::TunnelNotAvailable(format!("Failed to open tunnel connection: {}", e))
+            .map_err(|err| {
+                warn!(
+                    service = %target.service_name,
+                    port = target.service_port,
+                    cluster = %target.cluster_id,
+                    "Failed to open tunnel connection: {err}"
+                );
+                Self::map_tunnel_connect_error(err)
             })?;
 
         if !initial_request_data.is_empty() {
@@ -430,7 +444,7 @@ impl PreviewUrlProxy {
                 })?;
         }
 
-        let (bytes_tx, bytes_rx) = copy_bidirectional(&mut client_stream, &mut tunnel_stream)
+        let (bytes_tx, bytes_rx) = copy_bidirectional(client_stream, &mut tunnel_stream)
             .await
             .map_err(|e| ProxyError::NetworkError(format!("Tunnel proxying failed: {}", e)))?;
 
@@ -444,6 +458,31 @@ impl PreviewUrlProxy {
         }
 
         Ok(())
+    }
+
+    fn map_tunnel_connect_error(err: TunnelError) -> ProxyError {
+        match err {
+            TunnelError::Remote(reason) => {
+                ProxyError::Timeout(format!("Target reported connection error: {}", reason))
+            }
+            TunnelError::Transport(io_err) => {
+                let message = format!("Transport error while opening tunnel: {}", io_err);
+                match io_err.kind() {
+                    io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::NotConnected => ProxyError::Timeout(message),
+                    _ => ProxyError::NetworkError(message),
+                }
+            }
+            TunnelError::ConnectionClosed => ProxyError::NetworkError(
+                "Tunnel connection closed before target connection was established".to_string(),
+            ),
+            TunnelError::Serialization(err) => {
+                ProxyError::Internal(format!("Failed to serialize tunnel open request: {}", err))
+            }
+        }
     }
 
     /// Add environment ID to the tracestate header in HTTP request using parsed header info
@@ -546,11 +585,8 @@ impl IntoResponse for ProxyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tunnel::TunnelRegistry;
-    use lapdev_db::api::DbApi;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-    use uuid::Uuid;
+    use lapdev_tunnel::TunnelError;
+    use std::io;
 
     // Mock test for basic URL parsing flow
     #[tokio::test]
@@ -611,5 +647,28 @@ mod tests {
         // Verify body parsing
         let body = &request_data[body_start..];
         assert_eq!(body, b"Hello, world!");
+    }
+
+    #[test]
+    fn test_map_tunnel_connect_error_remote_maps_to_timeout() {
+        let err = TunnelError::Remote("connection refused".to_string());
+        match PreviewUrlProxy::map_tunnel_connect_error(err) {
+            ProxyError::Timeout(message) => {
+                assert!(message.contains("connection error"));
+            }
+            other => panic!("expected timeout error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_tunnel_connect_error_transport_connection_refused() {
+        let err =
+            TunnelError::Transport(io::Error::new(io::ErrorKind::ConnectionRefused, "refused"));
+        match PreviewUrlProxy::map_tunnel_connect_error(err) {
+            ProxyError::Timeout(message) => {
+                assert!(message.contains("Transport error"));
+            }
+            other => panic!("expected timeout error, got {other:?}"),
+        }
     }
 }

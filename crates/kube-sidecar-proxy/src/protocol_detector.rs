@@ -1,3 +1,5 @@
+use lapdev_kube_rpc::http_parser::{self, HeaderReadStatus};
+use std::io;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     time::{timeout, Duration, Instant},
@@ -7,7 +9,6 @@ use tracing::debug;
 /// Maximum bytes to read while attempting to detect HTTP.
 const MAX_DETECTION_BYTES: usize = 8192;
 const READ_CHUNK_SIZE: usize = 1024;
-const HEADER_END_MARKER: &[u8] = b"\r\n\r\n";
 
 /// HTTP/2 client preface sent at the start of cleartext connections.
 const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -96,7 +97,24 @@ where
     // Check if it starts with an HTTP method (HTTP/1.x)
     if let Some(protocol) = detect_http_in_buffer(&buffer) {
         debug!("Detected HTTP protocol: {:?}", protocol);
-        ensure_http_headers_complete(reader, &mut buffer, deadline, &mut timed_out).await?;
+        match http_parser::read_http_headers_with_deadline(reader, &mut buffer, deadline).await {
+            Ok(HeaderReadStatus::TimedOut) => {
+                timed_out = true;
+            }
+            Ok(HeaderReadStatus::Complete) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                debug!(
+                    "HTTP header read finished early while detecting protocol: {}",
+                    err
+                );
+            }
+            Err(err) => return Err(err),
+        }
         Ok(ProtocolDetectionResult {
             protocol,
             buffer,
@@ -147,13 +165,6 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
     }
 }
 
-/// Return true if the buffer already contains the HTTP header terminator.
-fn has_complete_http_headers(buffer: &[u8]) -> bool {
-    buffer
-        .windows(HEADER_END_MARKER.len())
-        .any(|window| window == HEADER_END_MARKER)
-}
-
 async fn read_chunk_with_deadline<R>(
     reader: &mut R,
     chunk: &mut [u8],
@@ -185,50 +196,6 @@ where
     } else {
         reader.read(chunk).await.map(Some)
     }
-}
-
-/// Continue reading until the HTTP header terminator is found or limits are exceeded.
-async fn ensure_http_headers_complete<R>(
-    reader: &mut R,
-    buffer: &mut Vec<u8>,
-    deadline: Option<Instant>,
-    timed_out: &mut bool,
-) -> std::io::Result<()>
-where
-    R: AsyncRead + Unpin,
-{
-    if has_complete_http_headers(buffer) || buffer.len() >= MAX_DETECTION_BYTES {
-        return Ok(());
-    }
-
-    loop {
-        if has_complete_http_headers(buffer) || buffer.len() >= MAX_DETECTION_BYTES {
-            break;
-        }
-
-        let remaining_capacity = MAX_DETECTION_BYTES - buffer.len();
-        if remaining_capacity == 0 {
-            break;
-        }
-
-        let mut chunk = [0u8; READ_CHUNK_SIZE];
-        let read_len = remaining_capacity.min(READ_CHUNK_SIZE);
-
-        let read_result =
-            read_chunk_with_deadline(reader, &mut chunk[..read_len], deadline, timed_out).await?;
-        let bytes_read = match read_result {
-            Some(n) => n,
-            None => break,
-        };
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        buffer.extend_from_slice(&chunk[..bytes_read]);
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

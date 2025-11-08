@@ -1,5 +1,8 @@
 use std::io;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    time::{timeout, Instant},
+};
 use tracing::debug;
 
 /// Parsed HTTP request information
@@ -12,6 +15,17 @@ pub struct ParsedHttpRequest {
 
 /// Result of parsing HTTP headers with body start position
 pub type HttpParseResult = (ParsedHttpRequest, usize);
+
+const MAX_HEADER_SIZE: usize = 8192;
+const READ_CHUNK_SIZE: usize = 1024;
+const HEADER_END_MARKER: &[u8] = b"\r\n\r\n";
+
+/// Outcome of attempting to read HTTP headers with an optional deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderReadStatus {
+    Complete,
+    TimedOut,
+}
 
 /// Parse HTTP request from a buffer using httparse
 pub fn parse_http_request_from_buffer(buffer: &[u8]) -> io::Result<HttpParseResult> {
@@ -74,18 +88,41 @@ pub async fn read_http_headers<R>(stream: &mut R, buffer: &mut Vec<u8>) -> io::R
 where
     R: AsyncRead + Unpin,
 {
-    const MAX_HEADER_SIZE: usize = 8192;
-    const READ_CHUNK_SIZE: usize = 1024;
-    const HEADER_END_MARKER: &[u8] = b"\r\n\r\n";
+    let status = read_http_headers_with_deadline(stream, buffer, None).await?;
+    debug_assert!(matches!(status, HeaderReadStatus::Complete));
+    Ok(())
+}
 
+/// Read HTTP headers while honoring an optional deadline. Returns whether the read completed
+/// before the deadline expired.
+pub async fn read_http_headers_with_deadline<R>(
+    stream: &mut R,
+    buffer: &mut Vec<u8>,
+    deadline: Option<Instant>,
+) -> io::Result<HeaderReadStatus>
+where
+    R: AsyncRead + Unpin,
+{
     if headers_complete(buffer, HEADER_END_MARKER) {
-        return Ok(());
+        return Ok(HeaderReadStatus::Complete);
     }
+
+    let mut status = HeaderReadStatus::Complete;
 
     while buffer.len() < MAX_HEADER_SIZE {
         let prev_len = buffer.len();
-        let mut temp_buffer = vec![0u8; READ_CHUNK_SIZE];
-        let bytes_read = stream.read(&mut temp_buffer).await?;
+        let remaining_capacity = MAX_HEADER_SIZE - prev_len;
+        let read_len = remaining_capacity.min(READ_CHUNK_SIZE);
+        let mut temp_buffer = vec![0u8; read_len];
+        let read_result = read_chunk_with_deadline(stream, &mut temp_buffer, deadline).await?;
+
+        let bytes_read = match read_result {
+            Some(n) => n,
+            None => {
+                status = HeaderReadStatus::TimedOut;
+                break;
+            }
+        };
 
         if bytes_read == 0 {
             return Err(io::Error::new(
@@ -94,8 +131,7 @@ where
             ));
         }
 
-        temp_buffer.truncate(bytes_read);
-        buffer.extend_from_slice(&temp_buffer);
+        buffer.extend_from_slice(&temp_buffer[..bytes_read]);
 
         let search_start = if prev_len >= HEADER_END_MARKER.len() - 1 {
             prev_len - (HEADER_END_MARKER.len() - 1)
@@ -108,17 +144,21 @@ where
                 "Successfully read HTTP headers after buffering {} bytes",
                 buffer.len()
             );
-            return Ok(());
+            return Ok(HeaderReadStatus::Complete);
         }
     }
 
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!(
-            "HTTP headers exceed maximum size of {} bytes",
-            MAX_HEADER_SIZE
-        ),
-    ))
+    if matches!(status, HeaderReadStatus::TimedOut) {
+        Ok(HeaderReadStatus::TimedOut)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "HTTP headers exceed maximum size of {} bytes",
+                MAX_HEADER_SIZE
+            ),
+        ))
+    }
 }
 
 fn headers_complete(buffer: &[u8], marker: &[u8]) -> bool {
@@ -153,9 +193,45 @@ pub fn get_header_value<'a>(
         .map(|(_, value)| value)
 }
 
+async fn read_chunk_with_deadline<R>(
+    reader: &mut R,
+    chunk: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<Option<usize>>
+where
+    R: AsyncRead + Unpin,
+{
+    if chunk.is_empty() {
+        return Ok(Some(0));
+    }
+
+    if let Some(deadline) = deadline {
+        match deadline.checked_duration_since(Instant::now()) {
+            Some(remaining) if !remaining.is_zero() => {
+                match timeout(remaining, reader.read(chunk)).await {
+                    Ok(result) => result.map(Some),
+                    Err(_) => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    } else {
+        reader.read(chunk).await.map(Some)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::{
+        io::{AsyncRead, ReadBuf},
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn test_parse_basic_get_request() {
@@ -574,5 +650,61 @@ mod tests {
                 Some(&"test.example.com".to_string())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_read_http_headers_immediate_deadline_times_out() {
+        let mut stream = tokio::io::empty();
+        let mut buffer = Vec::new();
+
+        let status =
+            read_http_headers_with_deadline(&mut stream, &mut buffer, Some(Instant::now()))
+                .await
+                .expect("Immediate deadline should not error");
+
+        assert_eq!(status, HeaderReadStatus::TimedOut);
+        assert!(buffer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_http_headers_deadline_succeeds_before_timeout() {
+        struct SingleChunkStream {
+            data: Vec<u8>,
+            sent: bool,
+        }
+
+        impl AsyncRead for SingleChunkStream {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                if self.sent {
+                    return Poll::Ready(Ok(()));
+                }
+
+                buf.put_slice(&self.data);
+                self.sent = true;
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let request = b"GET /ok HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test\r\n\r\n".to_vec();
+        let mut stream = SingleChunkStream {
+            data: request.clone(),
+            sent: false,
+        };
+        let mut buffer = Vec::new();
+
+        let status = read_http_headers_with_deadline(
+            &mut stream,
+            &mut buffer,
+            Some(Instant::now() + Duration::from_secs(5)),
+        )
+        .await
+        .expect("Should finish before timeout");
+
+        assert_eq!(status, HeaderReadStatus::Complete);
+        assert_eq!(buffer, request);
     }
 }

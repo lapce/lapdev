@@ -2,7 +2,7 @@ use anyhow::Result;
 use axum::{http::StatusCode, response::IntoResponse};
 use std::{io, sync::Arc};
 use tokio::{
-    io::{copy_bidirectional, AsyncWriteExt},
+    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 use tracing::{debug, error, info, warn};
@@ -441,23 +441,46 @@ impl PreviewUrlProxy {
                 })?;
         }
 
+        let mut downstream_bytes = 0u64;
+
+        let mut initial_buffer = vec![0u8; 8192];
+        match tunnel_stream
+            .read(&mut initial_buffer)
+            .await
+            .map_err(Self::map_tunnel_runtime_error)?
+        {
+            0 => {
+                warn!(
+                    "Tunnel to {}:{} closed before any downstream bytes were sent (cluster={})",
+                    target.service_name, target.service_port, target.cluster_id
+                );
+                return Err(ProxyError::Timeout(
+                    "Target service did not produce a response".to_string(),
+                ));
+            }
+            n => {
+                client_stream
+                    .write_all(&initial_buffer[..n])
+                    .await
+                    .map_err(|e| {
+                        ProxyError::NetworkError(format!(
+                            "Failed to send initial response chunk to client: {}",
+                            e
+                        ))
+                    })?;
+                downstream_bytes += n as u64;
+            }
+        }
+
         let (bytes_tx, bytes_rx) = copy_bidirectional(client_stream, &mut tunnel_stream)
             .await
             .map_err(Self::map_tunnel_runtime_error)?;
 
-        if bytes_rx == 0 {
-            warn!(
-                "Tunnel to {}:{} closed before any downstream bytes were sent (cluster={})",
-                target.service_name, target.service_port, target.cluster_id
-            );
-            return Err(ProxyError::Timeout(
-                "Target service did not produce a response".to_string(),
-            ));
-        }
+        downstream_bytes += bytes_rx;
 
         info!(
             "Tunnel proxied {} bytes upstream and {} bytes downstream (cluster={})",
-            bytes_tx, bytes_rx, target.cluster_id
+            bytes_tx, downstream_bytes, target.cluster_id
         );
 
         if let Err(err) = AsyncWriteExt::shutdown(&mut tunnel_stream).await {

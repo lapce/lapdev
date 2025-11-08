@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use tokio::{
     io::{self, AsyncRead, AsyncWrite},
-    sync::{mpsc, oneshot, Notify},
+    sync::{mpsc, oneshot, watch, Notify},
     task::JoinHandle,
     time::{Duration, MissedTickBehavior},
 };
@@ -36,6 +36,7 @@ enum InnerCommand {
     RegisterStream {
         tunnel_id: String,
         sender: mpsc::UnboundedSender<Bytes>,
+        reason_tx: watch::Sender<Option<String>>,
     },
     ForwardData {
         tunnel_id: String,
@@ -44,9 +45,18 @@ enum InnerCommand {
     CloseStream {
         tunnel_id: String,
     },
+    SetCloseReason {
+        tunnel_id: String,
+        reason: Option<String>,
+    },
     FailAll {
         reason: String,
     },
+}
+
+struct StreamEntry {
+    data_tx: mpsc::UnboundedSender<Bytes>,
+    reason_tx: watch::Sender<Option<String>>,
 }
 
 struct Inner {
@@ -61,7 +71,7 @@ impl Inner {
         tokio::spawn(async move {
             let mut pending: HashMap<String, oneshot::Sender<Result<(), TunnelError>>> =
                 HashMap::new();
-            let mut streams: HashMap<String, mpsc::UnboundedSender<Bytes>> = HashMap::new();
+            let mut streams: HashMap<String, StreamEntry> = HashMap::new();
 
             while let Some(command) = command_rx.recv().await {
                 match command {
@@ -73,13 +83,23 @@ impl Inner {
                             let _ = sender.send(result);
                         }
                     }
-                    InnerCommand::RegisterStream { tunnel_id, sender } => {
-                        streams.insert(tunnel_id, sender);
+                    InnerCommand::RegisterStream {
+                        tunnel_id,
+                        sender,
+                        reason_tx,
+                    } => {
+                        streams.insert(
+                            tunnel_id,
+                            StreamEntry {
+                                data_tx: sender,
+                                reason_tx,
+                            },
+                        );
                     }
                     InnerCommand::ForwardData { tunnel_id, payload } => {
                         match streams.get(&tunnel_id) {
-                            Some(sender) => {
-                                if sender.send(Bytes::from(payload)).is_err() {
+                            Some(entry) => {
+                                if entry.data_tx.send(Bytes::from(payload)).is_err() {
                                     debug!("Failed to forward data for tunnel {}", tunnel_id);
                                 }
                             }
@@ -91,11 +111,23 @@ impl Inner {
                     InnerCommand::CloseStream { tunnel_id } => {
                         streams.remove(&tunnel_id);
                     }
+                    InnerCommand::SetCloseReason { tunnel_id, reason } => {
+                        if let Some(entry) = streams.get(&tunnel_id) {
+                            if entry.reason_tx.send(reason.clone()).is_err() {
+                                debug!(
+                                    "Failed to publish close reason for tunnel {}; receiver dropped",
+                                    tunnel_id
+                                );
+                            }
+                        }
+                    }
                     InnerCommand::FailAll { reason } => {
                         for (_, sender) in pending.drain() {
                             let _ = sender.send(Err(TunnelError::Remote(reason.clone())));
                         }
-                        streams.clear();
+                        for (_, entry) in streams.drain() {
+                            let _ = entry.reason_tx.send(Some(reason.clone()));
+                        }
                     }
                 }
             }
@@ -146,17 +178,24 @@ impl Inner {
         }
     }
 
-    async fn register_stream(&self, tunnel_id: String, tx: mpsc::UnboundedSender<Bytes>) {
+    fn register_stream(
+        &self,
+        tunnel_id: String,
+        tx: mpsc::UnboundedSender<Bytes>,
+    ) -> watch::Receiver<Option<String>> {
+        let (reason_tx, reason_rx) = watch::channel(None);
         if self
             .command_tx
             .send(InnerCommand::RegisterStream {
                 tunnel_id,
                 sender: tx,
+                reason_tx,
             })
             .is_err()
         {
             debug!("Failed to register stream; manager dropped");
         }
+        reason_rx
     }
 
     async fn forward_data(&self, tunnel_id: &str, payload: Vec<u8>) {
@@ -184,6 +223,22 @@ impl Inner {
             .is_err()
         {
             debug!("Failed to close stream {}; manager dropped", tunnel_id);
+        }
+    }
+
+    async fn set_close_reason(&self, tunnel_id: &str, reason: Option<String>) {
+        if self
+            .command_tx
+            .send(InnerCommand::SetCloseReason {
+                tunnel_id: tunnel_id.to_string(),
+                reason,
+            })
+            .is_err()
+        {
+            debug!(
+                "Failed to set close reason for tunnel {}; manager dropped",
+                tunnel_id
+            );
         }
     }
 
@@ -363,7 +418,7 @@ impl TunnelClient {
         let (open_tx, open_rx) = oneshot::channel();
         let (data_tx, data_rx) = mpsc::unbounded_channel();
 
-        self.inner.register_stream(tunnel_id.clone(), data_tx).await;
+        let reason_rx = self.inner.register_stream(tunnel_id.clone(), data_tx);
         self.inner.insert_pending(tunnel_id.clone(), open_tx).await;
 
         self.inner.send_message(WireMessage::Open {
@@ -376,7 +431,12 @@ impl TunnelClient {
         })?;
 
         match open_rx.await {
-            Ok(Ok(())) => Ok(TunnelTcpStream::new(tunnel_id, self.inner.clone(), data_rx)),
+            Ok(Ok(())) => Ok(TunnelTcpStream::new(
+                tunnel_id,
+                self.inner.clone(),
+                data_rx,
+                reason_rx,
+            )),
             Ok(Err(err)) => {
                 self.inner.close_stream(&tunnel_id).await;
                 Err(err)
@@ -429,6 +489,7 @@ pub struct TunnelTcpStream {
     read_rx: mpsc::UnboundedReceiver<Bytes>,
     read_buffer: BytesMut,
     shutdown_sent: bool,
+    close_reason_rx: watch::Receiver<Option<String>>,
 }
 
 impl fmt::Debug for TunnelTcpStream {
@@ -439,14 +500,22 @@ impl fmt::Debug for TunnelTcpStream {
     }
 }
 
+impl Unpin for TunnelTcpStream {}
+
 impl TunnelTcpStream {
-    fn new(tunnel_id: String, inner: Arc<Inner>, read_rx: mpsc::UnboundedReceiver<Bytes>) -> Self {
+    fn new(
+        tunnel_id: String,
+        inner: Arc<Inner>,
+        read_rx: mpsc::UnboundedReceiver<Bytes>,
+        close_reason_rx: watch::Receiver<Option<String>>,
+    ) -> Self {
         Self {
             tunnel_id,
             inner,
             read_rx,
             read_buffer: BytesMut::with_capacity(8192),
             shutdown_sent: false,
+            close_reason_rx,
         }
     }
 
@@ -471,6 +540,13 @@ impl TunnelTcpStream {
             );
         }
     }
+
+    fn remote_close_error(&self) -> Option<io::Error> {
+        self.close_reason_rx
+            .borrow()
+            .clone()
+            .map(|reason| io::Error::from(TunnelError::Remote(reason)))
+    }
 }
 
 impl AsyncRead for TunnelTcpStream {
@@ -485,6 +561,10 @@ impl AsyncRead for TunnelTcpStream {
             return Poll::Ready(Ok(()));
         }
 
+        if let Some(err) = self.remote_close_error() {
+            return Poll::Ready(Err(err));
+        }
+
         match Pin::new(&mut self.read_rx).poll_recv(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(bytes)) => {
@@ -497,7 +577,13 @@ impl AsyncRead for TunnelTcpStream {
                 buf.put_slice(&self.read_buffer.split_to(to_copy));
                 Poll::Ready(Ok(()))
             }
-            Poll::Ready(None) => Poll::Ready(Ok(())),
+            Poll::Ready(None) => {
+                if let Some(err) = self.remote_close_error() {
+                    Poll::Ready(Err(err))
+                } else {
+                    Poll::Ready(Ok(()))
+                }
+            }
         }
     }
 }
@@ -513,6 +599,10 @@ impl AsyncWrite for TunnelTcpStream {
                 io::ErrorKind::BrokenPipe,
                 "tunnel is closed",
             )));
+        }
+
+        if let Some(err) = self.remote_close_error() {
+            return Poll::Ready(Err(err));
         }
 
         let payload = data.to_vec();
@@ -532,6 +622,69 @@ impl AsyncWrite for TunnelTcpStream {
     fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.send_close(Some("shutdown".to_string()));
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn tunnel_stream_surfaces_remote_close_on_read() {
+        let (wire_tx, _wire_rx) = mpsc::unbounded_channel();
+        let inner = Arc::new(Inner::new(wire_tx));
+        let tunnel_id = "test-read".to_string();
+        let (data_tx, data_rx) = mpsc::unbounded_channel();
+        let reason_rx = inner.register_stream(tunnel_id.clone(), data_tx);
+        let mut stream = TunnelTcpStream::new(tunnel_id.clone(), inner.clone(), data_rx, reason_rx);
+
+        inner
+            .set_close_reason(&tunnel_id, Some("devbox offline".into()))
+            .await;
+        inner.close_stream(&tunnel_id).await;
+
+        let mut buf = [0u8; 8];
+        let err = stream
+            .read(&mut buf)
+            .await
+            .expect_err("expected read error");
+        let tunnel_err = err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<TunnelError>())
+            .expect("missing tunnel error");
+        match tunnel_err {
+            TunnelError::Remote(reason) => assert_eq!(reason, "devbox offline"),
+            other => panic!("expected remote error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tunnel_stream_surfaces_remote_close_on_write() {
+        let (wire_tx, _wire_rx) = mpsc::unbounded_channel();
+        let inner = Arc::new(Inner::new(wire_tx));
+        let tunnel_id = "test-write".to_string();
+        let (data_tx, data_rx) = mpsc::unbounded_channel();
+        let reason_rx = inner.register_stream(tunnel_id.clone(), data_tx);
+        let mut stream = TunnelTcpStream::new(tunnel_id.clone(), inner.clone(), data_rx, reason_rx);
+
+        inner
+            .set_close_reason(&tunnel_id, Some("branch route missing".into()))
+            .await;
+        inner.close_stream(&tunnel_id).await;
+
+        let err = stream
+            .write_all(b"hello")
+            .await
+            .expect_err("expected write error");
+        let tunnel_err = err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<TunnelError>())
+            .expect("missing tunnel error");
+        match tunnel_err {
+            TunnelError::Remote(reason) => assert_eq!(reason, "branch route missing"),
+            other => panic!("expected remote error, got {other:?}"),
+        }
     }
 }
 
@@ -560,11 +713,12 @@ async fn handle_incoming(inner: &Arc<Inner>, payload: Bytes) {
             inner.forward_data(&tunnel_id, payload).await;
         }
         Ok(WireMessage::Close { tunnel_id, reason }) => {
-            if let Some(reason) = reason {
+            if let Some(reason_value) = reason.clone() {
                 inner
-                    .resolve_pending(&tunnel_id, Err(TunnelError::Remote(reason.clone())))
+                    .resolve_pending(&tunnel_id, Err(TunnelError::Remote(reason_value)))
                     .await;
             }
+            inner.set_close_reason(&tunnel_id, reason).await;
             inner.close_stream(&tunnel_id).await;
         }
         Ok(WireMessage::Heartbeat) => {

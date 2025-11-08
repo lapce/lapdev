@@ -446,7 +446,7 @@ impl PreviewUrlProxy {
 
         let (bytes_tx, bytes_rx) = copy_bidirectional(client_stream, &mut tunnel_stream)
             .await
-            .map_err(|e| ProxyError::NetworkError(format!("Tunnel proxying failed: {}", e)))?;
+            .map_err(Self::map_tunnel_runtime_error)?;
 
         info!(
             "Tunnel proxied {} bytes upstream and {} bytes downstream (cluster={})",
@@ -483,6 +483,32 @@ impl PreviewUrlProxy {
                 ProxyError::Internal(format!("Failed to serialize tunnel open request: {}", err))
             }
         }
+    }
+
+    fn map_tunnel_runtime_error(err: io::Error) -> ProxyError {
+        if let Some(tunnel_error) = Self::tunnel_error_from_io(&err) {
+            return match tunnel_error {
+                TunnelError::Remote(reason) => {
+                    ProxyError::Timeout(format!("Tunnel closed remotely: {}", reason))
+                }
+                TunnelError::ConnectionClosed => ProxyError::TunnelNotAvailable(
+                    "Tunnel connection closed unexpectedly".to_string(),
+                ),
+                TunnelError::Serialization(inner) => {
+                    ProxyError::Internal(format!("Tunnel serialization error: {}", inner))
+                }
+                TunnelError::Transport(inner) => {
+                    ProxyError::NetworkError(format!("Tunnel transport error: {}", inner))
+                }
+            };
+        }
+
+        ProxyError::NetworkError(format!("Tunnel proxying failed: {}", err))
+    }
+
+    fn tunnel_error_from_io(err: &io::Error) -> Option<&TunnelError> {
+        err.get_ref()
+            .and_then(|inner| inner.downcast_ref::<TunnelError>())
     }
 
     /// Add environment ID to the tracestate header in HTTP request using parsed header info
@@ -669,6 +695,17 @@ mod tests {
                 assert!(message.contains("Transport error"));
             }
             other => panic!("expected timeout error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_tunnel_runtime_error_remote_reason() {
+        let io_err = io::Error::from(TunnelError::Remote("devbox offline".into()));
+        match PreviewUrlProxy::map_tunnel_runtime_error(io_err) {
+            ProxyError::Timeout(message) => {
+                assert!(message.contains("devbox offline"));
+            }
+            other => panic!("expected timeout proxy error, got {other:?}"),
         }
     }
 }

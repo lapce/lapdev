@@ -18,9 +18,11 @@ impl From<TunnelError> for io::Error {
             TunnelError::Transport(err) => err,
             TunnelError::Serialization(err) => io::Error::new(io::ErrorKind::InvalidData, err),
             TunnelError::ConnectionClosed => {
-                io::Error::new(io::ErrorKind::BrokenPipe, "connection closed")
+                io::Error::new(io::ErrorKind::BrokenPipe, TunnelError::ConnectionClosed)
             }
-            TunnelError::Remote(err) => io::Error::new(io::ErrorKind::Other, err),
+            TunnelError::Remote(reason) => {
+                io::Error::new(io::ErrorKind::Other, TunnelError::Remote(reason))
+            }
         }
     }
 }

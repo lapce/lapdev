@@ -38,10 +38,14 @@ use crate::{
 
 static STATIC_DIR: include_dir::Dir =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/../dashboard/dist");
-static PAGE_NOT_FOUND: LazyErrorPage = LazyErrorPage::new("Workspace not found");
-static PAGE_NOT_AUTHORISED: LazyErrorPage = LazyErrorPage::new("Not authorised");
-static PAGE_NOT_RUNNING: LazyErrorPage = LazyErrorPage::new("Workspace not running");
-static PAGE_NOT_FORWARDED: LazyErrorPage = LazyErrorPage::new("Workspace port not forwarded");
+static PAGE_NOT_FOUND: LazyErrorPage =
+    LazyErrorPage::new("We couldn't find an environment or service for this Preview URL.");
+static PAGE_NOT_AUTHORISED: LazyErrorPage =
+    LazyErrorPage::new("You don't have access to this preview yet.");
+static PAGE_NOT_RUNNING: LazyErrorPage =
+    LazyErrorPage::new("The environment powering this Preview URL isn't running right now.");
+static PAGE_NOT_FORWARDED: LazyErrorPage =
+    LazyErrorPage::new("The environment hasn't exposed the requested service port.");
 
 fn private_routes() -> Router<Arc<CoreState>> {
     Router::new()

@@ -90,6 +90,19 @@ impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
             .await
             .map_err(|e| e.to_string())?;
 
+        if let Err(err) = self
+            .manager
+            .replay_devbox_route(environment_id, workload_id)
+            .await
+        {
+            tracing::warn!(
+                environment_id = %environment_id,
+                workload_id = %workload_id,
+                error = %err,
+                "Failed to replay devbox route after sidecar registration"
+            );
+        }
+
         Ok(())
     }
 

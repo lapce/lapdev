@@ -295,7 +295,6 @@ fn devbox_connection_from_config(route: DevboxRouteConfig) -> Arc<DevboxConnecti
     Arc::new(DevboxConnection::new(DevboxRouteMetadata {
         intercept_id: route.intercept_id,
         workload_id: route.workload_id,
-        session_id: route.session_id,
         auth_token: route.auth_token,
         websocket_url: route.websocket_url,
         path_pattern: route.path_pattern,
@@ -313,7 +312,6 @@ fn devbox_route_config_from_connection(
     DevboxRouteConfig {
         intercept_id: metadata.intercept_id,
         workload_id: metadata.workload_id,
-        session_id: metadata.session_id,
         auth_token: metadata.auth_token.clone(),
         websocket_url: metadata.websocket_url.clone(),
         path_pattern: metadata.path_pattern.clone(),

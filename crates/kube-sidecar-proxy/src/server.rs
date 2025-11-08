@@ -559,12 +559,12 @@ async fn handle_connection(
                     let shutdown_rx = connection_registry.subscribe(None).await;
                     let metadata = connection.metadata();
                     info!(
-                        "TCP {} via proxy port {} (service {}) intercepted by Devbox (intercept_id={}, session_id={}, target_port={})",
+                        "TCP {} via proxy port {} (service {}) intercepted by Devbox (intercept_id={}, workload_id={}, target_port={})",
                         client_addr,
                         proxy_port,
                         service_port,
                         metadata.intercept_id,
-                        metadata.session_id,
+                        metadata.workload_id,
                         target_port
                     );
                     handle_devbox_tunnel(
@@ -692,12 +692,12 @@ async fn handle_http_proxy(
         } => {
             let metadata = connection.metadata();
             info!(
-                "HTTP {} {} intercepted by branch devbox (env {:?}, intercept_id={}, session_id={}, target_port={})",
+                "HTTP {} {} intercepted by branch devbox (env {:?}, intercept_id={}, workload_id={}, target_port={})",
                 http_request.method,
                 http_request.path,
                 branch_id,
                 metadata.intercept_id,
-                metadata.session_id,
+                metadata.workload_id,
                 target_port
             );
             let shutdown_rx = connection_registry.subscribe(branch_id).await;
@@ -718,13 +718,13 @@ async fn handle_http_proxy(
         } => {
             let metadata = connection.metadata();
             info!(
-                "HTTP {} {} intercepted by shared devbox (proxy port {}, service port {}, intercept_id={}, session_id={}, target_port={})",
+                "HTTP {} {} intercepted by shared devbox (proxy port {}, service port {}, intercept_id={}, workload_id={}, target_port={})",
                 http_request.method,
                 http_request.path,
                 proxy_port,
                 service_port,
                 metadata.intercept_id,
-                metadata.session_id,
+                metadata.workload_id,
                 target_port
             );
             let shutdown_rx = connection_registry.subscribe(None).await;
@@ -898,8 +898,8 @@ async fn handle_devbox_tunnel(
     let metadata = connection.metadata();
 
     info!(
-        "Routing {} (service port {}) through devbox tunnel (intercept_id={}, session_id={}, target_port={})",
-        client_addr, service_port, metadata.intercept_id, metadata.session_id, target_port
+        "Routing {} (service port {}) through devbox tunnel (intercept_id={}, workload_id={}, target_port={})",
+        client_addr, service_port, metadata.intercept_id, metadata.workload_id, target_port
     );
 
     info!(

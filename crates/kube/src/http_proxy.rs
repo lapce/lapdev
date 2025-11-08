@@ -12,8 +12,10 @@ use crate::{
     preview_url::{PreviewUrlError, PreviewUrlResolver, PreviewUrlTarget},
     tunnel::TunnelRegistry,
 };
+use chrono::Utc;
 use lapdev_common::{
-    error_page::render_error_page, kube::PreviewUrlAccessLevel, LAPDEV_AUTH_TOKEN_COOKIE,
+    devbox::DevboxPortMapping, error_page::render_error_page, kube::PreviewUrlAccessLevel,
+    LAPDEV_AUTH_TOKEN_COOKIE,
 };
 use lapdev_db::api::DbApi;
 use lapdev_kube_rpc::http_parser;
@@ -528,6 +530,9 @@ impl PreviewUrlProxy {
                     "Tunnel to {}:{} closed before any downstream bytes were sent (cluster={})",
                     target.service_name, target.service_port, target.cluster_id
                 );
+                if let Some(hint) = self.intercept_hint(&target).await {
+                    return Err(ProxyError::Timeout(hint));
+                }
                 return Err(ProxyError::Timeout(
                     "Target service did not produce a response".to_string(),
                 ));
@@ -613,6 +618,84 @@ impl PreviewUrlProxy {
     fn tunnel_error_from_io(err: &io::Error) -> Option<&TunnelError> {
         err.get_ref()
             .and_then(|inner| inner.downcast_ref::<TunnelError>())
+    }
+
+    async fn intercept_hint(&self, target: &PreviewUrlTarget) -> Option<String> {
+        let intercepts = match self
+            .db
+            .get_active_intercepts_for_environment(target.environment_id)
+            .await
+        {
+            Ok(list) => list,
+            Err(err) => {
+                warn!(
+                    "Failed to load intercepts for environment {}: {}",
+                    target.environment_id, err
+                );
+                return None;
+            }
+        };
+
+        for intercept in intercepts {
+            let Ok(port_mappings) =
+                serde_json::from_value::<Vec<DevboxPortMapping>>(intercept.port_mappings.clone())
+            else {
+                continue;
+            };
+
+            if !port_mappings
+                .iter()
+                .any(|mapping| mapping.workload_port == target.service_port)
+            {
+                continue;
+            }
+
+            let workload_name = self
+                .db
+                .get_environment_workload(intercept.workload_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|w| w.name)
+                .unwrap_or_else(|| "this workload".to_string());
+
+            let user_label = self
+                .db
+                .get_user(intercept.user_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|u| {
+                    u.name
+                        .clone()
+                        .filter(|name| !name.is_empty())
+                        .or(u.email.clone())
+                })
+                .unwrap_or_else(|| format!("user {}", intercept.user_id));
+
+            let since = intercept
+                .created_at
+                .with_timezone(&Utc)
+                .format("%Y-%m-%d %H:%M:%S UTC");
+            let local_port = port_mappings
+                .iter()
+                .find(|mapping| mapping.workload_port == target.service_port)
+                .map(|mapping| mapping.local_port);
+
+            return Some(format!(
+                "Service `{}` port {} is intercepted by {} on workload `{}` (active since {}). Lapdev routed this preview through their local port {} but it didn’t respond.",
+                target.service_name,
+                target.service_port,
+                user_label,
+                workload_name,
+                since,
+                local_port
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ));
+        }
+
+        None
     }
 
     /// Add environment ID to the tracestate header in HTTP request using parsed header info

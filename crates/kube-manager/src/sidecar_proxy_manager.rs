@@ -26,6 +26,7 @@ pub struct SidecarProxyManager {
         Arc<RwLock<HashMap<Uuid, HashMap<Uuid, BTreeMap<u64, SidecarProxyRpcClient>>>>>,
     kube_cluster_rpc_client: Arc<RwLock<Option<KubeClusterRpcClient>>>,
     generation_counter: Arc<AtomicU64>,
+    devbox_route_snapshots: Arc<RwLock<HashMap<Uuid, HashMap<Uuid, DevboxRouteConfig>>>>,
 }
 
 impl SidecarProxyManager {
@@ -49,6 +50,7 @@ impl SidecarProxyManager {
             sidecar_proxies: Arc::new(RwLock::new(HashMap::new())),
             kube_cluster_rpc_client: Arc::new(RwLock::new(None)),
             generation_counter: Arc::new(AtomicU64::new(1)),
+            devbox_route_snapshots: Arc::new(RwLock::new(HashMap::new())),
         };
 
         {
@@ -212,6 +214,9 @@ impl SidecarProxyManager {
         environment_id: Uuid,
         mut routes: HashMap<Uuid, DevboxRouteConfig>,
     ) -> Result<(), String> {
+        self.snapshot_devbox_routes_for_environment(environment_id, routes.clone())
+            .await;
+
         let Some(connections) = self.latest_clients_for_environment(environment_id).await else {
             warn!(
                 "No sidecar proxy registered for environment {} when sending devbox routes",
@@ -323,6 +328,9 @@ impl SidecarProxyManager {
         environment_id: Uuid,
         branch_environment_id: Option<Uuid>,
     ) -> Result<(), String> {
+        self.prune_devbox_route_snapshot(environment_id, branch_environment_id)
+            .await;
+
         let Some(connections) = self.latest_clients_for_environment(environment_id).await else {
             return Ok(());
         };
@@ -350,5 +358,81 @@ impl SidecarProxyManager {
     pub async fn clear_cluster_rpc_client(&self) {
         let mut guard = self.kube_cluster_rpc_client.write().await;
         *guard = None;
+    }
+
+    async fn snapshot_devbox_routes_for_environment(
+        &self,
+        environment_id: Uuid,
+        routes: HashMap<Uuid, DevboxRouteConfig>,
+    ) {
+        let mut guard = self.devbox_route_snapshots.write().await;
+        guard.insert(environment_id, routes);
+    }
+
+    async fn devbox_route_for_workload(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Option<DevboxRouteConfig> {
+        let guard = self.devbox_route_snapshots.read().await;
+        guard
+            .get(&environment_id)
+            .and_then(|routes| routes.get(&workload_id).cloned())
+    }
+
+    async fn prune_devbox_route_snapshot(
+        &self,
+        environment_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) {
+        let mut guard = self.devbox_route_snapshots.write().await;
+        let Some(routes) = guard.get_mut(&environment_id) else {
+            return;
+        };
+
+        match branch_environment_id {
+            Some(branch_id) => {
+                routes.retain(|_, route| route.branch_environment_id != Some(branch_id));
+            }
+            None => {
+                routes.retain(|_, route| route.branch_environment_id.is_some());
+            }
+        }
+
+        if routes.is_empty() {
+            guard.remove(&environment_id);
+        }
+    }
+
+    pub async fn replay_devbox_route(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), String> {
+        let Some(route) = self
+            .devbox_route_for_workload(environment_id, workload_id)
+            .await
+        else {
+            return Ok(());
+        };
+
+        let Some(connections) = self.latest_clients_for_environment(environment_id).await else {
+            return Ok(());
+        };
+
+        let Some(client) = connections.get(&workload_id) else {
+            return Ok(());
+        };
+
+        client
+            .clone()
+            .set_devbox_route(tarpc::context::current(), route)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to replay devbox route for workload {}: {}",
+                    workload_id, e
+                )
+            })
     }
 }

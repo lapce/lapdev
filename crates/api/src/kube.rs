@@ -171,16 +171,14 @@ async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, clus
 }
 
 pub async fn sidecar_tunnel_websocket(
-    Path((environment_id, workload_id, session_id)): Path<(Uuid, Uuid, Uuid)>,
+    Path((environment_id, workload_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
     State(state): State<Arc<CoreState>>,
 ) -> Result<Response, ApiError> {
     tracing::debug!(
-        "Handling sidecar tunnel WebSocket for environment {} workload {} session {}",
-        environment_id,
-        workload_id,
-        session_id
+        "Handling sidecar tunnel WebSocket for environment {} workload {}",
+        environment_id, workload_id
     );
 
     // Get the environment auth token from headers
@@ -204,12 +202,14 @@ pub async fn sidecar_tunnel_websocket(
         workload_id
     );
 
+    let user_id = environment.user_id;
     let registry = state.devbox_tunnels.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        if let Err(err) = registry.attach_sidecar(session_id, socket).await {
+        if let Err(err) = registry.attach_sidecar(user_id, socket).await {
             tracing::warn!(
-                session_id = %session_id,
+                user_id = %user_id,
+                environment_id = %environment_id,
                 workload_id = %workload_id,
                 error = %err,
                 "Sidecar tunnel terminated with error"

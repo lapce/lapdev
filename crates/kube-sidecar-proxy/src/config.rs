@@ -341,7 +341,6 @@ impl Default for DefaultRoute {
 pub struct DevboxRouteMetadata {
     pub intercept_id: Uuid,
     pub workload_id: Uuid,
-    pub session_id: Uuid,
     pub auth_token: String,
     pub websocket_url: String,
     pub path_pattern: String,

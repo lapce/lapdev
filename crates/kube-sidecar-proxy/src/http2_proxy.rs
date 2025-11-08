@@ -244,8 +244,8 @@ async fn determine_connection_route(
         } => {
             let metadata = connection.metadata().clone();
             let description = format!(
-                "branch devbox intercept_id={} session_id={} target_port={} (branch {:?})",
-                metadata.intercept_id, metadata.session_id, target_port, branch_id
+                "branch devbox intercept_id={} workload_id={} target_port={} (branch {:?})",
+                metadata.intercept_id, metadata.workload_id, target_port, branch_id
             );
             (
                 UpstreamConnector::Devbox {
@@ -262,8 +262,8 @@ async fn determine_connection_route(
         } => {
             let metadata = connection.metadata().clone();
             let description = format!(
-                "shared devbox intercept_id={} session_id={} target_port={}",
-                metadata.intercept_id, metadata.session_id, target_port
+                "shared devbox intercept_id={} workload_id={} target_port={}",
+                metadata.intercept_id, metadata.workload_id, target_port
             );
             (
                 UpstreamConnector::Devbox {

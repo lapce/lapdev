@@ -547,8 +547,8 @@ impl CoreState {
             }
 
             let websocket_url = format!(
-                "{}/api/v1/kube/sidecar/tunnel/{}/{}/{}",
-                base_trimmed, environment_id, intercept.workload_id, session_id
+                "{}/api/v1/kube/sidecar/tunnel/{}/{}",
+                base_trimmed, environment_id, intercept.workload_id
             );
 
             routes.insert(
@@ -556,7 +556,6 @@ impl CoreState {
                 DevboxRouteConfig {
                     intercept_id: intercept.id,
                     workload_id: intercept.workload_id,
-                    session_id,
                     auth_token: environment.auth_token.clone(),
                     websocket_url,
                     path_pattern: "/*".to_string(),

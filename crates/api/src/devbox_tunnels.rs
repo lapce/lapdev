@@ -17,14 +17,14 @@ use uuid::Uuid;
 use crate::websocket_transport::WebSocketTransport;
 
 pub struct DevboxTunnelRegistry {
-    sessions: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, Arc<TunnelClient>>>>>,
+    sessions_by_user: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, Arc<TunnelClient>>>>>,
     generation_counter: AtomicU64,
 }
 
 impl DevboxTunnelRegistry {
     pub fn new() -> Self {
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions_by_user: Arc::new(RwLock::new(HashMap::new())),
             generation_counter: AtomicU64::new(1),
         }
     }
@@ -33,54 +33,57 @@ impl DevboxTunnelRegistry {
         self.generation_counter.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub async fn register_cli(&self, session_id: Uuid, socket: WebSocket) {
+    pub async fn register_cli(&self, user_id: Uuid, session_id: Uuid, socket: WebSocket) {
         let transport = WebSocketTransport::new(socket);
         let client = Arc::new(TunnelClient::connect(transport));
         let generation = self.next_generation();
 
         {
-            let mut sessions = self.sessions.write().await;
-            let entry = sessions.entry(session_id).or_insert_with(BTreeMap::new);
+            let mut sessions = self.sessions_by_user.write().await;
+            let entry = sessions.entry(user_id).or_insert_with(BTreeMap::new);
             if entry.insert(generation, client.clone()).is_some() {
                 warn!(
-                    "Overwrote Devbox CLI tunnel generation {} for session {}",
-                    generation, session_id
+                    "Overwrote Devbox CLI tunnel generation {} for user {} session {}",
+                    generation, user_id, session_id
                 );
             }
             info!(
-                "Registered Devbox CLI tunnel for session {} generation {}; active entries {}",
+                "Registered Devbox CLI tunnel for user {} session {} generation {}; active entries {}",
+                user_id,
                 session_id,
                 generation,
                 entry.len()
             );
         }
 
-        let sessions = Arc::clone(&self.sessions);
+        let sessions = Arc::clone(&self.sessions_by_user);
         tokio::spawn(async move {
             client.closed().await;
             let mut sessions = sessions.write().await;
-            if let Some(entry) = sessions.get_mut(&session_id) {
+            if let Some(entry) = sessions.get_mut(&user_id) {
                 if entry.remove(&generation).is_some() {
                     info!(
-                        "Devbox CLI tunnel closed for session {} generation {}; remaining {}",
+                        "Devbox CLI tunnel closed for user {} session {} generation {}; remaining {}",
+                        user_id,
                         session_id,
                         generation,
                         entry.len()
                     );
                     if entry.is_empty() {
-                        sessions.remove(&session_id);
+                        sessions.remove(&user_id);
                     }
                 } else {
                     info!(
-                        "Skip removing Devbox CLI tunnel for session {} due to generation mismatch (requested {})",
+                        "Skip removing Devbox CLI tunnel for user {} session {} due to generation mismatch (requested {})",
+                        user_id,
                         session_id,
                         generation
                     );
                 }
             } else {
                 info!(
-                    "Devbox CLI tunnel cleanup found no session {} for generation {}",
-                    session_id, generation
+                    "Devbox CLI tunnel cleanup found no user {} session {} for generation {}",
+                    user_id, session_id, generation
                 );
             }
         });
@@ -88,12 +91,12 @@ impl DevboxTunnelRegistry {
 
     pub async fn attach_sidecar(
         &self,
-        session_id: Uuid,
+        user_id: Uuid,
         socket: WebSocket,
     ) -> Result<(), TunnelError> {
         let cli_client = {
-            let sessions = self.sessions.read().await;
-            sessions.get(&session_id).and_then(|entry| {
+            let sessions = self.sessions_by_user.read().await;
+            sessions.get(&user_id).and_then(|entry| {
                 entry
                     .values()
                     .rev()
@@ -104,8 +107,8 @@ impl DevboxTunnelRegistry {
 
         let Some(cli_client) = cli_client else {
             warn!(
-                "Received sidecar tunnel for session {} with no active CLI tunnel",
-                session_id
+                "Received sidecar tunnel for user {} with no active CLI tunnel",
+                user_id
             );
             return Err(TunnelError::Remote("no active CLI tunnel".to_string()));
         };

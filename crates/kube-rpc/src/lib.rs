@@ -504,7 +504,6 @@ pub struct DevboxTunnelInfo {
 pub struct DevboxRouteConfig {
     pub intercept_id: Uuid,
     pub workload_id: Uuid,
-    pub session_id: Uuid,
     pub auth_token: String,
     pub websocket_url: String,
     /// Path pattern for this route (e.g., "/*" for all traffic)

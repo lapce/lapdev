@@ -360,11 +360,12 @@ pub async fn devbox_intercept_tunnel_websocket(
         session.device_name
     );
 
+    let user_id = session.user_id;
     let session_id = session.session_id;
     let registry = state.devbox_tunnels.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        registry.register_cli(session_id, socket).await;
+        registry.register_cli(user_id, session_id, socket).await;
     }))
 }
 

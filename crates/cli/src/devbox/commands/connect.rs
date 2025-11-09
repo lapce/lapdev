@@ -1041,8 +1041,7 @@ impl DirectServerHandle {
     }
 
     async fn set_token(&self, token: String) {
-        let mut guard = self.credential.write().await;
-        *guard = Some(token);
+        self.credential_store.replace(token).await;
     }
 
     async fn shutdown(mut self) {

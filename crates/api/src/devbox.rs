@@ -127,11 +127,10 @@ pub async fn devbox_rpc_websocket(
     }
 
     // Create or update devbox session
-    let session = state
+    state
         .db
         .create_or_update_devbox_session(
             ctx.user.id,
-            ctx.session_id,
             token,
             ctx.device_name.clone(),
             expires_at.into(),
@@ -140,8 +139,7 @@ pub async fn devbox_rpc_websocket(
         .map_err(|e| ApiError::InternalError(format!("Failed to create session: {}", e)))?;
 
     tracing::info!(
-        "Created devbox session {} for user {} on device {}",
-        session.session_id,
+        "Created devbox session for user {} on device {}",
         ctx.user.id,
         ctx.device_name
     );
@@ -149,7 +147,7 @@ pub async fn devbox_rpc_websocket(
     Ok(handle_devbox_rpc_upgrade(
         websocket,
         state,
-        session.session_id,
+        ctx.session_id,
         ctx.user.id,
         ctx.organization_id,
         ctx.device_name,
@@ -276,7 +274,7 @@ async fn handle_devbox_rpc(
     }
     notification_task.abort();
 
-    if let Ok(Some(session)) = state.db.get_devbox_session(session_id).await {
+    if let Ok(Some(session)) = state.db.get_active_devbox_session(user_id).await {
         if let Some(environment_id) = session.active_environment_id {
             let state_clone = state.clone();
             tokio::spawn(async move {
@@ -288,7 +286,7 @@ async fn handle_devbox_rpc(
     }
 
     // Mark session as revoked in database
-    if let Err(e) = state.db.revoke_devbox_session(session_id).await {
+    if let Err(e) = state.db.revoke_active_devbox_session(user_id).await {
         tracing::error!(
             "Failed to revoke session {} on disconnect: {}",
             session_id,
@@ -311,7 +309,7 @@ pub struct DevboxInterceptTunnelParams {
 
 /// WebSocket endpoint for devbox intercept tunnels (server side - receives connections from in-cluster services)
 pub async fn devbox_intercept_tunnel_websocket(
-    Path(requested_session_id): Path<Uuid>,
+    Path(requested_user_id): Path<Uuid>,
     Query(_params): Query<DevboxInterceptTunnelParams>,
     websocket: WebSocketUpgrade,
     headers: HeaderMap,
@@ -338,40 +336,38 @@ pub async fn devbox_intercept_tunnel_websocket(
         .map_err(|e| ApiError::InternalError(format!("Failed to load devbox session: {}", e)))?
         .ok_or(ApiError::Unauthenticated)?;
 
-    if session.session_id != requested_session_id {
+    if session.user_id != requested_user_id {
         tracing::warn!(
-            "Devbox session ID mismatch: token session {} vs path {}",
-            session.session_id,
-            requested_session_id
+            "Devbox user mismatch: token user {} vs path {}",
+            session.user_id,
+            requested_user_id
         );
         return Err(ApiError::Unauthenticated);
     }
 
     state
         .db
-        .update_devbox_session_last_used(session.session_id)
+        .update_devbox_session_last_used(session.user_id)
         .await
         .map_err(|e| ApiError::InternalError(format!("Failed to update session usage: {}", e)))?;
 
     tracing::info!(
-        "Devbox tunnel WebSocket authenticated for user {} session {} ({})",
+        "Devbox tunnel WebSocket authenticated for user {} ({})",
         session.user_id,
-        session.session_id,
         session.device_name
     );
 
     let user_id = session.user_id;
-    let session_id = session.session_id;
     let registry = state.devbox_tunnels.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
-        registry.register_cli(user_id, session_id, socket).await;
+        registry.register_cli(user_id, socket).await;
     }))
 }
 
 /// WebSocket endpoint for devbox client tunnels (client side - connects to in-cluster services via devbox-proxy)
 pub async fn devbox_client_tunnel_websocket(
-    Path(requested_session_id): Path<Uuid>,
+    Path(requested_user_id): Path<Uuid>,
     websocket: WebSocketUpgrade,
     headers: HeaderMap,
     State(state): State<Arc<CoreState>>,
@@ -397,27 +393,28 @@ pub async fn devbox_client_tunnel_websocket(
         .map_err(|e| ApiError::InternalError(format!("Failed to load devbox session: {}", e)))?
         .ok_or(ApiError::Unauthenticated)?;
 
-    if session.session_id != requested_session_id {
+    if session.user_id != requested_user_id {
         tracing::warn!(
-            "Devbox session ID mismatch: token session {} vs path {}",
-            session.session_id,
-            requested_session_id
+            "Devbox user mismatch: token user {} vs path {}",
+            session.user_id,
+            requested_user_id
         );
         return Err(ApiError::Unauthenticated);
     }
 
     state
         .db
-        .update_devbox_session_last_used(session.session_id)
+        .update_devbox_session_last_used(session.user_id)
         .await
         .map_err(|e| ApiError::InternalError(format!("Failed to update session usage: {}", e)))?;
 
     tracing::info!(
-        "Devbox client tunnel WebSocket authenticated for user {} session {} ({})",
+        "Devbox client tunnel WebSocket authenticated for user {} ({})",
         session.user_id,
-        session.session_id,
         session.device_name
     );
+
+    let user_id = session.user_id;
 
     let environment_id = session
         .active_environment_id
@@ -426,13 +423,12 @@ pub async fn devbox_client_tunnel_websocket(
     let environment = state.db.get_kube_environment(environment_id).await?;
 
     tracing::info!(
-        "Devbox client tunnel session {} targeting environment {}",
-        session.session_id,
+        "Devbox client tunnel for user {} targeting environment {}",
+        user_id,
         environment_id
     );
     let cluster_id = environment.map(|e| e.cluster_id);
 
-    let session_id = session.session_id;
     let tunnel_registry = state.kube_controller.tunnel_registry.clone();
 
     Ok(websocket.on_upgrade(move |socket| async move {
@@ -454,7 +450,7 @@ pub async fn devbox_client_tunnel_websocket(
                     }
                     Some(_) => {
                         tracing::warn!(
-                            session_id = %session_id,
+                            user_id = %user_id,
                             cluster_id = %cluster_id,
                             "Cluster tunnel is closed; rejecting devbox client request"
                         );
@@ -462,7 +458,7 @@ pub async fn devbox_client_tunnel_websocket(
                     }
                     None => {
                         tracing::warn!(
-                            session_id = %session_id,
+                            user_id = %user_id,
                             cluster_id = %cluster_id,
                             "No cluster tunnel available for devbox client request"
                         );
@@ -474,7 +470,7 @@ pub async fn devbox_client_tunnel_websocket(
 
         if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
             tracing::warn!(
-                session_id = %session_id,
+                user_id = %user_id,
                 error = %err,
                 "Devbox client tunnel terminated with error"
             );
@@ -530,24 +526,20 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         let session = self
             .state
             .db
-            .get_devbox_session(self.session_id)
+            .get_active_devbox_session(self.user_id)
             .await
             .map_err(|e| format!("Failed to fetch session: {}", e))?
             .ok_or_else(|| "Session not found".to_string())?;
 
         if let Some(environment_id) = session.active_environment_id {
             let state = self.state.clone();
-            let session_id = self.session_id;
             let user_id = self.user_id;
             tokio::spawn(async move {
-                state
-                    .push_devbox_routes(user_id, session_id, environment_id)
-                    .await;
+                state.push_devbox_routes(user_id, environment_id).await;
             });
         }
 
         Ok(DevboxSessionInfo {
-            session_id: session.session_id,
             user_id: self.user_id,
             email: user.email.unwrap_or_default(),
             device_name: session.device_name,
@@ -569,7 +561,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         let session = self
             .state
             .db
-            .get_devbox_session(self.session_id)
+            .get_active_devbox_session(self.user_id)
             .await
             .map_err(|e| format!("Failed to fetch session: {}", e))?
             .ok_or_else(|| "Session not found".to_string())?;
@@ -610,7 +602,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 
         self.state
             .db
-            .update_devbox_session_device_name(self.session_id, device_name.clone())
+            .update_devbox_session_device_name(self.user_id, device_name.clone())
             .await
             .map_err(|e| format!("Failed to update device name: {}", e))?;
 
@@ -654,14 +646,14 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         let previous_environment = self
             .state
             .db
-            .get_devbox_session(self.session_id)
+            .get_active_devbox_session(self.user_id)
             .await
             .map_err(|e| format!("Failed to fetch session: {}", e))?
             .and_then(|session| session.active_environment_id);
 
         self.state
             .db
-            .update_devbox_session_active_environment(self.session_id, Some(environment_id))
+            .update_devbox_session_active_environment(self.user_id, Some(environment_id))
             .await
             .map_err(|e| format!("Failed to update active environment: {}", e))?;
 
@@ -716,11 +708,8 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 
         let state = self.state.clone();
         let user_id = self.user_id;
-        let session_id = self.session_id;
         tokio::spawn(async move {
-            state
-                .push_devbox_routes(user_id, session_id, environment_id)
-                .await;
+            state.push_devbox_routes(user_id, environment_id).await;
         });
 
         if let Some(prev_env) = previous_environment.filter(|prev| *prev != environment_id) {
@@ -747,7 +736,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         let session = self
             .state
             .db
-            .get_devbox_session(self.session_id)
+            .get_active_devbox_session(self.user_id)
             .await
             .map_err(|e| format!("Failed to fetch session: {}", e))?
             .ok_or_else(|| "Session not found".to_string())?;
@@ -924,21 +913,19 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .await
             .map_err(|e| format!("Failed to create intercept: {}", e))?;
 
-        if let Some(session_id) = self
+        if self
             .state
             .active_devbox_sessions
             .read()
             .await
             .get(&self.user_id)
-            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
+            .is_some()
         {
             let state = self.state.clone();
             let user_id = self.user_id;
             let environment_id = environment.id;
             tokio::spawn(async move {
-                state
-                    .push_devbox_routes(user_id, session_id, environment_id)
-                    .await;
+                state.push_devbox_routes(user_id, environment_id).await;
             });
         }
 
@@ -977,21 +964,19 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .await
             .map_err(|e| format!("Failed to stop intercept: {}", e))?;
 
-        if let Some(session_id) = self
+        if self
             .state
             .active_devbox_sessions
             .read()
             .await
             .get(&self.user_id)
-            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
+            .is_some()
         {
             let state = self.state.clone();
             let user_id = self.user_id;
             let environment_id = intercept.environment_id;
             tokio::spawn(async move {
-                state
-                    .push_devbox_routes(user_id, session_id, environment_id)
-                    .await;
+                state.push_devbox_routes(user_id, environment_id).await;
             });
         }
 

@@ -83,11 +83,11 @@ fn v1_api_routes() -> Router<Arc<CoreState>> {
         .route("/kube/cluster/tunnel", any(kube_data_plane_websocket))
         .route("/kube/devbox/rpc", any(devbox_rpc_websocket))
         .route(
-            "/kube/devbox/tunnel/intercept/{session_id}",
+            "/kube/devbox/tunnel/intercept/{user_id}",
             any(devbox_intercept_tunnel_websocket),
         )
         .route(
-            "/kube/devbox/tunnel/client/{session_id}",
+            "/kube/devbox/tunnel/client/{user_id}",
             any(devbox_client_tunnel_websocket),
         )
         .route(

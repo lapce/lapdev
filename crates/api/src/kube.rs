@@ -178,7 +178,8 @@ pub async fn sidecar_tunnel_websocket(
 ) -> Result<Response, ApiError> {
     tracing::debug!(
         "Handling sidecar tunnel WebSocket for environment {} workload {}",
-        environment_id, workload_id
+        environment_id,
+        workload_id
     );
 
     // Get the environment auth token from headers

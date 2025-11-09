@@ -38,7 +38,6 @@ pub trait DevboxInterceptRpc {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevboxSessionInfo {
-    pub session_id: Uuid,
     pub user_id: Uuid,
     pub email: String,
     pub device_name: String,

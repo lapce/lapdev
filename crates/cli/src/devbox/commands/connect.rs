@@ -327,13 +327,13 @@ impl DevboxTunnelManager {
             tracing::info!("DevboxClientRpc server stopped");
         });
 
-        self.ensure_client(token, session_info.session_id)
+        self.ensure_client(token, session_info.user_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start client tunnel: {}", e))?;
 
-        if let Err(err) = self.ensure_intercept(token, session_info.session_id).await {
+        if let Err(err) = self.ensure_intercept(token, session_info.user_id).await {
             tracing::error!(
-                session_id = %session_info.session_id,
+                user_id = %session_info.user_id,
                 "Failed to start intercept tunnel: {}",
                 err
             );
@@ -420,7 +420,7 @@ impl DevboxTunnelManager {
                 _ = heartbeat_interval.tick() => {
                     if let Err(err) = Self::send_session_heartbeat(&rpc_client).await {
                         tracing::warn!(
-                            session_id = %session_info.session_id,
+                            user_id = %session_info.user_id,
                             "Devbox session heartbeat failed: {}",
                             err
                         );
@@ -797,25 +797,25 @@ impl TunnelKind {
 }
 
 impl DevboxTunnelManager {
-    async fn ensure_intercept(&self, token: &str, session_id: Uuid) -> Result<(), String> {
+    async fn ensure_intercept(&self, token: &str, user_id: Uuid) -> Result<(), String> {
         let mut guard = self.intercept_task.lock().await;
         if guard.is_some() {
             return Ok(());
         }
 
-        let task = self.spawn_tunnel_task(TunnelKind::Intercept, token, session_id, None);
+        let task = self.spawn_tunnel_task(TunnelKind::Intercept, token, user_id, None);
 
         *guard = Some(task);
         Ok(())
     }
 
-    async fn ensure_client(&self, token: &str, session_id: Uuid) -> Result<(), String> {
+    async fn ensure_client(&self, token: &str, user_id: Uuid) -> Result<(), String> {
         let mut guard = self.client_task.lock().await;
         if guard.is_some() {
             return Ok(());
         }
 
-        let task = self.spawn_tunnel_task(TunnelKind::Client, token, session_id, None);
+        let task = self.spawn_tunnel_task(TunnelKind::Client, token, user_id, None);
         *guard = Some(task);
         Ok(())
     }
@@ -860,7 +860,7 @@ impl DevboxTunnelManager {
         &self,
         kind: TunnelKind,
         token: &str,
-        session_id: Uuid,
+        user_id: Uuid,
         intercept_id: Option<Uuid>,
     ) -> TunnelTask {
         let manager = self.clone();
@@ -869,7 +869,7 @@ impl DevboxTunnelManager {
         let token = token.to_string();
         let handle = tokio::spawn(async move {
             manager
-                .run_tunnel_loop(kind, token, session_id, intercept_id, shutdown_rx)
+                .run_tunnel_loop(kind, token, user_id, intercept_id, shutdown_rx)
                 .await;
         });
 
@@ -887,7 +887,7 @@ impl DevboxTunnelManager {
         &self,
         kind: TunnelKind,
         token: String,
-        session_id: Uuid,
+        user_id: Uuid,
         intercept_id: Option<Uuid>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) {
@@ -895,7 +895,7 @@ impl DevboxTunnelManager {
             "{}/api/v1/kube/devbox/tunnel/{}/{}",
             self.ws_base(),
             kind.path(),
-            session_id
+            user_id
         );
         let intercept_id_str = intercept_id.map(|id| id.to_string());
 
@@ -905,7 +905,7 @@ impl DevboxTunnelManager {
             tokio::select! {
                 _ = &mut shutdown_rx => {
                     tracing::info!(
-                        %session_id,
+                        %user_id,
                         tunnel_kind = kind.as_str(),
                         intercept_id = intercept_id_str.as_deref(),
                         "Devbox tunnel shutdown signal received"
@@ -916,7 +916,7 @@ impl DevboxTunnelManager {
                     match result {
                         Ok(()) => {
                             tracing::info!(
-                                %session_id,
+                                %user_id,
                                 intercept_id = intercept_id_str.as_deref(),
                                 "Devbox {} tunnel closed gracefully", kind.as_str()
                             );
@@ -924,7 +924,7 @@ impl DevboxTunnelManager {
                         }
                         Err(err) => {
                             tracing::warn!(
-                                %session_id,
+                                %user_id,
                                 intercept_id = intercept_id_str.as_deref(),
                                 "Devbox {} tunnel disconnected: {}", kind.as_str(),
                                 err
@@ -936,7 +936,7 @@ impl DevboxTunnelManager {
                     tokio::select! {
                         _ = &mut shutdown_rx => {
                             tracing::info!(
-                                %session_id,
+                                %user_id,
                                 intercept_id = intercept_id_str.as_deref(),
                                 "Devbox {} tunnel shutdown signal received", kind.as_str()
                             );

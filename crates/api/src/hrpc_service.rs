@@ -42,7 +42,6 @@ impl HrpcService for CoreState {
             .into_iter()
             .map(|session| DevboxSessionSummary {
                 id: session.id,
-                session_id: session.session_id,
                 device_name: session.device_name,
                 token_prefix: session.token_prefix,
                 active_environment_id: session.active_environment_id,
@@ -64,7 +63,7 @@ impl HrpcService for CoreState {
         let user = self.hrpc_authenticate_user(headers).await?;
         let session = self
             .db
-            .get_devbox_session_including_revoked(session_id)
+            .get_devbox_session_by_id(session_id)
             .await
             .map_err(hrpc_from_anyhow)?
             .ok_or_else(|| hrpc_error("Session not found"))?;
@@ -78,7 +77,7 @@ impl HrpcService for CoreState {
         }
 
         self.db
-            .revoke_devbox_session(session_id)
+            .revoke_devbox_session_by_id(session_id)
             .await
             .map_err(hrpc_from_anyhow)?;
 
@@ -167,7 +166,7 @@ impl HrpcService for CoreState {
             .await?;
 
         self.db
-            .update_devbox_session_active_environment(ctx.session.session_id, Some(environment_id))
+            .update_devbox_session_active_environment(ctx.session.user_id, Some(environment_id))
             .await
             .map_err(hrpc_from_anyhow)?;
 
@@ -187,7 +186,7 @@ impl HrpcService for CoreState {
 
         tracing::info!(
             "set_active_environment (HRPC) called for session {} with environment {} ({}/{})",
-            ctx.session.session_id,
+            ctx.session.id,
             environment_id,
             cluster.name,
             environment.namespace
@@ -236,11 +235,8 @@ impl HrpcService for CoreState {
 
         let state = self.clone();
         let user_id = ctx.user.id;
-        let session_id = ctx.session.session_id;
         tokio::spawn(async move {
-            state
-                .push_devbox_routes(user_id, session_id, environment_id)
-                .await;
+            state.push_devbox_routes(user_id, environment_id).await;
         });
 
         if let Some(prev_env) = previous_environment.filter(|prev| *prev != environment_id) {
@@ -369,20 +365,18 @@ impl HrpcService for CoreState {
             .await
             .map_err(hrpc_from_anyhow)?;
 
-        if let Some(session_id) = self
+        if self
             .active_devbox_sessions
             .read()
             .await
             .get(&user.id)
-            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
+            .is_some()
         {
             let state = self.clone();
             let user_id = user.id;
             let environment_id = environment.id;
             tokio::spawn(async move {
-                state
-                    .push_devbox_routes(user_id, session_id, environment_id)
-                    .await;
+                state.push_devbox_routes(user_id, environment_id).await;
             });
         }
 
@@ -413,19 +407,17 @@ impl HrpcService for CoreState {
             .stop_workload_intercept(intercept_id)
             .await
             .map_err(hrpc_from_anyhow)?;
-        if let Some(session_id) = self
+        if self
             .active_devbox_sessions
             .read()
             .await
             .get(&user.id)
-            .and_then(|entries| entries.values().next_back().map(|handle| handle.session_id))
+            .is_some()
         {
             let state = self.clone();
             let environment_id = intercept.environment_id;
             tokio::spawn(async move {
-                state
-                    .push_devbox_routes(user.id, session_id, environment_id)
-                    .await;
+                state.push_devbox_routes(user.id, environment_id).await;
             });
         }
 
@@ -1108,7 +1100,7 @@ impl CoreState {
                     .ok_or_else(|| hrpc_error("Active session not found"))?;
 
                 self.db
-                    .update_devbox_session_last_used(session.session_id)
+                    .update_devbox_session_last_used(session.user_id)
                     .await
                     .map_err(hrpc_from_anyhow)?;
 
@@ -1130,7 +1122,7 @@ impl CoreState {
             .ok_or_else(|| hrpc_error("No active devbox session"))?;
 
         self.db
-            .update_devbox_session_last_used(session.session_id)
+            .update_devbox_session_last_used(session.user_id)
             .await
             .map_err(hrpc_from_anyhow)?;
 

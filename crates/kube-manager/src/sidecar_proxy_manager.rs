@@ -430,6 +430,12 @@ impl SidecarProxyManager {
             .await
             .map_err(|e| {
                 format!(
+                    "Failed to replay devbox route for workload {} (RPC error): {}",
+                    workload_id, e
+                )
+            })?
+            .map_err(|e| {
+                format!(
                     "Failed to replay devbox route for workload {}: {}",
                     workload_id, e
                 )

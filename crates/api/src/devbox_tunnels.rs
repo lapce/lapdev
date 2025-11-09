@@ -33,7 +33,7 @@ impl DevboxTunnelRegistry {
         self.generation_counter.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub async fn register_cli(&self, user_id: Uuid, session_id: Uuid, socket: WebSocket) {
+    pub async fn register_cli(&self, user_id: Uuid, socket: WebSocket) {
         let transport = WebSocketTransport::new(socket);
         let client = Arc::new(TunnelClient::connect(transport));
         let generation = self.next_generation();
@@ -43,14 +43,13 @@ impl DevboxTunnelRegistry {
             let entry = sessions.entry(user_id).or_insert_with(BTreeMap::new);
             if entry.insert(generation, client.clone()).is_some() {
                 warn!(
-                    "Overwrote Devbox CLI tunnel generation {} for user {} session {}",
-                    generation, user_id, session_id
+                    "Overwrote Devbox CLI tunnel generation {} for user {}",
+                    generation, user_id
                 );
             }
             info!(
-                "Registered Devbox CLI tunnel for user {} session {} generation {}; active entries {}",
+                "Registered Devbox CLI tunnel for user {} generation {}; active entries {}",
                 user_id,
-                session_id,
                 generation,
                 entry.len()
             );
@@ -63,9 +62,8 @@ impl DevboxTunnelRegistry {
             if let Some(entry) = sessions.get_mut(&user_id) {
                 if entry.remove(&generation).is_some() {
                     info!(
-                        "Devbox CLI tunnel closed for user {} session {} generation {}; remaining {}",
+                        "Devbox CLI tunnel closed for user {} generation {}; remaining {}",
                         user_id,
-                        session_id,
                         generation,
                         entry.len()
                     );
@@ -74,16 +72,14 @@ impl DevboxTunnelRegistry {
                     }
                 } else {
                     info!(
-                        "Skip removing Devbox CLI tunnel for user {} session {} due to generation mismatch (requested {})",
-                        user_id,
-                        session_id,
-                        generation
+                        "Skip removing Devbox CLI tunnel for user {} due to generation mismatch (requested {})",
+                        user_id, generation
                     );
                 }
             } else {
                 info!(
-                    "Devbox CLI tunnel cleanup found no user {} session {} for generation {}",
-                    user_id, session_id, generation
+                    "Devbox CLI tunnel cleanup found no user {} for generation {}",
+                    user_id, generation
                 );
             }
         });

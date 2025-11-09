@@ -432,9 +432,9 @@ impl CoreState {
         }
     }
 
-    pub async fn push_devbox_routes(&self, user_id: Uuid, session_id: Uuid, environment_id: Uuid) {
+    pub async fn push_devbox_routes(&self, user_id: Uuid, environment_id: Uuid) {
         match self
-            .build_devbox_route_snapshot(user_id, session_id, environment_id)
+            .build_devbox_route_snapshot(user_id, environment_id)
             .await
         {
             Ok((cluster_id, base_environment_id, routes)) => {
@@ -507,7 +507,6 @@ impl CoreState {
     async fn build_devbox_route_snapshot(
         &self,
         user_id: Uuid,
-        session_id: Uuid,
         environment_id: Uuid,
     ) -> Result<(Uuid, Option<Uuid>, HashMap<Uuid, DevboxRouteConfig>), String> {
         let environment = self

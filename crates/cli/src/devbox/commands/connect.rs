@@ -1,19 +1,19 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use futures::StreamExt;
-use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig};
+use lapdev_common::devbox::DirectChannelConfig;
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient};
 use lapdev_rpc::spawn_twoway;
-use lapdev_tunnel::direct::{collect_candidates, CandidateOptions, DirectQuicServer};
-use lapdev_tunnel::WebSocketTransport;
-use lapdev_tunnel::{
-    run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
+use lapdev_tunnel::direct::{
+    collect_candidates, CandidateOptions, DirectQuicServer, DirectServerOptions, QuicTransport,
 };
-use std::time::Duration;
+use lapdev_tunnel::{run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport};
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    io,
+    net::{SocketAddr, ToSocketAddrs},
     sync::Arc,
+    time::Duration,
 };
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
@@ -35,6 +35,11 @@ use crate::{
 };
 
 const DEVBOX_HEARTBEAT_INTERVAL_SECS: u64 = 30;
+const DEFAULT_STUN_ENDPOINTS: &[&str] = &[
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+    "stun2.l.google.com:19302",
+];
 
 /// Execute the devbox connect command
 pub async fn execute(api_host: &str) -> Result<()> {
@@ -226,6 +231,43 @@ impl DevboxTunnelManager {
         }
     }
 
+    fn stun_servers() -> Vec<SocketAddr> {
+        let sources: Vec<String> = std::env::var("LAPDEV_STUN_SERVERS")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|entry| entry.trim().to_string())
+                    .filter(|entry| !entry.is_empty())
+                    .collect()
+            })
+            .filter(|entries: &Vec<String>| !entries.is_empty())
+            .unwrap_or_else(|| {
+                DEFAULT_STUN_ENDPOINTS
+                    .iter()
+                    .map(|entry| entry.to_string())
+                    .collect()
+            });
+
+        sources
+            .into_iter()
+            .filter_map(|entry| match Self::resolve_stun_endpoint(&entry) {
+                Ok(addr) => Some(addr),
+                Err(err) => {
+                    tracing::warn!(endpoint = entry, error = %err, "Failed to resolve STUN server");
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn resolve_stun_endpoint(endpoint: &str) -> io::Result<SocketAddr> {
+        endpoint
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no address resolved"))
+    }
+
     fn api_host(&self) -> &str {
         self.api_host.as_str()
     }
@@ -322,6 +364,10 @@ impl DevboxTunnelManager {
             .map_err(|e| anyhow::anyhow!("Failed to start direct server: {}", e))?;
         let mut candidate_opts = CandidateOptions::default();
         candidate_opts.preferred_port = Some(direct_port);
+        candidate_opts.stun_observed_addr = {
+            let guard = self.direct_server.lock().await;
+            guard.as_ref().and_then(|handle| handle.observed_addr())
+        };
         let discovery = collect_candidates(&candidate_opts);
         match rpc_client
             .publish_direct_candidates(tarpc::context::current(), discovery.candidates)
@@ -841,11 +887,18 @@ impl DevboxTunnelManager {
 
     async fn start_direct_server_task() -> Result<DirectServerHandle, String> {
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
+        let options = DirectServerOptions {
+            stun_servers: Self::stun_servers(),
+            ..Default::default()
+        };
         let server = Arc::new(
-            DirectQuicServer::bind(bind_addr)
+            DirectQuicServer::bind_with_options(bind_addr, options)
                 .await
                 .map_err(|e| e.to_string())?,
         );
+        if let Some(addr) = server.observed_addr() {
+            tracing::info!(observed_addr = %addr, "STUN discovered reflexive address");
+        }
         let port = server.local_addr().map_err(|e| e.to_string())?.port();
         let credential = server.credential_handle();
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
@@ -910,6 +963,10 @@ struct DirectServerHandle {
 impl DirectServerHandle {
     fn port(&self) -> u16 {
         self.port
+    }
+
+    fn observed_addr(&self) -> Option<SocketAddr> {
+        self.server.observed_addr()
     }
 
     async fn set_token(&self, token: String) {
@@ -1124,10 +1181,15 @@ impl DevboxTunnelManager {
 
         tracing::info!("Devbox {} tunnel connected: {}", kind.as_str(), ws_url);
 
-        let transport = TunnelWebSocketTransport::new(stream);
-
         if matches!(kind, TunnelKind::Client) {
-            let client = Arc::new(TunnelClient::connect(transport));
+            let (client, _mode) = TunnelClient::connect_with_direct_or_relay::<_, _, _, _>(
+                None,
+                token,
+                || async { Ok(stream) },
+                |_| {},
+            )
+            .await?;
+            let client = Arc::new(client);
             tracing::info!("Tunnel client exposed for DNS service bridge");
 
             self.set_tunnel_client(Arc::clone(&client)).await;
@@ -1138,6 +1200,7 @@ impl DevboxTunnelManager {
             self.clear_tunnel_client(&client).await;
             Ok(())
         } else {
+            let transport = QuicTransport::connect_websocket_client(stream, token).await?;
             run_tunnel_server(transport).await
         }
     }

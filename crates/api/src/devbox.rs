@@ -13,7 +13,10 @@ use lapdev_devbox_rpc::{
     DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionInfo, DevboxSessionRpc, PortMapping,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
-use lapdev_tunnel::{run_tunnel_server_with_connector, DynTunnelStream, TunnelError, TunnelTarget};
+use lapdev_tunnel::{
+    direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
+    DynTunnelStream, TunnelError, TunnelTarget, WebSocketUdpSocket,
+};
 use serde::{Deserialize, Serialize};
 use tarpc::{
     server::{BaseChannel, Channel},
@@ -21,7 +24,9 @@ use tarpc::{
 };
 use uuid::Uuid;
 
-use crate::{state::CoreState, websocket_transport::WebSocketTransport};
+use crate::{
+    devbox_tunnels::split_axum_websocket, state::CoreState, websocket_transport::WebSocketTransport,
+};
 
 #[derive(Debug, Serialize)]
 pub struct WhoamiResponse {
@@ -361,8 +366,13 @@ pub async fn devbox_intercept_tunnel_websocket(
     let user_id = session.user_id;
     let registry = state.devbox_tunnels.clone();
 
-    Ok(websocket.on_upgrade(move |socket| async move {
-        registry.register_cli(user_id, socket).await;
+    let token_string = token.to_string();
+
+    Ok(websocket.on_upgrade(move |socket| {
+        let registry = registry.clone();
+        async move {
+            registry.register_cli(user_id, token_string, socket).await;
+        }
     }))
 }
 
@@ -431,50 +441,73 @@ pub async fn devbox_client_tunnel_websocket(
     let cluster_id = environment.map(|e| e.cluster_id);
 
     let tunnel_registry = state.kube_controller.tunnel_registry.clone();
+    let token_string = token.to_string();
 
-    Ok(websocket.on_upgrade(move |socket| async move {
-        let transport = WebSocketTransport::new(socket);
+    Ok(websocket.on_upgrade(move |socket| {
         let registry = tunnel_registry.clone();
+        let cluster_id = cluster_id;
+        let user_id = user_id;
+        let token = token_string.clone();
+        async move {
+            let (sink, stream) = split_axum_websocket(socket);
+            let udp_socket = WebSocketUdpSocket::from_parts(
+                sink,
+                stream,
+                relay_server_addr(),
+                relay_client_addr(),
+            );
 
-        let connector = move |target: TunnelTarget| {
-            let registry = registry.clone();
-            async move {
-                let Some(cluster_id) = cluster_id else {
-                    return Err(TunnelError::Remote("active environment is not set".into()));
-                };
+            let connector = move |target: TunnelTarget| {
+                let registry = registry.clone();
+                async move {
+                    let Some(cluster_id) = cluster_id else {
+                        return Err(TunnelError::Remote("active environment is not set".into()));
+                    };
 
-                match registry.get_client(cluster_id).await {
-                    Some(cluster_client) if !cluster_client.is_closed() => {
-                        let TunnelTarget { host, port } = target;
-                        let stream = cluster_client.connect_tcp(host, port).await?;
-                        Ok::<DynTunnelStream, TunnelError>(Box::new(stream) as DynTunnelStream)
-                    }
-                    Some(_) => {
-                        tracing::warn!(
-                            user_id = %user_id,
-                            cluster_id = %cluster_id,
-                            "Cluster tunnel is closed; rejecting devbox client request"
-                        );
-                        Err(TunnelError::Remote("cluster tunnel is closed".into()))
-                    }
-                    None => {
-                        tracing::warn!(
-                            user_id = %user_id,
-                            cluster_id = %cluster_id,
-                            "No cluster tunnel available for devbox client request"
-                        );
-                        Err(TunnelError::Remote("cluster tunnel unavailable".into()))
+                    match registry.get_client(cluster_id).await {
+                        Some(cluster_client) if !cluster_client.is_closed() => {
+                            let TunnelTarget { host, port } = target;
+                            let stream = cluster_client.connect_tcp(host, port).await?;
+                            Ok::<DynTunnelStream, TunnelError>(Box::new(stream) as DynTunnelStream)
+                        }
+                        Some(_) => {
+                            tracing::warn!(
+                                user_id = %user_id,
+                                cluster_id = %cluster_id,
+                                "Cluster tunnel is closed; rejecting devbox client request"
+                            );
+                            Err(TunnelError::Remote("cluster tunnel is closed".into()))
+                        }
+                        None => {
+                            tracing::warn!(
+                                user_id = %user_id,
+                                cluster_id = %cluster_id,
+                                "No cluster tunnel available for devbox client request"
+                            );
+                            Err(TunnelError::Remote("cluster tunnel unavailable".into()))
+                        }
                     }
                 }
-            }
-        };
+            };
 
-        if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
-            tracing::warn!(
-                user_id = %user_id,
-                error = %err,
-                "Devbox client tunnel terminated with error"
-            );
+            match QuicTransport::accept_udp_server(udp_socket, &token).await {
+                Ok(transport) => {
+                    if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
+                        tracing::warn!(
+                            user_id = %user_id,
+                            error = %err,
+                            "Devbox client tunnel terminated with error"
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        user_id = %user_id,
+                        error = %err,
+                        "Failed to establish QUIC relay for devbox client tunnel"
+                    );
+                }
+            }
         }
     }))
 }

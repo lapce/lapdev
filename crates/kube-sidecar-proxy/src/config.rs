@@ -3,16 +3,13 @@ use lapdev_common::{
     devbox::DirectChannelConfig,
     kube::{ProxyPortRoute, KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER},
 };
-use lapdev_tunnel::{
-    direct::connect_direct_tunnel, TunnelClient, TunnelError, TunnelTcpStream,
-    WebSocketTransport as TunnelWebSocketTransport,
-};
+use lapdev_tunnel::{TunnelClient, TunnelError, TunnelMode, TunnelTcpStream};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 use tokio::sync::{OnceCell, RwLock};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Immutable settings for the sidecar proxy determined at boot time.
@@ -433,54 +430,60 @@ impl DevboxConnection {
     }
 
     async fn create_client(&self) -> Result<TunnelClient, TunnelError> {
-        if let Some(direct) = &self.metadata.direct {
-            match connect_direct_tunnel(direct).await {
-                Ok(client) => {
-                    info!(
-                        intercept_id = %self.metadata.intercept_id,
-                        workload_id = %self.metadata.workload_id,
-                        "Established direct Devbox tunnel"
+        let intercept_id = self.metadata.intercept_id;
+        let workload_id = self.metadata.workload_id;
+        let websocket_url = self.metadata.websocket_url.clone();
+        let auth_token = self.metadata.auth_token.clone();
+        let direct = self.metadata.direct.as_ref();
+
+        let (client, mode) = TunnelClient::connect_with_direct_or_relay(
+            direct,
+            auth_token.as_str(),
+            || {
+                let websocket_url = websocket_url.clone();
+                let auth_token = auth_token.clone();
+                async move {
+                    let mut request = websocket_url
+                        .into_client_request()
+                        .map_err(tunnel_transport_error)?;
+
+                    let env_header_value = auth_token.parse().map_err(tunnel_transport_error)?;
+                    request.headers_mut().insert(
+                        HeaderName::from_static(KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER),
+                        env_header_value,
                     );
-                    return Ok(client);
+
+                    let (stream, _) = connect_async(request)
+                        .await
+                        .map_err(tunnel_transport_error)?;
+                    Ok(stream)
                 }
-                Err(err) => {
-                    debug!(
-                        intercept_id = %self.metadata.intercept_id,
-                        workload_id = %self.metadata.workload_id,
-                        error = %err,
-                        "Direct tunnel attempt failed; falling back to WebSocket"
-                    );
-                }
-            }
+            },
+            |err| {
+                debug!(
+                    intercept_id = %intercept_id,
+                    workload_id = %workload_id,
+                    error = %err,
+                    "Direct tunnel attempt failed; falling back to relay"
+                );
+            },
+        )
+        .await?;
+
+        match mode {
+            TunnelMode::Direct => info!(
+                intercept_id = %intercept_id,
+                workload_id = %workload_id,
+                "Established direct Devbox tunnel"
+            ),
+            TunnelMode::Relay => info!(
+                intercept_id = %intercept_id,
+                workload_id = %workload_id,
+                "Using relay Devbox tunnel"
+            ),
         }
 
-        self.create_websocket_client().await
-    }
-
-    async fn create_websocket_client(&self) -> Result<TunnelClient, TunnelError> {
-        let mut request = self
-            .metadata
-            .websocket_url
-            .clone()
-            .into_client_request()
-            .map_err(tunnel_transport_error)?;
-
-        let env_header_value = self
-            .metadata
-            .auth_token
-            .parse()
-            .map_err(tunnel_transport_error)?;
-        request.headers_mut().insert(
-            HeaderName::from_static(KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER),
-            env_header_value,
-        );
-
-        let (stream, _) = connect_async(request)
-            .await
-            .map_err(tunnel_transport_error)?;
-
-        let transport = TunnelWebSocketTransport::new(stream);
-        Ok(TunnelClient::connect(transport))
+        Ok(client)
     }
 }
 

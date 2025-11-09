@@ -1,15 +1,22 @@
 use anyhow::Result;
-use lapdev_tunnel::{run_tunnel_server, WebSocketTransport as TunnelWebSocketTransport};
+use lapdev_tunnel::{direct::QuicTransport, run_tunnel_server};
 
 /// Manages the lifecycle of the background tunnel connection used for preview URLs.
 #[derive(Clone)]
 pub struct TunnelManager {
     tunnel_request: tokio_tungstenite::tungstenite::http::Request<()>,
+    auth_token: String,
 }
 
 impl TunnelManager {
-    pub fn new(tunnel_request: tokio_tungstenite::tungstenite::http::Request<()>) -> Self {
-        Self { tunnel_request }
+    pub fn new(
+        tunnel_request: tokio_tungstenite::tungstenite::http::Request<()>,
+        auth_token: String,
+    ) -> Self {
+        Self {
+            tunnel_request,
+            auth_token,
+        }
     }
 
     /// Start the tunnel manager connection cycle
@@ -38,7 +45,7 @@ impl TunnelManager {
 
         tracing::info!("Tunnel WebSocket connection established");
 
-        let transport = TunnelWebSocketTransport::new(stream);
+        let transport = QuicTransport::connect_websocket_client(stream, &self.auth_token).await?;
         run_tunnel_server(transport).await?;
 
         tracing::info!("Tunnel server session ended");

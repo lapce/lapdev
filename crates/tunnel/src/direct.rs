@@ -1,7 +1,9 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
+    convert::TryFrom,
+    io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use lapdev_common::devbox::{
@@ -9,6 +11,7 @@ use lapdev_common::devbox::{
 };
 use quinn::rustls;
 use quinn::{self, Connection, Endpoint, RecvStream, SendStream};
+use rand::random;
 use rcgen::generate_simple_self_signed;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
@@ -17,9 +20,30 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::{client::TunnelClient, error::TunnelError};
+use crate::{
+    client::{TunnelClient, TunnelMode},
+    error::TunnelError,
+};
 
 const HANDSHAKE_MAX_TOKEN_LEN: usize = u16::MAX as usize;
+
+/// Options controlling direct QUIC server behavior.
+#[derive(Debug, Clone)]
+pub struct DirectServerOptions {
+    /// STUN servers that should be queried to discover the server's reflexive address.
+    pub stun_servers: Vec<SocketAddr>,
+    /// How long to wait for a STUN response.
+    pub stun_timeout: Duration,
+}
+
+impl Default for DirectServerOptions {
+    fn default() -> Self {
+        Self {
+            stun_servers: Vec::new(),
+            stun_timeout: Duration::from_millis(750),
+        }
+    }
+}
 
 /// Options that influence how direct transport candidates are collected.
 #[derive(Debug, Clone)]
@@ -30,6 +54,8 @@ pub struct CandidateOptions {
     pub include_loopback: bool,
     /// Pre-configured relay candidates supplied by the caller.
     pub relay_candidates: Vec<DirectCandidate>,
+    /// Reflexive address reported by a STUN probe, if one was performed.
+    pub stun_observed_addr: Option<SocketAddr>,
 }
 
 impl Default for CandidateOptions {
@@ -38,6 +64,7 @@ impl Default for CandidateOptions {
             preferred_port: None,
             include_loopback: true,
             relay_candidates: Vec::new(),
+            stun_observed_addr: None,
         }
     }
 }
@@ -48,6 +75,7 @@ pub struct CandidateDiagnostics {
     pub detected_interface: Option<IpAddr>,
     pub relay_candidates: usize,
     pub loopback_included: bool,
+    pub stun_observed_addr: Option<SocketAddr>,
 }
 
 /// Result produced by the candidate collector.
@@ -63,6 +91,7 @@ pub fn collect_candidates(opts: &CandidateOptions) -> CandidateDiscovery {
         relay_candidates: opts.relay_candidates.len(),
         loopback_included: opts.include_loopback,
         detected_interface: None,
+        stun_observed_addr: opts.stun_observed_addr,
     };
 
     let mut priority_counter = 0u32;
@@ -73,6 +102,19 @@ pub fn collect_candidates(opts: &CandidateOptions) -> CandidateDiscovery {
     {
         diagnostics.detected_interface = Some(ip);
         candidates.push(direct_candidate);
+    }
+
+    if let Some(addr) = opts.stun_observed_addr {
+        let host = addr.ip().to_string();
+        if !candidate_exists(&candidates, &host, addr.port()) {
+            candidates.push(DirectCandidate {
+                host,
+                port: addr.port(),
+                transport: DirectTransport::Quic,
+                kind: DirectCandidateKind::Public,
+                priority: next_priority(&mut priority_counter),
+            });
+        }
     }
 
     if opts.include_loopback {
@@ -133,6 +175,12 @@ fn next_priority(counter: &mut u32) -> u32 {
     value
 }
 
+fn candidate_exists(candidates: &[DirectCandidate], host: &str, port: u16) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| candidate.host == host && candidate.port == port)
+}
+
 /// Attempt to establish a direct tunnel using the provided channel config.
 pub async fn connect_direct_tunnel(
     config: &DirectChannelConfig,
@@ -166,7 +214,10 @@ pub async fn connect_direct_tunnel(
                         match establish_client_stream(connection, &config.credential.token).await {
                             Ok(transport) => {
                                 info!(peer = %addr, "Direct QUIC tunnel established");
-                                return Ok(TunnelClient::connect(transport));
+                                return Ok(TunnelClient::connect_with_mode(
+                                    transport,
+                                    TunnelMode::Direct,
+                                ));
                             }
                             Err(err) => {
                                 last_err = Some(err);
@@ -196,7 +247,7 @@ pub async fn connect_direct_tunnel(
     Err(last_err.unwrap_or_else(|| TunnelError::Remote("no QUIC candidates available".to_string())))
 }
 
-async fn establish_client_stream(
+pub(crate) async fn establish_client_stream(
     connection: Connection,
     token: &str,
 ) -> Result<QuicTransport, TunnelError> {
@@ -213,16 +264,53 @@ async fn establish_client_stream(
 pub struct DirectQuicServer {
     endpoint: Endpoint,
     credential: Arc<RwLock<Option<String>>>,
+    observed_addr: Option<SocketAddr>,
 }
 
 impl DirectQuicServer {
     pub async fn bind(bind_addr: SocketAddr) -> Result<Self, TunnelError> {
+        Self::bind_with_options(bind_addr, DirectServerOptions::default()).await
+    }
+
+    pub async fn bind_with_options(
+        bind_addr: SocketAddr,
+        options: DirectServerOptions,
+    ) -> Result<Self, TunnelError> {
         let server_config = build_server_config()?;
-        let endpoint = Endpoint::server(server_config, bind_addr)
-            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+        let socket = std::net::UdpSocket::bind(bind_addr)
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+        socket
+            .set_nonblocking(false)
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+
+        let observed_addr = if options.stun_servers.is_empty() {
+            None
+        } else {
+            match run_stun_probes(&socket, &options.stun_servers, options.stun_timeout) {
+                Ok(addr) => addr,
+                Err(err) => {
+                    warn!(error = %err, "STUN probe failed");
+                    None
+                }
+            }
+        };
+
+        socket
+            .set_nonblocking(true)
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| TunnelError::Transport(io::Error::other("no async runtime found")))?;
+        let endpoint = Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server_config),
+            socket,
+            runtime,
+        )
+        .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
         Ok(Self {
             endpoint,
             credential: Arc::new(RwLock::new(None)),
+            observed_addr,
         })
     }
 
@@ -234,6 +322,10 @@ impl DirectQuicServer {
 
     pub fn credential_handle(&self) -> Arc<RwLock<Option<String>>> {
         Arc::clone(&self.credential)
+    }
+
+    pub fn observed_addr(&self) -> Option<SocketAddr> {
+        self.observed_addr
     }
 
     pub async fn accept(&self) -> Result<QuicTransport, TunnelError> {
@@ -283,7 +375,7 @@ pub struct QuicTransport {
 }
 
 impl QuicTransport {
-    fn new(send: SendStream, recv: RecvStream) -> Self {
+    pub(crate) fn new(send: SendStream, recv: RecvStream) -> Self {
         Self {
             reader: recv,
             writer: send,
@@ -329,29 +421,30 @@ impl AsyncWrite for QuicTransport {
     }
 }
 
-fn build_server_config() -> Result<quinn::ServerConfig, TunnelError> {
-    let cert = generate_simple_self_signed(["lapdev.devbox".to_string()])
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    let cert_der = cert
-        .serialize_der()
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    let priv_key = cert.serialize_private_key_der();
-
-    let cert_chain = vec![CertificateDer::from(cert_der)];
-    let private_key = PrivatePkcs8KeyDer::from(priv_key);
+pub(crate) fn build_server_config() -> Result<quinn::ServerConfig, TunnelError> {
+    let rcgen::CertifiedKey { cert, signing_key } =
+        generate_simple_self_signed(["lapdev.devbox".to_string()])
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+    let cert_chain = vec![CertificateDer::from(cert)];
+    let private_key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
 
     quinn::ServerConfig::with_single_cert(cert_chain, private_key.into())
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))
 }
 
-fn client_config() -> quinn::ClientConfig {
+pub(crate) fn client_config() -> quinn::ClientConfig {
     let roots = Arc::new(rustls::RootCertStore::empty());
-    let mut crypto =
-        rustls::ClientConfig::with_root_certificates(roots).expect("invalid client config");
+    let mut crypto = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
     crypto
         .dangerous()
         .set_certificate_verifier(Arc::new(SkipServerVerification));
-    quinn::ClientConfig::new(Arc::new(crypto))
+    crypto.enable_early_data = true;
+
+    let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
+        .expect("invalid QUIC client crypto config");
+    quinn::ClientConfig::new(Arc::new(quic_crypto))
 }
 
 #[derive(Debug)]
@@ -395,7 +488,7 @@ impl ServerCertVerifier for SkipServerVerification {
     }
 }
 
-async fn write_token(stream: &mut SendStream, token: &str) -> Result<(), TunnelError> {
+pub(crate) async fn write_token(stream: &mut SendStream, token: &str) -> Result<(), TunnelError> {
     let token_bytes = token.as_bytes();
     if token_bytes.len() > HANDSHAKE_MAX_TOKEN_LEN {
         return Err(TunnelError::Remote("direct credential too long".into()));
@@ -415,7 +508,7 @@ async fn write_token(stream: &mut SendStream, token: &str) -> Result<(), TunnelE
     Ok(())
 }
 
-async fn read_token(stream: &mut RecvStream) -> Result<String, TunnelError> {
+pub(crate) async fn read_token(stream: &mut RecvStream) -> Result<String, TunnelError> {
     let len = stream
         .read_u16()
         .await
@@ -428,7 +521,7 @@ async fn read_token(stream: &mut RecvStream) -> Result<String, TunnelError> {
     String::from_utf8(buf).map_err(|_| TunnelError::Remote("invalid credential encoding".into()))
 }
 
-async fn read_server_ack(stream: &mut RecvStream) -> Result<(), TunnelError> {
+pub(crate) async fn read_server_ack(stream: &mut RecvStream) -> Result<(), TunnelError> {
     let ack = stream
         .read_u8()
         .await
@@ -442,9 +535,218 @@ async fn read_server_ack(stream: &mut RecvStream) -> Result<(), TunnelError> {
     }
 }
 
-async fn write_server_ack(stream: &mut SendStream) -> Result<(), TunnelError> {
+pub(crate) async fn write_server_ack(stream: &mut SendStream) -> Result<(), TunnelError> {
     stream
         .write_all(&[1u8])
         .await
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))
+}
+
+const STUN_MAGIC_COOKIE: u32 = 0x2112_A442;
+const STUN_HEADER_SIZE: usize = 20;
+const STUN_BINDING_REQUEST: u16 = 0x0001;
+const STUN_BINDING_SUCCESS: u16 = 0x0101;
+const STUN_ATTR_MAPPED_ADDRESS: u16 = 0x0001;
+const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+
+fn run_stun_probes(
+    socket: &UdpSocket,
+    servers: &[SocketAddr],
+    timeout: Duration,
+) -> io::Result<Option<SocketAddr>> {
+    if servers.is_empty() {
+        return Ok(None);
+    }
+
+    socket.set_read_timeout(Some(timeout))?;
+    socket.set_write_timeout(Some(timeout))?;
+
+    let mut result = Ok(None);
+    for server in servers {
+        match send_stun_binding_request(socket, *server) {
+            Ok(Some(addr)) => {
+                debug!(?server, observed = %addr, "STUN reported public address");
+                result = Ok(Some(addr));
+                break;
+            }
+            Ok(None) => {
+                debug!(?server, "STUN response missing mapped address attribute");
+            }
+            Err(err) => {
+                warn!(?server, error = %err, "STUN probe error");
+            }
+        }
+    }
+
+    if let Err(err) = socket.set_read_timeout(None) {
+        debug!(error = %err, "Failed to reset STUN read timeout");
+    }
+    if let Err(err) = socket.set_write_timeout(None) {
+        debug!(error = %err, "Failed to reset STUN write timeout");
+    }
+
+    result
+}
+
+fn send_stun_binding_request(
+    socket: &UdpSocket,
+    server: SocketAddr,
+) -> io::Result<Option<SocketAddr>> {
+    let transaction_id: [u8; 12] = random();
+
+    let mut request = [0u8; STUN_HEADER_SIZE];
+    request[0] = (STUN_BINDING_REQUEST >> 8) as u8;
+    request[1] = STUN_BINDING_REQUEST as u8;
+    request[2] = 0;
+    request[3] = 0;
+    request[4..8].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+    request[8..20].copy_from_slice(&transaction_id);
+
+    socket.send_to(&request, server)?;
+
+    let mut buf = [0u8; 576];
+    let (len, _) = socket.recv_from(&mut buf)?;
+    parse_stun_response(&buf[..len], &transaction_id)
+}
+
+fn parse_stun_response(data: &[u8], transaction_id: &[u8; 12]) -> io::Result<Option<SocketAddr>> {
+    if data.len() < STUN_HEADER_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "STUN response too short",
+        ));
+    }
+
+    let message_type = u16::from_be_bytes([data[0], data[1]]);
+    if message_type != STUN_BINDING_SUCCESS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected STUN response type",
+        ));
+    }
+
+    let message_len = u16::from_be_bytes([data[2], data[3]]) as usize;
+    if data.len() < STUN_HEADER_SIZE + message_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "STUN response truncated",
+        ));
+    }
+
+    if data[4..8] != STUN_MAGIC_COOKIE.to_be_bytes() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid STUN magic cookie",
+        ));
+    }
+
+    if data[8..20] != transaction_id[..] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mismatched STUN transaction id",
+        ));
+    }
+
+    let mut offset = STUN_HEADER_SIZE;
+    let end = STUN_HEADER_SIZE + message_len;
+    while offset + 4 <= end {
+        let attr_type = u16::from_be_bytes([data[offset], data[offset + 1]]);
+        let attr_len = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
+        let value_start = offset + 4;
+        let value_end = value_start + attr_len;
+        if value_end > data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "STUN attribute exceeds message length",
+            ));
+        }
+
+        let value = &data[value_start..value_end];
+        match attr_type {
+            STUN_ATTR_XOR_MAPPED_ADDRESS => {
+                if let Some(addr) = parse_xor_mapped_address(value, transaction_id) {
+                    return Ok(Some(addr));
+                }
+            }
+            STUN_ATTR_MAPPED_ADDRESS => {
+                if let Some(addr) = parse_mapped_address(value) {
+                    return Ok(Some(addr));
+                }
+            }
+            _ => {}
+        }
+
+        let padding = (4 - (attr_len % 4)) % 4;
+        offset = value_end + padding;
+    }
+
+    Ok(None)
+}
+
+fn parse_mapped_address(value: &[u8]) -> Option<SocketAddr> {
+    if value.len() < 4 {
+        return None;
+    }
+    let family = value[1];
+    let port = u16::from_be_bytes([value[2], value[3]]);
+    match family {
+        0x01 => {
+            if value.len() < 8 {
+                return None;
+            }
+            let addr = Ipv4Addr::new(value[4], value[5], value[6], value[7]);
+            Some(SocketAddr::new(IpAddr::V4(addr), port))
+        }
+        0x02 => {
+            if value.len() < 20 {
+                return None;
+            }
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(&value[4..20]);
+            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(bytes)), port))
+        }
+        _ => None,
+    }
+}
+
+fn parse_xor_mapped_address(value: &[u8], transaction_id: &[u8; 12]) -> Option<SocketAddr> {
+    if value.len() < 4 {
+        return None;
+    }
+    let family = value[1];
+    let mut port = u16::from_be_bytes([value[2], value[3]]);
+    port ^= (STUN_MAGIC_COOKIE >> 16) as u16;
+    match family {
+        0x01 => {
+            if value.len() < 8 {
+                return None;
+            }
+            let cookie = STUN_MAGIC_COOKIE.to_be_bytes();
+            let mut addr = [0u8; 4];
+            for i in 0..4 {
+                addr[i] = value[4 + i] ^ cookie[i];
+            }
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3])),
+                port,
+            ))
+        }
+        0x02 => {
+            if value.len() < 20 {
+                return None;
+            }
+            let cookie = STUN_MAGIC_COOKIE.to_be_bytes();
+            let mut addr = [0u8; 16];
+            for i in 0..16 {
+                let xor_byte = if i < 4 {
+                    cookie[i]
+                } else {
+                    transaction_id[i - 4]
+                };
+                addr[i] = value[4 + i] ^ xor_byte;
+            }
+            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(addr)), port))
+        }
+        _ => None,
+    }
 }

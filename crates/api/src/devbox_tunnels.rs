@@ -1,20 +1,22 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
 };
 
-use axum::extract::ws::WebSocket;
+use axum::extract::ws::{Message, WebSocket};
+use bytes::Bytes;
+use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use lapdev_tunnel::{
-    run_tunnel_server_with_connector, DynTunnelStream, TunnelClient, TunnelError, TunnelTarget,
+    direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
+    DynTunnelStream, TunnelClient, TunnelError, TunnelTarget, WebSocketUdpSocket,
 };
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
-
-use crate::websocket_transport::WebSocketTransport;
 
 pub struct DevboxTunnelRegistry {
     sessions_by_user: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, Arc<TunnelClient>>>>>,
@@ -33,8 +35,23 @@ impl DevboxTunnelRegistry {
         self.generation_counter.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub async fn register_cli(&self, user_id: Uuid, socket: WebSocket) {
-        let transport = WebSocketTransport::new(socket);
+    pub async fn register_cli(&self, user_id: Uuid, token: String, socket: WebSocket) {
+        let (sink, stream) = split_axum_websocket(socket);
+        let udp_socket =
+            WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
+
+        let transport = match QuicTransport::accept_udp_server(udp_socket, &token).await {
+            Ok(transport) => transport,
+            Err(err) => {
+                warn!(
+                    user_id = %user_id,
+                    error = %err,
+                    "Failed to perform QUIC handshake for CLI tunnel"
+                );
+                return;
+            }
+        };
+
         let client = Arc::new(TunnelClient::connect(transport));
         let generation = self.next_generation();
 
@@ -88,6 +105,7 @@ impl DevboxTunnelRegistry {
     pub async fn attach_sidecar(
         &self,
         user_id: Uuid,
+        token: String,
         socket: WebSocket,
     ) -> Result<(), TunnelError> {
         let cli_client = {
@@ -109,7 +127,11 @@ impl DevboxTunnelRegistry {
             return Err(TunnelError::Remote("no active CLI tunnel".to_string()));
         };
 
-        let transport = WebSocketTransport::new(socket);
+        let (sink, stream) = split_axum_websocket(socket);
+        let udp_socket =
+            WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
+
+        let transport = QuicTransport::accept_udp_server(udp_socket, &token).await?;
         let connector = move |target: TunnelTarget| {
             let cli_client = cli_client.clone();
             async move {
@@ -122,6 +144,30 @@ impl DevboxTunnelRegistry {
 
         run_tunnel_server_with_connector(transport, connector).await
     }
+}
+
+pub(crate) fn split_axum_websocket(
+    socket: WebSocket,
+) -> (
+    impl Sink<Bytes, Error = io::Error> + Send + 'static,
+    impl Stream<Item = Result<Bytes, io::Error>> + Send + 'static,
+) {
+    let (sink, stream) = socket.split();
+
+    let sink = sink
+        .sink_map_err(|err| io::Error::other(err))
+        .with(|bytes: Bytes| future::ready(Ok(Message::Binary(bytes))));
+
+    let stream = stream.filter_map(|msg| {
+        future::ready(match msg {
+            Ok(Message::Binary(data)) => Some(Ok(data)),
+            Ok(Message::Close(_)) => None,
+            Ok(_) => None,
+            Err(err) => Some(Err(io::Error::other(err))),
+        })
+    });
+
+    (sink, stream)
 }
 
 impl Default for DevboxTunnelRegistry {

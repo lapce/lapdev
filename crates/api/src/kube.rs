@@ -14,7 +14,8 @@ use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
-    run_tunnel_server_with_connector, DynTunnelStream, TunnelClient, TunnelError, TunnelTarget,
+    direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
+    DynTunnelStream, TunnelClient, TunnelError, TunnelTarget, WebSocketUdpSocket,
 };
 use secrecy::ExposeSecret;
 use tarpc::{
@@ -23,7 +24,9 @@ use tarpc::{
 };
 use uuid::Uuid;
 
-use crate::{state::CoreState, websocket_transport::WebSocketTransport};
+use crate::{
+    devbox_tunnels::split_axum_websocket, state::CoreState, websocket_transport::WebSocketTransport,
+};
 
 pub async fn kube_cluster_rpc_websocket(
     websocket: WebSocketUpgrade,
@@ -205,16 +208,21 @@ pub async fn sidecar_tunnel_websocket(
 
     let user_id = environment.user_id;
     let registry = state.devbox_tunnels.clone();
+    let token_string = environment.auth_token.clone();
 
-    Ok(websocket.on_upgrade(move |socket| async move {
-        if let Err(err) = registry.attach_sidecar(user_id, socket).await {
-            tracing::warn!(
-                user_id = %user_id,
-                environment_id = %environment_id,
-                workload_id = %workload_id,
-                error = %err,
-                "Sidecar tunnel terminated with error"
-            );
+    Ok(websocket.on_upgrade(move |socket| {
+        let registry = registry.clone();
+        let token = token_string.clone();
+        async move {
+            if let Err(err) = registry.attach_sidecar(user_id, token, socket).await {
+                tracing::warn!(
+                    user_id = %user_id,
+                    environment_id = %environment_id,
+                    workload_id = %workload_id,
+                    error = %err,
+                    "Sidecar tunnel terminated with error"
+                );
+            }
         }
     }))
 }
@@ -263,26 +271,46 @@ pub async fn devbox_proxy_tunnel_websocket(
     );
 
     let cluster_id = environment.cluster_id;
+    let auth_token = environment.auth_token.clone();
     let tunnel_registry = state.kube_controller.tunnel_registry.clone();
 
-    Ok(websocket.on_upgrade(move |socket| async move {
-        match tunnel_registry.get_client(cluster_id).await {
-            Some(client) if !client.is_closed() => {
-                serve_devbox_proxy_tunnel(socket, client).await;
-            }
-            _ => {
-                tracing::warn!(
-                    "No active cluster tunnel available for devbox proxy environment {} (cluster {})",
-                    environment_id,
-                    cluster_id
-                );
+    Ok(websocket.on_upgrade(move |socket| {
+        let registry = tunnel_registry.clone();
+        let token = auth_token.clone();
+        async move {
+            match registry.get_client(cluster_id).await {
+                Some(client) if !client.is_closed() => {
+                    serve_devbox_proxy_tunnel(socket, client, token).await;
+                }
+                _ => {
+                    tracing::warn!(
+                        "No active cluster tunnel available for devbox proxy environment {} (cluster {})",
+                        environment_id,
+                        cluster_id
+                    );
+                }
             }
         }
     }))
 }
 
-async fn serve_devbox_proxy_tunnel(socket: WebSocket, cluster_client: Arc<TunnelClient>) {
-    let transport = WebSocketTransport::new(socket);
+async fn serve_devbox_proxy_tunnel(
+    socket: WebSocket,
+    cluster_client: Arc<TunnelClient>,
+    token: String,
+) {
+    let (sink, stream) = split_axum_websocket(socket);
+    let udp_socket =
+        WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
+
+    let transport = match QuicTransport::accept_udp_server(udp_socket, &token).await {
+        Ok(transport) => transport,
+        Err(err) => {
+            tracing::warn!("Failed to negotiate QUIC relay for devbox proxy: {}", err);
+            return;
+        }
+    };
+
     let connector_client = cluster_client.clone();
 
     let connector = move |target: TunnelTarget| {

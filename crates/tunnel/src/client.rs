@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -19,10 +20,13 @@ use tracing::{debug, error, trace};
 use uuid::Uuid;
 
 use crate::{
+    direct::{connect_direct_tunnel, QuicTransport},
     error::TunnelError,
     message::{Protocol, Target, TunnelTarget, WireMessage},
     util::spawn_detached,
 };
+use lapdev_common::devbox::DirectChannelConfig;
+use tokio_tungstenite::WebSocketStream;
 
 enum InnerCommand {
     InsertPending {
@@ -263,6 +267,7 @@ pub struct TunnelClient {
     writer_task: JoinHandle<()>,
     reader_task: JoinHandle<()>,
     close_notify: Arc<Notify>,
+    mode: TunnelMode,
 }
 
 impl fmt::Debug for TunnelClient {
@@ -274,6 +279,13 @@ impl fmt::Debug for TunnelClient {
 impl TunnelClient {
     /// Establish a new tunnel client using any async byte stream.
     pub fn connect<S>(stream: S) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::connect_with_mode(stream, TunnelMode::Relay)
+    }
+
+    pub(crate) fn connect_with_mode<S>(stream: S, mode: TunnelMode) -> Self
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -359,7 +371,12 @@ impl TunnelClient {
             writer_task,
             reader_task,
             close_notify,
+            mode,
         }
+    }
+
+    pub fn mode(&self) -> TunnelMode {
+        self.mode
     }
 
     /// Returns true if the underlying transport tasks have terminated.
@@ -446,6 +463,51 @@ impl TunnelClient {
                 Err(TunnelError::ConnectionClosed)
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelMode {
+    Direct,
+    Relay,
+}
+
+impl TunnelClient {
+    pub async fn connect_with_direct_or_relay<S, F, Fut, G>(
+        direct: Option<&DirectChannelConfig>,
+        token: &str,
+        ws_connector: F,
+        on_direct_failure: G,
+    ) -> Result<(Self, TunnelMode), TunnelError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<WebSocketStream<S>, TunnelError>>,
+        G: FnOnce(&TunnelError),
+    {
+        if let Some(config) = direct {
+            match connect_direct_tunnel(config).await {
+                Ok(client) => {
+                    tracing::info!("Established direct tunnel connection");
+                    return Ok((client, TunnelMode::Direct));
+                }
+                Err(err) => {
+                    on_direct_failure(&err);
+                    tracing::debug!(
+                        error = %err,
+                        "Direct tunnel attempt failed; falling back to relay transport"
+                    );
+                }
+            }
+        }
+
+        let websocket = ws_connector().await?;
+        let transport = QuicTransport::connect_websocket_client(websocket, token).await?;
+        tracing::info!("Using relay tunnel connection over QUIC");
+        Ok((
+            TunnelClient::connect_with_mode(transport, TunnelMode::Relay),
+            TunnelMode::Relay,
+        ))
     }
 }
 

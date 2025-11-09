@@ -21,3 +21,4 @@ tokio-tungstenite.workspace = true
 lapdev-common.workspace = true
 quinn.workspace = true
 rcgen.workspace = true
+rand.workspace = true

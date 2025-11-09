@@ -88,7 +88,7 @@ impl KubeManager {
             kube_client,
             proxy_manager,
             devbox_proxy_manager,
-            tunnel_manager: TunnelManager::new(tunnel_request),
+            tunnel_manager: TunnelManager::new(tunnel_request, token.clone()),
             watch_manager,
             manager_namespace,
         };

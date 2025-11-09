@@ -227,6 +227,48 @@ impl KubeClusterServer {
         }
     }
 
+    pub async fn set_devbox_route(
+        &self,
+        environment_id: Uuid,
+        route: DevboxRouteConfig,
+    ) -> Result<(), String> {
+        match self
+            .rpc_client
+            .set_devbox_route(tarpc::context::current(), environment_id, route)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(format!(
+                "Failed to send set_devbox_route RPC to kube-manager: {}",
+                err
+            )),
+        }
+    }
+
+    pub async fn remove_devbox_route(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        match self
+            .rpc_client
+            .remove_devbox_route(
+                tarpc::context::current(),
+                environment_id,
+                workload_id,
+                branch_environment_id,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(format!(
+                "Failed to send remove_devbox_route RPC to kube-manager: {}",
+                err
+            )),
+        }
+    }
+
     pub async fn clear_devbox_routes(
         &self,
         environment_id: Uuid,

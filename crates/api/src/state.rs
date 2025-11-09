@@ -464,6 +464,74 @@ impl CoreState {
         }
     }
 
+    pub async fn push_devbox_route_for_intercept(
+        &self,
+        environment: lapdev_db_entities::kube_environment::Model,
+        intercept: lapdev_db_entities::kube_devbox_workload_intercept::Model,
+    ) {
+        let base = self.websocket_base_url().await;
+        let base_trimmed = base.trim_end_matches('/').to_string();
+
+        match Self::build_devbox_route_config_from_intercept(
+            base_trimmed.as_str(),
+            &environment,
+            &intercept,
+        ) {
+            Ok(route) => {
+                let (target_environment_id, _) = Self::route_environment_targets(&environment);
+                if let Err(err) = self
+                    .kube_controller
+                    .set_devbox_route(environment.cluster_id, target_environment_id, route)
+                    .await
+                {
+                    tracing::warn!(
+                        environment_id = %environment.id,
+                        workload_id = %intercept.workload_id,
+                        intercept_id = %intercept.id,
+                        error = %err,
+                        "Failed to push devbox route for intercept"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    environment_id = %environment.id,
+                    intercept_id = %intercept.id,
+                    error = %err,
+                    "Failed to build devbox route for intercept"
+                );
+            }
+        }
+    }
+
+    pub async fn clear_devbox_route_for_intercept(
+        &self,
+        environment: lapdev_db_entities::kube_environment::Model,
+        intercept: lapdev_db_entities::kube_devbox_workload_intercept::Model,
+    ) {
+        let (target_environment_id, branch_environment_id) =
+            Self::route_environment_targets(&environment);
+
+        if let Err(err) = self
+            .kube_controller
+            .remove_devbox_route(
+                environment.cluster_id,
+                target_environment_id,
+                intercept.workload_id,
+                branch_environment_id,
+            )
+            .await
+        {
+            tracing::warn!(
+                environment_id = %environment.id,
+                workload_id = %intercept.workload_id,
+                intercept_id = %intercept.id,
+                error = %err,
+                "Failed to clear devbox route for intercept"
+            );
+        }
+    }
+
     pub async fn clear_devbox_routes_for_environment(&self, environment_id: Uuid) {
         match self
             .db
@@ -532,38 +600,13 @@ impl CoreState {
                 continue;
             }
 
-            let value: serde_json::Value = intercept.port_mappings.clone().into();
-            let mappings: Vec<PortMapping> = serde_json::from_value(value).map_err(|e| {
-                format!(
-                    "Failed to parse port mappings for intercept {}: {e}",
-                    intercept.id
-                )
-            })?;
+            let route = Self::build_devbox_route_config_from_intercept(
+                base_trimmed,
+                &environment,
+                &intercept,
+            )?;
 
-            let mut port_map = HashMap::with_capacity(mappings.len());
-            for mapping in &mappings {
-                port_map.insert(mapping.workload_port, mapping.local_port);
-            }
-
-            let websocket_url = format!(
-                "{}/api/v1/kube/sidecar/tunnel/{}/{}",
-                base_trimmed, environment_id, intercept.workload_id
-            );
-
-            routes.insert(
-                intercept.workload_id,
-                DevboxRouteConfig {
-                    intercept_id: intercept.id,
-                    workload_id: intercept.workload_id,
-                    auth_token: environment.auth_token.clone(),
-                    websocket_url,
-                    path_pattern: "/*".to_string(),
-                    branch_environment_id: environment.base_environment_id.map(|_| environment_id),
-                    created_at_epoch_seconds: Some(intercept.created_at.timestamp()),
-                    expires_at_epoch_seconds: intercept.stopped_at.map(|dt| dt.timestamp()),
-                    port_mappings: port_map,
-                },
-            );
+            routes.insert(intercept.workload_id, route);
         }
 
         Ok((
@@ -571,6 +614,58 @@ impl CoreState {
             environment.base_environment_id,
             routes,
         ))
+    }
+
+    fn build_devbox_route_config_from_intercept(
+        base_trimmed: &str,
+        environment: &lapdev_db_entities::kube_environment::Model,
+        intercept: &lapdev_db_entities::kube_devbox_workload_intercept::Model,
+    ) -> Result<DevboxRouteConfig, String> {
+        let port_mappings = Self::intercept_port_map(intercept)?;
+        let websocket_url = format!(
+            "{}/api/v1/kube/sidecar/tunnel/{}/{}",
+            base_trimmed, environment.id, intercept.workload_id
+        );
+
+        Ok(DevboxRouteConfig {
+            intercept_id: intercept.id,
+            workload_id: intercept.workload_id,
+            auth_token: environment.auth_token.clone(),
+            websocket_url,
+            path_pattern: "/*".to_string(),
+            branch_environment_id: environment.base_environment_id.map(|_| environment.id),
+            created_at_epoch_seconds: Some(intercept.created_at.timestamp()),
+            expires_at_epoch_seconds: intercept.stopped_at.map(|dt| dt.timestamp()),
+            port_mappings,
+        })
+    }
+
+    fn intercept_port_map(
+        intercept: &lapdev_db_entities::kube_devbox_workload_intercept::Model,
+    ) -> Result<HashMap<u16, u16>, String> {
+        let value: serde_json::Value = intercept.port_mappings.clone().into();
+        let mappings: Vec<PortMapping> = serde_json::from_value(value).map_err(|e| {
+            format!(
+                "Failed to parse port mappings for intercept {}: {e}",
+                intercept.id
+            )
+        })?;
+
+        let mut port_map = HashMap::with_capacity(mappings.len());
+        for mapping in &mappings {
+            port_map.insert(mapping.workload_port, mapping.local_port);
+        }
+
+        Ok(port_map)
+    }
+
+    fn route_environment_targets(
+        environment: &lapdev_db_entities::kube_environment::Model,
+    ) -> (Uuid, Option<Uuid>) {
+        (
+            environment.base_environment_id.unwrap_or(environment.id),
+            environment.base_environment_id.map(|_| environment.id),
+        )
     }
 
     fn cookie_token(&self, cookie: &headers::Cookie, name: &str) -> Result<TrustedToken, ApiError> {

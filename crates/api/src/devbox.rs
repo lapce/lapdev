@@ -922,10 +922,12 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .is_some()
         {
             let state = self.state.clone();
-            let user_id = self.user_id;
-            let environment_id = environment.id;
+            let environment = environment.clone();
+            let intercept_clone = intercept.clone();
             tokio::spawn(async move {
-                state.push_devbox_routes(user_id, environment_id).await;
+                state
+                    .push_devbox_route_for_intercept(environment, intercept_clone)
+                    .await;
             });
         }
 
@@ -972,12 +974,37 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .get(&self.user_id)
             .is_some()
         {
-            let state = self.state.clone();
-            let user_id = self.user_id;
-            let environment_id = intercept.environment_id;
-            tokio::spawn(async move {
-                state.push_devbox_routes(user_id, environment_id).await;
-            });
+            match self
+                .state
+                .db
+                .get_kube_environment(intercept.environment_id)
+                .await
+            {
+                Ok(Some(environment)) => {
+                    let state = self.state.clone();
+                    let intercept_clone = intercept.clone();
+                    tokio::spawn(async move {
+                        state
+                            .clear_devbox_route_for_intercept(environment, intercept_clone)
+                            .await;
+                    });
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        environment_id = %intercept.environment_id,
+                        intercept_id = %intercept.id,
+                        "Environment not found while clearing devbox route after intercept stop"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        environment_id = %intercept.environment_id,
+                        intercept_id = %intercept.id,
+                        error = %err,
+                        "Failed to load environment while clearing devbox route after intercept stop"
+                    );
+                }
+            }
         }
 
         Ok(())

@@ -140,6 +140,64 @@ impl KubeController {
         }))
     }
 
+    pub async fn set_devbox_route(
+        &self,
+        cluster_id: Uuid,
+        environment_id: Uuid,
+        route: DevboxRouteConfig,
+    ) -> Result<(), String> {
+        let servers = self.kube_cluster_servers.read().await;
+        let Some(cluster_servers) = servers.get(&cluster_id) else {
+            return Err(format!(
+                "No connected KubeManager instances for cluster {}",
+                cluster_id
+            ));
+        };
+
+        let mut last_err: Option<String> = None;
+        for server in cluster_servers.values() {
+            match server.set_devbox_route(environment_id, route.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            "Failed to dispatch set_devbox_route to any KubeManager instances".to_string()
+        }))
+    }
+
+    pub async fn remove_devbox_route(
+        &self,
+        cluster_id: Uuid,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        let servers = self.kube_cluster_servers.read().await;
+        let Some(cluster_servers) = servers.get(&cluster_id) else {
+            return Err(format!(
+                "No connected KubeManager instances for cluster {}",
+                cluster_id
+            ));
+        };
+
+        let mut last_err: Option<String> = None;
+        for server in cluster_servers.values() {
+            match server
+                .remove_devbox_route(environment_id, workload_id, branch_environment_id)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            "Failed to dispatch remove_devbox_route to any KubeManager instances".to_string()
+        }))
+    }
+
     pub async fn clear_devbox_routes(
         &self,
         cluster_id: Uuid,

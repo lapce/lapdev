@@ -255,6 +255,86 @@ impl SidecarProxyManager {
         Ok(())
     }
 
+    pub async fn set_devbox_route(
+        &self,
+        environment_id: Uuid,
+        route: DevboxRouteConfig,
+    ) -> Result<(), String> {
+        self.upsert_devbox_route_snapshot(environment_id, route.clone())
+            .await;
+
+        let Some(connections) = self.latest_clients_for_environment(environment_id).await else {
+            warn!(
+                "No sidecar proxy registered for environment {} when sending devbox route",
+                environment_id
+            );
+            return Ok(());
+        };
+
+        let Some(client) = connections.get(&route.workload_id) else {
+            warn!(
+                "No sidecar proxy registered for workload {} when sending devbox route",
+                route.workload_id
+            );
+            return Ok(());
+        };
+
+        let workload_id = route.workload_id;
+
+        if let Err(err) = client
+            .clone()
+            .set_devbox_route(tarpc::context::current(), route)
+            .await
+        {
+            return Err(format!(
+                "Failed to send devbox route to workload {}: {}",
+                workload_id, err
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn remove_devbox_route(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        let removed = self
+            .remove_devbox_route_snapshot(
+                environment_id,
+                workload_id,
+                branch_environment_id.clone(),
+            )
+            .await;
+
+        if !removed {
+            return Ok(());
+        }
+
+        let Some(connections) = self.latest_clients_for_environment(environment_id).await else {
+            return Ok(());
+        };
+
+        let Some(client) = connections.get(&workload_id) else {
+            return Ok(());
+        };
+
+        if let Err(err) = client
+            .clone()
+            .stop_devbox(tarpc::context::current(), branch_environment_id)
+            .await
+        {
+            return Err(format!(
+                "Failed to clear devbox route for workload {}: {}",
+                workload_id, err
+            ));
+        }
+
+        Ok(())
+    }
+
     pub async fn upsert_branch_service_route(
         &self,
         base_environment_id: Uuid,
@@ -367,6 +447,41 @@ impl SidecarProxyManager {
     ) {
         let mut guard = self.devbox_route_snapshots.write().await;
         guard.insert(environment_id, routes);
+    }
+
+    async fn upsert_devbox_route_snapshot(&self, environment_id: Uuid, route: DevboxRouteConfig) {
+        let mut guard = self.devbox_route_snapshots.write().await;
+        guard
+            .entry(environment_id)
+            .or_default()
+            .insert(route.workload_id, route);
+    }
+
+    async fn remove_devbox_route_snapshot(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> bool {
+        let mut guard = self.devbox_route_snapshots.write().await;
+        let Some(routes) = guard.get_mut(&environment_id) else {
+            return false;
+        };
+
+        let should_remove = routes
+            .get(&workload_id)
+            .map(|route| route.branch_environment_id == branch_environment_id)
+            .unwrap_or(false);
+
+        if should_remove {
+            routes.remove(&workload_id);
+        }
+
+        if routes.is_empty() {
+            guard.remove(&environment_id);
+        }
+
+        should_remove
     }
 
     async fn devbox_route_for_workload(

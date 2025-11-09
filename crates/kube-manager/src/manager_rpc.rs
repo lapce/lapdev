@@ -201,6 +201,27 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         self.manager.set_devbox_routes(environment_id, routes).await
     }
 
+    async fn set_devbox_route(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+        route: DevboxRouteConfig,
+    ) -> Result<(), String> {
+        self.manager.set_devbox_route(environment_id, route).await
+    }
+
+    async fn remove_devbox_route(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        self.manager
+            .remove_devbox_route(environment_id, workload_id, branch_environment_id)
+            .await
+    }
+
     async fn update_branch_service_route(
         self,
         _context: ::tarpc::context::Context,

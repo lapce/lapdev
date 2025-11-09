@@ -373,10 +373,12 @@ impl HrpcService for CoreState {
             .is_some()
         {
             let state = self.clone();
-            let user_id = user.id;
-            let environment_id = environment.id;
+            let environment = environment.clone();
+            let intercept_clone = intercept.clone();
             tokio::spawn(async move {
-                state.push_devbox_routes(user_id, environment_id).await;
+                state
+                    .push_devbox_route_for_intercept(environment, intercept_clone)
+                    .await;
             });
         }
 
@@ -414,11 +416,32 @@ impl HrpcService for CoreState {
             .get(&user.id)
             .is_some()
         {
-            let state = self.clone();
-            let environment_id = intercept.environment_id;
-            tokio::spawn(async move {
-                state.push_devbox_routes(user.id, environment_id).await;
-            });
+            match self.db.get_kube_environment(intercept.environment_id).await {
+                Ok(Some(environment)) => {
+                    let state = self.clone();
+                    let intercept_clone = intercept.clone();
+                    tokio::spawn(async move {
+                        state
+                            .clear_devbox_route_for_intercept(environment, intercept_clone)
+                            .await;
+                    });
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        environment_id = %intercept.environment_id,
+                        intercept_id = %intercept.id,
+                        "Environment not found while clearing devbox route after intercept stop"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        environment_id = %intercept.environment_id,
+                        intercept_id = %intercept.id,
+                        error = %err,
+                        "Failed to load environment while clearing devbox route after intercept stop"
+                    );
+                }
+            }
         }
 
         Ok(())

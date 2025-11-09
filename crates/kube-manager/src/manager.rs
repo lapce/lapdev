@@ -1741,6 +1741,27 @@ impl KubeManager {
             .await
     }
 
+    pub async fn set_devbox_route(
+        &self,
+        environment_id: Uuid,
+        route: DevboxRouteConfig,
+    ) -> Result<(), String> {
+        self.proxy_manager
+            .set_devbox_route(environment_id, route)
+            .await
+    }
+
+    pub async fn remove_devbox_route(
+        &self,
+        environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String> {
+        self.proxy_manager
+            .remove_devbox_route(environment_id, workload_id, branch_environment_id)
+            .await
+    }
+
     pub async fn update_branch_service_route(
         &self,
         base_environment_id: Uuid,

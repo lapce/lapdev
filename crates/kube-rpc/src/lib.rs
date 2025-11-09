@@ -430,6 +430,15 @@ pub trait KubeManagerRpc {
         routes: HashMap<Uuid, DevboxRouteConfig>,
     ) -> Result<(), String>;
 
+    async fn set_devbox_route(environment_id: Uuid, route: DevboxRouteConfig)
+        -> Result<(), String>;
+
+    async fn remove_devbox_route(
+        environment_id: Uuid,
+        workload_id: Uuid,
+        branch_environment_id: Option<Uuid>,
+    ) -> Result<(), String>;
+
     async fn update_branch_service_route(
         base_environment_id: Uuid,
         workload_id: Uuid,

@@ -1,179 +1,26 @@
-use std::{collections::HashMap, future::Future, sync::Arc};
-
-use bytes::Bytes;
-use futures::{future::BoxFuture, SinkExt, StreamExt};
-use serde_json;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
-    sync::{mpsc, watch},
-    time::{Duration, MissedTickBehavior},
+use std::{
+    future::Future,
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
 };
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::{debug, error, trace, warn};
+
+use futures::future::BoxFuture;
+use quinn::{Connection, RecvStream, SendStream, WriteError};
+use tokio::{
+    io::{self as tokio_io, AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpStream,
+};
+use tracing::{debug, warn};
 
 use crate::{
+    direct::QuicTransport,
     error::TunnelError,
-    message::{Protocol, Target, WireMessage},
-    util::spawn_detached,
-    TunnelTarget,
+    message::{self, Protocol, TunnelTarget},
 };
 
-const TUNNEL_HEARTBEAT_INTERVAL_SECS: u64 = 30;
-
-#[derive(Clone)]
-struct ConnectionManager {
-    command_tx: mpsc::UnboundedSender<ConnectionCommand>,
-}
-
-#[derive(Debug)]
-enum ConnectionCommand {
-    Register {
-        tunnel_id: String,
-        connection: ServerConnection,
-    },
-    ForwardData {
-        tunnel_id: String,
-        payload: Vec<u8>,
-    },
-    Terminate {
-        tunnel_id: String,
-    },
-    ConnectionClosed {
-        tunnel_id: String,
-        reason: Option<String>,
-    },
-    Shutdown {
-        reason: Option<String>,
-    },
-}
-
-#[derive(Clone, Debug)]
-struct ServerConnection {
-    write_tx: mpsc::UnboundedSender<Bytes>,
-    shutdown_tx: watch::Sender<bool>,
-}
-
-impl ConnectionManager {
-    fn new(send: mpsc::UnboundedSender<WireMessage>) -> Self {
-        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(async move {
-            let mut connections: HashMap<String, ServerConnection> = HashMap::new();
-            while let Some(command) = command_rx.recv().await {
-                match command {
-                    ConnectionCommand::Register {
-                        tunnel_id,
-                        connection,
-                    } => {
-                        connections.insert(tunnel_id, connection);
-                    }
-                    ConnectionCommand::ForwardData { tunnel_id, payload } => {
-                        match connections.get(&tunnel_id) {
-                            Some(conn) => {
-                                if conn.write_tx.send(Bytes::from(payload)).is_err() {
-                                    if let Some(conn) = connections.remove(&tunnel_id) {
-                                        finalize_connection(
-                                            &send,
-                                            tunnel_id,
-                                            conn,
-                                            Some("connection writer dropped".to_string()),
-                                        );
-                                    }
-                                }
-                            }
-                            None => {
-                                debug!("Received data for unknown tunnel {}", tunnel_id);
-                            }
-                        }
-                    }
-                    ConnectionCommand::Terminate { tunnel_id } => {
-                        if let Some(conn) = connections.remove(&tunnel_id) {
-                            drop(conn.write_tx);
-                            let _ = conn.shutdown_tx.send(true);
-                        }
-                    }
-                    ConnectionCommand::ConnectionClosed { tunnel_id, reason } => {
-                        if let Some(conn) = connections.remove(&tunnel_id) {
-                            finalize_connection(&send, tunnel_id, conn, reason);
-                        }
-                    }
-                    ConnectionCommand::Shutdown { reason } => {
-                        let reason = reason.unwrap_or_else(|| "server shutdown".to_string());
-                        for (tunnel_id, conn) in connections.drain() {
-                            finalize_connection(&send, tunnel_id, conn, Some(reason.clone()));
-                        }
-                        break;
-                    }
-                }
-            }
-
-            for (tunnel_id, conn) in connections.drain() {
-                finalize_connection(&send, tunnel_id, conn, Some("server shutdown".to_string()));
-            }
-        });
-
-        Self { command_tx }
-    }
-
-    fn register(&self, tunnel_id: String, connection: ServerConnection) {
-        if self
-            .command_tx
-            .send(ConnectionCommand::Register {
-                tunnel_id,
-                connection,
-            })
-            .is_err()
-        {
-            debug!("Connection manager dropped register command");
-        }
-    }
-
-    fn forward_data(&self, tunnel_id: String, payload: Vec<u8>) {
-        if self
-            .command_tx
-            .send(ConnectionCommand::ForwardData { tunnel_id, payload })
-            .is_err()
-        {
-            debug!("Connection manager dropped data command");
-        }
-    }
-
-    fn terminate(&self, tunnel_id: String) {
-        if self
-            .command_tx
-            .send(ConnectionCommand::Terminate { tunnel_id })
-            .is_err()
-        {
-            debug!("Connection manager dropped terminate command");
-        }
-    }
-
-    fn connection_closed(&self, tunnel_id: String, reason: Option<String>) {
-        if self
-            .command_tx
-            .send(ConnectionCommand::ConnectionClosed { tunnel_id, reason })
-            .is_err()
-        {
-            debug!("Connection manager dropped close command");
-        }
-    }
-
-    fn shutdown(&self, reason: Option<String>) {
-        let _ = self.command_tx.send(ConnectionCommand::Shutdown { reason });
-    }
-}
-
-fn finalize_connection(
-    send: &mpsc::UnboundedSender<WireMessage>,
-    tunnel_id: String,
-    conn: ServerConnection,
-    reason: Option<String>,
-) {
-    drop(conn.write_tx);
-    let _ = conn.shutdown_tx.send(true);
-    let _ = send.send(WireMessage::Close { tunnel_id, reason });
-}
+const UNSUPPORTED_PROTOCOL: &str = "protocol not supported";
 
 pub trait TunnelStream: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -186,6 +33,19 @@ pub trait TunnelConnector: Send + Sync + 'static {
         &self,
         target: TunnelTarget,
     ) -> BoxFuture<'static, Result<DynTunnelStream, TunnelError>>;
+}
+
+impl<F, Fut> TunnelConnector for F
+where
+    F: Fn(TunnelTarget) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<DynTunnelStream, TunnelError>> + Send + 'static,
+{
+    fn connect(
+        &self,
+        target: TunnelTarget,
+    ) -> BoxFuture<'static, Result<DynTunnelStream, TunnelError>> {
+        Box::pin((self)(target))
+    }
 }
 
 #[derive(Clone, Default)]
@@ -204,313 +64,137 @@ impl TunnelConnector for TcpConnector {
     }
 }
 
-impl<F, Fut> TunnelConnector for F
-where
-    F: Fn(TunnelTarget) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<DynTunnelStream, TunnelError>> + Send + 'static,
-{
-    fn connect(
-        &self,
-        target: TunnelTarget,
-    ) -> BoxFuture<'static, Result<DynTunnelStream, TunnelError>> {
-        Box::pin((self)(target))
-    }
+pub async fn run_tunnel_server(transport: QuicTransport) -> Result<(), TunnelError> {
+    run_tunnel_server_with_connector(transport, TcpConnector::default()).await
 }
 
-/// Run a tunnel server on top of any async byte stream.
-pub async fn run_tunnel_server<S>(stream: S) -> Result<(), TunnelError>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    run_tunnel_server_with_connector(stream, TcpConnector::default()).await
-}
-
-/// Run a tunnel server using a custom connector for handling inbound tunnel requests.
-pub async fn run_tunnel_server_with_connector<S, C>(
-    stream: S,
+pub async fn run_tunnel_server_with_connector<C>(
+    transport: QuicTransport,
     connector: C,
 ) -> Result<(), TunnelError>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     C: TunnelConnector,
 {
-    let connector: Arc<dyn TunnelConnector> = Arc::new(connector);
-    run_tunnel_server_inner(stream, connector).await
+    run_tunnel_server_inner(transport.into_connection(), Arc::new(connector)).await
 }
 
-async fn run_tunnel_server_inner<S>(
-    stream: S,
+async fn run_tunnel_server_inner(
+    connection: Connection,
     connector: Arc<dyn TunnelConnector>,
-) -> Result<(), TunnelError>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let framed = Framed::new(stream, LengthDelimitedCodec::new());
-    let (mut writer, mut reader) = framed.split();
-
-    let (send_tx, mut send_rx) = mpsc::unbounded_channel::<WireMessage>();
-    let manager = ConnectionManager::new(send_tx.clone());
-
-    let (hb_shutdown_tx, mut hb_shutdown_rx) = watch::channel(false);
-    let heartbeat_sender = send_tx.clone();
-    let heartbeat_task = tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(TUNNEL_HEARTBEAT_INTERVAL_SECS));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                _ = hb_shutdown_rx.changed(), if *hb_shutdown_rx.borrow() => {
-                    trace!("Tunnel server heartbeat task exiting due to shutdown");
-                    break;
-                }
-                _ = interval.tick() => {
-                    if heartbeat_sender.send(WireMessage::Heartbeat).is_err() {
-                        trace!("Tunnel server heartbeat task stopping; channel closed");
-                        break;
+) -> Result<(), TunnelError> {
+    loop {
+        match connection.accept_bi().await {
+            Ok((send, recv)) => {
+                let connector = connector.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_stream(connector, send, recv).await {
+                        debug!("tunnel stream ended: {}", err);
                     }
-                }
+                });
             }
-        }
-    });
-
-    let writer_task = tokio::spawn({
-        let manager = manager.clone();
-        async move {
-            while let Some(message) = send_rx.recv().await {
-                match serde_json::to_vec(&message) {
-                    Ok(payload) => {
-                        if let Err(err) = writer.send(Bytes::from(payload)).await {
-                            error!("Failed to send tunnel frame: {}", err);
-                            manager.shutdown(Some(err.to_string()));
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        error!("Failed to serialize tunnel frame: {}", err);
-                    }
-                }
+            Err(quinn::ConnectionError::ApplicationClosed(_))
+            | Err(quinn::ConnectionError::ConnectionClosed(_)) => {
+                return Ok(());
             }
-
-            if let Err(err) = writer.flush().await {
-                debug!("Failed to flush tunnel writer: {}", err);
-            }
-        }
-    });
-
-    let mut shutdown_reason: Option<String> = None;
-
-    while let Some(frame) = reader.next().await {
-        match frame {
-            Ok(bytes) => match serde_json::from_slice::<WireMessage>(&bytes) {
-                Ok(WireMessage::Open {
-                    tunnel_id,
-                    protocol,
-                    target,
-                }) => {
-                    handle_open(
-                        &send_tx,
-                        &manager,
-                        connector.clone(),
-                        tunnel_id,
-                        protocol,
-                        target,
-                    )
-                    .await;
-                }
-                Ok(WireMessage::Data { tunnel_id, payload }) => {
-                    handle_data(&manager, tunnel_id, payload);
-                }
-                Ok(WireMessage::Close { tunnel_id, .. }) => {
-                    terminate_connection(&manager, &tunnel_id);
-                }
-                Ok(WireMessage::Heartbeat) => {
-                    // No-op; keep-alive frame.
-                }
-                Ok(WireMessage::OpenResult { .. }) => {
-                    warn!("Server received unexpected OpenResult message");
-                }
-                Err(err) => {
-                    error!("Failed to parse tunnel frame: {}", err);
-                }
-            },
             Err(err) => {
-                error!("Tunnel server receive error: {}", err);
-                shutdown_reason = Some(err.to_string());
-                break;
+                return Err(TunnelError::Transport(io::Error::other(err)));
             }
         }
     }
+}
 
-    let reason = shutdown_reason.unwrap_or_else(|| "server shutdown".to_string());
-    manager.shutdown(Some(reason));
-    drop(send_tx);
-    let _ = hb_shutdown_tx.send(true);
-    let _ = heartbeat_task.await;
-    let _ = writer_task.await;
+async fn handle_stream(
+    connector: Arc<dyn TunnelConnector>,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) -> Result<(), TunnelError> {
+    let request = match message::read_stream_open_request(&mut recv).await {
+        Ok(request) => request,
+        Err(err) => {
+            warn!("failed to parse stream request: {}", err);
+            let _ =
+                message::write_stream_open_response(&mut send, false, Some("bad request")).await;
+            return Err(err);
+        }
+    };
+
+    if request.protocol != Protocol::Tcp {
+        message::write_stream_open_response(&mut send, false, Some(UNSUPPORTED_PROTOCOL)).await?;
+        return Err(TunnelError::Remote(UNSUPPORTED_PROTOCOL.into()));
+    }
+
+    let target = request.target.clone();
+    let stream = match connector.connect(target.clone()).await {
+        Ok(stream) => stream,
+        Err(err) => {
+            let reason = err.to_string();
+            message::write_stream_open_response(&mut send, false, Some(&reason)).await?;
+            return Err(err);
+        }
+    };
+
+    message::write_stream_open_response(&mut send, true, None).await?;
+    pipe_streams(send, recv, stream).await
+}
+
+async fn pipe_streams(
+    send: SendStream,
+    recv: RecvStream,
+    mut target: DynTunnelStream,
+) -> Result<(), TunnelError> {
+    let mut quic_stream = QuicServerStream::new(send, recv);
+
+    tokio_io::copy_bidirectional(&mut quic_stream, &mut target)
+        .await
+        .map_err(|err| TunnelError::Transport(err))?;
     Ok(())
 }
 
-async fn handle_open(
-    send: &mpsc::UnboundedSender<WireMessage>,
-    manager: &ConnectionManager,
-    connector: Arc<dyn TunnelConnector>,
-    tunnel_id: String,
-    protocol: Protocol,
-    target: Target,
-) {
-    match protocol {
-        Protocol::Tcp => {
-            let tunnel_target = TunnelTarget::new(target.host.clone(), target.port);
-            match connector.connect(tunnel_target).await {
-                Ok(stream) => {
-                    let (read_half, write_half) = tokio::io::split(stream);
-                    let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
-                    let (shutdown_tx, _) = watch::channel(false);
+struct QuicServerStream {
+    send: SendStream,
+    recv: RecvStream,
+}
 
-                    manager.register(
-                        tunnel_id.clone(),
-                        ServerConnection {
-                            write_tx: write_tx.clone(),
-                            shutdown_tx: shutdown_tx.clone(),
-                        },
-                    );
-
-                    if send
-                        .send(WireMessage::OpenResult {
-                            tunnel_id: tunnel_id.clone(),
-                            success: true,
-                            error: None,
-                        })
-                        .is_err()
-                    {
-                        debug!("Client dropped before acknowledging open");
-                    }
-
-                    spawn_conn_writer(
-                        write_half,
-                        write_rx,
-                        shutdown_tx.subscribe(),
-                        tunnel_id.clone(),
-                        manager.clone(),
-                    );
-
-                    spawn_conn_reader(
-                        read_half,
-                        shutdown_tx.subscribe(),
-                        send.clone(),
-                        tunnel_id,
-                        manager.clone(),
-                    );
-                }
-                Err(err) => {
-                    let _ = send.send(WireMessage::OpenResult {
-                        tunnel_id,
-                        success: false,
-                        error: Some(err.to_string()),
-                    });
-                }
-            }
-        }
-        Protocol::Udp => {
-            let _ = send.send(WireMessage::OpenResult {
-                tunnel_id,
-                success: false,
-                error: Some("UDP tunneling not supported".to_string()),
-            });
-        }
+impl QuicServerStream {
+    fn new(send: SendStream, recv: RecvStream) -> Self {
+        Self { send, recv }
     }
 }
 
-fn handle_data(manager: &ConnectionManager, tunnel_id: String, payload: Vec<u8>) {
-    manager.forward_data(tunnel_id, payload);
+impl Unpin for QuicServerStream {}
+
+impl AsyncRead for QuicServerStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.recv).poll_read(cx, buf)
+    }
 }
 
-fn spawn_conn_writer<W>(
-    mut write_half: W,
-    mut data_rx: mpsc::UnboundedReceiver<Bytes>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    tunnel_id: String,
-    manager: ConnectionManager,
-) where
-    W: AsyncWrite + Unpin + Send + 'static,
-{
-    spawn_detached(async move {
-        let mut close_reason: Option<String> = None;
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.changed(), if *shutdown_rx.borrow() => {
-                    break;
-                }
-                maybe = data_rx.recv() => {
-                    match maybe {
-                        Some(bytes) => {
-                            if let Err(err) = write_half.write_all(&bytes).await {
-                                close_reason = Some(err.to_string());
-                                break;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-            }
-        }
+impl AsyncWrite for QuicServerStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        map_write_poll(Pin::new(&mut self.send).poll_write(cx, buf))
+    }
 
-        if let Some(reason) = close_reason {
-            manager.connection_closed(tunnel_id, Some(reason));
-        }
-    });
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.send).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.send).poll_shutdown(cx)
+    }
 }
 
-fn spawn_conn_reader<R>(
-    mut read_half: R,
-    mut shutdown_rx: watch::Receiver<bool>,
-    send: mpsc::UnboundedSender<WireMessage>,
-    tunnel_id: String,
-    manager: ConnectionManager,
-) where
-    R: AsyncRead + Unpin + Send + 'static,
-{
-    spawn_detached(async move {
-        let mut buffer = vec![0u8; 8192];
-        let mut send_close = false;
-        let mut close_reason: Option<String> = None;
-
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.changed(), if *shutdown_rx.borrow() => {
-                    break;
-                }
-                result = read_half.read(&mut buffer) => {
-                    match result {
-                        Ok(0) => {
-                            send_close = true;
-                            break;
-                        }
-                        Ok(n) => {
-                            if send.send(WireMessage::Data {
-                                tunnel_id: tunnel_id.clone(),
-                                payload: buffer[..n].to_vec(),
-                            }).is_err() {
-                                break;
-                            }
-                        }
-                        Err(err) => {
-                            send_close = true;
-                            close_reason = Some(err.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if send_close {
-            manager.connection_closed(tunnel_id, close_reason);
-        }
-    });
-}
-
-fn terminate_connection(manager: &ConnectionManager, tunnel_id: &str) {
-    manager.terminate(tunnel_id.to_string());
+fn map_write_poll<T>(poll: Poll<Result<T, WriteError>>) -> Poll<io::Result<T>> {
+    match poll {
+        Poll::Ready(Ok(value)) => Poll::Ready(Ok(value)),
+        Poll::Ready(Err(err)) => Poll::Ready(Err(io::Error::other(err))),
+        Poll::Pending => Poll::Pending,
+    }
 }

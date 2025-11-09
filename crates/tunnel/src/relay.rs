@@ -26,8 +26,8 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 use crate::{
     direct::{
-        build_server_config, client_config, establish_client_stream, read_token, write_server_ack,
-        QuicTransport,
+        build_server_config, client_config, establish_client_connection, read_token,
+        write_server_ack, QuicTransport,
     },
     error::TunnelError,
 };
@@ -109,7 +109,7 @@ async fn quic_client_from_udp(
     let connection = connecting
         .await
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    establish_client_stream(connection, token).await
+    establish_client_connection(connection, token).await
 }
 
 async fn quic_server_from_udp(
@@ -148,7 +148,9 @@ async fn quic_server_from_udp(
     }
 
     write_server_ack(&mut send).await?;
-    Ok(QuicTransport::new(send, recv))
+    send.finish()
+        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+    Ok(QuicTransport::new(connection))
 }
 
 /// Adapter that exposes a WebSocket as a virtual UDP socket suitable for Quinn.

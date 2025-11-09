@@ -4,7 +4,6 @@ mod error;
 mod message;
 mod relay;
 mod server;
-mod util;
 mod websocket;
 
 pub use client::{TunnelClient, TunnelMode, TunnelTcpConnection, TunnelTcpStream};

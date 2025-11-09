@@ -588,9 +588,6 @@ impl PreviewUrlProxy {
             TunnelError::ConnectionClosed => ProxyError::NetworkError(
                 "Tunnel connection closed before target connection was established".to_string(),
             ),
-            TunnelError::Serialization(err) => {
-                ProxyError::Internal(format!("Failed to serialize tunnel open request: {}", err))
-            }
         }
     }
 
@@ -603,9 +600,6 @@ impl PreviewUrlProxy {
                 TunnelError::ConnectionClosed => ProxyError::TunnelNotAvailable(
                     "Lapdev’s tunnel to the preview environment closed unexpectedly.".to_string(),
                 ),
-                TunnelError::Serialization(inner) => {
-                    ProxyError::Internal(format!("Tunnel serialization error: {}", inner))
-                }
                 TunnelError::Transport(inner) => {
                     ProxyError::NetworkError(format!("Tunnel transport error: {}", inner))
                 }

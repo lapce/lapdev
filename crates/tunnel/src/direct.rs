@@ -16,7 +16,7 @@ use rcgen::generate_simple_self_signed;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -211,7 +211,9 @@ pub async fn connect_direct_tunnel(
             match endpoint.connect(addr, "lapdev-direct") {
                 Ok(connecting) => match connecting.await {
                     Ok(connection) => {
-                        match establish_client_stream(connection, &config.credential.token).await {
+                        match establish_client_connection(connection, &config.credential.token)
+                            .await
+                        {
                             Ok(transport) => {
                                 info!(peer = %addr, "Direct QUIC tunnel established");
                                 return Ok(TunnelClient::connect_with_mode(
@@ -247,7 +249,7 @@ pub async fn connect_direct_tunnel(
     Err(last_err.unwrap_or_else(|| TunnelError::Remote("no QUIC candidates available".to_string())))
 }
 
-pub(crate) async fn establish_client_stream(
+pub(crate) async fn establish_client_connection(
     connection: Connection,
     token: &str,
 ) -> Result<QuicTransport, TunnelError> {
@@ -257,7 +259,9 @@ pub(crate) async fn establish_client_stream(
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
     write_token(&mut send, token).await?;
     read_server_ack(&mut recv).await?;
-    Ok(QuicTransport::new(send, recv))
+    send.finish()
+        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+    Ok(QuicTransport::new(connection))
 }
 
 /// QUIC listener that validates the shared credential before handing over the transport.
@@ -359,8 +363,10 @@ impl DirectQuicServer {
         }
 
         write_server_ack(&mut send).await?;
+        send.finish()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
 
-        Ok(QuicTransport::new(send, recv))
+        Ok(QuicTransport::new(connection))
     }
 
     pub fn close(&self) {
@@ -368,56 +374,22 @@ impl DirectQuicServer {
     }
 }
 
-/// Transport wrapper around a QUIC bidirectional stream.
+/// Handle to an authenticated QUIC connection that can open new streams.
 pub struct QuicTransport {
-    reader: RecvStream,
-    writer: SendStream,
+    connection: Connection,
 }
 
 impl QuicTransport {
-    pub(crate) fn new(send: SendStream, recv: RecvStream) -> Self {
-        Self {
-            reader: recv,
-            writer: send,
-        }
-    }
-}
-
-impl AsyncRead for QuicTransport {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        std::pin::Pin::new(&mut this.reader).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for QuicTransport {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        let this = self.get_mut();
-        AsyncWrite::poll_write(std::pin::Pin::new(&mut this.writer), cx, buf)
+    pub(crate) fn new(connection: Connection) -> Self {
+        Self { connection }
     }
 
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        AsyncWrite::poll_flush(std::pin::Pin::new(&mut this.writer), cx)
+    pub fn connection(&self) -> &Connection {
+        &self.connection
     }
 
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        AsyncWrite::poll_shutdown(std::pin::Pin::new(&mut this.writer), cx)
+    pub fn into_connection(self) -> Connection {
+        self.connection
     }
 }
 

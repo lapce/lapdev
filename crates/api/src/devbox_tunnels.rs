@@ -12,7 +12,7 @@ use bytes::Bytes;
 use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use lapdev_tunnel::{
     direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    DynTunnelStream, TunnelClient, TunnelError, TunnelTarget, WebSocketUdpSocket,
+    DynTunnelStream, TunnelClient, TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
 };
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -52,7 +52,10 @@ impl DevboxTunnelRegistry {
             }
         };
 
-        let client = Arc::new(TunnelClient::connect(transport));
+        let client = Arc::new(TunnelClient::connect_with_mode(
+            transport,
+            TunnelMode::Relay,
+        ));
         let generation = self.next_generation();
 
         {

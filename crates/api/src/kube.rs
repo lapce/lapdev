@@ -15,7 +15,7 @@ use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
     direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    DynTunnelStream, TunnelClient, TunnelError, TunnelTarget, WebSocketUdpSocket,
+    DynTunnelStream, TunnelClient, TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
 };
 use secrecy::ExposeSecret;
 use tarpc::{
@@ -110,11 +110,12 @@ pub async fn kube_data_plane_websocket(
     State(state): State<Arc<CoreState>>,
 ) -> Result<Response, ApiError> {
     tracing::debug!("Handling data plane WebSocket connection");
-    let token = headers
+    let raw_token = headers
         .get(KUBE_CLUSTER_TOKEN_HEADER)
         .ok_or(ApiError::Unauthenticated)?
-        .to_str()?;
-    let token = HashedToken::parse(token);
+        .to_str()?
+        .to_owned();
+    let token = HashedToken::parse(&raw_token);
     let token = state
         .db
         .get_kube_token(token.expose_secret())
@@ -131,26 +132,55 @@ pub async fn kube_data_plane_websocket(
         })?;
 
     tracing::debug!("Handling data plane WebSocket for cluster: {}", cluster.id);
-    Ok(handle_data_plane_websocket(websocket, state, cluster.id))
+    Ok(handle_data_plane_websocket(
+        websocket, state, cluster.id, raw_token,
+    ))
 }
 
 fn handle_data_plane_websocket(
     websocket: WebSocketUpgrade,
     state: Arc<CoreState>,
     cluster_id: Uuid,
+    token: String,
 ) -> Response {
     websocket
         .on_failed_upgrade(|e| tracing::error!("data plane websocket upgrade failed {e:?}"))
-        .on_upgrade(move |socket| async move {
-            handle_data_plane_tunnel(socket, state, cluster_id).await;
+        .on_upgrade(move |socket| {
+            let token = token.clone();
+            async move {
+                handle_data_plane_tunnel(socket, state, cluster_id, token).await;
+            }
         })
 }
 
-async fn handle_data_plane_tunnel(socket: WebSocket, state: Arc<CoreState>, cluster_id: Uuid) {
+async fn handle_data_plane_tunnel(
+    socket: WebSocket,
+    state: Arc<CoreState>,
+    cluster_id: Uuid,
+    token: String,
+) {
     tracing::info!("Data plane tunnel established for cluster: {}", cluster_id);
 
-    let transport = WebSocketTransport::new(socket);
-    let tunnel_client = Arc::new(TunnelClient::connect(transport));
+    let (sink, stream) = split_axum_websocket(socket);
+    let udp_socket =
+        WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
+
+    let transport = match QuicTransport::accept_udp_server(udp_socket, &token).await {
+        Ok(transport) => transport,
+        Err(err) => {
+            tracing::warn!(
+                cluster_id = %cluster_id,
+                error = %err,
+                "Failed to negotiate QUIC transport for data plane tunnel"
+            );
+            return;
+        }
+    };
+
+    let tunnel_client = Arc::new(TunnelClient::connect_with_mode(
+        transport,
+        TunnelMode::Relay,
+    ));
 
     let generation = state
         .kube_controller

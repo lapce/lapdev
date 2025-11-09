@@ -286,7 +286,6 @@ impl DirectCredentialStore {
 
     pub async fn replace(&self, token: impl Into<String>) {
         let mut guard = self.tokens.write().await;
-        guard.clear();
         guard.insert(token.into());
     }
 

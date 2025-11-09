@@ -66,10 +66,7 @@ impl DevboxDirectGateway {
                 Arc::clone(&credential_store),
                 Arc::clone(&sessions),
             )),
-            _cleanup_task: Arc::new(Self::spawn_cleanup_loop(
-                sessions,
-                credential_store,
-            )),
+            _cleanup_task: Arc::new(Self::spawn_cleanup_loop(sessions, credential_store)),
         };
         Ok(gateway)
     }
@@ -213,6 +210,7 @@ impl DevboxDirectGateway {
             credential: DirectCredential { token, expires_at },
             devbox_candidates: discovery.candidates.candidates,
             sidecar_candidates: Vec::new(),
+            server_certificate: Some(self.server.server_certificate().to_vec()),
         })
     }
 }

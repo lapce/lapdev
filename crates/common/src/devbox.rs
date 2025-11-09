@@ -107,6 +107,8 @@ impl Default for DirectCandidate {
 pub struct DirectCandidateSet {
     pub candidates: Vec<DirectCandidate>,
     pub generation: Option<u64>,
+    #[serde(default)]
+    pub server_certificate: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,4 +122,6 @@ pub struct DirectChannelConfig {
     pub credential: DirectCredential,
     pub devbox_candidates: Vec<DirectCandidate>,
     pub sidecar_candidates: Vec<DirectCandidate>,
+    #[serde(default)]
+    pub server_certificate: Option<Vec<u8>>,
 }

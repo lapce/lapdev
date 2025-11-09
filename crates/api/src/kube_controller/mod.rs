@@ -6,9 +6,9 @@ use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use crate::environment_events::EnvironmentLifecycleEvent;
+use lapdev_common::devbox::DirectChannelConfig;
 use lapdev_db::api::DbApi;
 use lapdev_kube::{server::KubeClusterServer, tunnel::TunnelRegistry};
-use lapdev_common::devbox::DirectChannelConfig;
 use lapdev_kube_rpc::{DevboxRouteConfig, ProxyBranchRouteConfig};
 use tracing::{debug, warn};
 

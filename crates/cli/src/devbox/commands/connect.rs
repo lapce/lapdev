@@ -375,7 +375,19 @@ impl DevboxTunnelManager {
             let guard = self.direct_server.lock().await;
             guard.as_ref().and_then(|handle| handle.observed_addr())
         };
-        let discovery = collect_candidates(&candidate_opts);
+        let server_certificate = {
+            let guard = self.direct_server.lock().await;
+            guard
+                .as_ref()
+                .map(|handle| handle.server_certificate().to_vec())
+        };
+        let mut discovery = collect_candidates(&candidate_opts);
+        if let Some(cert) = server_certificate {
+            discovery.candidates.server_certificate = Some(cert);
+        } else {
+            tracing::warn!("Direct server certificate unavailable; skipping pinning data");
+        }
+        let diagnostics = discovery.diagnostics.clone();
         match rpc_client
             .publish_direct_candidates(tarpc::context::current(), discovery.candidates)
             .await
@@ -383,8 +395,8 @@ impl DevboxTunnelManager {
             Ok(Ok(config)) => {
                 self.configure_direct_server(&config).await;
                 tracing::info!(
-                    detected_interface = ?discovery.diagnostics.detected_interface,
-                    relay_candidates = discovery.diagnostics.relay_candidates,
+                    detected_interface = ?diagnostics.detected_interface,
+                    relay_candidates = diagnostics.relay_candidates,
                     "Direct channel negotiation initialized"
                 );
             }
@@ -1038,6 +1050,10 @@ impl DirectServerHandle {
 
     fn observed_addr(&self) -> Option<SocketAddr> {
         self.server.observed_addr()
+    }
+
+    fn server_certificate(&self) -> &[u8] {
+        self.server.server_certificate()
     }
 
     async fn set_token(&self, token: String) {

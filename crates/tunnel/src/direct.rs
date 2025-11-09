@@ -27,6 +27,8 @@ use crate::{
 };
 
 const HANDSHAKE_MAX_TOKEN_LEN: usize = u16::MAX as usize;
+const DIRECT_SERVER_NAME: &str = "lapdev.devbox";
+const CERTIFICATE_ALT_NAMES: &[&str] = &["lapdev.devbox", "lapdev-direct", "lapdev-relay"];
 
 /// Options controlling direct QUIC server behavior.
 #[derive(Debug, Clone)]
@@ -143,6 +145,7 @@ pub fn collect_candidates(opts: &CandidateOptions) -> CandidateDiscovery {
         candidates: DirectCandidateSet {
             candidates,
             generation: Some(generation),
+            server_certificate: None,
         },
         diagnostics,
     }
@@ -189,7 +192,11 @@ pub async fn connect_direct_tunnel(
     let mut endpoint = Endpoint::client("[::]:0".parse().unwrap())
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
 
-    endpoint.set_default_client_config(client_config());
+    let server_cert = config
+        .server_certificate
+        .as_deref()
+        .ok_or_else(|| TunnelError::Remote("direct server certificate missing".into()))?;
+    endpoint.set_default_client_config(client_config_with_pinned_certificate(server_cert)?);
 
     let mut last_err: Option<TunnelError> = None;
 
@@ -209,7 +216,7 @@ pub async fn connect_direct_tunnel(
 
         for addr in resolved_addrs {
             debug!(candidate = %addr, "Attempting direct QUIC candidate");
-            match endpoint.connect(addr, "lapdev-direct") {
+            match endpoint.connect(addr, DIRECT_SERVER_NAME) {
                 Ok(connecting) => match connecting.await {
                     Ok(connection) => {
                         match establish_client_connection(connection, &config.credential.token)
@@ -270,6 +277,7 @@ pub struct DirectQuicServer {
     endpoint: Endpoint,
     credential: Arc<DirectCredentialStore>,
     observed_addr: Option<SocketAddr>,
+    server_certificate: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -319,7 +327,7 @@ impl DirectQuicServer {
         bind_addr: SocketAddr,
         options: DirectServerOptions,
     ) -> Result<Self, TunnelError> {
-        let server_config = build_server_config()?;
+        let (server_config, server_certificate) = build_server_config()?;
         let socket = std::net::UdpSocket::bind(bind_addr)
             .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
         socket
@@ -354,6 +362,7 @@ impl DirectQuicServer {
             endpoint,
             credential: Arc::new(DirectCredentialStore::new()),
             observed_addr,
+            server_certificate,
         })
     }
 
@@ -369,6 +378,10 @@ impl DirectQuicServer {
 
     pub fn observed_addr(&self) -> Option<SocketAddr> {
         self.observed_addr
+    }
+
+    pub fn server_certificate(&self) -> &[u8] {
+        &self.server_certificate
     }
 
     pub async fn accept(&self) -> Result<DirectConnection, TunnelError> {
@@ -428,15 +441,38 @@ impl QuicTransport {
     }
 }
 
-pub(crate) fn build_server_config() -> Result<quinn::ServerConfig, TunnelError> {
-    let rcgen::CertifiedKey { cert, signing_key } =
-        generate_simple_self_signed(["lapdev.devbox".to_string()])
-            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+pub(crate) fn build_server_config() -> Result<(quinn::ServerConfig, Vec<u8>), TunnelError> {
+    let names: Vec<String> = CERTIFICATE_ALT_NAMES
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let rcgen::CertifiedKey { cert, signing_key } = generate_simple_self_signed(names)
+        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+    let cert_der_bytes = cert.der().as_ref().to_vec();
     let cert_chain = vec![CertificateDer::from(cert)];
     let private_key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
 
-    quinn::ServerConfig::with_single_cert(cert_chain, private_key.into())
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))
+    let config = quinn::ServerConfig::with_single_cert(cert_chain, private_key.into())
+        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+    Ok((config, cert_der_bytes))
+}
+
+pub(crate) fn client_config_with_pinned_certificate(
+    server_certificate: &[u8],
+) -> Result<quinn::ClientConfig, TunnelError> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from(server_certificate.to_vec()))
+        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+    let mut crypto = rustls::ClientConfig::builder()
+        .with_root_certificates(Arc::new(roots))
+        .with_no_client_auth();
+    crypto.enable_early_data = true;
+
+    let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
+        .expect("invalid QUIC client crypto config");
+    Ok(quinn::ClientConfig::new(Arc::new(quic_crypto)))
 }
 
 pub(crate) fn client_config() -> quinn::ClientConfig {

@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Result};
 use lapdev_common::{
     devbox::DirectChannelConfig,
-    kube::{
-        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
-    },
+    kube::{KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams},
 };
 use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml,

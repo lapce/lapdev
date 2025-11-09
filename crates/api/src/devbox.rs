@@ -680,6 +680,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             credential,
             devbox_candidates: update.candidates,
             sidecar_candidates: Vec::new(),
+            server_certificate: update.server_certificate,
         };
 
         self.state

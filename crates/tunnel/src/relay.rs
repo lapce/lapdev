@@ -118,9 +118,10 @@ async fn quic_server_from_udp(
 ) -> Result<QuicTransport, TunnelError> {
     let runtime = quinn::default_runtime()
         .ok_or_else(|| TunnelError::Transport(io::Error::other("no async runtime found")))?;
+    let (server_config, _) = build_server_config()?;
     let endpoint = quinn::Endpoint::new_with_abstract_socket(
         quinn::EndpointConfig::default(),
-        Some(build_server_config()?),
+        Some(server_config),
         socket,
         runtime,
     )

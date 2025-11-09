@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use futures::StreamExt;
+use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig};
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient};
 use lapdev_rpc::spawn_twoway;
+use lapdev_tunnel::direct::{collect_candidates, CandidateOptions, DirectQuicServer};
 use lapdev_tunnel::WebSocketTransport;
 use lapdev_tunnel::{
     run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport as TunnelWebSocketTransport,
@@ -10,6 +12,7 @@ use lapdev_tunnel::{
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
+    net::SocketAddr,
     sync::Arc,
 };
 use tarpc::server::{BaseChannel, Channel};
@@ -193,6 +196,7 @@ struct DevboxTunnelManager {
     ws_base: Arc<String>,
     intercept_task: Arc<Mutex<Option<TunnelTask>>>,
     client_task: Arc<Mutex<Option<TunnelTask>>>,
+    direct_server: Arc<Mutex<Option<DirectServerHandle>>>,
     /// Shared tunnel client for DNS service bridge
     tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
     /// Service bridge for DNS resolution
@@ -214,6 +218,7 @@ impl DevboxTunnelManager {
             ws_base: Arc::new(ws_base),
             intercept_task: Arc::new(Mutex::new(None)),
             client_task: Arc::new(Mutex::new(None)),
+            direct_server: Arc::new(Mutex::new(None)),
             tunnel_client: Arc::new(RwLock::new(None)),
             service_bridge: Arc::new(ServiceBridge::new()),
             hosts_manager: Arc::new(HostsManager::new()),
@@ -310,6 +315,33 @@ impl DevboxTunnelManager {
                 return Err(anyhow::anyhow!("Authentication failed: {}", e));
             }
         };
+
+        let direct_port = self
+            .ensure_direct_server()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start direct server: {}", e))?;
+        let mut candidate_opts = CandidateOptions::default();
+        candidate_opts.preferred_port = Some(direct_port);
+        let discovery = collect_candidates(&candidate_opts);
+        match rpc_client
+            .publish_direct_candidates(tarpc::context::current(), discovery.candidates)
+            .await
+        {
+            Ok(Ok(config)) => {
+                self.configure_direct_server(&config).await;
+                tracing::info!(
+                    detected_interface = ?discovery.diagnostics.detected_interface,
+                    relay_candidates = discovery.diagnostics.relay_candidates,
+                    "Direct channel negotiation initialized"
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("Failed to publish direct candidates: {}", err);
+            }
+            Err(err) => {
+                tracing::warn!("Direct candidate RPC transport error: {}", err);
+            }
+        }
 
         // Create RPC server (for server to call us)
         let client_rpc_server =
@@ -768,6 +800,96 @@ impl DevboxTunnelManager {
             Err(err) => Err(err.to_string()),
         }
     }
+
+    async fn ensure_direct_server(&self) -> Result<u16, String> {
+        if let Some(port) = {
+            let guard = self.direct_server.lock().await;
+            guard.as_ref().map(|handle| handle.port())
+        } {
+            return Ok(port);
+        }
+
+        let handle = Self::start_direct_server_task().await?;
+        let port = handle.port();
+        let mut guard = self.direct_server.lock().await;
+        *guard = Some(handle);
+        Ok(port)
+    }
+
+    async fn configure_direct_server(&self, config: &DirectChannelConfig) {
+        let credential = {
+            let guard = self.direct_server.lock().await;
+            guard.as_ref().map(|handle| Arc::clone(&handle.credential))
+        };
+
+        if let Some(store) = credential {
+            let mut guard = store.write().await;
+            *guard = Some(config.credential.token.clone());
+        }
+    }
+
+    async fn stop_direct_server(&self) {
+        let handle = {
+            let mut guard = self.direct_server.lock().await;
+            guard.take()
+        };
+
+        if let Some(handle) = handle {
+            handle.shutdown().await;
+        }
+    }
+
+    async fn start_direct_server_task() -> Result<DirectServerHandle, String> {
+        let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
+        let server = Arc::new(
+            DirectQuicServer::bind(bind_addr)
+                .await
+                .map_err(|e| e.to_string())?,
+        );
+        let port = server.local_addr().map_err(|e| e.to_string())?.port();
+        let credential = server.credential_handle();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+
+        let server_task = Arc::clone(&server);
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => {
+                        server_task.close();
+                        break;
+                    }
+                    result = server_task.accept() => {
+                        match result {
+                            Ok(transport) => {
+                                tokio::spawn(async move {
+                                    if let Err(err) = run_tunnel_server(transport).await {
+                                        tracing::warn!(
+                                            error = %err,
+                                            "Direct tunnel server error"
+                                        );
+                                    }
+                                });
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = %err,
+                                    "Failed to accept direct tunnel connection"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(DirectServerHandle {
+            credential,
+            server,
+            port,
+            shutdown: Some(shutdown_tx),
+            task,
+        })
+    }
 }
 
 struct TunnelTask {
@@ -775,6 +897,35 @@ struct TunnelTask {
     intercept_id: Option<Uuid>,
     shutdown: oneshot::Sender<()>,
     handle: JoinHandle<()>,
+}
+
+struct DirectServerHandle {
+    credential: Arc<RwLock<Option<String>>>,
+    server: Arc<DirectQuicServer>,
+    port: u16,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
+}
+
+impl DirectServerHandle {
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    async fn set_token(&self, token: String) {
+        let mut guard = self.credential.write().await;
+        *guard = Some(token);
+    }
+
+    async fn shutdown(mut self) {
+        self.server.close();
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if !self.task.is_finished() {
+            self.task.abort();
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -833,6 +984,7 @@ impl DevboxTunnelManager {
     }
 
     async fn shutdown(&self) {
+        self.stop_direct_server().await;
         self.stop_intercept().await;
         self.stop_client().await;
     }

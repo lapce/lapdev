@@ -1,4 +1,5 @@
 mod client;
+pub mod direct;
 mod error;
 mod message;
 mod server;

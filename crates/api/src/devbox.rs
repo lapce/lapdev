@@ -8,6 +8,7 @@ use axum::{
 };
 use axum_extra::{headers, TypedHeader};
 use futures::StreamExt;
+use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig, DirectCredential};
 use lapdev_devbox_rpc::{
     DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionInfo, DevboxSessionRpc, PortMapping,
 };
@@ -630,6 +631,29 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
     async fn heartbeat(self, _context: tarpc::context::Context) -> Result<(), String> {
         tracing::trace!("Heartbeat received for session {}", self.session_id);
         Ok(())
+    }
+
+    async fn publish_direct_candidates(
+        self,
+        _context: tarpc::context::Context,
+        update: DirectCandidateSet,
+    ) -> Result<DirectChannelConfig, String> {
+        let credential = DirectCredential {
+            token: Uuid::new_v4().to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+        };
+
+        let config = DirectChannelConfig {
+            credential,
+            devbox_candidates: update.candidates,
+            sidecar_candidates: Vec::new(),
+        };
+
+        self.state
+            .set_direct_channel_config(self.user_id, config.clone())
+            .await;
+
+        Ok(config)
     }
 
     async fn set_active_environment(

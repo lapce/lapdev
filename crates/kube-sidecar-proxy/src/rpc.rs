@@ -301,6 +301,7 @@ fn devbox_connection_from_config(route: DevboxRouteConfig) -> Arc<DevboxConnecti
         port_mappings: route.port_mappings,
         created_at_epoch_seconds: route.created_at_epoch_seconds,
         expires_at_epoch_seconds: route.expires_at_epoch_seconds,
+        direct: route.direct,
     }))
 }
 
@@ -319,6 +320,7 @@ fn devbox_route_config_from_connection(
         created_at_epoch_seconds: metadata.created_at_epoch_seconds,
         expires_at_epoch_seconds: metadata.expires_at_epoch_seconds,
         port_mappings: metadata.port_mappings.clone(),
+        direct: metadata.direct.clone(),
     }
 }
 

@@ -14,6 +14,7 @@ use axum_extra::{
 use chrono::{DateTime, Utc};
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
 use lapdev_common::{
+    devbox::DirectChannelConfig,
     kube::{AppCatalogStatusEvent, ClusterStatusEvent, EnvironmentWorkloadStatusEvent},
     utils::resolve_api_host,
     UserRole, LAPDEV_AUTH_STATE_COOKIE, LAPDEV_AUTH_TOKEN_COOKIE, LAPDEV_BASE_HOSTNAME,
@@ -107,6 +108,8 @@ pub struct CoreState {
     pub pending_cli_auth: Arc<RwLock<HashMap<Uuid, PendingCliAuth>>>,
     // Active devbox sessions (user_id -> DevboxSessionHandle)
     pub active_devbox_sessions: Arc<RwLock<HashMap<Uuid, BTreeMap<Uuid, DevboxSessionHandle>>>>,
+    // Direct channel negotiation data by user
+    pub direct_channel_configs: Arc<RwLock<HashMap<Uuid, DirectChannelConfig>>>,
     // Lifecycle notifications for kube environments
     pub environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
     pub environment_workload_events: broadcast::Sender<EnvironmentWorkloadStatusEvent>,
@@ -166,6 +169,7 @@ impl CoreState {
             devbox_tunnels: Arc::new(DevboxTunnelRegistry::new()),
             pending_cli_auth: Arc::new(RwLock::new(HashMap::new())),
             active_devbox_sessions: Arc::new(RwLock::new(HashMap::new())),
+            direct_channel_configs: Arc::new(RwLock::new(HashMap::new())),
             environment_events,
             environment_workload_events: environment_workload_events.clone(),
             cluster_events,
@@ -464,6 +468,26 @@ impl CoreState {
         }
     }
 
+    pub async fn set_direct_channel_config(&self, user_id: Uuid, config: DirectChannelConfig) {
+        let mut guard = self.direct_channel_configs.write().await;
+        guard.insert(user_id, config);
+    }
+
+    pub async fn direct_channel_config_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Option<DirectChannelConfig> {
+        let mut guard = self.direct_channel_configs.write().await;
+        match guard.get(&user_id) {
+            Some(config) if config.credential.expires_at > Utc::now() => Some(config.clone()),
+            Some(_) => {
+                guard.remove(&user_id);
+                None
+            }
+            None => None,
+        }
+    }
+
     pub async fn push_devbox_route_for_intercept(
         &self,
         environment: lapdev_db_entities::kube_environment::Model,
@@ -472,10 +496,15 @@ impl CoreState {
         let base = self.websocket_base_url().await;
         let base_trimmed = base.trim_end_matches('/').to_string();
 
+        let direct = self
+            .direct_channel_config_for_user(environment.user_id)
+            .await;
+
         match Self::build_devbox_route_config_from_intercept(
             base_trimmed.as_str(),
             &environment,
             &intercept,
+            direct,
         ) {
             Ok(route) => {
                 let (target_environment_id, _) = Self::route_environment_targets(&environment);
@@ -592,6 +621,9 @@ impl CoreState {
 
         let base = self.websocket_base_url().await;
         let base_trimmed = base.trim_end_matches('/');
+        let direct = self
+            .direct_channel_config_for_user(environment.user_id)
+            .await;
 
         let mut routes: HashMap<Uuid, DevboxRouteConfig> = HashMap::new();
 
@@ -604,6 +636,7 @@ impl CoreState {
                 base_trimmed,
                 &environment,
                 &intercept,
+                direct.clone(),
             )?;
 
             routes.insert(intercept.workload_id, route);
@@ -620,6 +653,7 @@ impl CoreState {
         base_trimmed: &str,
         environment: &lapdev_db_entities::kube_environment::Model,
         intercept: &lapdev_db_entities::kube_devbox_workload_intercept::Model,
+        direct: Option<DirectChannelConfig>,
     ) -> Result<DevboxRouteConfig, String> {
         let port_mappings = Self::intercept_port_map(intercept)?;
         let websocket_url = format!(
@@ -637,6 +671,7 @@ impl CoreState {
             created_at_epoch_seconds: Some(intercept.created_at.timestamp()),
             expires_at_epoch_seconds: intercept.stopped_at.map(|dt| dt.timestamp()),
             port_mappings,
+            direct,
         })
     }
 

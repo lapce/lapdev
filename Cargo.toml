@@ -66,7 +66,8 @@ members = [
   "crates/guest-agent",
   "crates/hrpc",
   "crates/hrpc-proc-macro",
-  "crates/devbox-rpc", "crates/tunnel",
+  "crates/devbox-rpc",
+  "crates/tunnel",
 ]
 
 [workspace.dependencies]
@@ -78,7 +79,10 @@ tempfile = "3.8.1"
 zstd = "0.13.0"
 tar = "0.4.40"
 regex = "1.11.1"
-git2 = { version = "0.18.2", features = ["vendored-libgit2", "vendored-openssl"] }
+git2 = { version = "0.18.2", features = [
+  "vendored-libgit2",
+  "vendored-openssl",
+] }
 anyhow = "1.0.66"
 thiserror = "1.0.58"
 async-trait = "0.1.74"
@@ -94,7 +98,11 @@ base64 = "0.22.0"
 hex = "0.4"
 oauth2 = "4.2.3"
 include_dir = "0.7.3"
-reqwest = {version = "0.11.26", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.11.26", default-features = false, features = [
+  "rustls-tls",
+  "stream",
+  "json",
+] }
 async-compression = { version = "0.4.6", features = ["tokio", "zstd"] }
 docker-compose-types = "0.7.0"
 tracing = "0.1.40"
@@ -112,28 +120,48 @@ rand = "0.9.0"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 procfs = "0.17.0"
+quinn = { version = "0.11", default-features = false, features = ["rustls"] }
+rcgen = "0.14.5"
 base16ct = { version = "0.2.0", features = ["alloc"] }
 axum = { version = "0.8.4", features = ["ws", "macros"] }
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
 axum-client-ip = "1.0.0"
 bytes = "1.5.0"
 hyper = { version = "1.2.0", features = ["server", "client", "http1", "http2"] }
-hyper-util = { version = "0.1.2", features = ["tokio", "client-legacy", "server", "server-auto"] }
+hyper-util = { version = "0.1.2", features = [
+  "tokio",
+  "client-legacy",
+  "server",
+  "server-auto",
+] }
 http-body-util = "0.1.1"
 kube = { version = "1.1.0", features = ["runtime"] }
 k8s-openapi = { version = "0.25.0", features = ["latest"] }
 tarpc = { version = "0.36.0", features = ["full"] }
-rustls-webpki = "0.102.2"
+rustls-webpki = "0.103.8"
 rustls-pemfile = "2.1.0"
-tokio-rustls = "0.25.0"
-tokio-util = { version = "0.7.10", features = ["codec", "io"] }
+tokio-rustls = "0.26.4"
+tokio-util = { version = "0.7.10", features = ["codec", "io", "compat"] }
 tokio = { version = "1.36.0", features = ["full"] }
-sqlx = { version = "0.8.6", default-features = false, features = ["sqlx-postgres"] }
-sea-orm = { version = "1.1.14", features = [ "sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
-sea-orm-migration = { version = "1.1.14", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
-sea-orm-cli = { version = "1.1.14", features = [ "sqlx-postgres", "runtime-tokio-rustls" ] }
+sqlx = { version = "0.8.6", default-features = false, features = [
+  "sqlx-postgres",
+] }
+sea-orm = { version = "1.1.14", features = [
+  "sqlx-postgres",
+  "sqlx-sqlite",
+  "runtime-tokio-rustls",
+  "macros",
+] }
+sea-orm-migration = { version = "1.1.14", features = [
+  "sqlx-postgres",
+  "runtime-tokio-rustls",
+] }
+sea-orm-cli = { version = "1.1.14", features = [
+  "sqlx-postgres",
+  "runtime-tokio-rustls",
+] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
-russh = {version = "0.53.0" }
+russh = { version = "0.53.0" }
 lapdev-api = { path = "./crates/api" }
 lapdev-api-hrpc = { path = "./crates/api-hrpc" }
 lapdev-cli = { path = "./crates/cli" }
@@ -163,15 +191,23 @@ depends = "$auto, passwd"
 maintainer-scripts = "pkg/deb/"
 systemd-units = { unit-name = "lapdev", enable = false }
 assets = [
-    ["target/release/lapdev", "/usr/bin/lapdev", "755"],
-    ["pkg/common/lapdev.service.preset", "/lib/systemd/system-preset/50-lapdev.preset", "644"],
+  [
+    "target/release/lapdev",
+    "/usr/bin/lapdev",
+    "755",
+  ],
+  [
+    "pkg/common/lapdev.service.preset",
+    "/lib/systemd/system-preset/50-lapdev.preset",
+    "644",
+  ],
 ]
 
 [package.metadata.generate-rpm]
 post_install_script = "pkg/rpm/lapdev.postinst"
 post_uninstall_script = "pkg/rpm/lapdev.postuninst"
 assets = [
-    { source = "target/release/lapdev", dest = "/usr/bin/lapdev", mode = "755" },
-    { source = "pkg/deb/lapdev.service", dest = "/lib/systemd/system/lapdev.service", mode = "644" },
-    { source = "pkg/common/lapdev.service.preset", dest = "/lib/systemd/system-preset/50-lapdev.preset", mode = "644" },
+  { source = "target/release/lapdev", dest = "/usr/bin/lapdev", mode = "755" },
+  { source = "pkg/deb/lapdev.service", dest = "/lib/systemd/system/lapdev.service", mode = "644" },
+  { source = "pkg/common/lapdev.service.preset", dest = "/lib/systemd/system-preset/50-lapdev.preset", mode = "644" },
 ]

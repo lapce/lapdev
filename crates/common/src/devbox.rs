@@ -69,3 +69,55 @@ pub struct DevboxWorkloadInterceptListResponse {
 pub struct DevboxStartWorkloadInterceptResponse {
     pub intercept_id: Uuid,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DirectTransport {
+    Quic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DirectCandidateKind {
+    Public,
+    Relay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectCandidate {
+    pub host: String,
+    pub port: u16,
+    pub transport: DirectTransport,
+    pub kind: DirectCandidateKind,
+    #[serde(default)]
+    pub priority: u32,
+}
+
+impl Default for DirectCandidate {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            port: 0,
+            transport: DirectTransport::Quic,
+            kind: DirectCandidateKind::Public,
+            priority: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DirectCandidateSet {
+    pub candidates: Vec<DirectCandidate>,
+    pub generation: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectCredential {
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectChannelConfig {
+    pub credential: DirectCredential,
+    pub devbox_candidates: Vec<DirectCandidate>,
+    pub sidecar_candidates: Vec<DirectCandidate>,
+}

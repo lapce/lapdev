@@ -1,3 +1,4 @@
+use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -9,6 +10,9 @@ pub trait DevboxSessionRpc {
     async fn get_active_environment() -> Result<Option<DevboxEnvironmentInfo>, String>;
     async fn set_active_environment(environment_id: Uuid) -> Result<(), String>;
     async fn heartbeat() -> Result<(), String>;
+    async fn publish_direct_candidates(
+        update: DirectCandidateSet,
+    ) -> Result<DirectChannelConfig, String>;
     async fn list_workload_intercepts(
         environment_id: Uuid,
     ) -> Result<Vec<WorkloadInterceptInfo>, String>;

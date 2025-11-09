@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
-use lapdev_common::kube::{
-    KubeClusterInfo, KubeNamespaceInfo, KubeServiceWithYaml, KubeWorkloadKind, KubeWorkloadList,
-    PaginationParams,
+use lapdev_common::{
+    devbox::DirectChannelConfig,
+    kube::{
+        KubeClusterInfo, KubeNamespaceInfo, KubeServiceWithYaml, KubeWorkloadKind,
+        KubeWorkloadList, PaginationParams,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -521,6 +524,7 @@ pub struct DevboxRouteConfig {
     pub created_at_epoch_seconds: Option<i64>,
     pub expires_at_epoch_seconds: Option<i64>,
     pub port_mappings: HashMap<u16, u16>,
+    pub direct: Option<DirectChannelConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -18,3 +18,6 @@ bytes.workspace = true
 tracing.workspace = true
 tokio-util.workspace = true
 tokio-tungstenite.workspace = true
+lapdev-common.workspace = true
+quinn.workspace = true
+rcgen.workspace = true

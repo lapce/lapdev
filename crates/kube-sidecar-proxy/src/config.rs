@@ -1,13 +1,18 @@
 use http::header::HeaderName;
-use lapdev_common::kube::{ProxyPortRoute, KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER};
+use lapdev_common::{
+    devbox::DirectChannelConfig,
+    kube::{ProxyPortRoute, KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER},
+};
 use lapdev_tunnel::{
-    TunnelClient, TunnelError, TunnelTcpStream, WebSocketTransport as TunnelWebSocketTransport,
+    direct::connect_direct_tunnel, TunnelClient, TunnelError, TunnelTcpStream,
+    WebSocketTransport as TunnelWebSocketTransport,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 use tokio::sync::{OnceCell, RwLock};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Immutable settings for the sidecar proxy determined at boot time.
@@ -347,6 +352,7 @@ pub struct DevboxRouteMetadata {
     pub port_mappings: HashMap<u16, u16>,
     pub created_at_epoch_seconds: Option<i64>,
     pub expires_at_epoch_seconds: Option<i64>,
+    pub direct: Option<DirectChannelConfig>,
 }
 
 impl DevboxRouteMetadata {
@@ -427,6 +433,31 @@ impl DevboxConnection {
     }
 
     async fn create_client(&self) -> Result<TunnelClient, TunnelError> {
+        if let Some(direct) = &self.metadata.direct {
+            match connect_direct_tunnel(direct).await {
+                Ok(client) => {
+                    info!(
+                        intercept_id = %self.metadata.intercept_id,
+                        workload_id = %self.metadata.workload_id,
+                        "Established direct Devbox tunnel"
+                    );
+                    return Ok(client);
+                }
+                Err(err) => {
+                    debug!(
+                        intercept_id = %self.metadata.intercept_id,
+                        workload_id = %self.metadata.workload_id,
+                        error = %err,
+                        "Direct tunnel attempt failed; falling back to WebSocket"
+                    );
+                }
+            }
+        }
+
+        self.create_websocket_client().await
+    }
+
+    async fn create_websocket_client(&self) -> Result<TunnelClient, TunnelError> {
         let mut request = self
             .metadata
             .websocket_url

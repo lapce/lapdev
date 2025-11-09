@@ -16,3 +16,5 @@ anyhow.workspace = true
 tracing.workspace = true
 futures.workspace = true
 lapdev-common.workspace = true
+tokio-util.workspace = true
+pin-project.workspace = true

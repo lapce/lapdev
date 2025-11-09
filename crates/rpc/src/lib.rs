@@ -1,7 +1,10 @@
 pub mod error;
 
+use pin_project::pin_project;
 use std::{
-    io,
+    fmt, io,
+    pin::Pin,
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -10,7 +13,7 @@ use chrono::{DateTime, FixedOffset};
 use error::ApiError;
 use futures::{
     stream::{AbortHandle, Abortable},
-    Sink, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt,
+    Sink, SinkExt, Stream, StreamExt, TryFutureExt,
 };
 use lapdev_common::{
     BuildTarget, ContainerInfo, CreateWorkspaceRequest, DeleteWorkspaceRequest, GitBranch,
@@ -18,11 +21,12 @@ use lapdev_common::{
     RepoContent, StartWorkspaceRequest, StopWorkspaceRequest,
 };
 use serde::{Deserialize, Serialize};
-use tarpc::transport::channel::UnboundedChannel;
+use tokio::sync::mpsc;
+use tokio_util::sync::PollSender;
 use uuid::Uuid;
 
 /// A tarpc message that can be either a request or a response.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum TwoWayMessage<Req, Resp> {
     ClientMessage(tarpc::ClientMessage<Req>),
     Response(tarpc::Response<Resp>),
@@ -35,8 +39,8 @@ pub enum TwoWayMessage<Req, Resp> {
 pub fn spawn_twoway<Req1, Resp1, Req2, Resp2, T>(
     transport: T,
 ) -> (
-    UnboundedChannel<tarpc::ClientMessage<Req1>, tarpc::Response<Resp1>>,
-    UnboundedChannel<tarpc::Response<Resp2>, tarpc::ClientMessage<Req2>>,
+    ChannelTransport<tarpc::ClientMessage<Req1>, tarpc::Response<Resp1>>,
+    ChannelTransport<tarpc::Response<Resp2>, tarpc::ClientMessage<Req2>>,
     AbortHandle,
 )
 where
@@ -48,23 +52,49 @@ where
     Req2: Send + 'static,
     Resp2: Send + 'static,
 {
-    let (server, server_ret) = tarpc::transport::channel::unbounded();
-    let (client, client_ret) = tarpc::transport::channel::unbounded();
-    let (mut server_sink, server_stream) = server.split();
-    let (mut client_sink, client_stream) = client.split();
-    let (transport_sink, mut transport_stream) = transport.split();
+    let (mut transport_sink, mut transport_stream) = transport.split();
 
     let (abort_handle, abort_registration) = AbortHandle::new_pair();
+    let (server_in_tx, server_in_rx) =
+        mpsc::channel::<Result<tarpc::ClientMessage<Req1>, io::Error>>(RPC_CHANNEL_CAPACITY);
+    let (client_in_tx, client_in_rx) =
+        mpsc::channel::<Result<tarpc::Response<Resp2>, io::Error>>(RPC_CHANNEL_CAPACITY);
+    let (server_out_tx, mut server_out_rx) =
+        mpsc::channel::<tarpc::Response<Resp1>>(RPC_CHANNEL_CAPACITY);
+    let (client_out_tx, mut client_out_rx) =
+        mpsc::channel::<tarpc::ClientMessage<Req2>>(RPC_CHANNEL_CAPACITY);
+
+    let (server_transport, client_transport) = (
+        ChannelTransport::new(server_in_rx, PollSender::new(server_out_tx)),
+        ChannelTransport::new(client_in_rx, PollSender::new(client_out_tx)),
+    );
 
     {
-        let abort_handle = abort_handle.clone();
-        // Task for inbound message handling
+        let abort_on_exit = abort_handle.clone();
+        let loop_abort = abort_handle.clone();
+        let server_in_tx = server_in_tx;
+        let client_in_tx = client_in_tx;
         tokio::spawn(async move {
             let e: Result<()> = async move {
-                while let Some(msg) = transport_stream.next().await {
-                    match msg? {
-                        TwoWayMessage::ClientMessage(req) => server_sink.send(req).await?,
-                        TwoWayMessage::Response(resp) => client_sink.send(resp).await?,
+                while !loop_abort.is_aborted() {
+                    match transport_stream.next().await {
+                        Some(Ok(TwoWayMessage::ClientMessage(req))) => {
+                            if server_in_tx.send(Ok(req)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(Ok(TwoWayMessage::Response(resp))) => {
+                            if client_in_tx.send(Ok(resp)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(Err(err)) => {
+                            let cloned = clone_io_error(&err);
+                            let _ = server_in_tx.send(Err(err)).await;
+                            let _ = client_in_tx.send(Err(cloned)).await;
+                            break;
+                        }
+                        None => break,
                     }
                 }
                 Ok(())
@@ -76,28 +106,208 @@ where
                 Err(e) => tracing::warn!("Error in inbound multiplexing: {}", e),
             }
 
-            abort_handle.abort();
+            abort_on_exit.abort();
         });
     }
 
-    let abortable_sink_channel = Abortable::new(
-        futures::stream::select(
-            server_stream.map_ok(TwoWayMessage::Response),
-            client_stream.map_ok(TwoWayMessage::ClientMessage),
-        )
-        .map_err(|e| anyhow!(e)),
-        abort_registration,
-    );
+    let outbound = async move {
+        loop {
+            tokio::select! {
+                Some(resp) = server_out_rx.recv() => {
+                    if let Err(e) = transport_sink.send(TwoWayMessage::Response(resp)).await.map_err(|e| anyhow!(e)) {
+                        return Err(e);
+                    }
+                }
+                Some(msg) = client_out_rx.recv() => {
+                    if let Err(e) = transport_sink.send(TwoWayMessage::ClientMessage(msg)).await.map_err(|e| anyhow!(e)) {
+                        return Err(e);
+                    }
+                }
+                else => break,
+            }
+        }
 
-    // Task for outbound message handling
+        transport_sink.sink_map_err(|e| anyhow!(e)).close().await
+    };
+
     tokio::spawn(
-        abortable_sink_channel
-            .forward(transport_sink.sink_map_err(|e| anyhow!(e)))
+        Abortable::new(outbound, abort_registration)
             .inspect_ok(|_| tracing::debug!("transport_sink done"))
             .inspect_err(|e| tracing::warn!("Error in outbound multiplexing: {}", e)),
     );
 
-    (server_ret, client_ret, abort_handle)
+    (server_transport, client_transport, abort_handle)
+}
+
+const RPC_CHANNEL_CAPACITY: usize = 32;
+
+fn clone_io_error(err: &io::Error) -> io::Error {
+    io::Error::new(err.kind(), err.to_string())
+}
+
+#[derive(Debug)]
+pub enum TwoWayTransportError {
+    Closed,
+    Io(io::Error),
+}
+
+impl fmt::Display for TwoWayTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => write!(f, "transport closed"),
+            Self::Io(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for TwoWayTransportError {}
+
+impl From<io::Error> for TwoWayTransportError {
+    fn from(err: io::Error) -> Self {
+        TwoWayTransportError::Io(err)
+    }
+}
+
+#[pin_project]
+pub struct ChannelTransport<In, Out> {
+    receiver: mpsc::Receiver<Result<In, io::Error>>,
+    #[pin]
+    sender: PollSender<Out>,
+}
+
+impl<In, Out> ChannelTransport<In, Out> {
+    fn new(receiver: mpsc::Receiver<Result<In, io::Error>>, sender: PollSender<Out>) -> Self {
+        Self { receiver, sender }
+    }
+}
+
+impl<In, Out> Stream for ChannelTransport<In, Out> {
+    type Item = Result<In, TwoWayTransportError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        match this.receiver.poll_recv(cx) {
+            Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(item))),
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(TwoWayTransportError::Io(err)))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<In, Out> Sink<Out> for ChannelTransport<In, Out>
+where
+    Out: Send,
+{
+    type Error = TwoWayTransportError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project()
+            .sender
+            .poll_ready(cx)
+            .map_err(|_| TwoWayTransportError::Closed)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Out) -> Result<(), Self::Error> {
+        self.project()
+            .sender
+            .start_send(item)
+            .map_err(|_| TwoWayTransportError::Closed)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project()
+            .sender
+            .poll_flush(cx)
+            .map_err(|_| TwoWayTransportError::Closed)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project()
+            .sender
+            .poll_close(cx)
+            .map_err(|_| TwoWayTransportError::Closed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::{SinkExt, StreamExt};
+    use tarpc::{context, trace};
+    use tokio::io::duplex;
+    use tokio_util::codec::LengthDelimitedCodec;
+
+    #[tokio::test]
+    async fn spawn_twoway_moves_messages_between_halves() {
+        let (io_a, io_b) = duplex(1024);
+        let framed_a = LengthDelimitedCodec::builder().new_framed(io_a);
+        let framed_b = LengthDelimitedCodec::builder().new_framed(io_b);
+        let transport_a = tarpc::serde_transport::new::<_, TwoWayMessage<String, String>, TwoWayMessage<String, String>, _>(
+            framed_a,
+            tarpc::tokio_serde::formats::Bincode::default(),
+        );
+        let transport_b = tarpc::serde_transport::new::<_, TwoWayMessage<String, String>, TwoWayMessage<String, String>, _>(
+            framed_b,
+            tarpc::tokio_serde::formats::Bincode::default(),
+        );
+        let (mut server, mut client, abort_handle) = spawn_twoway::<String, String, String, String, _>(transport_a);
+        let (mut transport_sink, mut transport_stream) = transport_b.split();
+
+        let cancel: tarpc::ClientMessage<String> = tarpc::ClientMessage::Cancel {
+            trace_context: trace::Context {
+                trace_id: trace::TraceId::from(1u128),
+                span_id: trace::SpanId::from(2u64),
+                sampling_decision: trace::SamplingDecision::Sampled,
+            },
+            request_id: 7,
+        };
+        transport_sink
+            .send(TwoWayMessage::ClientMessage(cancel))
+            .await
+            .unwrap();
+        match server.next().await.unwrap().unwrap() {
+            tarpc::ClientMessage::Cancel { request_id, .. } => assert_eq!(request_id, 7),
+            other => panic!("unexpected client message: {:?}", other),
+        }
+
+        let inbound_response = tarpc::Response {
+            request_id: 9,
+            message: Ok("pong".to_string()),
+        };
+        transport_sink
+            .send(TwoWayMessage::Response(inbound_response.clone()))
+            .await
+            .unwrap();
+        let received = client.next().await.unwrap().unwrap();
+        assert_eq!(received.request_id, 9);
+
+        let outbound_request = tarpc::ClientMessage::Request(tarpc::Request {
+            context: context::current(),
+            id: 11,
+            message: "ping".to_string(),
+        });
+        client.send(outbound_request).await.unwrap();
+        match transport_stream.next().await.unwrap().unwrap() {
+            TwoWayMessage::ClientMessage(tarpc::ClientMessage::Request(sent)) => {
+                assert_eq!(sent.id, 11);
+                assert_eq!(sent.message, "ping");
+            }
+            msg => panic!("unexpected outbound message: {:?}", msg),
+        }
+
+        let outbound_response = tarpc::Response {
+            request_id: 13,
+            message: Ok("ok".to_string()),
+        };
+        server.send(outbound_response).await.unwrap();
+        match transport_stream.next().await.unwrap().unwrap() {
+            TwoWayMessage::Response(sent) => assert_eq!(sent.request_id, 13),
+            msg => panic!("unexpected outbound response: {:?}", msg),
+        }
+
+        abort_handle.abort();
+    }
 }
 
 #[tarpc::service]

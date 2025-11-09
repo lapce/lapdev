@@ -18,7 +18,7 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 pub fn websocket_serde_transport<S, Item, SinkItem, Codec>(
     socket: WebSocketStream<S>,
     codec: Codec,
-) -> WebSocketTransport<S, Item, SinkItem, Codec>
+) -> WebSocketTransport<SocketStream<S>, Item, SinkItem, Codec>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     Item: for<'de> Deserialize<'de>,
@@ -32,18 +32,39 @@ where
     }
 }
 
+/// Builds a serde transport from any socket that transmits binary websocket frames.
+pub fn websocket_serde_transport_from_socket<Socket, Item, SinkItem, Codec>(
+    socket: Socket,
+    codec: Codec,
+) -> WebSocketTransport<Socket, Item, SinkItem, Codec>
+where
+    Socket: Stream<Item = Result<Bytes, io::Error>> + Sink<Bytes, Error = io::Error>,
+    Socket: Unpin,
+    Item: for<'de> Deserialize<'de>,
+    SinkItem: Serialize,
+    Codec: Serializer<SinkItem> + Deserializer<Item>,
+{
+    WebSocketTransport {
+        inner: socket,
+        codec,
+        _marker: PhantomData,
+    }
+}
+
 #[pin_project]
-pub struct WebSocketTransport<S, Item, SinkItem, Codec> {
+pub struct WebSocketTransport<Socket, Item, SinkItem, Codec> {
     #[pin]
-    inner: SocketStream<S>,
+    inner: Socket,
     #[pin]
     codec: Codec,
     _marker: PhantomData<(Item, SinkItem)>,
 }
 
-impl<S, Item, SinkItem, Codec, CodecError> Stream for WebSocketTransport<S, Item, SinkItem, Codec>
+impl<Socket, Item, SinkItem, Codec, CodecError> Stream
+    for WebSocketTransport<Socket, Item, SinkItem, Codec>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    Socket: Stream<Item = Result<Bytes, io::Error>> + Sink<Bytes, Error = io::Error>,
+    Socket: Unpin,
     Item: for<'de> Deserialize<'de>,
     SinkItem: Serialize,
     Codec: Deserializer<Item, Error = CodecError> + Serializer<SinkItem, Error = CodecError>,
@@ -67,10 +88,11 @@ where
     }
 }
 
-impl<S, Item, SinkItem, Codec, CodecError> Sink<SinkItem>
-    for WebSocketTransport<S, Item, SinkItem, Codec>
+impl<Socket, Item, SinkItem, Codec, CodecError> Sink<SinkItem>
+    for WebSocketTransport<Socket, Item, SinkItem, Codec>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    Socket: Stream<Item = Result<Bytes, io::Error>> + Sink<Bytes, Error = io::Error>,
+    Socket: Unpin,
     Item: for<'de> Deserialize<'de>,
     SinkItem: Serialize,
     Codec: Deserializer<Item, Error = CodecError> + Serializer<SinkItem, Error = CodecError>,
@@ -102,7 +124,7 @@ where
 }
 
 #[pin_project]
-struct SocketStream<S>(#[pin] WebSocketStream<S>);
+pub struct SocketStream<S>(#[pin] WebSocketStream<S>);
 
 impl<S> Stream for SocketStream<S>
 where

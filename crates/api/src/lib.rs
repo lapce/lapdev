@@ -23,5 +23,5 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod websocket;
-pub mod websocket_transport;
+pub mod websocket_socket;
 pub mod workspace;

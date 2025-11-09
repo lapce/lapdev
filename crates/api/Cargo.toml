@@ -60,3 +60,4 @@ lapdev-proxy-ssh.workspace = true
 lapdev-proxy-http.workspace = true
 lapdev-kube.workspace = true
 lapdev-tunnel.workspace = true
+pin-project.workspace = true

@@ -15,17 +15,15 @@ use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
     direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    DynTunnelStream, TunnelClient, TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
+    websocket_serde_transport_from_socket, DynTunnelStream, TunnelClient, TunnelError, TunnelMode,
+    TunnelTarget, WebSocketUdpSocket,
 };
 use secrecy::ExposeSecret;
-use tarpc::{
-    server::{BaseChannel, Channel},
-    tokio_util::codec::LengthDelimitedCodec,
-};
+use tarpc::server::{BaseChannel, Channel};
 use uuid::Uuid;
 
 use crate::{
-    devbox_tunnels::split_axum_websocket, state::CoreState, websocket_transport::WebSocketTransport,
+    devbox_tunnels::split_axum_websocket, state::CoreState, websocket_socket::AxumBinarySocket,
 };
 
 pub async fn kube_cluster_rpc_websocket(
@@ -71,10 +69,11 @@ fn handle_cluster_websocket(
 }
 
 async fn handle_cluster_rpc(socket: WebSocket, state: Arc<CoreState>, cluster_id: Uuid) {
-    let trans = WebSocketTransport::new(socket);
-    let io = LengthDelimitedCodec::builder().new_framed(trans);
-    let transport =
-        tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
+    let socket = AxumBinarySocket::new(socket);
+    let transport = websocket_serde_transport_from_socket(
+        socket,
+        tarpc::tokio_serde::formats::Bincode::default(),
+    );
     let (server_chan, client_chan, _) = spawn_twoway(transport);
     let rpc_client =
         KubeManagerRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();

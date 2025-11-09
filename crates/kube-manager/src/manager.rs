@@ -26,20 +26,19 @@ use lapdev_kube_rpc::{
     ProxyBranchRouteConfig,
 };
 use lapdev_rpc::spawn_twoway;
+use lapdev_tunnel::websocket_serde_transport;
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     task::JoinHandle,
     time::{sleep, Duration, MissedTickBehavior},
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
 
 use crate::manager_rpc::KubeManagerRpcServer;
 use crate::{devbox_direct_gateway::DevboxDirectGateway, devbox_proxy_manager::DevboxProxyManager};
 use crate::{
     sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager, watch_manager::WatchManager,
-    websocket_transport::WebSocketTransport,
 };
 
 const CLUSTER_HEARTBEAT_INTERVAL_SECS: u64 = 30;
@@ -149,11 +148,8 @@ impl KubeManager {
 
         tracing::info!("WebSocket connection established");
 
-        let trans = WebSocketTransport::new(stream);
-        let io = LengthDelimitedCodec::builder().new_framed(trans);
-
         let transport =
-            tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
+            websocket_serde_transport(stream, tarpc::tokio_serde::formats::Bincode::default());
         let (server_chan, client_chan, _) = spawn_twoway(transport);
 
         let rpc_client =

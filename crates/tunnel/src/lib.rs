@@ -14,4 +14,6 @@ pub use server::{
     run_tunnel_server, run_tunnel_server_with_connector, DynTunnelStream, TcpConnector,
     TunnelConnector,
 };
-pub use websocket::{websocket_serde_transport, WebSocketTransport};
+pub use websocket::{
+    websocket_serde_transport, websocket_serde_transport_from_socket, WebSocketTransport,
+};

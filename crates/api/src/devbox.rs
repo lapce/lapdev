@@ -15,17 +15,15 @@ use lapdev_devbox_rpc::{
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
     direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    DynTunnelStream, TunnelError, TunnelTarget, WebSocketUdpSocket,
+    websocket_serde_transport_from_socket, DynTunnelStream, TunnelError, TunnelTarget,
+    WebSocketUdpSocket,
 };
 use serde::{Deserialize, Serialize};
-use tarpc::{
-    server::{BaseChannel, Channel},
-    tokio_util::codec::LengthDelimitedCodec,
-};
+use tarpc::server::{BaseChannel, Channel};
 use uuid::Uuid;
 
 use crate::{
-    devbox_tunnels::split_axum_websocket, state::CoreState, websocket_transport::WebSocketTransport,
+    devbox_tunnels::split_axum_websocket, state::CoreState, websocket_socket::AxumBinarySocket,
 };
 
 #[derive(Debug, Serialize)]
@@ -191,10 +189,11 @@ async fn handle_devbox_rpc(
     organization_id: Uuid,
     device_name: String,
 ) {
-    let trans = WebSocketTransport::new(socket);
-    let io = LengthDelimitedCodec::builder().new_framed(trans);
-    let transport =
-        tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
+    let socket = AxumBinarySocket::new(socket);
+    let transport = websocket_serde_transport_from_socket(
+        socket,
+        tarpc::tokio_serde::formats::Bincode::default(),
+    );
     let (server_chan, client_chan, _abort_handle) = spawn_twoway(transport);
 
     // Create RPC client (for calling CLI methods)

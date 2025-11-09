@@ -17,6 +17,9 @@ pub trait DevboxSessionRpc {
         environment_id: Uuid,
     ) -> Result<Vec<WorkloadInterceptInfo>, String>;
     async fn list_services(environment_id: Uuid) -> Result<Vec<ServiceInfo>, String>;
+    async fn request_direct_client_config(
+        environment_id: Uuid,
+    ) -> Result<Option<DirectChannelConfig>, String>;
     async fn update_device_name(device_name: String) -> Result<(), String>;
 }
 

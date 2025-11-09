@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     convert::TryFrom,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
@@ -267,8 +268,47 @@ pub(crate) async fn establish_client_connection(
 /// QUIC listener that validates the shared credential before handing over the transport.
 pub struct DirectQuicServer {
     endpoint: Endpoint,
-    credential: Arc<RwLock<Option<String>>>,
+    credential: Arc<DirectCredentialStore>,
     observed_addr: Option<SocketAddr>,
+}
+
+#[derive(Default)]
+pub struct DirectCredentialStore {
+    tokens: RwLock<HashSet<String>>,
+}
+
+impl DirectCredentialStore {
+    pub fn new() -> Self {
+        Self {
+            tokens: RwLock::new(HashSet::new()),
+        }
+    }
+
+    pub async fn replace(&self, token: impl Into<String>) {
+        let mut guard = self.tokens.write().await;
+        guard.clear();
+        guard.insert(token.into());
+    }
+
+    pub async fn insert(&self, token: impl Into<String>) {
+        let mut guard = self.tokens.write().await;
+        guard.insert(token.into());
+    }
+
+    pub async fn remove(&self, token: &str) -> bool {
+        let mut guard = self.tokens.write().await;
+        guard.remove(token)
+    }
+
+    pub async fn contains(&self, token: &str) -> bool {
+        let guard = self.tokens.read().await;
+        guard.contains(token)
+    }
+}
+
+pub struct DirectConnection {
+    pub transport: QuicTransport,
+    pub token: String,
 }
 
 impl DirectQuicServer {
@@ -313,7 +353,7 @@ impl DirectQuicServer {
         .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
         Ok(Self {
             endpoint,
-            credential: Arc::new(RwLock::new(None)),
+            credential: Arc::new(DirectCredentialStore::new()),
             observed_addr,
         })
     }
@@ -324,7 +364,7 @@ impl DirectQuicServer {
             .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))
     }
 
-    pub fn credential_handle(&self) -> Arc<RwLock<Option<String>>> {
+    pub fn credential_handle(&self) -> Arc<DirectCredentialStore> {
         Arc::clone(&self.credential)
     }
 
@@ -332,7 +372,7 @@ impl DirectQuicServer {
         self.observed_addr
     }
 
-    pub async fn accept(&self) -> Result<QuicTransport, TunnelError> {
+    pub async fn accept(&self) -> Result<DirectConnection, TunnelError> {
         let incoming = match self.endpoint.accept().await {
             Some(incoming) => incoming,
             None => return Err(TunnelError::ConnectionClosed),
@@ -350,15 +390,8 @@ impl DirectQuicServer {
             .await
             .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
 
-        let expected = {
-            let guard = self.credential.read().await;
-            guard
-                .clone()
-                .ok_or_else(|| TunnelError::Remote("direct credential not configured".into()))?
-        };
-
         let presented = read_token(&mut recv).await?;
-        if presented != expected {
+        if !self.credential.contains(&presented).await {
             return Err(TunnelError::Remote("invalid direct credential".into()));
         }
 
@@ -366,7 +399,10 @@ impl DirectQuicServer {
         send.finish()
             .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
 
-        Ok(QuicTransport::new(connection))
+        Ok(DirectConnection {
+            transport: QuicTransport::new(connection),
+            token: presented,
+        })
     }
 
     pub fn close(&self) {

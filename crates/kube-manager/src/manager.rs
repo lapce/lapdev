@@ -11,11 +11,14 @@ use k8s_openapi::{
     NamespaceResourceScope,
 };
 use kube::api::{DeleteParams, ListParams};
-use lapdev_common::kube::{
-    KubeClusterInfo, KubeClusterStatus, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
-    KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
-    DEFAULT_KUBE_CLUSTER_TUNNEL_URL, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
-    KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_TUNNEL_URL_ENV_VAR, KUBE_CLUSTER_URL_ENV_VAR,
+use lapdev_common::{
+    devbox::DirectChannelConfig,
+    kube::{
+        KubeClusterInfo, KubeClusterStatus, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
+        KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
+        DEFAULT_KUBE_CLUSTER_TUNNEL_URL, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
+        KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_TUNNEL_URL_ENV_VAR, KUBE_CLUSTER_URL_ENV_VAR,
+    },
 };
 use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadYamlOnly,
@@ -32,8 +35,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
 
-use crate::devbox_proxy_manager::DevboxProxyManager;
 use crate::manager_rpc::KubeManagerRpcServer;
+use crate::{devbox_direct_gateway::DevboxDirectGateway, devbox_proxy_manager::DevboxProxyManager};
 use crate::{
     sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager, watch_manager::WatchManager,
     websocket_transport::WebSocketTransport,
@@ -50,6 +53,7 @@ pub struct KubeManager {
     tunnel_manager: TunnelManager,
     pub(crate) watch_manager: Arc<WatchManager>,
     manager_namespace: Option<String>,
+    devbox_direct_gateway: Arc<DevboxDirectGateway>,
 }
 
 impl KubeManager {
@@ -62,6 +66,11 @@ impl KubeManager {
         let proxy_manager = Arc::new(SidecarProxyManager::new().await?);
         let devbox_proxy_manager = Arc::new(DevboxProxyManager::new().await?);
         let watch_manager = Arc::new(WatchManager::new(kube_client.clone()));
+        let devbox_direct_gateway = Arc::new(
+            DevboxDirectGateway::new()
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to initialize direct gateway: {e}"))?,
+        );
 
         let token = std::env::var(KUBE_CLUSTER_TOKEN_ENV_VAR)
             .map_err(|_| anyhow::anyhow!("can't find env var {}", KUBE_CLUSTER_TOKEN_ENV_VAR))?;
@@ -91,6 +100,7 @@ impl KubeManager {
             tunnel_manager: TunnelManager::new(tunnel_request, token.clone()),
             watch_manager,
             manager_namespace,
+            devbox_direct_gateway,
         };
 
         // Start the tunnel manager connection cycle in the background
@@ -1729,6 +1739,22 @@ impl KubeManager {
         self.proxy_manager
             .set_service_routes_if_registered(environment_id)
             .await
+    }
+
+    pub async fn get_devbox_direct_config(
+        &self,
+        user_id: Uuid,
+        environment_id: Uuid,
+        namespace: String,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        match self
+            .devbox_direct_gateway
+            .issue_config(user_id, environment_id, namespace)
+            .await
+        {
+            Ok(config) => Ok(Some(config)),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn set_devbox_routes(

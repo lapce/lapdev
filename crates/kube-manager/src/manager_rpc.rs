@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
-use lapdev_common::kube::{
-    KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
+use lapdev_common::{
+    devbox::DirectChannelConfig,
+    kube::{
+        KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams,
+    },
 };
 use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml,
@@ -254,6 +257,18 @@ impl KubeManagerRpc for KubeManagerRpcServer {
     ) -> Result<(), String> {
         self.manager
             .clear_devbox_routes(environment_id, branch_environment_id)
+            .await
+    }
+
+    async fn get_devbox_direct_config(
+        self,
+        _context: ::tarpc::context::Context,
+        user_id: Uuid,
+        environment_id: Uuid,
+        namespace: String,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        self.manager
+            .get_devbox_direct_config(user_id, environment_id, namespace)
             .await
     }
 

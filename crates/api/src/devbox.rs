@@ -888,6 +888,47 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 
         Ok(result)
     }
+
+    async fn request_direct_client_config(
+        self,
+        _context: tarpc::context::Context,
+        environment_id: Uuid,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        let environment = self
+            .state
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch environment: {}", e))?
+            .ok_or_else(|| "Environment not found".to_string())?;
+
+        if environment.user_id != self.user_id {
+            return Err("Unauthorized".to_string());
+        }
+
+        match self
+            .state
+            .kube_controller
+            .request_devbox_direct_config(
+                environment.cluster_id,
+                self.user_id,
+                environment.id,
+                environment.namespace.clone(),
+            )
+            .await
+        {
+            Ok(config) => Ok(config),
+            Err(err) => {
+                tracing::warn!(
+                    environment_id = %environment_id,
+                    user_id = %self.user_id,
+                    error = %err,
+                    "Failed to fetch direct devbox config; falling back to relay"
+                );
+                Ok(None)
+            }
+        }
+    }
 }
 
 /// Implementation for DevboxInterceptRpc - allows dashboard/CLI to control intercepts

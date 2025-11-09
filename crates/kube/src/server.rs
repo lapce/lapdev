@@ -5,9 +5,12 @@ use k8s_openapi::api::{
     batch::v1::{CronJob, Job},
     core::v1::{PodSpec, Service},
 };
-use lapdev_common::kube::{
-    EnvironmentWorkloadStatusEvent, KubeClusterInfo, KubeContainerImage, KubeContainerInfo,
-    KubeContainerPort, KubeServicePort, KubeWorkloadKind,
+use lapdev_common::{
+    devbox::DirectChannelConfig,
+    kube::{
+        EnvironmentWorkloadStatusEvent, KubeClusterInfo, KubeContainerImage, KubeContainerInfo,
+        KubeContainerPort, KubeServicePort, KubeWorkloadKind,
+    },
 };
 use lapdev_db::api::{CachedClusterService, DbApi};
 use lapdev_db_entities::{
@@ -286,6 +289,30 @@ impl KubeClusterServer {
             Ok(result) => result,
             Err(err) => Err(format!(
                 "Failed to send clear_devbox_routes RPC to kube-manager: {}",
+                err
+            )),
+        }
+    }
+
+    pub async fn get_devbox_direct_config(
+        &self,
+        user_id: Uuid,
+        environment_id: Uuid,
+        namespace: String,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        match self
+            .rpc_client
+            .get_devbox_direct_config(
+                tarpc::context::current(),
+                user_id,
+                environment_id,
+                namespace,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(format!(
+                "Failed to send get_devbox_direct_config RPC to kube-manager: {}",
                 err
             )),
         }

@@ -459,6 +459,12 @@ pub trait KubeManagerRpc {
         branch_environment_id: Option<Uuid>,
     ) -> Result<(), String>;
 
+    async fn get_devbox_direct_config(
+        user_id: Uuid,
+        environment_id: Uuid,
+        namespace: String,
+    ) -> Result<Option<DirectChannelConfig>, String>;
+
     async fn refresh_branch_service_routes(environment_id: Uuid) -> Result<(), String>;
 
     async fn destroy_environment(environment_id: Uuid, namespace: String) -> Result<(), String>;

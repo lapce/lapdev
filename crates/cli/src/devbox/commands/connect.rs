@@ -5,7 +5,8 @@ use lapdev_common::devbox::DirectChannelConfig;
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient};
 use lapdev_rpc::spawn_twoway;
 use lapdev_tunnel::direct::{
-    collect_candidates, CandidateOptions, DirectQuicServer, DirectServerOptions, QuicTransport,
+    collect_candidates, CandidateOptions, DirectCredentialStore, DirectQuicServer,
+    DirectServerOptions, QuicTransport,
 };
 use lapdev_tunnel::{run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport};
 use std::{
@@ -210,6 +211,9 @@ struct DevboxTunnelManager {
     hosts_manager: Arc<HostsManager>,
     /// IP allocator
     ip_allocator: Arc<Mutex<SyntheticIpAllocator>>,
+    client_direct_config: Arc<RwLock<Option<DirectChannelConfig>>>,
+    client_token: Arc<RwLock<Option<String>>>,
+    client_user_id: Arc<RwLock<Option<Uuid>>>,
 }
 
 impl DevboxTunnelManager {
@@ -228,6 +232,9 @@ impl DevboxTunnelManager {
             service_bridge: Arc::new(ServiceBridge::new()),
             hosts_manager: Arc::new(HostsManager::new()),
             ip_allocator: Arc::new(Mutex::new(SyntheticIpAllocator::new())),
+            client_direct_config: Arc::new(RwLock::new(None)),
+            client_token: Arc::new(RwLock::new(None)),
+            client_user_id: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -445,6 +452,13 @@ impl DevboxTunnelManager {
             }
         };
 
+        self.refresh_client_direct_config(
+            active_environment.as_ref().map(|env| env.environment_id),
+            &rpc_client,
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err))?;
+
         if let Some(env) = active_environment.clone() {
             match rpc_client
                 .list_workload_intercepts(tarpc::context::current(), env.environment_id)
@@ -548,11 +562,30 @@ impl DevboxTunnelManager {
                             } else {
                                 tracing::info!("DNS setup completed successfully");
                             }
+                            if let Err(err) = self
+                                .refresh_client_direct_config(Some(env_info.environment_id), &rpc_client)
+                                .await
+                            {
+                                tracing::warn!(
+                                    environment_id = %env_info.environment_id,
+                                    error = %err,
+                                    "Failed to refresh direct tunnel configuration"
+                                );
+                            }
                         }
                         None => {
                             tracing::info!("Clearing DNS entries");
                             println!("{} Clearing DNS entries...", "🔧".cyan());
                             self.cleanup_dns().await;
+                            if let Err(err) = self
+                                .refresh_client_direct_config(None, &rpc_client)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %err,
+                                    "Failed to disable direct tunnel configuration"
+                                );
+                            }
                         }
                     }
                     // Continue the loop instead of exiting
@@ -863,15 +896,53 @@ impl DevboxTunnelManager {
     }
 
     async fn configure_direct_server(&self, config: &DirectChannelConfig) {
-        let credential = {
+        let credential_store = {
             let guard = self.direct_server.lock().await;
-            guard.as_ref().map(|handle| Arc::clone(&handle.credential))
+            guard
+                .as_ref()
+                .map(|handle| Arc::clone(&handle.credential_store))
         };
 
-        if let Some(store) = credential {
-            let mut guard = store.write().await;
-            *guard = Some(config.credential.token.clone());
+        if let Some(store) = credential_store {
+            store.replace(config.credential.token.clone()).await;
         }
+    }
+
+    async fn refresh_client_direct_config(
+        &self,
+        environment_id: Option<Uuid>,
+        rpc_client: &DevboxSessionRpcClient,
+    ) -> Result<(), String> {
+        if let Some(env_id) = environment_id {
+            match rpc_client
+                .request_direct_client_config(tarpc::context::current(), env_id)
+                .await
+            {
+                Ok(Ok(config)) => {
+                    self.update_client_direct_config(config).await?;
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!(
+                        environment_id = %env_id,
+                        error = %err,
+                        "Server rejected direct config request"
+                    );
+                    self.update_client_direct_config(None).await?;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        environment_id = %env_id,
+                        error = %err,
+                        "Direct config RPC failed"
+                    );
+                    self.update_client_direct_config(None).await?;
+                }
+            }
+        } else {
+            self.update_client_direct_config(None).await?;
+        }
+
+        Ok(())
     }
 
     async fn stop_direct_server(&self) {
@@ -900,7 +971,7 @@ impl DevboxTunnelManager {
             tracing::info!(observed_addr = %addr, "STUN discovered reflexive address");
         }
         let port = server.local_addr().map_err(|e| e.to_string())?.port();
-        let credential = server.credential_handle();
+        let credential_store = server.credential_handle();
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
         let server_task = Arc::clone(&server);
@@ -913,9 +984,9 @@ impl DevboxTunnelManager {
                     }
                     result = server_task.accept() => {
                         match result {
-                            Ok(transport) => {
+                            Ok(connection) => {
                                 tokio::spawn(async move {
-                                    if let Err(err) = run_tunnel_server(transport).await {
+                                    if let Err(err) = run_tunnel_server(connection.transport).await {
                                         tracing::warn!(
                                             error = %err,
                                             "Direct tunnel server error"
@@ -936,7 +1007,7 @@ impl DevboxTunnelManager {
         });
 
         Ok(DirectServerHandle {
-            credential,
+            credential_store,
             server,
             port,
             shutdown: Some(shutdown_tx),
@@ -953,7 +1024,7 @@ struct TunnelTask {
 }
 
 struct DirectServerHandle {
-    credential: Arc<RwLock<Option<String>>>,
+    credential_store: Arc<DirectCredentialStore>,
     server: Arc<DirectQuicServer>,
     port: u16,
     shutdown: Option<oneshot::Sender<()>>,
@@ -1023,6 +1094,16 @@ impl DevboxTunnelManager {
             return Ok(());
         }
 
+        {
+            let mut stored_token = self.client_token.write().await;
+            *stored_token = Some(token.to_string());
+        }
+
+        {
+            let mut stored_user = self.client_user_id.write().await;
+            *stored_user = Some(user_id);
+        }
+
         let task = self.spawn_tunnel_task(TunnelKind::Client, token, user_id, None);
         *guard = Some(task);
         Ok(())
@@ -1031,6 +1112,16 @@ impl DevboxTunnelManager {
     async fn stop_client(&self) {
         if let Some(task) = self.client_task.lock().await.take() {
             Self::stop_task(task, "Devbox client tunnel").await;
+        }
+    }
+
+    async fn restart_client_tunnel(&self) -> Result<(), String> {
+        self.stop_client().await;
+        let token = { self.client_token.read().await.clone() };
+        let user_id = { self.client_user_id.read().await.clone() };
+        match (token, user_id) {
+            (Some(token), Some(user_id)) => self.ensure_client(&token, user_id).await,
+            _ => Ok(()),
         }
     }
 
@@ -1044,6 +1135,17 @@ impl DevboxTunnelManager {
         self.stop_direct_server().await;
         self.stop_intercept().await;
         self.stop_client().await;
+    }
+
+    async fn update_client_direct_config(
+        &self,
+        config: Option<DirectChannelConfig>,
+    ) -> Result<(), String> {
+        {
+            let mut guard = self.client_direct_config.write().await;
+            *guard = config;
+        }
+        self.restart_client_tunnel().await
     }
 
     async fn stop_task(task: TunnelTask, context: &str) {
@@ -1182,15 +1284,28 @@ impl DevboxTunnelManager {
         tracing::info!("Devbox {} tunnel connected: {}", kind.as_str(), ws_url);
 
         if matches!(kind, TunnelKind::Client) {
-            let (client, _mode) = TunnelClient::connect_with_direct_or_relay::<_, _, _, _>(
-                None,
+            let direct_config = { self.client_direct_config.read().await.clone() };
+            let (client, mode) = TunnelClient::connect_with_direct_or_relay::<_, _, _, _>(
+                direct_config.as_ref(),
                 token,
                 || async { Ok(stream) },
-                |_| {},
+                |err| {
+                    tracing::warn!(
+                        error = %err,
+                        "Direct devbox client tunnel attempt failed; falling back to relay"
+                    );
+                },
             )
             .await?;
             let client = Arc::new(client);
-            tracing::info!("Tunnel client exposed for DNS service bridge");
+            match mode {
+                lapdev_tunnel::TunnelMode::Direct => {
+                    tracing::info!("Devbox client tunnel using direct QUIC transport");
+                }
+                lapdev_tunnel::TunnelMode::Relay => {
+                    tracing::info!("Devbox client tunnel using API relay transport");
+                }
+            }
 
             self.set_tunnel_client(Arc::clone(&client)).await;
 

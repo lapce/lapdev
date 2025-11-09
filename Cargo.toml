@@ -87,6 +87,7 @@ thiserror = "1.0.58"
 async-trait = "0.1.74"
 serde = { version = "1.0.219", features = ["derive"] }
 pasetors = "0.6.8"
+pin-project = "1.1.5"
 futures = "0.3.31"
 futures-util = "0.3.31"
 serde_yaml = "0.9.30"
@@ -112,6 +113,7 @@ chrono = { version = "0.4.40", features = ["serde"] }
 tower = { version = "0.5.2", features = ["util"] }
 tower-http = { version = "0.6.6", features = ["fs", "trace"] }
 tokio-tungstenite = { version = "0.27.0", features = ["native-tls-vendored"] }
+tokio-serde = "0.9.0"
 data-encoding = "2.4.0"
 secrecy = "0.10.3"
 sha2 = "0.10.8"
@@ -119,7 +121,7 @@ rand = "0.9.0"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 procfs = "0.17.0"
-quinn = { version = "0.11", default-features = false, features = ["rustls"] }
+quinn = { version = "0.11", default-features = false, features = ["rustls", "runtime-tokio"] }
 rcgen = "0.14.5"
 base16ct = { version = "0.2.0", features = ["alloc"] }
 axum = { version = "0.8.4", features = ["ws", "macros"] }
@@ -139,7 +141,11 @@ k8s-openapi = { version = "0.25.0", features = ["latest"] }
 tarpc = { version = "0.36.0", features = ["full"] }
 rustls-webpki = "0.103.8"
 rustls-pemfile = "2.1.0"
-tokio-rustls = "0.26.4"
+tokio-rustls = { version = "0.26.4", default-features = false, features = [
+  "ring",
+  "logging",
+  "tls12",
+] }
 tokio-util = { version = "0.7.10", features = ["codec", "io", "compat"] }
 tokio = { version = "1.36.0", features = ["full"] }
 sqlx = { version = "0.8.6", default-features = false, features = [

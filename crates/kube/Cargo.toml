@@ -6,7 +6,11 @@ edition.workspace = true
 
 [dependencies]
 pem = "3.0.5"
-yup-oauth2 = "12.1.0"
+yup-oauth2 = { version = "12.1.0", default-features = false, features = [
+    "hyper-rustls",
+    "service-account",
+    "ring",
+] }
 httparse = "1.8"
 uuid.workspace = true
 base64.workspace = true

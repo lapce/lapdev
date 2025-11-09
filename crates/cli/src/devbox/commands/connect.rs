@@ -8,7 +8,7 @@ use lapdev_tunnel::direct::{
     collect_candidates, CandidateOptions, DirectCredentialStore, DirectQuicServer,
     DirectServerOptions, QuicTransport,
 };
-use lapdev_tunnel::{run_tunnel_server, TunnelClient, TunnelError, WebSocketTransport};
+use lapdev_tunnel::{run_tunnel_server, websocket_serde_transport, TunnelClient, TunnelError};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -24,7 +24,6 @@ use tokio::{
     time::{sleep, MissedTickBehavior},
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
 
 use crate::{
@@ -320,12 +319,9 @@ impl DevboxTunnelManager {
         println!("{}", "✓ WebSocket connection established".green());
 
         // Create transport layer
-        let trans = WebSocketTransport::new(stream);
-        let io = LengthDelimitedCodec::builder().new_framed(trans);
-
-        // Set up bidirectional RPC
+        // Set up bidirectional RPC over the websocket stream
         let transport =
-            tarpc::serde_transport::new(io, tarpc::tokio_serde::formats::Bincode::default());
+            websocket_serde_transport(stream, tarpc::tokio_serde::formats::Bincode::default());
         let (server_chan, client_chan, _abort_handle) = spawn_twoway(transport);
 
         // Create channels for this connection

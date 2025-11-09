@@ -20,3 +20,6 @@ lapdev-common.workspace = true
 quinn.workspace = true
 rcgen.workspace = true
 rand.workspace = true
+serde.workspace = true
+tokio-serde.workspace = true
+pin-project.workspace = true

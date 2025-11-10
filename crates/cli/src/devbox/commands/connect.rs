@@ -21,7 +21,7 @@ use tokio::{
     signal,
     sync::{mpsc, oneshot, Mutex, RwLock},
     task::JoinHandle,
-    time::{sleep, MissedTickBehavior},
+    time::{sleep, timeout, MissedTickBehavior},
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
@@ -35,6 +35,13 @@ use crate::{
 };
 
 const DEVBOX_HEARTBEAT_INTERVAL_SECS: u64 = 30;
+const DEVBOX_HEARTBEAT_TIMEOUT_SECS: u64 = 10;
+
+#[derive(Debug)]
+enum HeartbeatEvent {
+    Failed(String),
+    TimedOut,
+}
 const DEFAULT_STUN_ENDPOINTS: &[&str] = &[
     "stun.l.google.com:19302",
     "stun1.l.google.com:19302",
@@ -511,22 +518,50 @@ impl DevboxTunnelManager {
 
         let mut server_task = server_task;
         let mut should_exit = false;
-        let mut heartbeat_interval =
-            tokio::time::interval(Duration::from_secs(DEVBOX_HEARTBEAT_INTERVAL_SECS));
-        heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let (heartbeat_event_tx, mut heartbeat_event_rx) =
+            mpsc::unbounded_channel::<HeartbeatEvent>();
+        let (mut heartbeat_task, heartbeat_cancel_tx) = Self::spawn_heartbeat_task(
+            rpc_client.clone(),
+            session_info.user_id,
+            heartbeat_event_tx,
+        );
 
         loop {
             tokio::select! {
-                _ = heartbeat_interval.tick() => {
-                    if let Err(err) = Self::send_session_heartbeat(&rpc_client).await {
-                        tracing::warn!(
-                            user_id = %session_info.user_id,
-                            "Devbox session heartbeat failed: {}",
-                            err
-                        );
-                        eprintln!("{} Connection heartbeat lost, reconnecting...", "⚠".yellow());
-                        break;
+                heartbeat_event = heartbeat_event_rx.recv() => {
+                    match heartbeat_event {
+                        Some(HeartbeatEvent::Failed(err)) => {
+                            tracing::warn!(
+                                user_id = %session_info.user_id,
+                                error = %err,
+                                "Devbox session heartbeat failed"
+                            );
+                            eprintln!(
+                                "{} Connection heartbeat lost ({}), reconnecting...",
+                                "⚠".yellow(),
+                                err
+                            );
+                        }
+                        Some(HeartbeatEvent::TimedOut) => {
+                            tracing::warn!(
+                                user_id = %session_info.user_id,
+                                timeout_secs = DEVBOX_HEARTBEAT_TIMEOUT_SECS,
+                                "Devbox session heartbeat timed out"
+                            );
+                            eprintln!(
+                                "{} Connection heartbeat timed out, reconnecting...",
+                                "⚠".yellow()
+                            );
+                        }
+                        None => {
+                            tracing::warn!(
+                                user_id = %session_info.user_id,
+                                "Heartbeat channel closed unexpectedly"
+                            );
+                            eprintln!("{} Heartbeat channel closed, reconnecting...", "⚠".yellow());
+                        }
                     }
+                    break;
                 }
                 res = &mut server_task => {
                     match res {
@@ -603,6 +638,12 @@ impl DevboxTunnelManager {
 
         if !server_task.is_finished() {
             server_task.abort();
+        }
+        if !heartbeat_task.is_finished() {
+            let _ = heartbeat_cancel_tx.send(());
+        }
+        if let Err(err) = heartbeat_task.await {
+            tracing::warn!("Heartbeat task join error: {}", err);
         }
 
         // Return true if we should exit completely, false to retry connection
@@ -885,6 +926,57 @@ impl DevboxTunnelManager {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err),
             Err(err) => Err(err.to_string()),
+        }
+    }
+
+    fn spawn_heartbeat_task(
+        rpc_client: DevboxSessionRpcClient,
+        user_id: Uuid,
+        event_tx: mpsc::UnboundedSender<HeartbeatEvent>,
+    ) -> (JoinHandle<()>, oneshot::Sender<()>) {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            Self::heartbeat_loop(rpc_client, user_id, event_tx, cancel_rx).await;
+        });
+        (task, cancel_tx)
+    }
+
+    async fn heartbeat_loop(
+        rpc_client: DevboxSessionRpcClient,
+        user_id: Uuid,
+        event_tx: mpsc::UnboundedSender<HeartbeatEvent>,
+        mut cancel_rx: oneshot::Receiver<()>,
+    ) {
+        let mut heartbeat_interval =
+            tokio::time::interval(Duration::from_secs(DEVBOX_HEARTBEAT_INTERVAL_SECS));
+        heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    tracing::debug!(user_id = %user_id, "Heartbeat loop cancelled");
+                    break;
+                }
+                _ = heartbeat_interval.tick() => {
+                    let heartbeat_result = timeout(
+                        Duration::from_secs(DEVBOX_HEARTBEAT_TIMEOUT_SECS),
+                        Self::send_session_heartbeat(&rpc_client)
+                    )
+                    .await;
+
+                    match heartbeat_result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            let _ = event_tx.send(HeartbeatEvent::Failed(err));
+                            break;
+                        }
+                        Err(_) => {
+                            let _ = event_tx.send(HeartbeatEvent::TimedOut);
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 

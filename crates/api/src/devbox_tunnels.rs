@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message as AxumMessage, Utf8Bytes, WebSocket};
 use bytes::Bytes;
 use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use lapdev_tunnel::{
@@ -15,6 +15,7 @@ use lapdev_tunnel::{
     DynTunnelStream, TunnelClient, TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
 };
 use tokio::sync::RwLock;
+use tokio_tungstenite::tungstenite::{self as ws, Message as TungMessage};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -152,25 +153,50 @@ impl DevboxTunnelRegistry {
 pub(crate) fn split_axum_websocket(
     socket: WebSocket,
 ) -> (
-    impl Sink<Bytes, Error = io::Error> + Send + 'static,
+    impl Sink<TungMessage, Error = io::Error> + Send + 'static,
     impl Stream<Item = Result<Bytes, io::Error>> + Send + 'static,
 ) {
     let (sink, stream) = socket.split();
 
     let sink = sink
         .sink_map_err(|err| io::Error::other(err))
-        .with(|bytes: Bytes| future::ready(Ok(Message::Binary(bytes))));
+        .with(|message: TungMessage| future::ready(map_tungstenite_to_axum(message)));
 
     let stream = stream.filter_map(|msg| {
         future::ready(match msg {
-            Ok(Message::Binary(data)) => Some(Ok(data)),
-            Ok(Message::Close(_)) => None,
+            Ok(AxumMessage::Binary(data)) => Some(Ok(data)),
+            Ok(AxumMessage::Close(_)) => None,
             Ok(_) => None,
             Err(err) => Some(Err(io::Error::other(err))),
         })
     });
 
     (sink, stream)
+}
+
+fn map_tungstenite_to_axum(message: TungMessage) -> io::Result<AxumMessage> {
+    match message {
+        ws::Message::Text(text) => {
+            let bytes: Bytes = text.into();
+            let utf8 = Utf8Bytes::try_from(bytes)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            Ok(AxumMessage::Text(utf8))
+        }
+        ws::Message::Binary(data) => Ok(AxumMessage::Binary(data)),
+        ws::Message::Ping(data) => Ok(AxumMessage::Ping(data)),
+        ws::Message::Pong(data) => Ok(AxumMessage::Pong(data)),
+        ws::Message::Close(frame) => {
+            let mapped = frame.map(|close| CloseFrame {
+                code: close.code.into(),
+                reason: Utf8Bytes::from(close.reason.to_string()),
+            });
+            Ok(AxumMessage::Close(mapped))
+        }
+        ws::Message::Frame(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame messages are not supported",
+        )),
+    }
 }
 
 impl Default for DevboxTunnelRegistry {

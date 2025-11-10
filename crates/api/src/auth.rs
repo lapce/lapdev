@@ -5,8 +5,9 @@ use lapdev_common::AuthProvider;
 use lapdev_db::api::DbApi;
 use oauth2::{
     basic::BasicClient, AccessToken, AuthUrl, AuthorizationCode, ClientId, ClientSecret,
-    RedirectUrl, TokenResponse, TokenUrl,
+    EndpointNotSet, EndpointSet, RedirectUrl, TokenResponse, TokenUrl,
 };
+use reqwest::redirect::Policy;
 use tokio::sync::RwLock;
 
 use crate::gitlab::GitlabClient;
@@ -42,8 +43,11 @@ impl AuthConfig {
     };
 }
 
+type ConfiguredOAuthClient =
+    BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
+
 pub struct Auth {
-    pub clients: RwLock<HashMap<AuthProvider, (BasicClient, AuthConfig)>>,
+    pub clients: RwLock<HashMap<AuthProvider, (ConfiguredOAuthClient, AuthConfig)>>,
     pub gitlab_client: GitlabClient,
 }
 
@@ -60,7 +64,7 @@ impl Auth {
         *self.clients.write().await = clients;
     }
 
-    async fn get_clients(db: &DbApi) -> HashMap<AuthProvider, (BasicClient, AuthConfig)> {
+    async fn get_clients(db: &DbApi) -> HashMap<AuthProvider, (ConfiguredOAuthClient, AuthConfig)> {
         let mut clients = HashMap::new();
         if let Ok(client) = Self::build_auth(db, &AuthConfig::GITHUB).await {
             clients.insert(AuthProvider::Github, (client, AuthConfig::GITHUB));
@@ -71,19 +75,17 @@ impl Auth {
         clients
     }
 
-    async fn build_auth(db: &DbApi, config: &AuthConfig) -> Result<BasicClient> {
+    async fn build_auth(db: &DbApi, config: &AuthConfig) -> Result<ConfiguredOAuthClient> {
         let client_id = db.get_config(config.client_id).await?;
         let client_secret = db.get_config(config.client_secret).await?;
         if client_id.trim().is_empty() || client_secret.trim().is_empty() {
             return Err(anyhow::anyhow!("client id or secret is empty"));
         }
 
-        let client = BasicClient::new(
-            ClientId::new(client_id),
-            Some(ClientSecret::new(client_secret)),
-            AuthUrl::new(config.auth_url.to_string())?,
-            Some(TokenUrl::new(config.token_url.to_string())?),
-        );
+        let client = BasicClient::new(ClientId::new(client_id))
+            .set_client_secret(ClientSecret::new(client_secret))
+            .set_auth_uri(AuthUrl::new(config.auth_url.to_string())?)
+            .set_token_uri(TokenUrl::new(config.token_url.to_string())?);
         Ok(client)
     }
 
@@ -121,10 +123,13 @@ impl Auth {
         let (client, _) = clients
             .get(provider)
             .ok_or_else(|| anyhow::anyhow!("can't find provider"))?;
+        let http_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()?;
         let token = match client
             .exchange_code(AuthorizationCode::new(code))
             .set_redirect_uri(Cow::Borrowed(&RedirectUrl::new(redirect_url)?))
-            .request_async(oauth2::reqwest::async_http_client)
+            .request_async(&http_client)
             .await
         {
             Ok(t) => t,

@@ -8,6 +8,7 @@ use std::{
         Arc, Mutex,
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -33,6 +34,7 @@ use crate::{
 };
 
 const DEFAULT_BUFFER_CAPACITY: usize = 256;
+const WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 pub fn relay_client_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 60000))
@@ -208,7 +210,7 @@ impl WebSocketUdpSocket {
         peer_addr: SocketAddr,
     ) -> Arc<Self>
     where
-        SinkT: Sink<Bytes, Error = io::Error> + Send + 'static,
+        SinkT: Sink<Message, Error = io::Error> + Send + 'static,
         StreamT: Stream<Item = Result<Bytes, io::Error>> + Send + 'static,
     {
         Self::with_capacity_parts(sink, stream, local_addr, peer_addr, DEFAULT_BUFFER_CAPACITY)
@@ -222,13 +224,17 @@ impl WebSocketUdpSocket {
         capacity: usize,
     ) -> Arc<Self>
     where
-        SinkT: Sink<Bytes, Error = io::Error> + Send + 'static,
+        SinkT: Sink<Message, Error = io::Error> + Send + 'static,
         StreamT: Stream<Item = Result<Bytes, io::Error>> + Send + 'static,
     {
         let send_buffer = Arc::new(SendBuffer::new(capacity));
         let recv_buffer = Arc::new(RecvBuffer::new(capacity));
 
-        tokio::spawn(run_sender_generic(sink, Arc::clone(&send_buffer)));
+        tokio::spawn(run_sender_generic(
+            sink,
+            Arc::clone(&send_buffer),
+            Some(WEBSOCKET_KEEPALIVE_INTERVAL),
+        ));
         tokio::spawn(run_receiver_generic(stream, Arc::clone(&recv_buffer)));
 
         Arc::new(Self {
@@ -323,15 +329,43 @@ impl UdpPoller for WebSocketUdpPoller {
     }
 }
 
-async fn run_sender_generic<SinkT>(sink: SinkT, buffer: Arc<SendBuffer>)
-where
-    SinkT: Sink<Bytes, Error = io::Error> + Send + 'static,
+async fn run_sender_generic<SinkT>(
+    sink: SinkT,
+    buffer: Arc<SendBuffer>,
+    keepalive_interval: Option<Duration>,
+) where
+    SinkT: Sink<Message, Error = io::Error> + Send + 'static,
 {
     pin!(sink);
 
-    while let Some(datagram) = buffer.next_datagram().await {
-        if SinkExt::send(&mut sink, datagram).await.is_err() {
-            break;
+    loop {
+        let next_datagram = if let Some(interval) = keepalive_interval {
+            match tokio::time::timeout(interval, buffer.next_datagram()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    if SinkExt::send(&mut sink, Message::Ping(Bytes::new()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            }
+        } else {
+            buffer.next_datagram().await
+        };
+
+        match next_datagram {
+            Some(datagram) => {
+                if SinkExt::send(&mut sink, Message::Binary(datagram))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            None => break,
         }
     }
 
@@ -362,7 +396,7 @@ where
 fn split_tungstenite<S>(
     websocket: WebSocketStream<S>,
 ) -> (
-    impl Sink<Bytes, Error = io::Error> + Send + 'static,
+    impl Sink<Message, Error = io::Error> + Send + 'static,
     impl Stream<Item = Result<Bytes, io::Error>> + Send + 'static,
 )
 where
@@ -370,9 +404,7 @@ where
 {
     let (sink, stream) = websocket.split();
 
-    let sink = sink
-        .sink_map_err(|err| io::Error::other(err))
-        .with(|bytes: Bytes| future::ready(Ok(Message::Binary(bytes))));
+    let sink = sink.sink_map_err(|err| io::Error::other(err));
 
     let stream = stream.filter_map(|msg| {
         future::ready(match msg {

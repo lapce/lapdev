@@ -243,15 +243,20 @@ mod tests {
         let (io_a, io_b) = duplex(1024);
         let framed_a = LengthDelimitedCodec::builder().new_framed(io_a);
         let framed_b = LengthDelimitedCodec::builder().new_framed(io_b);
-        let transport_a = tarpc::serde_transport::new::<_, TwoWayMessage<String, String>, TwoWayMessage<String, String>, _>(
-            framed_a,
-            tarpc::tokio_serde::formats::Bincode::default(),
-        );
-        let transport_b = tarpc::serde_transport::new::<_, TwoWayMessage<String, String>, TwoWayMessage<String, String>, _>(
-            framed_b,
-            tarpc::tokio_serde::formats::Bincode::default(),
-        );
-        let (mut server, mut client, abort_handle) = spawn_twoway::<String, String, String, String, _>(transport_a);
+        let transport_a = tarpc::serde_transport::new::<
+            _,
+            TwoWayMessage<String, String>,
+            TwoWayMessage<String, String>,
+            _,
+        >(framed_a, tarpc::tokio_serde::formats::Bincode::default());
+        let transport_b = tarpc::serde_transport::new::<
+            _,
+            TwoWayMessage<String, String>,
+            TwoWayMessage<String, String>,
+            _,
+        >(framed_b, tarpc::tokio_serde::formats::Bincode::default());
+        let (mut server, mut client, abort_handle) =
+            spawn_twoway::<String, String, String, String, _>(transport_a);
         let (mut transport_sink, mut transport_stream) = transport_b.split();
 
         let cancel: tarpc::ClientMessage<String> = tarpc::ClientMessage::Cancel {

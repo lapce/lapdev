@@ -85,7 +85,7 @@ impl TunnelClient {
                 }
                 Err(err) => {
                     on_direct_failure(&err);
-                    tracing::debug!(
+                    tracing::info!(
                         error = %err,
                         "Direct tunnel attempt failed; falling back to relay transport"
                     );

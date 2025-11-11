@@ -127,7 +127,7 @@ pub async fn connect_direct_tunnel(
 async fn connect_direct_tunnel_inner(
     config: &DirectChannelConfig,
 ) -> Result<TunnelClient, TunnelError> {
-    let mut endpoint = Endpoint::client("[::]:0".parse().unwrap())
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
 
     let server_cert = config

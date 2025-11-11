@@ -318,7 +318,12 @@ impl DirectQuicServer {
 
         let stun_keepalive = match (keepalive_socket, keepalive_interval) {
             (Some(sock), Some(interval)) if !stun_servers_clone.is_empty() => {
-                Some(Self::start_stun_keepalive(sock, stun_servers_clone, interval))
+                Some(Self::start_stun_keepalive(
+                    sock,
+                    stun_servers_clone,
+                    interval,
+                    options.stun_timeout,
+                ))
             }
             _ => None,
         };
@@ -403,21 +408,25 @@ impl DirectQuicServer {
         socket: UdpSocket,
         servers: Vec<SocketAddr>,
         interval: Duration,
+        timeout: Duration,
     ) -> StunKeepaliveHandle {
         let socket = Arc::new(socket);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => {
-                        break;
-                    }
-                    _ = ticker.tick() => {
-                        for server in &servers {
-                            if let Err(err) = send_stun_binding_indication(socket.as_ref(), *server) {
-                                debug!(?server, error = %err, "STUN keepalive send failed");
+        let task = tokio::spawn({
+            let servers = servers.clone();
+            async move {
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_rx => {
+                            break;
+                        }
+                        _ = ticker.tick() => {
+                            for server in &servers {
+                                if let Err(err) = send_stun_binding_request_with_timeout(socket.as_ref(), *server, timeout) {
+                                    debug!(?server, error = %err, "STUN keepalive request failed");
+                                }
                             }
                         }
                     }
@@ -669,7 +678,28 @@ fn send_stun_binding_request(
     socket: &UdpSocket,
     server: SocketAddr,
 ) -> io::Result<Option<SocketAddr>> {
+    send_stun_binding_request_inner(socket, server, None)
+}
+
+fn send_stun_binding_request_with_timeout(
+    socket: &UdpSocket,
+    server: SocketAddr,
+    timeout: Duration,
+) -> io::Result<Option<SocketAddr>> {
+    send_stun_binding_request_inner(socket, server, Some(timeout))
+}
+
+fn send_stun_binding_request_inner(
+    socket: &UdpSocket,
+    server: SocketAddr,
+    timeout: Option<Duration>,
+) -> io::Result<Option<SocketAddr>> {
     let transaction_id: [u8; 12] = random();
+
+    if let Some(timeout) = timeout {
+        socket.set_read_timeout(Some(timeout))?;
+        socket.set_write_timeout(Some(timeout))?;
+    }
 
     let mut request = [0u8; STUN_HEADER_SIZE];
     request[0] = (STUN_BINDING_REQUEST >> 8) as u8;
@@ -683,22 +713,18 @@ fn send_stun_binding_request(
 
     let mut buf = [0u8; 576];
     let (len, _) = socket.recv_from(&mut buf)?;
-    parse_stun_response(&buf[..len], &transaction_id)
-}
+    let result = parse_stun_response(&buf[..len], &transaction_id);
 
-fn send_stun_binding_indication(socket: &UdpSocket, server: SocketAddr) -> io::Result<()> {
-    let transaction_id: [u8; 12] = random();
+    if timeout.is_some() {
+        if let Err(err) = socket.set_read_timeout(None) {
+            debug!(error = %err, "Failed to reset STUN keepalive read timeout");
+        }
+        if let Err(err) = socket.set_write_timeout(None) {
+            debug!(error = %err, "Failed to reset STUN keepalive write timeout");
+        }
+    }
 
-    let mut request = [0u8; STUN_HEADER_SIZE];
-    request[0] = (STUN_BINDING_INDICATION >> 8) as u8;
-    request[1] = STUN_BINDING_INDICATION as u8;
-    request[2] = 0;
-    request[3] = 0;
-    request[4..8].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
-    request[8..20].copy_from_slice(&transaction_id);
-
-    socket.send_to(&request, server)?;
-    Ok(())
+    result
 }
 
 fn parse_stun_response(data: &[u8], transaction_id: &[u8; 12]) -> io::Result<Option<SocketAddr>> {

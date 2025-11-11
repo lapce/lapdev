@@ -19,7 +19,6 @@ use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UdpSocket as TokioUdpSocket,
     sync::{oneshot, RwLock},
     task::JoinHandle,
     time::{timeout, MissedTickBehavior},
@@ -279,26 +278,7 @@ impl DirectQuicServer {
         let stun_servers_clone = options.stun_servers.clone();
         let keepalive_socket = if keepalive_interval.is_some() && !stun_servers_clone.is_empty() {
             match socket.try_clone() {
-                Ok(mut clone) => {
-                    if let Err(err) = clone.set_nonblocking(true) {
-                        warn!(
-                            error = %err,
-                            "Failed to set cloned UDP socket nonblocking for STUN keepalive; continuing without keepalive"
-                        );
-                        None
-                    } else {
-                        match TokioUdpSocket::from_std(clone) {
-                            Ok(sock) => Some(sock),
-                            Err(err) => {
-                                warn!(
-                                    error = %err,
-                                    "Failed to convert cloned UDP socket for STUN keepalive; continuing without keepalive"
-                                );
-                                None
-                            }
-                        }
-                    }
-                }
+                Ok(clone) => Some(clone),
                 Err(err) => {
                     warn!(
                         error = %err,
@@ -425,7 +405,7 @@ impl DirectQuicServer {
     }
 
     fn start_stun_keepalive(
-        socket: TokioUdpSocket,
+        socket: UdpSocket,
         servers: Vec<SocketAddr>,
         interval: Duration,
         timeout: Duration,
@@ -443,11 +423,11 @@ impl DirectQuicServer {
                             break;
                         }
                         _ = ticker.tick() => {
-                        for server in &servers {
-                            if let Err(err) = send_async_stun_binding_request(socket.as_ref(), *server, timeout).await {
-                                debug!(?server, error = %err, "STUN keepalive request failed");
+                            for server in &servers {
+                                if let Err(err) = send_stun_binding_request_with_timeout(socket.as_ref(), *server, timeout) {
+                                    debug!(?server, error = %err, "STUN keepalive request failed");
+                                }
                             }
-                        }
                         }
                     }
                 }
@@ -642,6 +622,7 @@ pub(crate) async fn write_server_ack(stream: &mut SendStream) -> Result<(), Tunn
 const STUN_MAGIC_COOKIE: u32 = 0x2112_A442;
 const STUN_HEADER_SIZE: usize = 20;
 const STUN_BINDING_REQUEST: u16 = 0x0001;
+const STUN_BINDING_INDICATION: u16 = 0x0011;
 const STUN_BINDING_SUCCESS: u16 = 0x0101;
 const STUN_ATTR_MAPPED_ADDRESS: u16 = 0x0001;
 const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
@@ -700,42 +681,12 @@ fn send_stun_binding_request(
     send_stun_binding_request_inner(socket, server, None)
 }
 
-async fn send_async_stun_binding_request(
-    socket: &TokioUdpSocket,
+fn send_stun_binding_request_with_timeout(
+    socket: &UdpSocket,
     server: SocketAddr,
-    response_timeout: Duration,
-) -> io::Result<()> {
-    let transaction_id: [u8; 12] = random();
-
-    let mut request = [0u8; STUN_HEADER_SIZE];
-    request[0] = (STUN_BINDING_REQUEST >> 8) as u8;
-    request[1] = STUN_BINDING_REQUEST as u8;
-    request[2] = 0;
-    request[3] = 0;
-    request[4..8].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
-    request[8..20].copy_from_slice(&transaction_id);
-
-    socket.send_to(&request, server).await?;
-
-    let mut buf = [0u8; 576];
-    loop {
-        match timeout(response_timeout, socket.recv_from(&mut buf)).await {
-            Ok(Ok((len, addr))) => {
-                if addr != server {
-                    continue;
-                }
-                parse_stun_response(&buf[..len], &transaction_id)?;
-                return Ok(());
-            }
-            Ok(Err(err)) => return Err(err),
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "STUN keepalive timed out",
-                ))
-            }
-        }
-    }
+    timeout: Duration,
+) -> io::Result<Option<SocketAddr>> {
+    send_stun_binding_request_inner(socket, server, Some(timeout))
 }
 
 fn send_stun_binding_request_inner(

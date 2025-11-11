@@ -227,6 +227,7 @@ impl DevboxTunnelManager {
         let api_host = api_host.into();
         let api_host = api_host.trim().trim_end_matches('/').to_string();
         let ws_base = format!("wss://{}", api_host);
+        let tunnel_client = Arc::new(RwLock::new(None));
 
         Self {
             api_host: Arc::new(api_host),
@@ -234,8 +235,8 @@ impl DevboxTunnelManager {
             intercept_task: Arc::new(Mutex::new(None)),
             client_task: Arc::new(Mutex::new(None)),
             direct_server: Arc::new(Mutex::new(None)),
-            tunnel_client: Arc::new(RwLock::new(None)),
-            service_bridge: Arc::new(ServiceBridge::new()),
+            tunnel_client: tunnel_client.clone(),
+            service_bridge: Arc::new(ServiceBridge::new(tunnel_client)),
             hosts_manager: Arc::new(HostsManager::new()),
             ip_allocator: Arc::new(Mutex::new(SyntheticIpAllocator::new())),
             client_direct_config: Arc::new(RwLock::new(None)),
@@ -368,12 +369,10 @@ impl DevboxTunnelManager {
             }
         };
 
-        let direct_port = self
-            .ensure_direct_server()
+        self.ensure_direct_server()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start direct server: {}", e))?;
         let mut candidate_opts = CandidateOptions::default();
-        candidate_opts.preferred_port = Some(direct_port);
         candidate_opts.stun_observed_addr = {
             let guard = self.direct_server.lock().await;
             guard.as_ref().and_then(|handle| handle.observed_addr())
@@ -384,22 +383,20 @@ impl DevboxTunnelManager {
                 .as_ref()
                 .map(|handle| handle.server_certificate().to_vec())
         };
-        let mut discovery = collect_candidates(&candidate_opts);
+        let mut candidate_set = collect_candidates(&candidate_opts);
         if let Some(cert) = server_certificate {
-            discovery.candidates.server_certificate = Some(cert);
+            candidate_set.server_certificate = Some(cert);
         } else {
             tracing::warn!("Direct server certificate unavailable; skipping pinning data");
         }
-        let diagnostics = discovery.diagnostics.clone();
         match rpc_client
-            .publish_direct_candidates(tarpc::context::current(), discovery.candidates)
+            .publish_direct_candidates(tarpc::context::current(), candidate_set)
             .await
         {
             Ok(Ok(config)) => {
                 self.configure_direct_server(&config).await;
                 tracing::info!(
-                    detected_interface = ?diagnostics.detected_interface,
-                    relay_candidates = diagnostics.relay_candidates,
+                    stun_observed = ?candidate_opts.stun_observed_addr,
                     "Direct channel negotiation initialized"
                 );
             }
@@ -615,6 +612,18 @@ impl DevboxTunnelManager {
                                     "Failed to refresh direct tunnel configuration"
                                 );
                             }
+                            if let Err(err) = self.restart_client_tunnel().await {
+                                tracing::warn!(
+                                    environment_id = %env_info.environment_id,
+                                    error = %err,
+                                    "Failed to restart client tunnel after environment change"
+                                );
+                            } else {
+                                tracing::info!(
+                                    environment_id = %env_info.environment_id,
+                                    "Client tunnel restarted after environment change"
+                                );
+                            }
                         }
                         None => {
                             tracing::info!("Clearing DNS entries");
@@ -661,8 +670,6 @@ impl DevboxTunnelManager {
             let mut guard = self.tunnel_client.write().await;
             *guard = Some(Arc::clone(&client));
         }
-        // Propagate the new client to the service bridge so future listeners use it
-        self.service_bridge.set_tunnel_client(client).await;
     }
 
     /// Clear the stored tunnel client if it matches the provided instance
@@ -1019,6 +1026,10 @@ impl DevboxTunnelManager {
                 .await
             {
                 Ok(Ok(config)) => {
+                    tracing::info!(
+                        environment_id = %env_id,
+                        "Received direct channel config from server {:?}", config.as_ref().map(|c| &c.candidates)
+                    );
                     self.update_client_direct_config(config).await?;
                 }
                 Ok(Err(err)) => {

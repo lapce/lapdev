@@ -194,22 +194,20 @@ impl DevboxDirectGateway {
         }
 
         let candidate_opts = CandidateOptions {
-            preferred_port: Some(
-                self.server
-                    .local_addr()
-                    .map_err(|e| format!("Failed to fetch server addr: {}", e))?
-                    .port(),
-            ),
             stun_observed_addr: self.server.observed_addr(),
-            include_loopback: false,
-            relay_candidates: Vec::new(),
         };
-        let discovery = collect_candidates(&candidate_opts);
+        let candidate_set = collect_candidates(&candidate_opts);
+        if let Some(addr) = candidate_opts.stun_observed_addr {
+            info!(
+                observed_addr = %addr,
+                namespace = %namespace,
+                "Advertising devbox STUN reflexive address"
+            );
+        }
 
         Ok(DirectChannelConfig {
             credential: DirectCredential { token, expires_at },
-            devbox_candidates: discovery.candidates.candidates,
-            sidecar_candidates: Vec::new(),
+            candidates: candidate_set.candidates,
             server_certificate: Some(self.server.server_certificate().to_vec()),
         })
     }

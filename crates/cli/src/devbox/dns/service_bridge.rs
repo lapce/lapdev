@@ -27,17 +27,12 @@ pub struct ServiceBridgeStartReport {
 }
 
 impl ServiceBridge {
-    pub fn new() -> Self {
+    pub fn new(tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>) -> Self {
         Self {
             endpoints: Arc::new(RwLock::new(HashMap::new())),
             listeners: Arc::new(RwLock::new(Vec::new())),
-            tunnel_client: Arc::new(RwLock::new(None)),
+            tunnel_client,
         }
-    }
-
-    /// Set the tunnel client to use for connections
-    pub async fn set_tunnel_client(&self, client: Arc<TunnelClient>) {
-        *self.tunnel_client.write().await = Some(client);
     }
 
     /// Start listening on synthetic IPs for the given service endpoints
@@ -149,7 +144,7 @@ impl ServiceBridge {
                             if let Err(e) =
                                 handle_connection(stream, addr, endpoints, tunnel_client).await
                             {
-                                error!("Connection handler error: {}", e);
+                                error!("Connection handler error: {:?}", e);
                             }
                         });
                     }

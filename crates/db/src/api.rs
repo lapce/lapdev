@@ -3534,37 +3534,42 @@ impl DbApi {
 
         let now: DateTimeWithTimeZone = Utc::now().into();
 
-        // Revoke existing active session (if present)
-        if let Some(existing) = lapdev_db_entities::kube_devbox_session::Entity::find()
+        let existing_session = lapdev_db_entities::kube_devbox_session::Entity::find()
             .filter(lapdev_db_entities::kube_devbox_session::Column::UserId.eq(user_id))
-            .filter(lapdev_db_entities::kube_devbox_session::Column::RevokedAt.is_null())
+            .order_by_desc(lapdev_db_entities::kube_devbox_session::Column::CreatedAt)
             .one(&txn)
-            .await?
-        {
+            .await?;
+
+        // Reuse the existing session row when present, otherwise create a new one.
+        let session = if let Some(existing) = existing_session {
             lapdev_db_entities::kube_devbox_session::ActiveModel {
                 id: ActiveValue::Set(existing.id),
-                revoked_at: ActiveValue::Set(Some(now)),
+                session_token_hash: ActiveValue::Set(token_hash.clone()),
+                token_prefix: ActiveValue::Set(token_prefix.clone()),
+                device_name: ActiveValue::Set(device_name.clone()),
+                expires_at: ActiveValue::Set(expires_at.clone()),
+                last_used_at: ActiveValue::Set(now.clone()),
+                revoked_at: ActiveValue::Set(None),
                 ..Default::default()
             }
             .update(&txn)
-            .await?;
-        }
-
-        // Create new session row
-        let session = lapdev_db_entities::kube_devbox_session::ActiveModel {
-            id: ActiveValue::Set(Uuid::new_v4()),
-            user_id: ActiveValue::Set(user_id),
-            session_token_hash: ActiveValue::Set(token_hash),
-            token_prefix: ActiveValue::Set(token_prefix),
-            device_name: ActiveValue::Set(device_name),
-            active_environment_id: ActiveValue::Set(None),
-            created_at: ActiveValue::Set(now),
-            expires_at: ActiveValue::Set(expires_at),
-            last_used_at: ActiveValue::Set(now),
-            revoked_at: ActiveValue::Set(None),
-        }
-        .insert(&txn)
-        .await?;
+            .await?
+        } else {
+            lapdev_db_entities::kube_devbox_session::ActiveModel {
+                id: ActiveValue::Set(Uuid::new_v4()),
+                user_id: ActiveValue::Set(user_id),
+                session_token_hash: ActiveValue::Set(token_hash),
+                token_prefix: ActiveValue::Set(token_prefix),
+                device_name: ActiveValue::Set(device_name),
+                active_environment_id: ActiveValue::Set(None),
+                created_at: ActiveValue::Set(now.clone()),
+                expires_at: ActiveValue::Set(expires_at),
+                last_used_at: ActiveValue::Set(now),
+                revoked_at: ActiveValue::Set(None),
+            }
+            .insert(&txn)
+            .await?
+        };
 
         txn.commit().await?;
 

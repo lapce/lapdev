@@ -104,7 +104,7 @@ async fn quic_client_from_udp(
         runtime,
     )
     .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
-    endpoint.set_default_client_config(client_config());
+    endpoint.set_default_client_config(client_config()?);
     let connecting = endpoint
         .connect(relay_server_addr(), "lapdev-relay")
         .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
@@ -583,7 +583,7 @@ impl RecvBuffer {
 
         if self.closed.load(Ordering::SeqCst) {
             return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::ConnectionReset,
+                io::ErrorKind::BrokenPipe,
                 "websocket closed",
             )));
         }

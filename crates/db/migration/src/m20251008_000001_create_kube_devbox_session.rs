@@ -72,14 +72,15 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create unique partial index to ensure one active session per user
-        // (only enforced when revoked_at IS NULL)
+        // Create unique index to ensure only one session row per user
         manager
-            .get_connection()
-            .execute_unprepared(
-                "CREATE UNIQUE INDEX kube_devbox_session_user_active_unique_idx
-                 ON kube_devbox_session (user_id)
-                 WHERE revoked_at IS NULL",
+            .create_index(
+                Index::create()
+                    .name("kube_devbox_session_user_unique_idx")
+                    .table(KubeDevboxSession::Table)
+                    .col(KubeDevboxSession::UserId)
+                    .unique()
+                    .to_owned(),
             )
             .await?;
 

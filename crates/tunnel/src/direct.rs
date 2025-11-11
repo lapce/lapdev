@@ -11,14 +11,17 @@ use lapdev_common::devbox::{
     DirectCandidate, DirectCandidateKind, DirectCandidateSet, DirectChannelConfig, DirectTransport,
 };
 use quinn::rustls;
-use quinn::{self, Connection, Endpoint, RecvStream, SendStream};
+use quinn::{self, Connection, Endpoint, IdleTimeout, RecvStream, SendStream, TransportConfig};
 use rand::random;
 use rcgen::generate_simple_self_signed;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::RwLock;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::RwLock,
+    time::timeout,
+};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -29,6 +32,9 @@ use crate::{
 const HANDSHAKE_MAX_TOKEN_LEN: usize = u16::MAX as usize;
 const DIRECT_SERVER_NAME: &str = "lapdev.devbox";
 const CERTIFICATE_ALT_NAMES: &[&str] = &["lapdev.devbox", "lapdev-direct", "lapdev-relay"];
+const QUIC_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
+const QUIC_IDLE_TIMEOUT_SECS: u64 = 60 * 60;
+const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Options controlling direct QUIC server behavior.
 #[derive(Debug, Clone)]
@@ -49,63 +55,16 @@ impl Default for DirectServerOptions {
 }
 
 /// Options that influence how direct transport candidates are collected.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CandidateOptions {
-    /// Preferred listening port to advertise to peers. Defaults to 0 (unknown).
-    pub preferred_port: Option<u16>,
-    /// Whether to include loopback candidates like 127.0.0.1 for debugging.
-    pub include_loopback: bool,
-    /// Pre-configured relay candidates supplied by the caller.
-    pub relay_candidates: Vec<DirectCandidate>,
     /// Reflexive address reported by a STUN probe, if one was performed.
     pub stun_observed_addr: Option<SocketAddr>,
 }
 
-impl Default for CandidateOptions {
-    fn default() -> Self {
-        Self {
-            preferred_port: None,
-            include_loopback: true,
-            relay_candidates: Vec::new(),
-            stun_observed_addr: None,
-        }
-    }
-}
-
-/// Basic telemetry describing what the collector discovered.
-#[derive(Debug, Clone, Default)]
-pub struct CandidateDiagnostics {
-    pub detected_interface: Option<IpAddr>,
-    pub relay_candidates: usize,
-    pub loopback_included: bool,
-    pub stun_observed_addr: Option<SocketAddr>,
-}
-
-/// Result produced by the candidate collector.
-#[derive(Debug, Clone)]
-pub struct CandidateDiscovery {
-    pub candidates: DirectCandidateSet,
-    pub diagnostics: CandidateDiagnostics,
-}
-
-/// Collects direct transport candidates based on local interface probing and supplied options.
-pub fn collect_candidates(opts: &CandidateOptions) -> CandidateDiscovery {
-    let mut diagnostics = CandidateDiagnostics {
-        relay_candidates: opts.relay_candidates.len(),
-        loopback_included: opts.include_loopback,
-        detected_interface: None,
-        stun_observed_addr: opts.stun_observed_addr,
-    };
-
+/// Collects direct transport candidates based on supplied options.
+pub fn collect_candidates(opts: &CandidateOptions) -> DirectCandidateSet {
     let mut priority_counter = 0u32;
     let mut candidates = Vec::new();
-
-    if let Some((ip, direct_candidate)) =
-        detect_public_interface(opts.preferred_port, &mut priority_counter)
-    {
-        diagnostics.detected_interface = Some(ip);
-        candidates.push(direct_candidate);
-    }
 
     if let Some(addr) = opts.stun_observed_addr {
         let host = addr.ip().to_string();
@@ -120,57 +79,16 @@ pub fn collect_candidates(opts: &CandidateOptions) -> CandidateDiscovery {
         }
     }
 
-    if opts.include_loopback {
-        candidates.push(DirectCandidate {
-            host: Ipv4Addr::LOCALHOST.to_string(),
-            port: opts.preferred_port.unwrap_or(0),
-            transport: DirectTransport::Quic,
-            kind: DirectCandidateKind::Public,
-            priority: next_priority(&mut priority_counter),
-        });
-    }
-
-    for relay in &opts.relay_candidates {
-        let mut relay_candidate = relay.clone();
-        relay_candidate.priority = next_priority(&mut priority_counter);
-        candidates.push(relay_candidate);
-    }
-
     let generation = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|dur| dur.as_secs())
         .unwrap_or_default();
 
-    CandidateDiscovery {
-        candidates: DirectCandidateSet {
-            candidates,
-            generation: Some(generation),
-            server_certificate: None,
-        },
-        diagnostics,
+    DirectCandidateSet {
+        candidates,
+        generation: Some(generation),
+        server_certificate: None,
     }
-}
-
-fn detect_public_interface(
-    preferred_port: Option<u16>,
-    priority_counter: &mut u32,
-) -> Option<(IpAddr, DirectCandidate)> {
-    const PROBE_ADDR: &str = "8.8.8.8:80";
-
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect(PROBE_ADDR).ok()?;
-    let addr = socket.local_addr().ok()?;
-
-    Some((
-        addr.ip(),
-        DirectCandidate {
-            host: addr.ip().to_string(),
-            port: preferred_port.unwrap_or(addr.port()),
-            transport: DirectTransport::Quic,
-            kind: DirectCandidateKind::Public,
-            priority: next_priority(priority_counter),
-        },
-    ))
 }
 
 fn next_priority(counter: &mut u32) -> u32 {
@@ -189,6 +107,21 @@ fn candidate_exists(candidates: &[DirectCandidate], host: &str, port: u16) -> bo
 pub async fn connect_direct_tunnel(
     config: &DirectChannelConfig,
 ) -> Result<TunnelClient, TunnelError> {
+    match timeout(DIRECT_CONNECT_TIMEOUT, connect_direct_tunnel_inner(config)).await {
+        Ok(result) => result,
+        Err(_) => Err(TunnelError::Transport(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "direct tunnel attempt exceeded {}s",
+                DIRECT_CONNECT_TIMEOUT.as_secs()
+            ),
+        ))),
+    }
+}
+
+async fn connect_direct_tunnel_inner(
+    config: &DirectChannelConfig,
+) -> Result<TunnelClient, TunnelError> {
     let mut endpoint = Endpoint::client("[::]:0".parse().unwrap())
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
 
@@ -201,7 +134,7 @@ pub async fn connect_direct_tunnel(
     let mut last_err: Option<TunnelError> = None;
 
     for candidate in config
-        .devbox_candidates
+        .candidates
         .iter()
         .filter(|candidate| matches!(candidate.transport, DirectTransport::Quic))
     {
@@ -453,8 +386,9 @@ pub(crate) fn build_server_config() -> Result<(quinn::ServerConfig, Vec<u8>), Tu
     let cert_chain = vec![CertificateDer::from(cert)];
     let private_key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
 
-    let config = quinn::ServerConfig::with_single_cert(cert_chain, private_key.into())
+    let mut config = quinn::ServerConfig::with_single_cert(cert_chain, private_key.into())
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+    config.transport_config(tunnel_transport_config()?);
     Ok((config, cert_der_bytes))
 }
 
@@ -473,10 +407,12 @@ pub(crate) fn client_config_with_pinned_certificate(
 
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
         .expect("invalid QUIC client crypto config");
-    Ok(quinn::ClientConfig::new(Arc::new(quic_crypto)))
+    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    client_config.transport_config(tunnel_transport_config()?);
+    Ok(client_config)
 }
 
-pub(crate) fn client_config() -> quinn::ClientConfig {
+pub(crate) fn client_config() -> Result<quinn::ClientConfig, TunnelError> {
     let roots = Arc::new(rustls::RootCertStore::empty());
     let mut crypto = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
@@ -488,7 +424,19 @@ pub(crate) fn client_config() -> quinn::ClientConfig {
 
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(crypto))
         .expect("invalid QUIC client crypto config");
-    quinn::ClientConfig::new(Arc::new(quic_crypto))
+    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    client_config.transport_config(tunnel_transport_config()?);
+    Ok(client_config)
+}
+
+fn tunnel_transport_config() -> Result<Arc<TransportConfig>, TunnelError> {
+    let mut transport = TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(QUIC_KEEP_ALIVE_INTERVAL_SECS)));
+    transport.max_idle_timeout(Some(
+        IdleTimeout::try_from(Duration::from_secs(QUIC_IDLE_TIMEOUT_SECS))
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?,
+    ));
+    Ok(Arc::new(transport))
 }
 
 #[derive(Debug)]
@@ -615,6 +563,14 @@ fn run_stun_probes(
             }
             Ok(None) => {
                 debug!(?server, "STUN response missing mapped address attribute");
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                debug!(?server, "STUN probe timed out");
             }
             Err(err) => {
                 warn!(?server, error = %err, "STUN probe error");

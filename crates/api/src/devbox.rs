@@ -426,18 +426,26 @@ pub async fn devbox_client_tunnel_websocket(
 
     let user_id = session.user_id;
 
-    let environment_id = session
-        .active_environment_id
-        .ok_or_else(|| ApiError::InvalidRequest("No active environment selected".to_string()))?;
+    let environment_id = session.active_environment_id;
 
-    let environment = state.db.get_kube_environment(environment_id).await?;
+    let environment = match environment_id {
+        Some(environment_id) => Some(
+            state
+                .db
+                .get_kube_environment(environment_id)
+                .await?
+                .ok_or_else(|| {
+                    ApiError::InvalidRequest(format!(
+                        "Environment {} does not exist",
+                        environment_id
+                    ))
+                })?,
+        ),
+        None => None,
+    };
 
-    tracing::info!(
-        "Devbox client tunnel for user {} targeting environment {}",
-        user_id,
-        environment_id
-    );
     let cluster_id = environment.map(|e| e.cluster_id);
+    tracing::info!("Devbox client tunnel for user {user_id} targeting environment {environment_id:?} cluster {cluster_id:?}");
 
     let tunnel_registry = state.kube_controller.tunnel_registry.clone();
     let token_string = token.to_string();
@@ -677,8 +685,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 
         let config = DirectChannelConfig {
             credential,
-            devbox_candidates: update.candidates,
-            sidecar_candidates: Vec::new(),
+            candidates: update.candidates,
             server_certificate: update.server_certificate,
         };
 

@@ -3,7 +3,7 @@ use std::{
     convert::TryFrom,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -19,8 +19,9 @@ use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::RwLock,
-    time::timeout,
+    sync::{oneshot, RwLock},
+    task::JoinHandle,
+    time::{timeout, MissedTickBehavior},
 };
 use tracing::{debug, info, warn};
 
@@ -35,6 +36,7 @@ const CERTIFICATE_ALT_NAMES: &[&str] = &["lapdev.devbox", "lapdev-direct", "lapd
 const QUIC_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
 const QUIC_IDLE_TIMEOUT_SECS: u64 = 60 * 60;
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_STUN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Options controlling direct QUIC server behavior.
 #[derive(Debug, Clone)]
@@ -43,6 +45,8 @@ pub struct DirectServerOptions {
     pub stun_servers: Vec<SocketAddr>,
     /// How long to wait for a STUN response.
     pub stun_timeout: Duration,
+    /// How often to send STUN keepalive probes.
+    pub stun_keepalive_interval: Option<Duration>,
 }
 
 impl Default for DirectServerOptions {
@@ -50,6 +54,7 @@ impl Default for DirectServerOptions {
         Self {
             stun_servers: Vec::new(),
             stun_timeout: Duration::from_millis(750),
+            stun_keepalive_interval: Some(DEFAULT_STUN_KEEPALIVE_INTERVAL),
         }
     }
 }
@@ -211,6 +216,7 @@ pub struct DirectQuicServer {
     credential: Arc<DirectCredentialStore>,
     observed_addr: Option<SocketAddr>,
     server_certificate: Vec<u8>,
+    stun_keepalive: Mutex<Option<StunKeepaliveHandle>>,
 }
 
 #[derive(Default)]
@@ -268,6 +274,23 @@ impl DirectQuicServer {
             .set_nonblocking(false)
             .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
 
+        let keepalive_interval = options.stun_keepalive_interval;
+        let stun_servers_clone = options.stun_servers.clone();
+        let keepalive_socket = if keepalive_interval.is_some() && !stun_servers_clone.is_empty() {
+            match socket.try_clone() {
+                Ok(clone) => Some(clone),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "Failed to clone UDP socket for STUN keepalive; continuing without keepalive"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let observed_addr = if options.stun_servers.is_empty() {
             None
         } else {
@@ -292,11 +315,20 @@ impl DirectQuicServer {
             runtime,
         )
         .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+
+        let stun_keepalive = match (keepalive_socket, keepalive_interval) {
+            (Some(sock), Some(interval)) if !stun_servers_clone.is_empty() => {
+                Some(Self::start_stun_keepalive(sock, stun_servers_clone, interval))
+            }
+            _ => None,
+        };
+
         Ok(Self {
             endpoint,
             credential: Arc::new(DirectCredentialStore::new()),
             observed_addr,
             server_certificate,
+            stun_keepalive: Mutex::new(stun_keepalive),
         })
     }
 
@@ -353,6 +385,50 @@ impl DirectQuicServer {
 
     pub fn close(&self) {
         self.endpoint.close(0u32.into(), b"direct server shutdown");
+        self.stop_stun_keepalive();
+    }
+
+    fn stop_stun_keepalive(&self) {
+        if let Some(handle) = self
+            .stun_keepalive
+            .lock()
+            .expect("stun keepalive mutex poisoned")
+            .take()
+        {
+            handle.stop();
+        }
+    }
+
+    fn start_stun_keepalive(
+        socket: UdpSocket,
+        servers: Vec<SocketAddr>,
+        interval: Duration,
+    ) -> StunKeepaliveHandle {
+        let socket = Arc::new(socket);
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => {
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        for server in &servers {
+                            if let Err(err) = send_stun_binding_indication(socket.as_ref(), *server) {
+                                debug!(?server, error = %err, "STUN keepalive send failed");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        StunKeepaliveHandle {
+            shutdown: Some(shutdown_tx),
+            task,
+        }
     }
 }
 
@@ -537,6 +613,7 @@ pub(crate) async fn write_server_ack(stream: &mut SendStream) -> Result<(), Tunn
 const STUN_MAGIC_COOKIE: u32 = 0x2112_A442;
 const STUN_HEADER_SIZE: usize = 20;
 const STUN_BINDING_REQUEST: u16 = 0x0001;
+const STUN_BINDING_INDICATION: u16 = 0x0011;
 const STUN_BINDING_SUCCESS: u16 = 0x0101;
 const STUN_ATTR_MAPPED_ADDRESS: u16 = 0x0001;
 const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
@@ -607,6 +684,21 @@ fn send_stun_binding_request(
     let mut buf = [0u8; 576];
     let (len, _) = socket.recv_from(&mut buf)?;
     parse_stun_response(&buf[..len], &transaction_id)
+}
+
+fn send_stun_binding_indication(socket: &UdpSocket, server: SocketAddr) -> io::Result<()> {
+    let transaction_id: [u8; 12] = random();
+
+    let mut request = [0u8; STUN_HEADER_SIZE];
+    request[0] = (STUN_BINDING_INDICATION >> 8) as u8;
+    request[1] = STUN_BINDING_INDICATION as u8;
+    request[2] = 0;
+    request[3] = 0;
+    request[4..8].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+    request[8..20].copy_from_slice(&transaction_id);
+
+    socket.send_to(&request, server)?;
+    Ok(())
 }
 
 fn parse_stun_response(data: &[u8], transaction_id: &[u8; 12]) -> io::Result<Option<SocketAddr>> {
@@ -748,5 +840,25 @@ fn parse_xor_mapped_address(value: &[u8], transaction_id: &[u8; 12]) -> Option<S
             Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(addr)), port))
         }
         _ => None,
+    }
+}
+
+struct StunKeepaliveHandle {
+    shutdown: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
+}
+
+impl StunKeepaliveHandle {
+    fn stop(mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.task.abort();
+    }
+}
+
+impl Drop for DirectQuicServer {
+    fn drop(&mut self) {
+        self.stop_stun_keepalive();
     }
 }

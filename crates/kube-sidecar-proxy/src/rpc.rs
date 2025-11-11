@@ -292,6 +292,24 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
 }
 
 fn devbox_connection_from_config(route: DevboxRouteConfig) -> Arc<DevboxConnection> {
+    match route.direct.as_ref() {
+        Some(direct) => {
+            info!(
+                intercept_id = %route.intercept_id,
+                workload_id = %route.workload_id,
+                candidates = ?direct.candidates,
+                "Received direct Devbox candidates for sidecar route"
+            );
+        }
+        None => {
+            info!(
+                intercept_id = %route.intercept_id,
+                workload_id = %route.workload_id,
+                "Sidecar route missing direct Devbox candidates"
+            );
+        }
+    }
+
     Arc::new(DevboxConnection::new(DevboxRouteMetadata {
         intercept_id: route.intercept_id,
         workload_id: route.workload_id,

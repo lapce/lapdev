@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lapdev_tunnel::{direct::QuicTransport, run_tunnel_server};
+use lapdev_tunnel::{direct::QuicTransport, run_tunnel_server, RelayEndpoint};
 
 /// Manages the lifecycle of the background tunnel connection used for preview URLs.
 #[derive(Clone)]
@@ -45,8 +45,8 @@ impl TunnelManager {
 
         tracing::info!("Tunnel WebSocket connection established");
 
-        let transport = QuicTransport::connect_websocket_client(stream, &self.auth_token).await?;
-        run_tunnel_server(transport).await?;
+        let connection = RelayEndpoint::client_connection(stream).await?;
+        run_tunnel_server(connection).await?;
 
         tracing::info!("Tunnel server session ended");
         Ok(())

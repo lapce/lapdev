@@ -23,3 +23,6 @@ rand.workspace = true
 serde.workspace = true
 tokio-serde.workspace = true
 pin-project.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true

@@ -8,7 +8,7 @@ use lapdev_kube_rpc::{
     KubeWorkloadsWithResources, NamespacedResourceRequest, NamespacedResourceResponse,
     ProxyBranchRouteConfig, WorkloadIdentifier,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, net::SocketAddr};
 use uuid::Uuid;
 
 use crate::manager::KubeManager;
@@ -264,9 +264,15 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         user_id: Uuid,
         environment_id: Uuid,
         namespace: String,
+        stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String> {
         self.manager
-            .get_devbox_direct_config(user_id, environment_id, namespace)
+            .get_devbox_direct_config(
+                user_id,
+                environment_id,
+                namespace,
+                stun_observed_addr,
+            )
             .await
     }
 

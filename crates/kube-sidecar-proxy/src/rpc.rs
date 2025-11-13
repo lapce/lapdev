@@ -3,6 +3,7 @@ use lapdev_kube_rpc::{
     DevboxRouteConfig, ProxyBranchRouteConfig, ProxyRouteAccessLevel, SidecarProxyManagerRpcClient,
     SidecarProxyRpc,
 };
+use lapdev_tunnel::direct::DirectEndpoint;
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -23,6 +24,7 @@ pub(crate) struct SidecarProxyRpcServer {
     rpc_client: SidecarProxyManagerRpcClient,
     routing_table: Arc<RwLock<RoutingTable>>,
     connection_registry: Arc<ConnectionRegistry>,
+    direct_endpoint: Arc<DirectEndpoint>,
 }
 
 impl SidecarProxyRpcServer {
@@ -33,6 +35,7 @@ impl SidecarProxyRpcServer {
         rpc_client: SidecarProxyManagerRpcClient,
         routing_table: Arc<RwLock<RoutingTable>>,
         connection_registry: Arc<ConnectionRegistry>,
+        direct_endpoint: Arc<DirectEndpoint>,
     ) -> Self {
         Self {
             workload_id,
@@ -41,6 +44,7 @@ impl SidecarProxyRpcServer {
             rpc_client,
             routing_table,
             connection_registry,
+            direct_endpoint,
         }
     }
 
@@ -97,7 +101,10 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             }
 
             if let Some(devbox) = route.devbox_route.clone() {
-                devbox_overrides.push((branch_id, devbox_connection_from_config(devbox)));
+                devbox_overrides.push((
+                    branch_id,
+                    devbox_connection_from_config(devbox, Arc::clone(&self.direct_endpoint)),
+                ));
             }
         }
 
@@ -147,7 +154,8 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             return Ok(());
         }
 
-        let devbox_connection = devbox_connection_from_config(route.clone());
+        let devbox_connection =
+            devbox_connection_from_config(route.clone(), Arc::clone(&self.direct_endpoint));
 
         let mut routing_table = self.routing_table.write().await;
 
@@ -237,7 +245,9 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             timeout_ms: route.timeout_ms,
         };
 
-        let devbox_override = route.devbox_route.map(devbox_connection_from_config);
+        let devbox_override = route
+            .devbox_route
+            .map(|devbox| devbox_connection_from_config(devbox, Arc::clone(&self.direct_endpoint)));
 
         let mut routing_table = self.routing_table.write().await;
         routing_table
@@ -291,7 +301,10 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
     }
 }
 
-fn devbox_connection_from_config(route: DevboxRouteConfig) -> Arc<DevboxConnection> {
+fn devbox_connection_from_config(
+    route: DevboxRouteConfig,
+    direct_endpoint: Arc<DirectEndpoint>,
+) -> Arc<DevboxConnection> {
     match route.direct.as_ref() {
         Some(direct) => {
             info!(
@@ -310,17 +323,20 @@ fn devbox_connection_from_config(route: DevboxRouteConfig) -> Arc<DevboxConnecti
         }
     }
 
-    Arc::new(DevboxConnection::new(DevboxRouteMetadata {
-        intercept_id: route.intercept_id,
-        workload_id: route.workload_id,
-        auth_token: route.auth_token,
-        websocket_url: route.websocket_url,
-        path_pattern: route.path_pattern,
-        port_mappings: route.port_mappings,
-        created_at_epoch_seconds: route.created_at_epoch_seconds,
-        expires_at_epoch_seconds: route.expires_at_epoch_seconds,
-        direct: route.direct,
-    }))
+    Arc::new(DevboxConnection::new(
+        DevboxRouteMetadata {
+            intercept_id: route.intercept_id,
+            workload_id: route.workload_id,
+            auth_token: route.auth_token,
+            websocket_url: route.websocket_url,
+            path_pattern: route.path_pattern,
+            port_mappings: route.port_mappings,
+            created_at_epoch_seconds: route.created_at_epoch_seconds,
+            expires_at_epoch_seconds: route.expires_at_epoch_seconds,
+            direct: route.direct,
+        },
+        direct_endpoint,
+    ))
 }
 
 fn devbox_route_config_from_connection(

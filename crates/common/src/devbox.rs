@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +110,8 @@ pub struct DirectCandidateSet {
     pub generation: Option<u64>,
     #[serde(default)]
     pub server_certificate: Option<Vec<u8>>,
+    #[serde(default)]
+    pub stun_observed_addr: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +124,7 @@ pub struct DirectCredential {
 pub struct DirectChannelConfig {
     pub credential: DirectCredential,
     pub candidates: Vec<DirectCandidate>,
-    #[serde(default)]
     pub server_certificate: Option<Vec<u8>>,
+    #[serde(default)]
+    pub stun_observed_addr: Option<SocketAddr>,
 }

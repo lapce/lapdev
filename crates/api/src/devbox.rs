@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use axum::{
     extract::{ws::WebSocket, Path, Query, State, WebSocketUpgrade},
@@ -15,8 +15,8 @@ use lapdev_devbox_rpc::{
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
     direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    websocket_serde_transport_from_socket, DynTunnelStream, TunnelError, TunnelTarget,
-    WebSocketUdpSocket,
+    websocket_serde_transport_from_socket, DynTunnelStream, RelayEndpoint, TunnelError,
+    TunnelTarget, WebSocketUdpSocket,
 };
 use serde::{Deserialize, Serialize};
 use tarpc::server::{BaseChannel, Channel};
@@ -448,13 +448,11 @@ pub async fn devbox_client_tunnel_websocket(
     tracing::info!("Devbox client tunnel for user {user_id} targeting environment {environment_id:?} cluster {cluster_id:?}");
 
     let tunnel_registry = state.kube_controller.tunnel_registry.clone();
-    let token_string = token.to_string();
 
     Ok(websocket.on_upgrade(move |socket| {
         let registry = tunnel_registry.clone();
         let cluster_id = cluster_id;
         let user_id = user_id;
-        let token = token_string.clone();
         async move {
             let (sink, stream) = split_axum_websocket(socket);
             let udp_socket = WebSocketUdpSocket::from_parts(
@@ -497,9 +495,10 @@ pub async fn devbox_client_tunnel_websocket(
                 }
             };
 
-            match QuicTransport::accept_udp_server(udp_socket, &token).await {
-                Ok(transport) => {
-                    if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
+            match RelayEndpoint::udp_server_connection(udp_socket).await {
+                Ok(connection) => {
+                    if let Err(err) = run_tunnel_server_with_connector(connection, connector).await
+                    {
                         tracing::warn!(
                             user_id = %user_id,
                             error = %err,
@@ -687,6 +686,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             credential,
             candidates: update.candidates,
             server_certificate: update.server_certificate,
+            stun_observed_addr: update.stun_observed_addr,
         };
 
         self.state
@@ -900,6 +900,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         self,
         _context: tarpc::context::Context,
         environment_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String> {
         let environment = self
             .state
@@ -921,6 +922,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
                 self.user_id,
                 environment.id,
                 environment.namespace.clone(),
+                stun_observed_addr,
             )
             .await
         {

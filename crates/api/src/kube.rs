@@ -15,8 +15,8 @@ use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
     direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    websocket_serde_transport_from_socket, DynTunnelStream, TunnelClient, TunnelError, TunnelMode,
-    TunnelTarget, WebSocketUdpSocket,
+    websocket_serde_transport_from_socket, DynTunnelStream, RelayEndpoint, TunnelClient,
+    TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
 };
 use secrecy::ExposeSecret;
 use tarpc::server::{BaseChannel, Channel};
@@ -164,8 +164,8 @@ async fn handle_data_plane_tunnel(
     let udp_socket =
         WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
 
-    let transport = match QuicTransport::accept_udp_server(udp_socket, &token).await {
-        Ok(transport) => transport,
+    let connection = match RelayEndpoint::udp_server_connection(udp_socket).await {
+        Ok(connection) => connection,
         Err(err) => {
             tracing::warn!(
                 cluster_id = %cluster_id,
@@ -176,10 +176,7 @@ async fn handle_data_plane_tunnel(
         }
     };
 
-    let tunnel_client = Arc::new(TunnelClient::connect_with_mode(
-        transport,
-        TunnelMode::Relay,
-    ));
+    let tunnel_client = Arc::new(TunnelClient::new_relay(connection));
 
     let generation = state
         .kube_controller
@@ -237,13 +234,11 @@ pub async fn sidecar_tunnel_websocket(
 
     let user_id = environment.user_id;
     let registry = state.devbox_tunnels.clone();
-    let token_string = environment.auth_token.clone();
 
     Ok(websocket.on_upgrade(move |socket| {
         let registry = registry.clone();
-        let token = token_string.clone();
         async move {
-            if let Err(err) = registry.attach_sidecar(user_id, token, socket).await {
+            if let Err(err) = registry.attach_sidecar(user_id, socket).await {
                 tracing::warn!(
                     user_id = %user_id,
                     environment_id = %environment_id,
@@ -256,7 +251,7 @@ pub async fn sidecar_tunnel_websocket(
     }))
 }
 
-fn extract_environment_token<'a>(headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
+fn extract_environment_token(headers: &HeaderMap) -> Result<&str, ApiError> {
     headers
         .get(KUBE_ENVIRONMENT_TOKEN_HEADER)
         .ok_or(ApiError::Unauthenticated)?
@@ -332,8 +327,8 @@ async fn serve_devbox_proxy_tunnel(
     let udp_socket =
         WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
 
-    let transport = match QuicTransport::accept_udp_server(udp_socket, &token).await {
-        Ok(transport) => transport,
+    let connection = match RelayEndpoint::udp_server_connection(udp_socket).await {
+        Ok(connection) => connection,
         Err(err) => {
             tracing::warn!("Failed to negotiate QUIC relay for devbox proxy: {}", err);
             return;
@@ -351,7 +346,7 @@ async fn serve_devbox_proxy_tunnel(
         }
     };
 
-    if let Err(err) = run_tunnel_server_with_connector(transport, connector).await {
+    if let Err(err) = run_tunnel_server_with_connector(connection, connector).await {
         tracing::warn!("Devbox proxy tunnel terminated with error: {}", err);
     }
 }

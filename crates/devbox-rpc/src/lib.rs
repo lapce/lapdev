@@ -1,4 +1,5 @@
 use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig};
+use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -19,6 +20,7 @@ pub trait DevboxSessionRpc {
     async fn list_services(environment_id: Uuid) -> Result<Vec<ServiceInfo>, String>;
     async fn request_direct_client_config(
         environment_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String>;
     async fn update_device_name(device_name: String) -> Result<(), String>;
 }

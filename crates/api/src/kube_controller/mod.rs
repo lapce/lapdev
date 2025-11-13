@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    net::SocketAddr,
     sync::{atomic::AtomicU64, Arc},
 };
 use tokio::sync::{broadcast, RwLock};
@@ -235,6 +236,7 @@ impl KubeController {
         user_id: Uuid,
         environment_id: Uuid,
         namespace: String,
+        stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String> {
         let servers = self.kube_cluster_servers.read().await;
         let Some(cluster_servers) = servers.get(&cluster_id) else {
@@ -247,7 +249,12 @@ impl KubeController {
         let mut last_err: Option<String> = None;
         for server in cluster_servers.values() {
             match server
-                .get_devbox_direct_config(user_id, environment_id, namespace.clone())
+                .get_devbox_direct_config(
+                    user_id,
+                    environment_id,
+                    namespace.clone(),
+                    stun_observed_addr,
+                )
                 .await
             {
                 Ok(config) => return Ok(config),

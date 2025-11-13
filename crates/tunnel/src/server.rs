@@ -64,18 +64,18 @@ impl TunnelConnector for TcpConnector {
     }
 }
 
-pub async fn run_tunnel_server(transport: QuicTransport) -> Result<(), TunnelError> {
-    run_tunnel_server_with_connector(transport, TcpConnector::default()).await
+pub async fn run_tunnel_server(connection: Connection) -> Result<(), TunnelError> {
+    run_tunnel_server_with_connector(connection, TcpConnector::default()).await
 }
 
 pub async fn run_tunnel_server_with_connector<C>(
-    transport: QuicTransport,
+    connection: Connection,
     connector: C,
 ) -> Result<(), TunnelError>
 where
     C: TunnelConnector,
 {
-    run_tunnel_server_inner(transport.into_connection(), Arc::new(connector)).await
+    run_tunnel_server_inner(connection, Arc::new(connector)).await
 }
 
 async fn run_tunnel_server_inner(

@@ -1,6 +1,7 @@
-use std::{collections::HashMap, fs, sync::Arc, time::Instant};
+use std::{collections::HashMap, fs, net::SocketAddr, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Result};
+use chrono::Utc;
 use futures::StreamExt;
 use k8s_openapi::{
     api::{
@@ -12,7 +13,10 @@ use k8s_openapi::{
 };
 use kube::api::{DeleteParams, ListParams};
 use lapdev_common::{
-    devbox::DirectChannelConfig,
+    devbox::{
+        DirectCandidate, DirectCandidateKind, DirectChannelConfig, DirectCredential,
+        DirectTransport,
+    },
     kube::{
         KubeClusterInfo, KubeClusterStatus, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
         KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
@@ -26,7 +30,7 @@ use lapdev_kube_rpc::{
     ProxyBranchRouteConfig,
 };
 use lapdev_rpc::spawn_twoway;
-use lapdev_tunnel::websocket_serde_transport;
+use lapdev_tunnel::{direct::DirectEndpoint, websocket_serde_transport};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     task::JoinHandle,
@@ -36,9 +40,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
 
 use crate::manager_rpc::KubeManagerRpcServer;
-use crate::{devbox_direct_gateway::DevboxDirectGateway, devbox_proxy_manager::DevboxProxyManager};
 use crate::{
-    sidecar_proxy_manager::SidecarProxyManager, tunnel::TunnelManager, watch_manager::WatchManager,
+    devbox_proxy_manager::DevboxProxyManager, sidecar_proxy_manager::SidecarProxyManager,
+    tunnel::TunnelManager, watch_manager::WatchManager,
 };
 
 const CLUSTER_HEARTBEAT_INTERVAL_SECS: u64 = 30;
@@ -52,7 +56,7 @@ pub struct KubeManager {
     tunnel_manager: TunnelManager,
     pub(crate) watch_manager: Arc<WatchManager>,
     manager_namespace: Option<String>,
-    devbox_direct_gateway: Arc<DevboxDirectGateway>,
+    direct_endpoint: Arc<DirectEndpoint>,
 }
 
 impl KubeManager {
@@ -65,12 +69,11 @@ impl KubeManager {
         let proxy_manager = Arc::new(SidecarProxyManager::new().await?);
         let devbox_proxy_manager = Arc::new(DevboxProxyManager::new().await?);
         let watch_manager = Arc::new(WatchManager::new(kube_client.clone()));
-        let devbox_direct_gateway = Arc::new(
-            DevboxDirectGateway::new()
+        let direct_endpoint = Arc::new(
+            DirectEndpoint::bind()
                 .await
-                .map_err(|e| anyhow::anyhow!("failed to initialize direct gateway: {e}"))?,
+                .map_err(|e| anyhow::anyhow!("failed to initialize direct endpoint: {e}"))?,
         );
-
         let token = std::env::var(KUBE_CLUSTER_TOKEN_ENV_VAR)
             .map_err(|_| anyhow::anyhow!("can't find env var {}", KUBE_CLUSTER_TOKEN_ENV_VAR))?;
         let url = std::env::var(KUBE_CLUSTER_URL_ENV_VAR)
@@ -99,7 +102,7 @@ impl KubeManager {
             tunnel_manager: TunnelManager::new(tunnel_request, token.clone()),
             watch_manager,
             manager_namespace,
-            devbox_direct_gateway,
+            direct_endpoint,
         };
 
         // Start the tunnel manager connection cycle in the background
@@ -1742,15 +1745,48 @@ impl KubeManager {
         user_id: Uuid,
         environment_id: Uuid,
         namespace: String,
+        stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String> {
-        match self
-            .devbox_direct_gateway
-            .issue_config(user_id, environment_id, namespace)
-            .await
-        {
-            Ok(config) => Ok(Some(config)),
-            Err(err) => Err(err),
+        if let Some(addr) = stun_observed_addr {
+            match self.direct_endpoint.send_probe(addr) {
+                Ok(()) => {
+                    tracing::debug!(
+                        %addr,
+                        "Sent hole-punch probe to devbox client before issuing config"
+                    )
+                }
+                Err(err) => {
+                    tracing::warn!(%addr, error = %err, "Failed to send probe to devbox client");
+                }
+            }
         }
+
+        let token = Uuid::new_v4().to_string();
+        let expires_at = Utc::now() + chrono::Duration::minutes(10);
+        self.direct_endpoint
+            .credential()
+            .insert(token.clone())
+            .await;
+
+        let mut candidates = Vec::new();
+        let server_observed_addr = self.direct_endpoint.observed_addr();
+        if let Some(addr) = server_observed_addr {
+            let host = addr.ip().to_string();
+            candidates.push(DirectCandidate {
+                host,
+                port: addr.port(),
+                transport: DirectTransport::Quic,
+                kind: DirectCandidateKind::Public,
+                priority: 0,
+            });
+        }
+
+        Ok(Some(DirectChannelConfig {
+            credential: DirectCredential { token, expires_at },
+            candidates,
+            server_certificate: Some(self.direct_endpoint.server_certificate().to_vec()),
+            stun_observed_addr: server_observed_addr,
+        }))
     }
 
     pub async fn set_devbox_routes(

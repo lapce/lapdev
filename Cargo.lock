@@ -3104,6 +3104,7 @@ dependencies = [
  "lapdev-devbox-rpc",
  "lapdev-rpc",
  "lapdev-tunnel",
+ "quinn",
  "reqwest",
  "serde",
  "serde_json",
@@ -3477,6 +3478,7 @@ name = "lapdev-tunnel"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "chrono",
  "futures",
  "futures-util",
  "lapdev-common",

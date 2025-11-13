@@ -7,7 +7,7 @@ use lapdev_common::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, net::SocketAddr};
 use uuid::Uuid;
 
 // HTTP parsing utilities
@@ -463,6 +463,7 @@ pub trait KubeManagerRpc {
         user_id: Uuid,
         environment_id: Uuid,
         namespace: String,
+        stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String>;
 
     async fn refresh_branch_service_routes(environment_id: Uuid) -> Result<(), String>;

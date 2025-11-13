@@ -4,11 +4,10 @@ use futures::StreamExt;
 use lapdev_common::devbox::DirectChannelConfig;
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient};
 use lapdev_rpc::spawn_twoway;
-use lapdev_tunnel::direct::{
-    collect_candidates, CandidateOptions, DirectCredentialStore, DirectQuicServer,
-    DirectServerOptions, QuicTransport,
+use lapdev_tunnel::direct::DirectEndpoint;
+use lapdev_tunnel::{
+    run_tunnel_server, websocket_serde_transport, RelayEndpoint, TunnelClient, TunnelError,
 };
-use lapdev_tunnel::{run_tunnel_server, websocket_serde_transport, TunnelClient, TunnelError};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -42,15 +41,12 @@ enum HeartbeatEvent {
     Failed(String),
     TimedOut,
 }
-const DEFAULT_STUN_ENDPOINTS: &[&str] = &[
-    "stun.l.google.com:19302",
-    "stun1.l.google.com:19302",
-    "stun2.l.google.com:19302",
-];
 
 /// Execute the devbox connect command
 pub async fn execute(api_host: &str) -> Result<()> {
-    let tunnel_manager = DevboxTunnelManager::new(api_host);
+    let tunnel_manager = DevboxTunnelManager::new(api_host)
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to initialize Devbox tunnel manager: {}", err))?;
 
     // Load token from keychain, or prompt for login if not found
     let token = match auth::get_token(tunnel_manager.api_host()) {
@@ -208,7 +204,8 @@ struct DevboxTunnelManager {
     ws_base: Arc<String>,
     intercept_task: Arc<Mutex<Option<TunnelTask>>>,
     client_task: Arc<Mutex<Option<TunnelTask>>>,
-    direct_server: Arc<Mutex<Option<DirectServerHandle>>>,
+    active_environment: Arc<Mutex<Option<Uuid>>>,
+    direct_endpoint: Arc<DirectEndpoint>,
     /// Shared tunnel client for DNS service bridge
     tunnel_client: Arc<RwLock<Option<Arc<TunnelClient>>>>,
     /// Service bridge for DNS resolution
@@ -217,69 +214,39 @@ struct DevboxTunnelManager {
     hosts_manager: Arc<HostsManager>,
     /// IP allocator
     ip_allocator: Arc<Mutex<SyntheticIpAllocator>>,
-    client_direct_config: Arc<RwLock<Option<DirectChannelConfig>>>,
     client_token: Arc<RwLock<Option<String>>>,
     client_user_id: Arc<RwLock<Option<Uuid>>>,
 }
 
 impl DevboxTunnelManager {
-    fn new(api_host: impl Into<String>) -> Self {
+    async fn new(api_host: impl Into<String>) -> Result<Self, TunnelError> {
         let api_host = api_host.into();
         let api_host = api_host.trim().trim_end_matches('/').to_string();
         let ws_base = format!("wss://{}", api_host);
         let tunnel_client = Arc::new(RwLock::new(None));
+        let direct_endpoint = Arc::new(DirectEndpoint::bind().await?);
 
-        Self {
+        {
+            let direct_endpoint = direct_endpoint.clone();
+            tokio::spawn(async move {
+                direct_endpoint.start_tunnel_server().await;
+            });
+        }
+
+        Ok(Self {
             api_host: Arc::new(api_host),
             ws_base: Arc::new(ws_base),
             intercept_task: Arc::new(Mutex::new(None)),
             client_task: Arc::new(Mutex::new(None)),
-            direct_server: Arc::new(Mutex::new(None)),
+            active_environment: Arc::new(Mutex::new(None)),
+            direct_endpoint,
             tunnel_client: tunnel_client.clone(),
             service_bridge: Arc::new(ServiceBridge::new(tunnel_client)),
             hosts_manager: Arc::new(HostsManager::new()),
             ip_allocator: Arc::new(Mutex::new(SyntheticIpAllocator::new())),
-            client_direct_config: Arc::new(RwLock::new(None)),
             client_token: Arc::new(RwLock::new(None)),
             client_user_id: Arc::new(RwLock::new(None)),
-        }
-    }
-
-    fn stun_servers() -> Vec<SocketAddr> {
-        let sources: Vec<String> = std::env::var("LAPDEV_STUN_SERVERS")
-            .ok()
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(|entry| entry.trim().to_string())
-                    .filter(|entry| !entry.is_empty())
-                    .collect()
-            })
-            .filter(|entries: &Vec<String>| !entries.is_empty())
-            .unwrap_or_else(|| {
-                DEFAULT_STUN_ENDPOINTS
-                    .iter()
-                    .map(|entry| entry.to_string())
-                    .collect()
-            });
-
-        sources
-            .into_iter()
-            .filter_map(|entry| match Self::resolve_stun_endpoint(&entry) {
-                Ok(addr) => Some(addr),
-                Err(err) => {
-                    tracing::warn!(endpoint = entry, error = %err, "Failed to resolve STUN server");
-                    None
-                }
-            })
-            .collect()
-    }
-
-    fn resolve_stun_endpoint(endpoint: &str) -> io::Result<SocketAddr> {
-        endpoint
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no address resolved"))
+        })
     }
 
     fn api_host(&self) -> &str {
@@ -369,45 +336,6 @@ impl DevboxTunnelManager {
             }
         };
 
-        self.ensure_direct_server()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to start direct server: {}", e))?;
-        let mut candidate_opts = CandidateOptions::default();
-        candidate_opts.stun_observed_addr = {
-            let guard = self.direct_server.lock().await;
-            guard.as_ref().and_then(|handle| handle.observed_addr())
-        };
-        let server_certificate = {
-            let guard = self.direct_server.lock().await;
-            guard
-                .as_ref()
-                .map(|handle| handle.server_certificate().to_vec())
-        };
-        let mut candidate_set = collect_candidates(&candidate_opts);
-        if let Some(cert) = server_certificate {
-            candidate_set.server_certificate = Some(cert);
-        } else {
-            tracing::warn!("Direct server certificate unavailable; skipping pinning data");
-        }
-        match rpc_client
-            .publish_direct_candidates(tarpc::context::current(), candidate_set)
-            .await
-        {
-            Ok(Ok(config)) => {
-                self.configure_direct_server(&config).await;
-                tracing::info!(
-                    stun_observed = ?candidate_opts.stun_observed_addr,
-                    "Direct channel negotiation initialized"
-                );
-            }
-            Ok(Err(err)) => {
-                tracing::warn!("Failed to publish direct candidates: {}", err);
-            }
-            Err(err) => {
-                tracing::warn!("Direct candidate RPC transport error: {}", err);
-            }
-        }
-
         // Create RPC server (for server to call us)
         let client_rpc_server =
             DevboxClientRpcServer::new(shutdown_tx.clone(), env_change_tx.clone());
@@ -424,11 +352,14 @@ impl DevboxTunnelManager {
             tracing::info!("DevboxClientRpc server stopped");
         });
 
-        self.ensure_client(token, session_info.user_id)
+        self.ensure_client(&rpc_client, token, session_info.user_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start client tunnel: {}", e))?;
 
-        if let Err(err) = self.ensure_intercept(token, session_info.user_id).await {
+        if let Err(err) = self
+            .ensure_intercept(&rpc_client, token, session_info.user_id)
+            .await
+        {
             tracing::error!(
                 user_id = %session_info.user_id,
                 "Failed to start intercept tunnel: {}",
@@ -436,74 +367,37 @@ impl DevboxTunnelManager {
             );
         }
 
-        // Attempt to rehydrate active environment and intercepts
-        let active_environment = match rpc_client
-            .get_active_environment(tarpc::context::current())
-            .await
-            .context("RPC call failed")?
         {
-            Ok(Some(env)) => {
-                println!(
-                    "  Active environment: {} / {}",
-                    env.cluster_name.bright_white(),
-                    env.namespace.cyan()
-                );
-                Some(env)
-            }
-            Ok(None) => {
-                println!("{} No active environment selected", "ℹ".blue());
-                None
-            }
-            Err(err) => {
-                eprintln!(
-                    "{} Failed to fetch active environment: {}",
-                    "⚠".yellow(),
-                    err
-                );
-                None
-            }
-        };
-
-        self.refresh_client_direct_config(
-            active_environment.as_ref().map(|env| env.environment_id),
-            &rpc_client,
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!(err))?;
-
-        if let Some(env) = active_environment.clone() {
-            match rpc_client
-                .list_workload_intercepts(tarpc::context::current(), env.environment_id)
-                .await
-                .context("RPC call failed")?
-            {
-                Ok(intercepts) => {
-                    for intercept in intercepts {
-                        if intercept.device_name != session_info.device_name {
-                            continue;
+            let rpc_client = rpc_client.clone();
+            let env_change_tx = env_change_tx.clone();
+            tokio::spawn(async move {
+                let result = rpc_client
+                    .get_active_environment(tarpc::context::current())
+                    .await;
+                match result {
+                    Ok(Ok(env)) => {
+                        if env_change_tx.send(env).is_err() {
+                            tracing::debug!(
+                                "Failed to deliver initial active environment; receiver dropped"
+                            );
                         }
-
-                        println!(
-                            "  {} Intercept active for {}/{} ({} port(s))",
-                            "↻".green(),
-                            intercept.namespace.bright_white(),
-                            intercept.workload_name.cyan(),
-                            intercept.port_mappings.len()
+                    }
+                    Ok(Err(err)) => {
+                        eprintln!(
+                            "{} Failed to fetch active environment: {}",
+                            "⚠".yellow(),
+                            err
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "{} Failed to fetch active environment: {}",
+                            "⚠".yellow(),
+                            err
                         );
                     }
                 }
-                Err(err) => {
-                    eprintln!("{} Failed to list intercepts: {}", "⚠".yellow(), err);
-                }
-            }
-
-            // Set up DNS for the active environment
-            if let Err(e) = self
-                .setup_dns_for_environment(env.environment_id, &rpc_client)
-                .await
-            {
-                eprintln!("{} Failed to set up DNS: {}", "⚠".yellow(), e);
-            }
+            });
         }
 
         if is_first_connection {
@@ -526,50 +420,11 @@ impl DevboxTunnelManager {
         loop {
             tokio::select! {
                 heartbeat_event = heartbeat_event_rx.recv() => {
-                    match heartbeat_event {
-                        Some(HeartbeatEvent::Failed(err)) => {
-                            tracing::warn!(
-                                user_id = %session_info.user_id,
-                                error = %err,
-                                "Devbox session heartbeat failed"
-                            );
-                            eprintln!(
-                                "{} Connection heartbeat lost ({}), reconnecting...",
-                                "⚠".yellow(),
-                                err
-                            );
-                        }
-                        Some(HeartbeatEvent::TimedOut) => {
-                            tracing::warn!(
-                                user_id = %session_info.user_id,
-                                timeout_secs = DEVBOX_HEARTBEAT_TIMEOUT_SECS,
-                                "Devbox session heartbeat timed out"
-                            );
-                            eprintln!(
-                                "{} Connection heartbeat timed out, reconnecting...",
-                                "⚠".yellow()
-                            );
-                        }
-                        None => {
-                            tracing::warn!(
-                                user_id = %session_info.user_id,
-                                "Heartbeat channel closed unexpectedly"
-                            );
-                            eprintln!("{} Heartbeat channel closed, reconnecting...", "⚠".yellow());
-                        }
-                    }
+                    self.handle_heartbeat_event(session_info.user_id, heartbeat_event);
                     break;
                 }
                 res = &mut server_task => {
-                    match res {
-                        Ok(()) => {
-                            tracing::info!("RPC server task completed normally");
-                        }
-                        Err(e) => {
-                            tracing::warn!("RPC server task failed: {}", e);
-                        }
-                    }
-                    // Connection closed, retry
+                    self.handle_server_task_result(res);
                     break;
                 }
                 _ = signal::ctrl_c() => {
@@ -578,69 +433,24 @@ impl DevboxTunnelManager {
                     break;
                 }
                 maybe_signal = shutdown_rx.recv() => {
-                    if let Some(signal) = maybe_signal {
-                        match signal {
-                            ShutdownSignal::Displaced(device) => {
-                                println!(
-                                    "\n{} Session displaced by new login from: {}",
-                                    "⚠".yellow(),
-                                    device.bright_white()
-                                );
-                                should_exit = true;
-                            }
-                        }
+                    if self.handle_shutdown_signal(maybe_signal) {
+                        should_exit = true;
                     }
                     break;
                 }
-                Some(env) = env_change_rx.recv() => {
-                    tracing::info!("Event loop received environment change notification");
-                    match env {
-                        Some(env_info) => {
-                            tracing::info!("Setting up DNS for environment {}", env_info.environment_id);
-                            if let Err(e) = self.setup_dns_for_environment(env_info.environment_id, &rpc_client).await {
-                                eprintln!("{} Failed to refresh DNS: {}", "⚠".yellow(), e);
-                            } else {
-                                tracing::info!("DNS setup completed successfully");
-                            }
-                            if let Err(err) = self
-                                .refresh_client_direct_config(Some(env_info.environment_id), &rpc_client)
-                                .await
-                            {
-                                tracing::warn!(
-                                    environment_id = %env_info.environment_id,
-                                    error = %err,
-                                    "Failed to refresh direct tunnel configuration"
-                                );
-                            }
-                            if let Err(err) = self.restart_client_tunnel().await {
-                                tracing::warn!(
-                                    environment_id = %env_info.environment_id,
-                                    error = %err,
-                                    "Failed to restart client tunnel after environment change"
-                                );
-                            } else {
-                                tracing::info!(
-                                    environment_id = %env_info.environment_id,
-                                    "Client tunnel restarted after environment change"
-                                );
-                            }
+                notification = env_change_rx.recv() => {
+                    match notification {
+                        Some(env) => {
+                            tracing::info!("Event loop received environment change notification");
+                            self
+                                .handle_environment_notification(env, &rpc_client, &session_info)
+                                .await;
                         }
                         None => {
-                            tracing::info!("Clearing DNS entries");
-                            println!("{} Clearing DNS entries...", "🔧".cyan());
-                            self.cleanup_dns().await;
-                            if let Err(err) = self
-                                .refresh_client_direct_config(None, &rpc_client)
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %err,
-                                    "Failed to disable direct tunnel configuration"
-                                );
-                            }
+                            tracing::warn!("Environment change channel closed unexpectedly");
+                            break;
                         }
                     }
-                    // Continue the loop instead of exiting
                 }
             }
         }
@@ -659,9 +469,169 @@ impl DevboxTunnelManager {
         Ok(should_exit)
     }
 
-    /// Get the tunnel client for making connections
-    async fn get_tunnel_client(&self) -> Option<Arc<TunnelClient>> {
-        self.tunnel_client.read().await.clone()
+    fn handle_heartbeat_event(&self, user_id: Uuid, event: Option<HeartbeatEvent>) {
+        match event {
+            Some(HeartbeatEvent::Failed(err)) => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    error = %err,
+                    "Devbox session heartbeat failed"
+                );
+                eprintln!(
+                    "{} Connection heartbeat lost ({}), reconnecting...",
+                    "⚠".yellow(),
+                    err
+                );
+            }
+            Some(HeartbeatEvent::TimedOut) => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    timeout_secs = DEVBOX_HEARTBEAT_TIMEOUT_SECS,
+                    "Devbox session heartbeat timed out"
+                );
+                eprintln!(
+                    "{} Connection heartbeat timed out, reconnecting...",
+                    "⚠".yellow()
+                );
+            }
+            None => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    "Heartbeat channel closed unexpectedly"
+                );
+                eprintln!("{} Heartbeat channel closed, reconnecting...", "⚠".yellow());
+            }
+        }
+    }
+
+    fn handle_server_task_result(&self, result: Result<(), tokio::task::JoinError>) {
+        match result {
+            Ok(()) => {
+                tracing::info!("RPC server task completed normally");
+            }
+            Err(err) => {
+                tracing::warn!("RPC server task failed: {}", err);
+            }
+        }
+    }
+
+    fn handle_shutdown_signal(&self, signal: Option<ShutdownSignal>) -> bool {
+        match signal {
+            Some(ShutdownSignal::Displaced(device)) => {
+                println!(
+                    "\n{} Session displaced by new login from: {}",
+                    "⚠".yellow(),
+                    device.bright_white()
+                );
+                true
+            }
+            None => {
+                tracing::warn!("Shutdown channel closed unexpectedly");
+                false
+            }
+        }
+    }
+
+    async fn handle_environment_notification(
+        &self,
+        environment: Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>,
+        rpc_client: &DevboxSessionRpcClient,
+        session_info: &lapdev_devbox_rpc::DevboxSessionInfo,
+    ) {
+        {
+            *self.active_environment.lock().await = environment.as_ref().map(|e| e.environment_id);
+        }
+
+        match environment {
+            Some(env) => {
+                self.process_active_environment(env, rpc_client, session_info)
+                    .await;
+            }
+            None => {
+                self.process_environment_cleared().await;
+            }
+        }
+    }
+
+    async fn process_active_environment(
+        &self,
+        env: lapdev_devbox_rpc::DevboxEnvironmentInfo,
+        rpc_client: &DevboxSessionRpcClient,
+        session_info: &lapdev_devbox_rpc::DevboxSessionInfo,
+    ) {
+        println!(
+            "  Active environment: {} / {}",
+            env.cluster_name.bright_white(),
+            env.namespace.cyan()
+        );
+
+        self.print_device_intercepts(env.environment_id, rpc_client, session_info)
+            .await;
+
+        tracing::info!("Setting up DNS for environment {}", env.environment_id);
+        match self
+            .setup_dns_for_environment(env.environment_id, rpc_client)
+            .await
+        {
+            Ok(()) => tracing::info!("DNS setup completed successfully"),
+            Err(err) => eprintln!("{} Failed to refresh DNS: {}", "⚠".yellow(), err),
+        }
+
+        match self.restart_client_tunnel(rpc_client).await {
+            Ok(()) => {
+                tracing::info!(
+                    environment_id = %env.environment_id,
+                    "Client tunnel restarted after environment change"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    environment_id = %env.environment_id,
+                    error = %err,
+                    "Failed to restart client tunnel after environment change"
+                );
+            }
+        }
+    }
+
+    async fn process_environment_cleared(&self) {
+        println!("{} No active environment selected", "ℹ".blue());
+        tracing::info!("Clearing DNS entries");
+        println!("{} Clearing DNS entries...", "🔧".cyan());
+        self.cleanup_dns().await;
+    }
+
+    async fn print_device_intercepts(
+        &self,
+        env_id: Uuid,
+        rpc_client: &DevboxSessionRpcClient,
+        session_info: &lapdev_devbox_rpc::DevboxSessionInfo,
+    ) {
+        match rpc_client
+            .list_workload_intercepts(tarpc::context::current(), env_id)
+            .await
+        {
+            Ok(Ok(intercepts)) => {
+                for intercept in intercepts {
+                    if intercept.device_name != session_info.device_name {
+                        continue;
+                    }
+                    println!(
+                        "  {} Intercept active for {}/{} ({} port(s))",
+                        "↻".green(),
+                        intercept.namespace.bright_white(),
+                        intercept.workload_name.cyan(),
+                        intercept.port_mappings.len()
+                    );
+                }
+            }
+            Ok(Err(err)) => {
+                eprintln!("{} Failed to list intercepts: {}", "⚠".yellow(), err);
+            }
+            Err(err) => {
+                eprintln!("{} Failed to list intercepts: {}", "⚠".yellow(), err);
+            }
+        }
     }
 
     /// Register a newly connected tunnel client and update shared state
@@ -986,145 +956,6 @@ impl DevboxTunnelManager {
             }
         }
     }
-
-    async fn ensure_direct_server(&self) -> Result<u16, String> {
-        if let Some(port) = {
-            let guard = self.direct_server.lock().await;
-            guard.as_ref().map(|handle| handle.port())
-        } {
-            return Ok(port);
-        }
-
-        let handle = Self::start_direct_server_task().await?;
-        let port = handle.port();
-        let mut guard = self.direct_server.lock().await;
-        *guard = Some(handle);
-        Ok(port)
-    }
-
-    async fn configure_direct_server(&self, config: &DirectChannelConfig) {
-        let credential_store = {
-            let guard = self.direct_server.lock().await;
-            guard
-                .as_ref()
-                .map(|handle| Arc::clone(&handle.credential_store))
-        };
-
-        if let Some(store) = credential_store {
-            store.replace(config.credential.token.clone()).await;
-        }
-    }
-
-    async fn refresh_client_direct_config(
-        &self,
-        environment_id: Option<Uuid>,
-        rpc_client: &DevboxSessionRpcClient,
-    ) -> Result<(), String> {
-        if let Some(env_id) = environment_id {
-            match rpc_client
-                .request_direct_client_config(tarpc::context::current(), env_id)
-                .await
-            {
-                Ok(Ok(config)) => {
-                    tracing::info!(
-                        environment_id = %env_id,
-                        "Received direct channel config from server {:?}", config.as_ref().map(|c| &c.candidates)
-                    );
-                    self.update_client_direct_config(config).await?;
-                }
-                Ok(Err(err)) => {
-                    tracing::warn!(
-                        environment_id = %env_id,
-                        error = %err,
-                        "Server rejected direct config request"
-                    );
-                    self.update_client_direct_config(None).await?;
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        environment_id = %env_id,
-                        error = %err,
-                        "Direct config RPC failed"
-                    );
-                    self.update_client_direct_config(None).await?;
-                }
-            }
-        } else {
-            self.update_client_direct_config(None).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn stop_direct_server(&self) {
-        let handle = {
-            let mut guard = self.direct_server.lock().await;
-            guard.take()
-        };
-
-        if let Some(handle) = handle {
-            handle.shutdown().await;
-        }
-    }
-
-    async fn start_direct_server_task() -> Result<DirectServerHandle, String> {
-        let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
-        let options = DirectServerOptions {
-            stun_servers: Self::stun_servers(),
-            ..Default::default()
-        };
-        let server = Arc::new(
-            DirectQuicServer::bind_with_options(bind_addr, options)
-                .await
-                .map_err(|e| e.to_string())?,
-        );
-        if let Some(addr) = server.observed_addr() {
-            tracing::info!(observed_addr = %addr, "STUN discovered reflexive address");
-        }
-        let port = server.local_addr().map_err(|e| e.to_string())?.port();
-        let credential_store = server.credential_handle();
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
-
-        let server_task = Arc::clone(&server);
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => {
-                        server_task.close();
-                        break;
-                    }
-                    result = server_task.accept() => {
-                        match result {
-                            Ok(connection) => {
-                                tokio::spawn(async move {
-                                    if let Err(err) = run_tunnel_server(connection.transport).await {
-                                        tracing::warn!(
-                                            error = %err,
-                                            "Direct tunnel server error"
-                                        );
-                                    }
-                                });
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    error = %err,
-                                    "Failed to accept direct tunnel connection"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(DirectServerHandle {
-            credential_store,
-            server,
-            port,
-            shutdown: Some(shutdown_tx),
-            task,
-        })
-    }
 }
 
 struct TunnelTask {
@@ -1132,42 +963,6 @@ struct TunnelTask {
     intercept_id: Option<Uuid>,
     shutdown: oneshot::Sender<()>,
     handle: JoinHandle<()>,
-}
-
-struct DirectServerHandle {
-    credential_store: Arc<DirectCredentialStore>,
-    server: Arc<DirectQuicServer>,
-    port: u16,
-    shutdown: Option<oneshot::Sender<()>>,
-    task: JoinHandle<()>,
-}
-
-impl DirectServerHandle {
-    fn port(&self) -> u16 {
-        self.port
-    }
-
-    fn observed_addr(&self) -> Option<SocketAddr> {
-        self.server.observed_addr()
-    }
-
-    fn server_certificate(&self) -> &[u8] {
-        self.server.server_certificate()
-    }
-
-    async fn set_token(&self, token: String) {
-        self.credential_store.replace(token).await;
-    }
-
-    async fn shutdown(mut self) {
-        self.server.close();
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
-        }
-        if !self.task.is_finished() {
-            self.task.abort();
-        }
-    }
 }
 
 #[derive(Copy, Clone)]
@@ -1190,19 +985,29 @@ impl TunnelKind {
 }
 
 impl DevboxTunnelManager {
-    async fn ensure_intercept(&self, token: &str, user_id: Uuid) -> Result<(), String> {
+    async fn ensure_intercept(
+        &self,
+        rpc_client: &DevboxSessionRpcClient,
+        token: &str,
+        user_id: Uuid,
+    ) -> Result<(), String> {
         let mut guard = self.intercept_task.lock().await;
         if guard.is_some() {
             return Ok(());
         }
 
-        let task = self.spawn_tunnel_task(TunnelKind::Intercept, token, user_id, None);
+        let task = self.spawn_tunnel_task(rpc_client, TunnelKind::Intercept, token, user_id, None);
 
         *guard = Some(task);
         Ok(())
     }
 
-    async fn ensure_client(&self, token: &str, user_id: Uuid) -> Result<(), String> {
+    async fn ensure_client(
+        &self,
+        rpc_client: &DevboxSessionRpcClient,
+        token: &str,
+        user_id: Uuid,
+    ) -> Result<(), String> {
         let mut guard = self.client_task.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -1218,7 +1023,7 @@ impl DevboxTunnelManager {
             *stored_user = Some(user_id);
         }
 
-        let task = self.spawn_tunnel_task(TunnelKind::Client, token, user_id, None);
+        let task = self.spawn_tunnel_task(rpc_client, TunnelKind::Client, token, user_id, None);
         *guard = Some(task);
         Ok(())
     }
@@ -1229,12 +1034,15 @@ impl DevboxTunnelManager {
         }
     }
 
-    async fn restart_client_tunnel(&self) -> Result<(), String> {
+    async fn restart_client_tunnel(
+        &self,
+        rpc_client: &DevboxSessionRpcClient,
+    ) -> Result<(), String> {
         self.stop_client().await;
         let token = { self.client_token.read().await.clone() };
         let user_id = { self.client_user_id.read().await.clone() };
         match (token, user_id) {
-            (Some(token), Some(user_id)) => self.ensure_client(&token, user_id).await,
+            (Some(token), Some(user_id)) => self.ensure_client(rpc_client, &token, user_id).await,
             _ => Ok(()),
         }
     }
@@ -1246,20 +1054,8 @@ impl DevboxTunnelManager {
     }
 
     async fn shutdown(&self) {
-        self.stop_direct_server().await;
         self.stop_intercept().await;
         self.stop_client().await;
-    }
-
-    async fn update_client_direct_config(
-        &self,
-        config: Option<DirectChannelConfig>,
-    ) -> Result<(), String> {
-        {
-            let mut guard = self.client_direct_config.write().await;
-            *guard = config;
-        }
-        self.restart_client_tunnel().await
     }
 
     async fn stop_task(task: TunnelTask, context: &str) {
@@ -1283,6 +1079,7 @@ impl DevboxTunnelManager {
 
     fn spawn_tunnel_task(
         &self,
+        rpc_client: &DevboxSessionRpcClient,
         kind: TunnelKind,
         token: &str,
         user_id: Uuid,
@@ -1292,9 +1089,10 @@ impl DevboxTunnelManager {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let token = token.to_string();
+        let rpc_client = rpc_client.clone();
         let handle = tokio::spawn(async move {
             manager
-                .run_tunnel_loop(kind, token, user_id, intercept_id, shutdown_rx)
+                .run_tunnel_loop(&rpc_client, kind, token, user_id, intercept_id, shutdown_rx)
                 .await;
         });
 
@@ -1310,6 +1108,7 @@ impl DevboxTunnelManager {
 impl DevboxTunnelManager {
     async fn run_tunnel_loop(
         &self,
+        rpc_client: &DevboxSessionRpcClient,
         kind: TunnelKind,
         token: String,
         user_id: Uuid,
@@ -1337,7 +1136,7 @@ impl DevboxTunnelManager {
                     );
                     break;
                 }
-                result = self.connect_and_run_tunnel(kind, &ws_url, &token) => {
+                result = self.connect_and_run_tunnel(rpc_client, kind, &ws_url, &token) => {
                     match result {
                         Ok(()) => {
                             tracing::info!(
@@ -1376,6 +1175,7 @@ impl DevboxTunnelManager {
 
     async fn connect_and_run_tunnel(
         &self,
+        rpc_client: &DevboxSessionRpcClient,
         kind: TunnelKind,
         ws_url: &str,
         token: &str,
@@ -1398,10 +1198,27 @@ impl DevboxTunnelManager {
         tracing::info!("Devbox {} tunnel connected: {}", kind.as_str(), ws_url);
 
         if matches!(kind, TunnelKind::Client) {
-            let direct_config = { self.client_direct_config.read().await.clone() };
+            let stun_observed_addr = self.direct_endpoint.observed_addr();
+            let direct_config = {
+                let active_environment = { *self.active_environment.lock().await };
+                if let Some(environment_id) = active_environment {
+                    rpc_client
+                        .request_direct_client_config(
+                            tarpc::context::current(),
+                            environment_id,
+                            stun_observed_addr,
+                        )
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                } else {
+                    None
+                }
+            };
             let (client, mode) = TunnelClient::connect_with_direct_or_relay::<_, _, _, _>(
                 direct_config.as_ref(),
-                token,
+                &self.direct_endpoint,
                 || async { Ok(stream) },
                 |err| {
                     tracing::warn!(
@@ -1429,7 +1246,7 @@ impl DevboxTunnelManager {
             self.clear_tunnel_client(&client).await;
             Ok(())
         } else {
-            let transport = QuicTransport::connect_websocket_client(stream, token).await?;
+            let transport = RelayEndpoint::client_connection(stream).await?;
             run_tunnel_server(transport).await
         }
     }

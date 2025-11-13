@@ -8,10 +8,11 @@ use std::{
 };
 
 use lapdev_common::devbox::{
-    DirectCandidate, DirectCandidateKind, DirectCandidateSet, DirectChannelConfig, DirectTransport,
+    DirectCandidate, DirectCandidateKind, DirectCandidateSet, DirectChannelConfig,
+    DirectTransport as CandidateTransport,
 };
-use quinn::rustls;
 use quinn::{self, Connection, Endpoint, IdleTimeout, RecvStream, SendStream, TransportConfig};
+use quinn::{rustls, Incoming};
 use rand::random;
 use rcgen::generate_simple_self_signed;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -28,6 +29,7 @@ use tracing::{debug, info, warn};
 use crate::{
     client::{TunnelClient, TunnelMode},
     error::TunnelError,
+    run_tunnel_server,
 };
 
 const HANDSHAKE_MAX_TOKEN_LEN: usize = u16::MAX as usize;
@@ -37,6 +39,11 @@ const QUIC_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
 const QUIC_IDLE_TIMEOUT_SECS: u64 = 60 * 60;
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_STUN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const DEFAULT_STUN_ENDPOINTS: &[&str] = &[
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+    "stun2.l.google.com:19302",
+];
 
 /// Options controlling direct QUIC server behavior.
 #[derive(Debug, Clone)]
@@ -77,7 +84,7 @@ pub fn collect_candidates(opts: &CandidateOptions) -> DirectCandidateSet {
             candidates.push(DirectCandidate {
                 host,
                 port: addr.port(),
-                transport: DirectTransport::Quic,
+                transport: CandidateTransport::Quic,
                 kind: DirectCandidateKind::Public,
                 priority: next_priority(&mut priority_counter),
             });
@@ -93,6 +100,7 @@ pub fn collect_candidates(opts: &CandidateOptions) -> DirectCandidateSet {
         candidates,
         generation: Some(generation),
         server_certificate: None,
+        stun_observed_addr: opts.stun_observed_addr,
     }
 }
 
@@ -108,11 +116,17 @@ fn candidate_exists(candidates: &[DirectCandidate], host: &str, port: u16) -> bo
         .any(|candidate| candidate.host == host && candidate.port == port)
 }
 
-/// Attempt to establish a direct tunnel using the provided channel config.
+/// Attempt to establish a direct tunnel using the provided endpoint and channel config.
 pub async fn connect_direct_tunnel(
+    endpoint: &Endpoint,
     config: &DirectChannelConfig,
 ) -> Result<TunnelClient, TunnelError> {
-    match timeout(DIRECT_CONNECT_TIMEOUT, connect_direct_tunnel_inner(config)).await {
+    match timeout(
+        DIRECT_CONNECT_TIMEOUT,
+        connect_direct_tunnel_inner(endpoint, config),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(TunnelError::Transport(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -125,80 +139,62 @@ pub async fn connect_direct_tunnel(
 }
 
 async fn connect_direct_tunnel_inner(
+    endpoint: &Endpoint,
     config: &DirectChannelConfig,
 ) -> Result<TunnelClient, TunnelError> {
-    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-
     let server_cert = config
         .server_certificate
         .as_deref()
         .ok_or_else(|| TunnelError::Remote("direct server certificate missing".into()))?;
-    endpoint.set_default_client_config(client_config_with_pinned_certificate(server_cert)?);
+    let client_config = client_config_with_pinned_certificate(server_cert)?;
+    let target_addr = config
+        .stun_observed_addr
+        .ok_or_else(|| TunnelError::Remote("direct server STUN address unavailable".into()))?;
 
-    let mut last_err: Option<TunnelError> = None;
+    debug!(candidate = %target_addr, "Attempting direct QUIC connect via STUN address");
+    let connecting = endpoint
+        .connect_with(client_config, target_addr, DIRECT_SERVER_NAME)
+        .map_err(|err| {
+            warn!(
+                candidate = %target_addr,
+                error = %err,
+                "Unable to initiate direct QUIC connect"
+            );
+            TunnelError::Transport(std::io::Error::other(err))
+        })?;
 
-    for candidate in config
-        .candidates
-        .iter()
-        .filter(|candidate| matches!(candidate.transport, DirectTransport::Quic))
-    {
-        let addr_string = format!("{}:{}", candidate.host, candidate.port);
-        let resolved_addrs: Vec<SocketAddr> = match addr_string.to_socket_addrs() {
-            Ok(iter) => iter.collect(),
-            Err(err) => {
-                last_err = Some(TunnelError::Transport(err));
-                continue;
-            }
-        };
-
-        for addr in resolved_addrs {
-            debug!(candidate = %addr, "Attempting direct QUIC candidate");
-            match endpoint.connect(addr, DIRECT_SERVER_NAME) {
-                Ok(connecting) => match connecting.await {
-                    Ok(connection) => {
-                        match establish_client_connection(connection, &config.credential.token)
-                            .await
-                        {
-                            Ok(transport) => {
-                                info!(peer = %addr, "Direct QUIC tunnel established");
-                                return Ok(TunnelClient::connect_with_mode(
-                                    transport,
-                                    TunnelMode::Direct,
-                                ));
-                            }
-                            Err(err) => {
-                                last_err = Some(err);
-                                continue;
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        warn!(candidate = %addr, error = %err, "Direct QUIC connect failed");
-                        last_err = Some(TunnelError::Transport(std::io::Error::other(err)));
-                        continue;
-                    }
-                },
+    match connecting.await {
+        Ok(connection) => {
+            match establish_client_connection(connection, &config.credential.token).await {
+                Ok(connection) => {
+                    info!(peer = %target_addr, "Direct QUIC tunnel established");
+                    Ok(TunnelClient::new_direct(connection))
+                }
                 Err(err) => {
-                    warn!(candidate = %addr, error = %err, "Unable to initiate direct QUIC connect");
-                    last_err = Some(TunnelError::Transport(std::io::Error::other(err)));
-                    continue;
+                    warn!(
+                        candidate = %target_addr,
+                        error = %err,
+                        "Direct QUIC handshake failed"
+                    );
+                    Err(err)
                 }
             }
         }
+        Err(err) => {
+            warn!(
+                candidate = %target_addr,
+                error = %err,
+                "Direct QUIC connect failed"
+            );
+            Err(TunnelError::Transport(std::io::Error::other(err)))
+        }
     }
-
-    if last_err.is_some() {
-        warn!("All direct QUIC candidates failed; falling back to WebSocket");
-    }
-
-    Err(last_err.unwrap_or_else(|| TunnelError::Remote("no QUIC candidates available".to_string())))
 }
 
 pub(crate) async fn establish_client_connection(
     connection: Connection,
     token: &str,
-) -> Result<QuicTransport, TunnelError> {
+) -> Result<Connection, TunnelError> {
     let (mut send, mut recv) = connection
         .open_bi()
         .await
@@ -207,16 +203,17 @@ pub(crate) async fn establish_client_connection(
     read_server_ack(&mut recv).await?;
     send.finish()
         .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    Ok(QuicTransport::new(connection))
+    Ok(connection)
 }
 
-/// QUIC listener that validates the shared credential before handing over the transport.
-pub struct DirectQuicServer {
+/// QUIC endpoint that can both accept and initiate direct transports.
+#[derive(Clone)]
+pub struct DirectTransport {
     endpoint: Endpoint,
     credential: Arc<DirectCredentialStore>,
     observed_addr: Option<SocketAddr>,
-    server_certificate: Vec<u8>,
-    stun_keepalive: Mutex<Option<StunKeepaliveHandle>>,
+    server_certificate: Arc<Vec<u8>>,
+    stun_keepalive: Arc<Mutex<Option<StunKeepaliveHandle>>>,
 }
 
 #[derive(Default)]
@@ -258,7 +255,257 @@ pub struct DirectConnection {
     pub token: String,
 }
 
-impl DirectQuicServer {
+/// Wrapper that pairs a Quinn endpoint with NAT discovery metadata.
+#[derive(Clone)]
+pub struct DirectEndpoint {
+    endpoint: Endpoint,
+    observed_addr: Option<SocketAddr>,
+    server_certificate: Arc<Vec<u8>>,
+    credential: Arc<DirectCredentialStore>,
+    hole_punch_socket: Option<Arc<UdpSocket>>,
+    stun_keepalive: Arc<Mutex<Option<StunKeepaliveHandle>>>,
+}
+
+impl DirectEndpoint {
+    /// Bind a new endpoint on 0.0.0.0:0 using the default STUN servers.
+    pub async fn bind() -> Result<Self, TunnelError> {
+        Self::bind_on(([0, 0, 0, 0], 0).into()).await
+    }
+
+    /// Bind on the provided address using the default STUN servers.
+    pub async fn bind_on(bind_addr: SocketAddr) -> Result<Self, TunnelError> {
+        let options = DirectServerOptions {
+            stun_servers: default_stun_servers(),
+            ..Default::default()
+        };
+        Self::bind_with_options(bind_addr, options).await
+    }
+
+    /// Bind using custom STUN options with the default Quinn configuration.
+    pub async fn bind_with_options(
+        bind_addr: SocketAddr,
+        options: DirectServerOptions,
+    ) -> Result<Self, TunnelError> {
+        Self::bind_with_quinn_config(bind_addr, quinn::EndpointConfig::default(), None, options)
+            .await
+    }
+
+    /// Bind with custom Quinn configuration and STUN options.
+    pub async fn bind_with_quinn_config(
+        bind_addr: SocketAddr,
+        endpoint_config: quinn::EndpointConfig,
+        server_config: Option<(quinn::ServerConfig, Vec<u8>)>,
+        options: DirectServerOptions,
+    ) -> Result<Self, TunnelError> {
+        let socket = std::net::UdpSocket::bind(bind_addr)
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+        Self::from_bound_socket(socket, endpoint_config, server_config, options)
+    }
+
+    /// Construct from an already-bound socket, applying the provided Quinn configuration.
+    pub fn from_bound_socket(
+        socket: std::net::UdpSocket,
+        endpoint_config: quinn::EndpointConfig,
+        server_config: Option<(quinn::ServerConfig, Vec<u8>)>,
+        options: DirectServerOptions,
+    ) -> Result<Self, TunnelError> {
+        socket
+            .set_nonblocking(false)
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+
+        let DirectServerOptions {
+            stun_servers,
+            stun_timeout,
+            stun_keepalive_interval,
+        } = options;
+
+        let keepalive_interval = stun_keepalive_interval;
+        let keepalive_servers = stun_servers.clone();
+        let keepalive_socket = if keepalive_interval.is_some() && !keepalive_servers.is_empty() {
+            match socket.try_clone() {
+                Ok(clone) => Some(clone),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "Failed to clone UDP socket for STUN keepalive; continuing without keepalive"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let observed_addr = if stun_servers.is_empty() {
+            None
+        } else {
+            match run_stun_probes(&socket, &stun_servers, stun_timeout) {
+                Ok(addr) => addr,
+                Err(err) => {
+                    warn!(error = %err, "STUN probe failed");
+                    None
+                }
+            }
+        };
+
+        socket
+            .set_nonblocking(true)
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+
+        let hole_punch_socket = match socket.try_clone() {
+            Ok(sock) => Some(Arc::new(sock)),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "Failed to clone UDP socket for hole punch probes; continuing without probe support"
+                );
+                None
+            }
+        };
+
+        let (server_config, server_certificate) = match server_config {
+            Some((config, cert)) => (config, Arc::new(cert)),
+            None => {
+                let (config, cert) = build_server_config()?;
+                (config, Arc::new(cert))
+            }
+        };
+
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| TunnelError::Transport(io::Error::other("no async runtime found")))?;
+        let endpoint = Endpoint::new(endpoint_config, Some(server_config), socket, runtime)
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+
+        let stun_keepalive = match (keepalive_socket, keepalive_interval) {
+            (Some(sock), Some(interval)) if !keepalive_servers.is_empty() => Some(
+                start_stun_keepalive(sock, keepalive_servers, interval, stun_timeout),
+            ),
+            _ => None,
+        };
+
+        Ok(Self {
+            endpoint,
+            observed_addr,
+            server_certificate,
+            credential: Arc::new(DirectCredentialStore::new()),
+            hole_punch_socket,
+            stun_keepalive: Arc::new(Mutex::new(stun_keepalive)),
+        })
+    }
+
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoint.clone()
+    }
+
+    pub fn observed_addr(&self) -> Option<SocketAddr> {
+        self.observed_addr
+    }
+
+    pub fn server_certificate(&self) -> &[u8] {
+        self.server_certificate.as_slice()
+    }
+
+    pub fn credential(&self) -> &DirectCredentialStore {
+        &self.credential
+    }
+
+    /// Send a one-byte UDP probe to the provided address to prime NAT state.
+    pub fn send_probe(&self, addr: SocketAddr) -> Result<(), TunnelError> {
+        let socket = self.hole_punch_socket.as_ref().ok_or_else(|| {
+            TunnelError::Transport(io::Error::other("hole punch socket unavailable"))
+        })?;
+        let payload = [0u8; 1];
+        socket
+            .send_to(&payload, addr)
+            .map(|_| ())
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))
+    }
+
+    pub async fn connect_tunnel(
+        &self,
+        config: &DirectChannelConfig,
+    ) -> Result<TunnelClient, TunnelError> {
+        connect_direct_tunnel(&self.endpoint, config).await
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, TunnelError> {
+        self.endpoint
+            .local_addr()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))
+    }
+
+    pub fn close(&self) {
+        self.endpoint
+            .close(0u32.into(), b"direct endpoint shutdown");
+        self.stop_stun_keepalive();
+    }
+
+    fn stop_stun_keepalive(&self) {
+        if let Some(handle) = self
+            .stun_keepalive
+            .lock()
+            .expect("stun keepalive mutex poisoned")
+            .take()
+        {
+            handle.stop();
+        }
+    }
+
+    pub async fn start_tunnel_server(&self) {
+        loop {
+            while let Some(incoming) = self.endpoint.accept().await {
+                let endpoint = self.clone();
+                tokio::spawn(async move {
+                    endpoint.handle_incoming(incoming).await;
+                });
+            }
+        }
+    }
+
+    async fn handle_incoming(&self, incoming: Incoming) -> Result<(), TunnelError> {
+        let connecting = incoming
+            .accept()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+        let connection = connecting
+            .await
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+        let (mut send, mut recv) = connection
+            .accept_bi()
+            .await
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+        let presented = read_token(&mut recv).await?;
+        if !self.credential.contains(&presented).await {
+            return Err(TunnelError::Remote("invalid direct credential".into()));
+        }
+
+        write_server_ack(&mut send).await?;
+        send.finish()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+        run_tunnel_server(connection).await?;
+
+        Ok(())
+    }
+}
+
+impl Drop for DirectEndpoint {
+    fn drop(&mut self) {
+        self.stop_stun_keepalive();
+    }
+}
+
+impl DirectTransport {
+    /// Bind a new direct transport endpoint on 0.0.0.0:0 using the default STUN servers.
+    pub async fn new() -> Result<Self, TunnelError> {
+        let options = DirectServerOptions {
+            stun_servers: default_stun_servers(),
+            ..Default::default()
+        };
+        Self::bind_with_options(([0, 0, 0, 0], 0).into(), options).await
+    }
+
     pub async fn bind(bind_addr: SocketAddr) -> Result<Self, TunnelError> {
         Self::bind_with_options(bind_addr, DirectServerOptions::default()).await
     }
@@ -317,14 +564,9 @@ impl DirectQuicServer {
         .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
 
         let stun_keepalive = match (keepalive_socket, keepalive_interval) {
-            (Some(sock), Some(interval)) if !stun_servers_clone.is_empty() => {
-                Some(Self::start_stun_keepalive(
-                    sock,
-                    stun_servers_clone,
-                    interval,
-                    options.stun_timeout,
-                ))
-            }
+            (Some(sock), Some(interval)) if !stun_servers_clone.is_empty() => Some(
+                start_stun_keepalive(sock, stun_servers_clone, interval, options.stun_timeout),
+            ),
             _ => None,
         };
 
@@ -332,8 +574,8 @@ impl DirectQuicServer {
             endpoint,
             credential: Arc::new(DirectCredentialStore::new()),
             observed_addr,
-            server_certificate,
-            stun_keepalive: Mutex::new(stun_keepalive),
+            server_certificate: Arc::new(server_certificate),
+            stun_keepalive: Arc::new(Mutex::new(stun_keepalive)),
         })
     }
 
@@ -353,6 +595,17 @@ impl DirectQuicServer {
 
     pub fn server_certificate(&self) -> &[u8] {
         &self.server_certificate
+    }
+
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoint.clone()
+    }
+
+    pub async fn connect_peer(
+        &self,
+        config: &DirectChannelConfig,
+    ) -> Result<TunnelClient, TunnelError> {
+        connect_direct_tunnel(&self.endpoint, config).await
     }
 
     pub async fn accept(&self) -> Result<DirectConnection, TunnelError> {
@@ -404,40 +657,58 @@ impl DirectQuicServer {
         }
     }
 
-    fn start_stun_keepalive(
-        socket: UdpSocket,
-        servers: Vec<SocketAddr>,
-        interval: Duration,
-        timeout: Duration,
-    ) -> StunKeepaliveHandle {
-        let socket = Arc::new(socket);
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let task = tokio::spawn({
-            let servers = servers.clone();
-            async move {
-                loop {
-                    tokio::select! {
-                        _ = &mut shutdown_rx => {
-                            break;
-                        }
-                        _ = ticker.tick() => {
-                            for server in &servers {
-                                if let Err(err) = send_stun_binding_request_with_timeout(socket.as_ref(), *server, timeout) {
-                                    debug!(?server, error = %err, "STUN keepalive request failed");
-                                }
-                            }
-                        }
-                    }
-                }
+    pub async fn start_tunnel_server(&self) {
+        loop {
+            while let Some(incoming) = self.endpoint.accept().await {
+                let transport = self.clone();
+                tokio::spawn(async move {
+                    transport.handle_incoming(incoming).await;
+                });
             }
-        });
-
-        StunKeepaliveHandle {
-            shutdown: Some(shutdown_tx),
-            task,
         }
+    }
+
+    async fn handle_incoming(&self, incoming: Incoming) -> Result<(), TunnelError> {
+        let connecting = incoming
+            .accept()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+        let connection = connecting
+            .await
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+        let (mut send, mut recv) = connection
+            .accept_bi()
+            .await
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+        let presented = read_token(&mut recv).await?;
+        if !self.credential.contains(&presented).await {
+            return Err(TunnelError::Remote("invalid direct credential".into()));
+        }
+
+        write_server_ack(&mut send).await?;
+        send.finish()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+        run_tunnel_server(connection).await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn auth(
+        &self,
+        send: &mut SendStream,
+        recv: &mut RecvStream,
+    ) -> Result<(), TunnelError> {
+        let presented = read_token(recv).await?;
+        if !self.credential.contains(&presented).await {
+            return Err(TunnelError::Remote("invalid direct credential".into()));
+        }
+
+        write_server_ack(send).await?;
+        send.finish()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+        Ok(())
     }
 }
 
@@ -869,6 +1140,49 @@ fn parse_xor_mapped_address(value: &[u8], transaction_id: &[u8; 12]) -> Option<S
     }
 }
 
+fn default_stun_servers() -> Vec<SocketAddr> {
+    DEFAULT_STUN_ENDPOINTS
+        .iter()
+        .filter_map(|endpoint| endpoint.to_socket_addrs().ok()?.next())
+        .collect()
+}
+
+fn start_stun_keepalive(
+    socket: UdpSocket,
+    servers: Vec<SocketAddr>,
+    interval: Duration,
+    timeout: Duration,
+) -> StunKeepaliveHandle {
+    let socket = Arc::new(socket);
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let task = tokio::spawn({
+        let servers = servers.clone();
+        async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => {
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        for server in &servers {
+                            if let Err(err) = send_stun_binding_request_with_timeout(socket.as_ref(), *server, timeout) {
+                                debug!(?server, error = %err, "STUN keepalive request failed");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    StunKeepaliveHandle {
+        shutdown: Some(shutdown_tx),
+        task,
+    }
+}
+
 struct StunKeepaliveHandle {
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<()>,
@@ -883,8 +1197,217 @@ impl StunKeepaliveHandle {
     }
 }
 
-impl Drop for DirectQuicServer {
+impl Drop for DirectTransport {
     fn drop(&mut self) {
         self.stop_stun_keepalive();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use lapdev_common::devbox::{
+        DirectCandidate, DirectCandidateKind, DirectChannelConfig, DirectCredential,
+        DirectTransport as CandidateTransport,
+    };
+    use rand::random;
+    use std::net::SocketAddr;
+
+    fn config_for_server(addr: SocketAddr, token: &str, certificate: &[u8]) -> DirectChannelConfig {
+        DirectChannelConfig {
+            credential: DirectCredential {
+                token: token.to_string(),
+                expires_at: Utc::now() + ChronoDuration::minutes(5),
+            },
+            candidates: vec![DirectCandidate {
+                host: addr.ip().to_string(),
+                port: addr.port(),
+                transport: CandidateTransport::Quic,
+                kind: DirectCandidateKind::Public,
+                priority: 0,
+            }],
+            server_certificate: Some(certificate.to_vec()),
+            stun_observed_addr: Some(addr),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_endpoint_can_bind_on_loopback() {
+        let endpoint = DirectEndpoint::bind_with_options(
+            "127.0.0.1:0".parse().unwrap(),
+            DirectServerOptions::default(),
+        )
+        .await
+        .expect("bind direct endpoint");
+        let addr = endpoint.local_addr().expect("local addr");
+        assert!(addr.ip().is_loopback());
+        endpoint.close();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_endpoint_tracks_server_certificate() {
+        let (server_config, certificate) = build_server_config().expect("server config");
+        let certificate_clone = certificate.clone();
+        let endpoint = DirectEndpoint::bind_with_quinn_config(
+            "127.0.0.1:0".parse().unwrap(),
+            quinn::EndpointConfig::default(),
+            Some((server_config, certificate)),
+            DirectServerOptions::default(),
+        )
+        .await
+        .expect("bind direct endpoint");
+        let stored = endpoint.server_certificate();
+        assert_eq!(stored, certificate_clone.as_slice());
+        endpoint.close();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_endpoint_can_send_probe() {
+        let endpoint = DirectEndpoint::bind_with_options(
+            "127.0.0.1:0".parse().unwrap(),
+            DirectServerOptions::default(),
+        )
+        .await
+        .expect("bind direct endpoint");
+
+        let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind listener");
+        listener
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set timeout");
+        let target_addr = listener.local_addr().expect("listener addr");
+        let recv_handle = tokio::task::spawn_blocking(move || {
+            let mut buf = [0u8; 16];
+            listener
+                .recv_from(&mut buf)
+                .map(|(len, addr)| (len, addr, buf))
+        });
+
+        let endpoint_addr = endpoint.local_addr().expect("endpoint addr");
+        endpoint
+            .send_probe(target_addr)
+            .expect("send probe succeeds");
+
+        let (len, addr, buf) = recv_handle.await.expect("recv join").expect("recv result");
+        assert_eq!(len, 1);
+        assert_eq!(addr.port(), endpoint_addr.port());
+        assert_eq!(buf[0], 0);
+
+        endpoint.close();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_endpoint_can_connect_tunnel() {
+        let server = Arc::new(
+            DirectTransport::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .expect("bind direct server"),
+        );
+        let client_endpoint = DirectEndpoint::bind_with_options(
+            "127.0.0.1:0".parse().unwrap(),
+            DirectServerOptions::default(),
+        )
+        .await
+        .expect("bind client endpoint");
+
+        let token = format!("test-token-{}", random::<u64>());
+        server.credential_handle().insert(token.clone()).await;
+
+        let server_addr = server.local_addr().expect("server address");
+        let config = config_for_server(server_addr, &token, server.server_certificate());
+
+        let accept_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.accept().await })
+        };
+
+        let client = client_endpoint
+            .connect_tunnel(&config)
+            .await
+            .expect("connect tunnel");
+        assert_eq!(client.mode(), TunnelMode::Direct);
+
+        let accepted = accept_task
+            .await
+            .expect("accept task join")
+            .expect("direct accept");
+        assert_eq!(accepted.token, token);
+
+        client_endpoint.close();
+        server.close();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_direct_tunnel_can_bind_and_connect_on_loopback() {
+        let server = Arc::new(
+            DirectTransport::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .expect("bind direct server"),
+        );
+
+        let token = format!("test-token-{}", random::<u64>());
+        server.credential_handle().insert(token.clone()).await;
+
+        let server_addr = server.local_addr().expect("server address");
+        let config = config_for_server(server_addr, &token, server.server_certificate());
+
+        let accept_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.accept().await })
+        };
+
+        let endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).expect("client endpoint");
+        let client = connect_direct_tunnel(&endpoint, &config)
+            .await
+            .expect("direct connect succeeded");
+        assert_eq!(client.mode(), TunnelMode::Direct);
+
+        let accepted = accept_task
+            .await
+            .expect("accept task join")
+            .expect("direct accept");
+        assert_eq!(accepted.token, token);
+
+        server.close();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_server_can_reuse_endpoint_for_outbound_connects() {
+        let listener = Arc::new(
+            DirectTransport::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .expect("bind listener"),
+        );
+        let dialer = Arc::new(
+            DirectTransport::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .expect("bind dialer"),
+        );
+
+        let token = format!("test-token-{}", random::<u64>());
+        listener.credential_handle().insert(token.clone()).await;
+
+        let server_addr = listener.local_addr().expect("listener addr");
+        let config = config_for_server(server_addr, &token, listener.server_certificate());
+
+        let accept_task = {
+            let listener = Arc::clone(&listener);
+            tokio::spawn(async move { listener.accept().await })
+        };
+
+        let client = dialer
+            .connect_peer(&config)
+            .await
+            .expect("outbound connect");
+        assert_eq!(client.mode(), TunnelMode::Direct);
+
+        let accepted = accept_task
+            .await
+            .expect("accept task join")
+            .expect("listener accept");
+        assert_eq!(accepted.token, token);
+
+        listener.close();
+        dialer.close();
     }
 }

@@ -16,7 +16,7 @@ use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use futures_util::task::AtomicWaker;
 use quinn::{
     udp::{RecvMeta, Transmit},
-    AsyncUdpSocket, UdpPoller,
+    AsyncUdpSocket, Connection, UdpPoller,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -26,10 +26,7 @@ use tokio::{
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 use crate::{
-    direct::{
-        build_server_config, client_config, establish_client_connection, read_token,
-        write_server_ack, QuicTransport,
-    },
+    direct::{build_server_config, client_config},
     error::TunnelError,
 };
 
@@ -44,12 +41,12 @@ pub fn relay_server_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 60001))
 }
 
-/// Establish a QUIC client over a WebSocket stream.
-impl QuicTransport {
-    pub async fn connect_websocket_client<S>(
+pub struct RelayEndpoint;
+
+impl RelayEndpoint {
+    pub async fn client_connection<S>(
         websocket: WebSocketStream<S>,
-        token: &str,
-    ) -> Result<Self, TunnelError>
+    ) -> Result<Connection, TunnelError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -58,102 +55,69 @@ impl QuicTransport {
             relay_client_addr(),
             relay_server_addr(),
         );
-        Self::connect_udp_client(socket, token).await
-    }
 
-    pub async fn connect_udp_client(
-        socket: Arc<WebSocketUdpSocket>,
-        token: &str,
-    ) -> Result<Self, TunnelError> {
-        quic_client_from_udp(socket, token).await
-    }
-
-    pub async fn accept_websocket_server<S>(
-        websocket: WebSocketStream<S>,
-        expected_token: &str,
-    ) -> Result<Self, TunnelError>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
-        let socket = WebSocketUdpSocket::from_tungstenite(
-            websocket,
-            relay_server_addr(),
-            relay_client_addr(),
-        );
-        Self::accept_udp_server(socket, expected_token).await
-    }
-
-    pub async fn accept_udp_server(
-        socket: Arc<WebSocketUdpSocket>,
-        expected_token: &str,
-    ) -> Result<Self, TunnelError> {
-        quic_server_from_udp(socket, expected_token).await
-    }
-}
-
-async fn quic_client_from_udp(
-    socket: Arc<WebSocketUdpSocket>,
-    token: &str,
-) -> Result<QuicTransport, TunnelError> {
-    let runtime = quinn::default_runtime()
-        .ok_or_else(|| TunnelError::Transport(io::Error::other("no async runtime found")))?;
-    let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
-        quinn::EndpointConfig::default(),
-        None,
-        socket,
-        runtime,
-    )
-    .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
-    endpoint.set_default_client_config(client_config()?);
-    let connecting = endpoint
-        .connect(relay_server_addr(), "lapdev-relay")
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| TunnelError::Transport(io::Error::other("no async runtime found")))?;
+        let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            runtime,
+        )
         .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
-    let connection = connecting
-        .await
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    establish_client_connection(connection, token).await
-}
+        endpoint.set_default_client_config(client_config()?);
+        let connecting = endpoint
+            .connect(relay_server_addr(), "lapdev-relay")
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+        let connection = connecting
+            .await
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
 
-async fn quic_server_from_udp(
-    socket: Arc<WebSocketUdpSocket>,
-    expected_token: &str,
-) -> Result<QuicTransport, TunnelError> {
-    let runtime = quinn::default_runtime()
-        .ok_or_else(|| TunnelError::Transport(io::Error::other("no async runtime found")))?;
-    let (server_config, _) = build_server_config()?;
-    let endpoint = quinn::Endpoint::new_with_abstract_socket(
-        quinn::EndpointConfig::default(),
-        Some(server_config),
-        socket,
-        runtime,
-    )
-    .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
-
-    let incoming = endpoint
-        .accept()
-        .await
-        .ok_or(TunnelError::ConnectionClosed)?;
-
-    let connecting = incoming
-        .accept()
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    let connection = connecting
-        .await
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    let (mut send, mut recv) = connection
-        .accept_bi()
-        .await
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-
-    let presented = read_token(&mut recv).await?;
-    if presented != expected_token {
-        return Err(TunnelError::Remote("invalid direct credential".into()));
+        Ok(connection)
     }
 
-    write_server_ack(&mut send).await?;
-    send.finish()
-        .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
-    Ok(QuicTransport::new(connection))
+    pub async fn server_connection<S>(
+        websocket: WebSocketStream<S>,
+    ) -> Result<Connection, TunnelError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let socket = WebSocketUdpSocket::from_tungstenite(
+            websocket,
+            relay_server_addr(),
+            relay_client_addr(),
+        );
+        Self::udp_server_connection(socket).await
+    }
+
+    pub async fn udp_server_connection(
+        socket: Arc<WebSocketUdpSocket>,
+    ) -> Result<Connection, TunnelError> {
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| TunnelError::Transport(io::Error::other("no async runtime found")))?;
+        let (server_config, _) = build_server_config()?;
+        let endpoint = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            Some(server_config),
+            socket,
+            runtime,
+        )
+        .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+
+        let incoming = endpoint
+            .accept()
+            .await
+            .ok_or(TunnelError::ConnectionClosed)?;
+
+        let connecting = incoming
+            .accept()
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+        let connection = connecting
+            .await
+            .map_err(|err| TunnelError::Transport(std::io::Error::other(err)))?;
+
+        Ok(connection)
+    }
 }
 
 /// Adapter that exposes a WebSocket as a virtual UDP socket suitable for Quinn.

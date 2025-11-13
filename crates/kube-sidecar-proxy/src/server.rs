@@ -15,6 +15,7 @@ use lapdev_common::kube::{
 };
 use lapdev_kube_rpc::{http_parser, SidecarProxyManagerRpcClient, SidecarProxyRpc};
 use lapdev_rpc::spawn_twoway;
+use lapdev_tunnel::direct::DirectEndpoint;
 use std::{collections::HashSet, env, io, net::SocketAddr, str::FromStr, sync::Arc};
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
@@ -36,6 +37,7 @@ pub struct SidecarProxyServer {
     settings: Arc<SidecarSettings>,
     routing_table: Arc<RwLock<RoutingTable>>,
     connection_registry: Arc<ConnectionRegistry>,
+    direct_endpoint: Arc<DirectEndpoint>,
     /// RPC client to kube-manager (None until connection established)
     rpc_client: Arc<RwLock<Option<SidecarProxyManagerRpcClient>>>,
 }
@@ -144,6 +146,11 @@ impl SidecarProxyServer {
             settings: Arc::new(settings),
             routing_table: Arc::new(RwLock::new(routing_table)),
             connection_registry: Arc::new(ConnectionRegistry::default()),
+            direct_endpoint: Arc::new(
+                DirectEndpoint::bind()
+                    .await
+                    .map_err(|e| anyhow!("failed to initialize direct endpoint: {}", e))?,
+            ),
             rpc_client: Arc::new(RwLock::new(None)),
         };
 
@@ -300,6 +307,7 @@ impl SidecarProxyServer {
             rpc_client,
             Arc::clone(&self.routing_table),
             Arc::clone(&self.connection_registry),
+            Arc::clone(&self.direct_endpoint),
         );
         let rpc_server_clone = rpc_server.clone();
         let rpc_server_task = tokio::spawn(async move {

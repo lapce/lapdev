@@ -3,7 +3,9 @@ use lapdev_common::{
     devbox::DirectChannelConfig,
     kube::{ProxyPortRoute, KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER},
 };
-use lapdev_tunnel::{TunnelClient, TunnelError, TunnelMode, TunnelTcpStream};
+use lapdev_tunnel::{
+    direct::DirectEndpoint, TunnelClient, TunnelError, TunnelMode, TunnelTcpStream,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 use tokio::sync::{OnceCell, RwLock};
@@ -363,13 +365,15 @@ impl DevboxRouteMetadata {
 
 pub struct DevboxConnection {
     metadata: DevboxRouteMetadata,
+    direct_endpoint: Arc<DirectEndpoint>,
     client: RwLock<OnceCell<Arc<TunnelClient>>>,
 }
 
 impl DevboxConnection {
-    pub fn new(metadata: DevboxRouteMetadata) -> Self {
+    pub fn new(metadata: DevboxRouteMetadata, direct_endpoint: Arc<DirectEndpoint>) -> Self {
         Self {
             metadata,
+            direct_endpoint,
             client: RwLock::new(OnceCell::new()),
         }
     }
@@ -438,7 +442,7 @@ impl DevboxConnection {
 
         let (client, mode) = TunnelClient::connect_with_direct_or_relay(
             direct,
-            auth_token.as_str(),
+            &self.direct_endpoint,
             || {
                 let websocket_url = websocket_url.clone();
                 let auth_token = auth_token.clone();

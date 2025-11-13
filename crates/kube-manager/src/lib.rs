@@ -1,4 +1,3 @@
-pub mod devbox_direct_gateway;
 pub mod devbox_proxy_manager;
 pub mod devbox_proxy_manager_rpc;
 pub mod manager;

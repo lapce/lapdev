@@ -5,14 +5,15 @@ use std::{
 };
 
 use lapdev_common::devbox::DirectChannelConfig;
-use quinn::{Connection, RecvStream, SendStream, WriteError};
+use quinn::{Connection, Endpoint, RecvStream, SendStream, WriteError};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::{
-    direct::{connect_direct_tunnel, QuicTransport},
+    direct::{connect_direct_tunnel, DirectEndpoint, QuicTransport},
     error::TunnelError,
     message::{self, Protocol, TunnelTarget},
+    RelayEndpoint,
 };
 
 /// Client capable of opening TCP tunnels by mapping each request to a native QUIC stream.
@@ -30,6 +31,20 @@ impl fmt::Debug for TunnelClient {
 }
 
 impl TunnelClient {
+    pub fn new_direct(connection: Connection) -> Self {
+        Self {
+            connection,
+            mode: TunnelMode::Direct,
+        }
+    }
+
+    pub fn new_relay(connection: Connection) -> Self {
+        Self {
+            connection,
+            mode: TunnelMode::Relay,
+        }
+    }
+
     pub fn connect_with_mode(transport: QuicTransport, mode: TunnelMode) -> Self {
         Self {
             connection: transport.into_connection(),
@@ -67,7 +82,7 @@ impl TunnelClient {
 
     pub async fn connect_with_direct_or_relay<S, F, Fut, G>(
         direct: Option<&DirectChannelConfig>,
-        token: &str,
+        direct_endpoint: &DirectEndpoint,
         ws_connector: F,
         on_direct_failure: G,
     ) -> Result<(Self, TunnelMode), TunnelError>
@@ -78,7 +93,9 @@ impl TunnelClient {
         G: FnOnce(&TunnelError),
     {
         if let Some(config) = direct {
-            match connect_direct_tunnel(config).await {
+            let direct_result = direct_endpoint.connect_tunnel(config).await;
+
+            match direct_result {
                 Ok(client) => {
                     tracing::info!("Established direct tunnel connection");
                     return Ok((client, TunnelMode::Direct));
@@ -94,12 +111,9 @@ impl TunnelClient {
         }
 
         let websocket = ws_connector().await?;
-        let transport = QuicTransport::connect_websocket_client(websocket, token).await?;
+        let connection = RelayEndpoint::client_connection(websocket).await?;
         tracing::info!("Using relay tunnel connection over QUIC");
-        Ok((
-            TunnelClient::connect_with_mode(transport, TunnelMode::Relay),
-            TunnelMode::Relay,
-        ))
+        Ok((TunnelClient::new_relay(connection), TunnelMode::Relay))
     }
 
     pub fn mode(&self) -> TunnelMode {

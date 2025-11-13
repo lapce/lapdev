@@ -26,7 +26,10 @@ use lapdev_rpc::error::ApiError;
 use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    net::SocketAddr,
+};
 use std::convert::TryFrom;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -299,6 +302,7 @@ impl KubeClusterServer {
         user_id: Uuid,
         environment_id: Uuid,
         namespace: String,
+        stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String> {
         match self
             .rpc_client
@@ -307,6 +311,7 @@ impl KubeClusterServer {
                 user_id,
                 environment_id,
                 namespace,
+                stun_observed_addr,
             )
             .await
         {

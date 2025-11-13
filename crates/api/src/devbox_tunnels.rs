@@ -12,7 +12,8 @@ use bytes::Bytes;
 use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use lapdev_tunnel::{
     direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    DynTunnelStream, TunnelClient, TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
+    DynTunnelStream, RelayEndpoint, TunnelClient, TunnelError, TunnelMode, TunnelTarget,
+    WebSocketUdpSocket,
 };
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::{self as ws, Message as TungMessage};
@@ -41,8 +42,8 @@ impl DevboxTunnelRegistry {
         let udp_socket =
             WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
 
-        let transport = match QuicTransport::accept_udp_server(udp_socket, &token).await {
-            Ok(transport) => transport,
+        let connection = match RelayEndpoint::udp_server_connection(udp_socket).await {
+            Ok(connection) => connection,
             Err(err) => {
                 warn!(
                     user_id = %user_id,
@@ -53,10 +54,7 @@ impl DevboxTunnelRegistry {
             }
         };
 
-        let client = Arc::new(TunnelClient::connect_with_mode(
-            transport,
-            TunnelMode::Relay,
-        ));
+        let client = Arc::new(TunnelClient::new_relay(connection));
         let generation = self.next_generation();
 
         {
@@ -109,7 +107,6 @@ impl DevboxTunnelRegistry {
     pub async fn attach_sidecar(
         &self,
         user_id: Uuid,
-        token: String,
         socket: WebSocket,
     ) -> Result<(), TunnelError> {
         let cli_client = {
@@ -135,7 +132,7 @@ impl DevboxTunnelRegistry {
         let udp_socket =
             WebSocketUdpSocket::from_parts(sink, stream, relay_server_addr(), relay_client_addr());
 
-        let transport = QuicTransport::accept_udp_server(udp_socket, &token).await?;
+        let connection = RelayEndpoint::udp_server_connection(udp_socket).await?;
         let connector = move |target: TunnelTarget| {
             let cli_client = cli_client.clone();
             async move {
@@ -146,7 +143,7 @@ impl DevboxTunnelRegistry {
             }
         };
 
-        run_tunnel_server_with_connector(transport, connector).await
+        run_tunnel_server_with_connector(connection, connector).await
     }
 }
 

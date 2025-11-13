@@ -3,15 +3,17 @@ use lapdev_common::{
     devbox::DirectChannelConfig,
     kube::{ProxyPortRoute, KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER},
 };
+use lapdev_kube_rpc::SidecarProxyManagerRpcClient;
 use lapdev_tunnel::{
     direct::DirectEndpoint, TunnelClient, TunnelError, TunnelMode, TunnelTcpStream,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
+use tarpc::context;
 use tokio::sync::{OnceCell, RwLock};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Immutable settings for the sidecar proxy determined at boot time.
@@ -366,14 +368,23 @@ impl DevboxRouteMetadata {
 pub struct DevboxConnection {
     metadata: DevboxRouteMetadata,
     direct_endpoint: Arc<DirectEndpoint>,
+    rpc_client: SidecarProxyManagerRpcClient,
+    target_environment_id: Uuid,
     client: RwLock<OnceCell<Arc<TunnelClient>>>,
 }
 
 impl DevboxConnection {
-    pub fn new(metadata: DevboxRouteMetadata, direct_endpoint: Arc<DirectEndpoint>) -> Self {
+    pub fn new(
+        metadata: DevboxRouteMetadata,
+        direct_endpoint: Arc<DirectEndpoint>,
+        rpc_client: SidecarProxyManagerRpcClient,
+        target_environment_id: Uuid,
+    ) -> Self {
         Self {
             metadata,
             direct_endpoint,
+            rpc_client,
+            target_environment_id,
             client: RwLock::new(OnceCell::new()),
         }
     }
@@ -438,7 +449,21 @@ impl DevboxConnection {
         let workload_id = self.metadata.workload_id;
         let websocket_url = self.metadata.websocket_url.clone();
         let auth_token = self.metadata.auth_token.clone();
-        let direct = self.metadata.direct.as_ref();
+        let direct_config = match self.fetch_direct_config().await {
+            Ok(config) => config,
+            Err(err) => {
+                warn!(
+                    intercept_id = %intercept_id,
+                    workload_id = %workload_id,
+                    target_environment_id = %self.target_environment_id,
+                    error = %err,
+                    "Failed to fetch direct Devbox config; continuing without direct candidates"
+                );
+                None
+            }
+        };
+
+        let direct = direct_config.as_ref();
 
         let (client, mode) = TunnelClient::connect_with_direct_or_relay(
             direct,
@@ -488,6 +513,25 @@ impl DevboxConnection {
         }
 
         Ok(client)
+    }
+
+    async fn fetch_direct_config(&self) -> Result<Option<DirectChannelConfig>, String> {
+        match self
+            .rpc_client
+            .request_direct_config(
+                context::current(),
+                self.target_environment_id,
+                self.direct_endpoint.observed_addr(),
+            )
+            .await
+        {
+            Ok(Ok(config)) => Ok(config),
+            Ok(Err(err)) => Err(err),
+            Err(err) => Err(format!(
+                "failed to request direct config from manager RPC: {}",
+                err
+            )),
+        }
     }
 }
 

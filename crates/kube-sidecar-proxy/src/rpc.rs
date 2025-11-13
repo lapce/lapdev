@@ -101,10 +101,13 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             }
 
             if let Some(devbox) = route.devbox_route.clone() {
-                devbox_overrides.push((
+                let connection = devbox_connection_from_config(
+                    devbox,
+                    Arc::clone(&self.direct_endpoint),
+                    self.rpc_client.clone(),
                     branch_id,
-                    devbox_connection_from_config(devbox, Arc::clone(&self.direct_endpoint)),
-                ));
+                );
+                devbox_overrides.push((branch_id, connection));
             }
         }
 
@@ -154,8 +157,13 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             return Ok(());
         }
 
-        let devbox_connection =
-            devbox_connection_from_config(route.clone(), Arc::clone(&self.direct_endpoint));
+        let target_environment_id = route.branch_environment_id.unwrap_or(self.environment_id);
+        let devbox_connection = devbox_connection_from_config(
+            route.clone(),
+            Arc::clone(&self.direct_endpoint),
+            self.rpc_client.clone(),
+            target_environment_id,
+        );
 
         let mut routing_table = self.routing_table.write().await;
 
@@ -245,9 +253,14 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
             timeout_ms: route.timeout_ms,
         };
 
-        let devbox_override = route
-            .devbox_route
-            .map(|devbox| devbox_connection_from_config(devbox, Arc::clone(&self.direct_endpoint)));
+        let devbox_override = route.devbox_route.map(|devbox| {
+            devbox_connection_from_config(
+                devbox,
+                Arc::clone(&self.direct_endpoint),
+                self.rpc_client.clone(),
+                branch_id,
+            )
+        });
 
         let mut routing_table = self.routing_table.write().await;
         routing_table
@@ -304,6 +317,8 @@ impl SidecarProxyRpc for SidecarProxyRpcServer {
 fn devbox_connection_from_config(
     route: DevboxRouteConfig,
     direct_endpoint: Arc<DirectEndpoint>,
+    rpc_client: SidecarProxyManagerRpcClient,
+    target_environment_id: Uuid,
 ) -> Arc<DevboxConnection> {
     match route.direct.as_ref() {
         Some(direct) => {
@@ -336,6 +351,8 @@ fn devbox_connection_from_config(
             direct: route.direct,
         },
         direct_endpoint,
+        rpc_client,
+        target_environment_id,
     ))
 }
 

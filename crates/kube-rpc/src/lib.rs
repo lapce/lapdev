@@ -396,6 +396,11 @@ pub trait KubeClusterRpc {
         environment_id: Uuid,
         workload_id: Uuid,
     ) -> Result<Vec<ProxyBranchRouteConfig>, String>;
+
+    async fn request_direct_config(
+        environment_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String>;
 }
 
 #[tarpc::service]
@@ -503,6 +508,11 @@ pub trait SidecarProxyManagerRpc {
         byte_count: u64,
         active_connections: u32,
     ) -> Result<(), String>;
+
+    async fn request_direct_config(
+        environment_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String>;
 }
 
 /// Information returned when requesting a devbox tunnel

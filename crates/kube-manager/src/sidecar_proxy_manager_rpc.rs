@@ -1,3 +1,4 @@
+use lapdev_common::devbox::DirectChannelConfig;
 use lapdev_kube_rpc::{SidecarProxyManagerRpc, SidecarProxyRpcClient};
 use std::{net::SocketAddr, sync::Arc};
 use tarpc::context::Context;
@@ -114,5 +115,16 @@ impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
         _active_connections: u32,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    async fn request_direct_config(
+        self,
+        _context: Context,
+        environment_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        self.manager
+            .request_direct_config(environment_id, stun_observed_addr)
+            .await
     }
 }

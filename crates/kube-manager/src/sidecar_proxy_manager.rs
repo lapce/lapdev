@@ -1,6 +1,9 @@
 use anyhow::Result;
 use futures::StreamExt;
-use lapdev_common::kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR};
+use lapdev_common::{
+    devbox::DirectChannelConfig,
+    kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR},
+};
 use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpcClient, ProxyBranchRouteConfig, SidecarProxyManagerRpc,
     SidecarProxyRpcClient,
@@ -8,6 +11,7 @@ use lapdev_kube_rpc::{
 use lapdev_rpc::spawn_twoway;
 use std::{
     collections::{BTreeMap, HashMap},
+    net::SocketAddr,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -438,6 +442,37 @@ impl SidecarProxyManager {
     pub async fn clear_cluster_rpc_client(&self) {
         let mut guard = self.kube_cluster_rpc_client.write().await;
         *guard = None;
+    }
+
+    pub async fn request_direct_config(
+        &self,
+        environment_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        let cluster_client = {
+            let guard = self.kube_cluster_rpc_client.read().await;
+            guard.clone()
+        };
+
+        let Some(client) = cluster_client else {
+            return Err("Cluster RPC client unavailable; cannot request direct config".to_string());
+        };
+
+        match client
+            .request_direct_config(
+                tarpc::context::current(),
+                environment_id,
+                stun_observed_addr,
+            )
+            .await
+        {
+            Ok(Ok(config)) => Ok(config),
+            Ok(Err(err)) => Err(err),
+            Err(err) => Err(format!(
+                "Failed to request direct config from KubeCluster: {}",
+                err
+            )),
+        }
     }
 
     async fn snapshot_devbox_routes_for_environment(

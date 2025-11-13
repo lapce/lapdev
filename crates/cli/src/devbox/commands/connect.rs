@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use colored::Colorize;
 use futures::StreamExt;
-use lapdev_common::devbox::DirectChannelConfig;
+use lapdev_common::devbox::{
+    DirectCandidate, DirectCandidateKind, DirectChannelConfig, DirectCredential, DirectTransport,
+};
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient};
 use lapdev_rpc::spawn_twoway;
 use lapdev_tunnel::direct::DirectEndpoint;
@@ -10,8 +13,7 @@ use lapdev_tunnel::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    io,
-    net::{SocketAddr, ToSocketAddrs},
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -130,16 +132,19 @@ pub async fn execute(api_host: &str) -> Result<()> {
 struct DevboxClientRpcServer {
     shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
     env_change_tx: mpsc::UnboundedSender<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>,
+    tunnel_manager: DevboxTunnelManager,
 }
 
 impl DevboxClientRpcServer {
     fn new(
         shutdown_tx: mpsc::UnboundedSender<ShutdownSignal>,
         env_change_tx: mpsc::UnboundedSender<Option<lapdev_devbox_rpc::DevboxEnvironmentInfo>>,
+        tunnel_manager: DevboxTunnelManager,
     ) -> Self {
         Self {
             shutdown_tx,
             env_change_tx,
+            tunnel_manager,
         }
     }
 }
@@ -191,6 +196,17 @@ impl DevboxClientRpc for DevboxClientRpcServer {
     async fn ping(self, _context: tarpc::context::Context) -> Result<(), String> {
         tracing::trace!("Received ping");
         Ok(())
+    }
+
+    async fn request_direct_config(
+        self,
+        _context: tarpc::context::Context,
+        user_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        self.tunnel_manager
+            .build_direct_channel_config(user_id, stun_observed_addr)
+            .await
     }
 }
 
@@ -338,7 +354,7 @@ impl DevboxTunnelManager {
 
         // Create RPC server (for server to call us)
         let client_rpc_server =
-            DevboxClientRpcServer::new(shutdown_tx.clone(), env_change_tx.clone());
+            DevboxClientRpcServer::new(shutdown_tx.clone(), env_change_tx.clone(), self.clone());
 
         // Spawn the RPC server task
         let server_task = tokio::spawn(async move {
@@ -1045,6 +1061,60 @@ impl DevboxTunnelManager {
             (Some(token), Some(user_id)) => self.ensure_client(rpc_client, &token, user_id).await,
             _ => Ok(()),
         }
+    }
+
+    async fn build_direct_channel_config(
+        &self,
+        user_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        let active_user = { self.client_user_id.read().await.clone() };
+        let Some(current_user) = active_user else {
+            return Err("No active devbox client session available".to_string());
+        };
+
+        if current_user != user_id {
+            return Err("Requesting user does not match active session".to_string());
+        }
+
+        if let Some(addr) = stun_observed_addr {
+            if let Err(err) = self.direct_endpoint.send_probe(addr) {
+                tracing::warn!(
+                    %addr,
+                    error = %err,
+                    "Failed to send probe packet to requesting sidecar"
+                );
+            }
+        }
+
+        let Some(server_observed_addr) = self.direct_endpoint.observed_addr() else {
+            tracing::warn!("Direct endpoint has no STUN observed address; cannot provide config");
+            return Ok(None);
+        };
+
+        let token = Uuid::new_v4().to_string();
+        let expires_at = Utc::now() + chrono::Duration::minutes(10);
+        self.direct_endpoint
+            .credential()
+            .insert(token.clone())
+            .await;
+
+        let candidate = DirectCandidate {
+            host: server_observed_addr.ip().to_string(),
+            port: server_observed_addr.port(),
+            transport: DirectTransport::Quic,
+            kind: DirectCandidateKind::Public,
+            priority: 0,
+        };
+
+        let config = DirectChannelConfig {
+            credential: DirectCredential { token, expires_at },
+            candidates: vec![candidate],
+            server_certificate: Some(self.direct_endpoint.server_certificate().to_vec()),
+            stun_observed_addr: Some(server_observed_addr),
+        };
+
+        Ok(Some(config))
     }
 
     async fn stop_intercept(&self) {

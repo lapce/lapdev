@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context as _, Result as AnyResult};
 use chrono::{DateTime, Utc};
+use futures::future::BoxFuture;
 use k8s_openapi::api::{
     apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
     batch::v1::{CronJob, Job},
@@ -26,19 +27,27 @@ use lapdev_rpc::error::ApiError;
 use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    net::SocketAddr,
-};
 use std::convert::TryFrom;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    net::SocketAddr,
+};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::tunnel::TunnelRegistry;
+
+pub trait DirectConfigProvider: Send + Sync {
+    fn request_direct_config(
+        &self,
+        user_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> BoxFuture<'static, Result<Option<DirectChannelConfig>, String>>;
+}
 
 /// KubeClusterServer is the central server where
 /// KubeManager and KubeCli connects to
@@ -51,6 +60,7 @@ pub struct KubeClusterServer {
     generation_counter: Arc<AtomicU64>,
     connection_generation: Arc<RwLock<Option<u64>>>,
     tunnel_registry: Arc<TunnelRegistry>,
+    direct_config_provider: Arc<dyn DirectConfigProvider>,
 }
 
 impl KubeClusterServer {
@@ -61,6 +71,7 @@ impl KubeClusterServer {
         kube_cluster_servers: Arc<RwLock<HashMap<Uuid, BTreeMap<u64, KubeClusterServer>>>>,
         generation_counter: Arc<AtomicU64>,
         tunnel_registry: Arc<TunnelRegistry>,
+        direct_config_provider: Arc<dyn DirectConfigProvider>,
     ) -> Self {
         Self {
             cluster_id,
@@ -70,6 +81,7 @@ impl KubeClusterServer {
             generation_counter,
             connection_generation: Arc::new(RwLock::new(None)),
             tunnel_registry,
+            direct_config_provider,
         }
     }
 
@@ -610,6 +622,31 @@ impl KubeClusterRpc for KubeClusterServer {
         }
 
         Ok(routes)
+    }
+
+    async fn request_direct_config(
+        self,
+        _context: ::tarpc::context::Context,
+        environment_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch environment {}: {}", environment_id, e))?
+            .ok_or_else(|| format!("Environment {} not found", environment_id))?;
+
+        if environment.cluster_id != self.cluster_id {
+            return Err(format!(
+                "Environment {} does not belong to cluster {}",
+                environment_id, self.cluster_id
+            ));
+        }
+
+        self.direct_config_provider
+            .request_direct_config(environment.user_id, stun_observed_addr)
+            .await
     }
 }
 

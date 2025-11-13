@@ -1,6 +1,6 @@
 use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig};
-use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use uuid::Uuid;
 
 // Devbox session RPC - Server to CLI
@@ -32,6 +32,10 @@ pub trait DevboxClientRpc {
     async fn session_displaced(new_device_name: String);
     async fn environment_changed(environment: Option<DevboxEnvironmentInfo>);
     async fn ping() -> Result<(), String>;
+    async fn request_direct_config(
+        user_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> Result<Option<DirectChannelConfig>, String>;
 }
 
 // Devbox intercept control RPC - Dashboard/CLI to Server

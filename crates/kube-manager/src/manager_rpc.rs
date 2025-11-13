@@ -267,12 +267,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectChannelConfig>, String> {
         self.manager
-            .get_devbox_direct_config(
-                user_id,
-                environment_id,
-                namespace,
-                stun_observed_addr,
-            )
+            .get_devbox_direct_config(user_id, environment_id, namespace, stun_observed_addr)
             .await
     }
 

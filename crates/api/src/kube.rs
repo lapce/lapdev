@@ -1,16 +1,17 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     extract::{ws::WebSocket, Path, State, WebSocketUpgrade},
     http::HeaderMap,
     response::Response,
 };
-use futures::StreamExt;
+use futures::{future::BoxFuture, StreamExt};
 use lapdev_common::{
+    devbox::DirectChannelConfig,
     kube::{KUBE_CLUSTER_TOKEN_HEADER, KUBE_ENVIRONMENT_TOKEN_HEADER},
     token::HashedToken,
 };
-use lapdev_kube::server::KubeClusterServer;
+use lapdev_kube::server::{DirectConfigProvider, KubeClusterServer};
 use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
@@ -19,12 +20,61 @@ use lapdev_tunnel::{
     TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
 };
 use secrecy::ExposeSecret;
-use tarpc::server::{BaseChannel, Channel};
+use tarpc::{
+    context,
+    server::{BaseChannel, Channel},
+};
 use uuid::Uuid;
 
 use crate::{
     devbox_tunnels::split_axum_websocket, state::CoreState, websocket_socket::AxumBinarySocket,
 };
+
+struct CliDirectConfigProvider {
+    state: Arc<CoreState>,
+}
+
+impl CliDirectConfigProvider {
+    fn new(state: Arc<CoreState>) -> Self {
+        Self { state }
+    }
+}
+
+impl DirectConfigProvider for CliDirectConfigProvider {
+    fn request_direct_config(
+        &self,
+        user_id: Uuid,
+        stun_observed_addr: Option<SocketAddr>,
+    ) -> BoxFuture<'static, Result<Option<DirectChannelConfig>, String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let rpc_client = {
+                let sessions = state.active_devbox_sessions.read().await;
+                sessions.get(&user_id).and_then(|entries| {
+                    entries
+                        .values()
+                        .rev()
+                        .next()
+                        .map(|handle| handle.rpc_client.clone())
+                })
+            };
+
+            let Some(client) = rpc_client else {
+                return Err("No active Devbox CLI session found for user".to_string());
+            };
+
+            client
+                .request_direct_config(context::current(), user_id, stun_observed_addr)
+                .await
+                .map_err(|err| {
+                    format!(
+                        "Failed to dispatch request_direct_config RPC to Devbox CLI: {}",
+                        err
+                    )
+                })?
+        })
+    }
+}
 
 pub async fn kube_cluster_rpc_websocket(
     websocket: WebSocketUpgrade,
@@ -77,6 +127,8 @@ async fn handle_cluster_rpc(socket: WebSocket, state: Arc<CoreState>, cluster_id
     let (server_chan, client_chan, _) = spawn_twoway(transport);
     let rpc_client =
         KubeManagerRpcClient::new(tarpc::client::Config::default(), client_chan).spawn();
+    let direct_config_provider: Arc<dyn DirectConfigProvider> =
+        Arc::new(CliDirectConfigProvider::new(state.clone()));
     let rpc_server = KubeClusterServer::new(
         cluster_id,
         rpc_client,
@@ -84,6 +136,7 @@ async fn handle_cluster_rpc(socket: WebSocket, state: Arc<CoreState>, cluster_id
         state.kube_controller.kube_cluster_servers.clone(),
         state.kube_controller.kube_cluster_server_generation.clone(),
         state.kube_controller.tunnel_registry.clone(),
+        direct_config_provider,
     );
 
     let fut = {

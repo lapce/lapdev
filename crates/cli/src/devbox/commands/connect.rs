@@ -1075,16 +1075,6 @@ impl DevboxTunnelManager {
             return Err("Requesting user does not match active session".to_string());
         }
 
-        if let Some(addr) = stun_observed_addr {
-            if let Err(err) = self.direct_endpoint.send_probe(addr).await {
-                tracing::warn!(
-                    %addr,
-                    error = %err,
-                    "Failed to send probe packet to requesting sidecar"
-                );
-            }
-        }
-
         let Some(server_observed_addr) = self.direct_endpoint.observed_addr() else {
             tracing::warn!("Direct endpoint has no STUN observed address; cannot provide config");
             return Ok(None);
@@ -1102,6 +1092,19 @@ impl DevboxTunnelManager {
             server_certificate: Some(self.direct_endpoint.server_certificate().to_vec()),
             stun_observed_addr: Some(server_observed_addr),
         };
+
+        if let Some(addr) = stun_observed_addr {
+            let direct_endpoint = self.direct_endpoint.clone();
+            tokio::spawn(async move {
+                if let Err(err) = direct_endpoint.send_probe(addr).await {
+                    tracing::warn!(
+                        %addr,
+                        error = %err,
+                        "Failed to send probe packet to requesting sidecar"
+                    );
+                }
+            });
+        }
 
         Ok(Some(config))
     }

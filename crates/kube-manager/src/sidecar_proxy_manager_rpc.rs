@@ -1,4 +1,4 @@
-use lapdev_common::devbox::DirectChannelConfig;
+use lapdev_common::devbox::DirectTunnelConfig;
 use lapdev_kube_rpc::{SidecarProxyManagerRpc, SidecarProxyRpcClient};
 use std::{net::SocketAddr, sync::Arc};
 use tarpc::context::Context;
@@ -122,7 +122,20 @@ impl SidecarProxyManagerRpc for SidecarProxyManagerRpcServer {
         _context: Context,
         environment_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
+        let bound_environment = { self.environment.read().await.clone() };
+        if bound_environment.is_none() {
+            return Err("sidecar proxy has not completed registration".to_string());
+        }
+        if bound_environment != Some(environment_id) {
+            tracing::warn!(
+                registered = ?bound_environment,
+                requested = %environment_id,
+                peer = ?self.peer_addr,
+                "Sidecar attempted to request direct config for unauthorized environment",
+            );
+            return Err("environment mismatch for sidecar proxy".to_string());
+        }
         self.manager
             .request_direct_config(environment_id, stun_observed_addr)
             .await

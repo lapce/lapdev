@@ -2,9 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use colored::Colorize;
 use futures::StreamExt;
-use lapdev_common::devbox::{
-    DirectCandidate, DirectCandidateKind, DirectChannelConfig, DirectCredential, DirectTransport,
-};
+use lapdev_common::devbox::{DirectTunnelConfig, DirectTunnelCredential};
 use lapdev_devbox_rpc::{DevboxClientRpc, DevboxSessionRpcClient};
 use lapdev_rpc::spawn_twoway;
 use lapdev_tunnel::direct::DirectEndpoint;
@@ -203,7 +201,7 @@ impl DevboxClientRpc for DevboxClientRpcServer {
         _context: tarpc::context::Context,
         user_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         self.tunnel_manager
             .build_direct_channel_config(user_id, stun_observed_addr)
             .await
@@ -1067,7 +1065,7 @@ impl DevboxTunnelManager {
         &self,
         user_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         let active_user = { self.client_user_id.read().await.clone() };
         let Some(current_user) = active_user else {
             return Err("No active devbox client session available".to_string());
@@ -1078,7 +1076,7 @@ impl DevboxTunnelManager {
         }
 
         if let Some(addr) = stun_observed_addr {
-            if let Err(err) = self.direct_endpoint.send_probe(addr) {
+            if let Err(err) = self.direct_endpoint.send_probe(addr).await {
                 tracing::warn!(
                     %addr,
                     error = %err,
@@ -1093,23 +1091,14 @@ impl DevboxTunnelManager {
         };
 
         let token = Uuid::new_v4().to_string();
-        let expires_at = Utc::now() + chrono::Duration::minutes(10);
+        let expires_at = Utc::now() + chrono::Duration::minutes(2);
         self.direct_endpoint
             .credential()
-            .insert(token.clone())
+            .insert(token.clone(), expires_at)
             .await;
 
-        let candidate = DirectCandidate {
-            host: server_observed_addr.ip().to_string(),
-            port: server_observed_addr.port(),
-            transport: DirectTransport::Quic,
-            kind: DirectCandidateKind::Public,
-            priority: 0,
-        };
-
-        let config = DirectChannelConfig {
-            credential: DirectCredential { token, expires_at },
-            candidates: vec![candidate],
+        let config = DirectTunnelConfig {
+            credential: DirectTunnelCredential { token, expires_at },
             server_certificate: Some(self.direct_endpoint.server_certificate().to_vec()),
             stun_observed_addr: Some(server_observed_addr),
         };

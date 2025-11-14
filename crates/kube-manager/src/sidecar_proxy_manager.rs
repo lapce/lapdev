@@ -1,7 +1,7 @@
 use anyhow::Result;
 use futures::StreamExt;
 use lapdev_common::{
-    devbox::DirectChannelConfig,
+    devbox::DirectTunnelConfig,
     kube::{DEFAULT_SIDECAR_PROXY_MANAGER_PORT, SIDECAR_PROXY_MANAGER_PORT_ENV_VAR},
 };
 use lapdev_kube_rpc::{
@@ -448,7 +448,7 @@ impl SidecarProxyManager {
         &self,
         environment_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         let cluster_client = {
             let guard = self.kube_cluster_rpc_client.read().await;
             guard.clone()

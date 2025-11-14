@@ -13,10 +13,7 @@ use k8s_openapi::{
 };
 use kube::api::{DeleteParams, ListParams};
 use lapdev_common::{
-    devbox::{
-        DirectCandidate, DirectCandidateKind, DirectChannelConfig, DirectCredential,
-        DirectTransport,
-    },
+    devbox::{DirectTunnelConfig, DirectTunnelCredential},
     kube::{
         KubeClusterInfo, KubeClusterStatus, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
         KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
@@ -74,6 +71,12 @@ impl KubeManager {
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to initialize direct endpoint: {e}"))?,
         );
+        {
+            let direct_endpoint = Arc::clone(&direct_endpoint);
+            tokio::spawn(async move {
+                direct_endpoint.start_tunnel_server().await;
+            });
+        }
         let token = std::env::var(KUBE_CLUSTER_TOKEN_ENV_VAR)
             .map_err(|_| anyhow::anyhow!("can't find env var {}", KUBE_CLUSTER_TOKEN_ENV_VAR))?;
         let url = std::env::var(KUBE_CLUSTER_URL_ENV_VAR)
@@ -1746,9 +1749,9 @@ impl KubeManager {
         environment_id: Uuid,
         namespace: String,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         if let Some(addr) = stun_observed_addr {
-            match self.direct_endpoint.send_probe(addr) {
+            match self.direct_endpoint.send_probe(addr).await {
                 Ok(()) => {
                     tracing::debug!(
                         %addr,
@@ -1762,28 +1765,15 @@ impl KubeManager {
         }
 
         let token = Uuid::new_v4().to_string();
-        let expires_at = Utc::now() + chrono::Duration::minutes(10);
+        let expires_at = Utc::now() + chrono::Duration::minutes(2);
         self.direct_endpoint
             .credential()
-            .insert(token.clone())
+            .insert(token.clone(), expires_at)
             .await;
 
-        let mut candidates = Vec::new();
         let server_observed_addr = self.direct_endpoint.observed_addr();
-        if let Some(addr) = server_observed_addr {
-            let host = addr.ip().to_string();
-            candidates.push(DirectCandidate {
-                host,
-                port: addr.port(),
-                transport: DirectTransport::Quic,
-                kind: DirectCandidateKind::Public,
-                priority: 0,
-            });
-        }
-
-        Ok(Some(DirectChannelConfig {
-            credential: DirectCredential { token, expires_at },
-            candidates,
+        Ok(Some(DirectTunnelConfig {
+            credential: DirectTunnelCredential { token, expires_at },
             server_certificate: Some(self.direct_endpoint.server_certificate().to_vec()),
             stun_observed_addr: server_observed_addr,
         }))

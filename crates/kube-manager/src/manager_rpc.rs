@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use lapdev_common::{
-    devbox::DirectChannelConfig,
+    devbox::DirectTunnelConfig,
     kube::{KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PaginationParams},
 };
 use lapdev_kube_rpc::{
@@ -265,7 +265,7 @@ impl KubeManagerRpc for KubeManagerRpcServer {
         environment_id: Uuid,
         namespace: String,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         self.manager
             .get_devbox_direct_config(user_id, environment_id, namespace, stun_observed_addr)
             .await

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lapdev_tunnel::{direct::QuicTransport, run_tunnel_server, RelayEndpoint};
+use lapdev_tunnel::{run_tunnel_server, RelayEndpoint};
 
 /// Manages the lifecycle of the background tunnel connection used for preview URLs.
 #[derive(Clone)]

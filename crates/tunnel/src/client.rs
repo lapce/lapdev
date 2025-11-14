@@ -4,13 +4,13 @@ use std::{
     task::{Context, Poll},
 };
 
-use lapdev_common::devbox::DirectChannelConfig;
-use quinn::{Connection, Endpoint, RecvStream, SendStream, WriteError};
+use lapdev_common::devbox::DirectTunnelConfig;
+use quinn::{Connection, RecvStream, SendStream, WriteError};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::{
-    direct::{connect_direct_tunnel, DirectEndpoint, QuicTransport},
+    direct::DirectEndpoint,
     error::TunnelError,
     message::{self, Protocol, TunnelTarget},
     RelayEndpoint,
@@ -45,13 +45,6 @@ impl TunnelClient {
         }
     }
 
-    pub fn connect_with_mode(transport: QuicTransport, mode: TunnelMode) -> Self {
-        Self {
-            connection: transport.into_connection(),
-            mode,
-        }
-    }
-
     pub async fn connect_tcp(
         &self,
         target_host: impl Into<String>,
@@ -70,18 +63,8 @@ impl TunnelClient {
             .await
     }
 
-    pub async fn connect_single(
-        transport: QuicTransport,
-        target_host: impl Into<String>,
-        target_port: u16,
-    ) -> Result<(Self, TunnelTcpStream), TunnelError> {
-        let client = Self::connect_with_mode(transport, TunnelMode::Relay);
-        let stream = client.connect_tcp(target_host, target_port).await?;
-        Ok((client, stream))
-    }
-
     pub async fn connect_with_direct_or_relay<S, F, Fut, G>(
-        direct: Option<&DirectChannelConfig>,
+        direct: Option<&DirectTunnelConfig>,
         direct_endpoint: &DirectEndpoint,
         ws_connector: F,
         on_direct_failure: G,

@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use crate::environment_events::EnvironmentLifecycleEvent;
-use lapdev_common::devbox::DirectChannelConfig;
+use lapdev_common::devbox::DirectTunnelConfig;
 use lapdev_db::api::DbApi;
 use lapdev_kube::{server::KubeClusterServer, tunnel::TunnelRegistry};
 use lapdev_kube_rpc::{DevboxRouteConfig, ProxyBranchRouteConfig};
@@ -237,7 +237,7 @@ impl KubeController {
         environment_id: Uuid,
         namespace: String,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         let servers = self.kube_cluster_servers.read().await;
         let Some(cluster_servers) = servers.get(&cluster_id) else {
             return Err(format!(

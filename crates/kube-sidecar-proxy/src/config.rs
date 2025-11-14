@@ -1,6 +1,6 @@
 use http::header::HeaderName;
 use lapdev_common::{
-    devbox::DirectChannelConfig,
+    devbox::DirectTunnelConfig,
     kube::{ProxyPortRoute, KUBE_ENVIRONMENT_TOKEN_HEADER_LOWER},
 };
 use lapdev_kube_rpc::SidecarProxyManagerRpcClient;
@@ -353,7 +353,6 @@ pub struct DevboxRouteMetadata {
     pub port_mappings: HashMap<u16, u16>,
     pub created_at_epoch_seconds: Option<i64>,
     pub expires_at_epoch_seconds: Option<i64>,
-    pub direct: Option<DirectChannelConfig>,
 }
 
 impl DevboxRouteMetadata {
@@ -515,7 +514,7 @@ impl DevboxConnection {
         Ok(client)
     }
 
-    async fn fetch_direct_config(&self) -> Result<Option<DirectChannelConfig>, String> {
+    async fn fetch_direct_config(&self) -> Result<Option<DirectTunnelConfig>, String> {
         match self
             .rpc_client
             .request_direct_config(

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use lapdev_common::{
-    devbox::DirectChannelConfig,
+    devbox::DirectTunnelConfig,
     kube::{
         KubeClusterInfo, KubeNamespaceInfo, KubeServiceWithYaml, KubeWorkloadKind,
         KubeWorkloadList, PaginationParams,
@@ -400,7 +400,7 @@ pub trait KubeClusterRpc {
     async fn request_direct_config(
         environment_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String>;
+    ) -> Result<Option<DirectTunnelConfig>, String>;
 }
 
 #[tarpc::service]
@@ -469,7 +469,7 @@ pub trait KubeManagerRpc {
         environment_id: Uuid,
         namespace: String,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String>;
+    ) -> Result<Option<DirectTunnelConfig>, String>;
 
     async fn refresh_branch_service_routes(environment_id: Uuid) -> Result<(), String>;
 
@@ -512,7 +512,7 @@ pub trait SidecarProxyManagerRpc {
     async fn request_direct_config(
         environment_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String>;
+    ) -> Result<Option<DirectTunnelConfig>, String>;
 }
 
 /// Information returned when requesting a devbox tunnel
@@ -541,7 +541,6 @@ pub struct DevboxRouteConfig {
     pub created_at_epoch_seconds: Option<i64>,
     pub expires_at_epoch_seconds: Option<i64>,
     pub port_mappings: HashMap<u16, u16>,
-    pub direct: Option<DirectChannelConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

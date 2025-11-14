@@ -1,4 +1,4 @@
-use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig};
+use lapdev_common::devbox::DirectTunnelConfig;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use uuid::Uuid;
@@ -8,20 +8,24 @@ use uuid::Uuid;
 #[tarpc::service]
 pub trait DevboxSessionRpc {
     async fn whoami() -> Result<DevboxSessionInfo, String>;
+
     async fn get_active_environment() -> Result<Option<DevboxEnvironmentInfo>, String>;
+
     async fn set_active_environment(environment_id: Uuid) -> Result<(), String>;
+
     async fn heartbeat() -> Result<(), String>;
-    async fn publish_direct_candidates(
-        update: DirectCandidateSet,
-    ) -> Result<DirectChannelConfig, String>;
+
     async fn list_workload_intercepts(
         environment_id: Uuid,
     ) -> Result<Vec<WorkloadInterceptInfo>, String>;
+
     async fn list_services(environment_id: Uuid) -> Result<Vec<ServiceInfo>, String>;
+
     async fn request_direct_client_config(
         environment_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String>;
+    ) -> Result<Option<DirectTunnelConfig>, String>;
+
     async fn update_device_name(device_name: String) -> Result<(), String>;
 }
 
@@ -35,7 +39,7 @@ pub trait DevboxClientRpc {
     async fn request_direct_config(
         user_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String>;
+    ) -> Result<Option<DirectTunnelConfig>, String>;
 }
 
 // Devbox intercept control RPC - Dashboard/CLI to Server

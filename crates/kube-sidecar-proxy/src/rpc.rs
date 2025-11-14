@@ -320,24 +320,6 @@ fn devbox_connection_from_config(
     rpc_client: SidecarProxyManagerRpcClient,
     target_environment_id: Uuid,
 ) -> Arc<DevboxConnection> {
-    match route.direct.as_ref() {
-        Some(direct) => {
-            info!(
-                intercept_id = %route.intercept_id,
-                workload_id = %route.workload_id,
-                candidates = ?direct.candidates,
-                "Received direct Devbox candidates for sidecar route"
-            );
-        }
-        None => {
-            info!(
-                intercept_id = %route.intercept_id,
-                workload_id = %route.workload_id,
-                "Sidecar route missing direct Devbox candidates"
-            );
-        }
-    }
-
     Arc::new(DevboxConnection::new(
         DevboxRouteMetadata {
             intercept_id: route.intercept_id,
@@ -348,31 +330,11 @@ fn devbox_connection_from_config(
             port_mappings: route.port_mappings,
             created_at_epoch_seconds: route.created_at_epoch_seconds,
             expires_at_epoch_seconds: route.expires_at_epoch_seconds,
-            direct: route.direct,
         },
         direct_endpoint,
         rpc_client,
         target_environment_id,
     ))
-}
-
-fn devbox_route_config_from_connection(
-    connection: &DevboxConnection,
-    branch_id: Option<Uuid>,
-) -> DevboxRouteConfig {
-    let metadata = connection.metadata();
-    DevboxRouteConfig {
-        intercept_id: metadata.intercept_id,
-        workload_id: metadata.workload_id,
-        auth_token: metadata.auth_token.clone(),
-        websocket_url: metadata.websocket_url.clone(),
-        path_pattern: metadata.path_pattern.clone(),
-        branch_environment_id: branch_id,
-        created_at_epoch_seconds: metadata.created_at_epoch_seconds,
-        expires_at_epoch_seconds: metadata.expires_at_epoch_seconds,
-        port_mappings: metadata.port_mappings.clone(),
-        direct: metadata.direct.clone(),
-    }
 }
 
 fn access_level_from_proxy(level: ProxyRouteAccessLevel) -> AccessLevel {

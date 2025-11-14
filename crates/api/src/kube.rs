@@ -7,7 +7,7 @@ use axum::{
 };
 use futures::{future::BoxFuture, StreamExt};
 use lapdev_common::{
-    devbox::DirectChannelConfig,
+    devbox::DirectTunnelConfig,
     kube::{KUBE_CLUSTER_TOKEN_HEADER, KUBE_ENVIRONMENT_TOKEN_HEADER},
     token::HashedToken,
 };
@@ -15,7 +15,7 @@ use lapdev_kube::server::{DirectConfigProvider, KubeClusterServer};
 use lapdev_kube_rpc::{KubeClusterRpc, KubeManagerRpcClient};
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
-    direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
+    relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
     websocket_serde_transport_from_socket, DynTunnelStream, RelayEndpoint, TunnelClient,
     TunnelError, TunnelMode, TunnelTarget, WebSocketUdpSocket,
 };
@@ -45,7 +45,7 @@ impl DirectConfigProvider for CliDirectConfigProvider {
         &self,
         user_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> BoxFuture<'static, Result<Option<DirectChannelConfig>, String>> {
+    ) -> BoxFuture<'static, Result<Option<DirectTunnelConfig>, String>> {
         let state = self.state.clone();
         Box::pin(async move {
             let rpc_client = {

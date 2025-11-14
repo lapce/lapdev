@@ -11,9 +11,8 @@ use axum::extract::ws::{CloseFrame, Message as AxumMessage, Utf8Bytes, WebSocket
 use bytes::Bytes;
 use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use lapdev_tunnel::{
-    direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
-    DynTunnelStream, RelayEndpoint, TunnelClient, TunnelError, TunnelMode, TunnelTarget,
-    WebSocketUdpSocket,
+    relay_client_addr, relay_server_addr, run_tunnel_server_with_connector, DynTunnelStream,
+    RelayEndpoint, TunnelClient, TunnelError, TunnelTarget, WebSocketUdpSocket,
 };
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::{self as ws, Message as TungMessage};

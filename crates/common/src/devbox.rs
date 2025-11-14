@@ -72,59 +72,14 @@ pub struct DevboxStartWorkloadInterceptResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DirectTransport {
-    Quic,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DirectCandidateKind {
-    Public,
-    Relay,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectCandidate {
-    pub host: String,
-    pub port: u16,
-    pub transport: DirectTransport,
-    pub kind: DirectCandidateKind,
-    #[serde(default)]
-    pub priority: u32,
-}
-
-impl Default for DirectCandidate {
-    fn default() -> Self {
-        Self {
-            host: String::new(),
-            port: 0,
-            transport: DirectTransport::Quic,
-            kind: DirectCandidateKind::Public,
-            priority: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DirectCandidateSet {
-    pub candidates: Vec<DirectCandidate>,
-    pub generation: Option<u64>,
-    #[serde(default)]
-    pub server_certificate: Option<Vec<u8>>,
-    #[serde(default)]
-    pub stun_observed_addr: Option<SocketAddr>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectCredential {
+pub struct DirectTunnelCredential {
     pub token: String,
     pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectChannelConfig {
-    pub credential: DirectCredential,
-    pub candidates: Vec<DirectCandidate>,
+pub struct DirectTunnelConfig {
+    pub credential: DirectTunnelCredential,
     pub server_certificate: Option<Vec<u8>>,
-    #[serde(default)]
     pub stun_observed_addr: Option<SocketAddr>,
 }

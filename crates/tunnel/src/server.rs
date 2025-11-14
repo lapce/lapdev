@@ -15,7 +15,6 @@ use tokio::{
 use tracing::{debug, warn};
 
 use crate::{
-    direct::QuicTransport,
     error::TunnelError,
     message::{self, Protocol, TunnelTarget},
 };

@@ -8,13 +8,13 @@ use axum::{
 };
 use axum_extra::{headers, TypedHeader};
 use futures::StreamExt;
-use lapdev_common::devbox::{DirectCandidateSet, DirectChannelConfig, DirectCredential};
+use lapdev_common::devbox::DirectTunnelConfig;
 use lapdev_devbox_rpc::{
     DevboxClientRpcClient, DevboxInterceptRpc, DevboxSessionInfo, DevboxSessionRpc, PortMapping,
 };
 use lapdev_rpc::{error::ApiError, spawn_twoway};
 use lapdev_tunnel::{
-    direct::QuicTransport, relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
+    relay_client_addr, relay_server_addr, run_tunnel_server_with_connector,
     websocket_serde_transport_from_socket, DynTunnelStream, RelayEndpoint, TunnelError,
     TunnelTarget, WebSocketUdpSocket,
 };
@@ -429,18 +429,7 @@ pub async fn devbox_client_tunnel_websocket(
     let environment_id = session.active_environment_id;
 
     let environment = match environment_id {
-        Some(environment_id) => Some(
-            state
-                .db
-                .get_kube_environment(environment_id)
-                .await?
-                .ok_or_else(|| {
-                    ApiError::InvalidRequest(format!(
-                        "Environment {} does not exist",
-                        environment_id
-                    ))
-                })?,
-        ),
+        Some(environment_id) => state.db.get_kube_environment(environment_id).await?,
         None => None,
     };
 
@@ -672,30 +661,6 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         Ok(())
     }
 
-    async fn publish_direct_candidates(
-        self,
-        _context: tarpc::context::Context,
-        update: DirectCandidateSet,
-    ) -> Result<DirectChannelConfig, String> {
-        let credential = DirectCredential {
-            token: Uuid::new_v4().to_string(),
-            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
-        };
-
-        let config = DirectChannelConfig {
-            credential,
-            candidates: update.candidates,
-            server_certificate: update.server_certificate,
-            stun_observed_addr: update.stun_observed_addr,
-        };
-
-        self.state
-            .set_direct_channel_config(self.user_id, config.clone())
-            .await;
-
-        Ok(config)
-    }
-
     async fn set_active_environment(
         self,
         _context: tarpc::context::Context,
@@ -901,7 +866,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         _context: tarpc::context::Context,
         environment_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         let environment = self
             .state
             .db

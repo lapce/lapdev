@@ -7,7 +7,7 @@ use k8s_openapi::api::{
     core::v1::{PodSpec, Service},
 };
 use lapdev_common::{
-    devbox::DirectChannelConfig,
+    devbox::DirectTunnelConfig,
     kube::{
         EnvironmentWorkloadStatusEvent, KubeClusterInfo, KubeContainerImage, KubeContainerInfo,
         KubeContainerPort, KubeServicePort, KubeWorkloadKind,
@@ -46,7 +46,7 @@ pub trait DirectConfigProvider: Send + Sync {
         &self,
         user_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> BoxFuture<'static, Result<Option<DirectChannelConfig>, String>>;
+    ) -> BoxFuture<'static, Result<Option<DirectTunnelConfig>, String>>;
 }
 
 /// KubeClusterServer is the central server where
@@ -315,7 +315,7 @@ impl KubeClusterServer {
         environment_id: Uuid,
         namespace: String,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         match self
             .rpc_client
             .get_devbox_direct_config(
@@ -629,7 +629,7 @@ impl KubeClusterRpc for KubeClusterServer {
         _context: ::tarpc::context::Context,
         environment_id: Uuid,
         stun_observed_addr: Option<SocketAddr>,
-    ) -> Result<Option<DirectChannelConfig>, String> {
+    ) -> Result<Option<DirectTunnelConfig>, String> {
         let environment = self
             .db
             .get_kube_environment(environment_id)

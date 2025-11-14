@@ -249,9 +249,9 @@ impl DirectEndpoint {
             .ok_or_else(|| TunnelError::Remote("direct server STUN address unavailable".into()))?;
 
         {
-            let endpoint = self.clone();
+            // let endpoint = self.clone();
             // tokio::spawn(async move {
-            let _ = endpoint.send_probe(target_addr, true).await;
+            // let _ = endpoint.send_probe(target_addr, true).await;
             // });
         }
 

@@ -1103,10 +1103,6 @@ impl DevboxTunnelManager {
                         "Failed to send probe packet to requesting sidecar"
                     );
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let _ = direct_endpoint.send_probe(addr).await;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let _ = direct_endpoint.send_probe(addr).await;
             });
         }
 

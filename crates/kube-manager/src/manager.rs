@@ -1750,20 +1750,6 @@ impl KubeManager {
         namespace: String,
         stun_observed_addr: Option<SocketAddr>,
     ) -> Result<Option<DirectTunnelConfig>, String> {
-        if let Some(addr) = stun_observed_addr {
-            match self.direct_endpoint.send_probe(addr).await {
-                Ok(()) => {
-                    tracing::info!(
-                        %addr,
-                        "Sent hole-punch probe to devbox client before issuing config"
-                    )
-                }
-                Err(err) => {
-                    tracing::warn!(%addr, error = %err, "Failed to send probe to devbox client");
-                }
-            }
-        }
-
         let token = Uuid::new_v4().to_string();
         let expires_at = Utc::now() + chrono::Duration::minutes(2);
         self.direct_endpoint
@@ -1772,6 +1758,24 @@ impl KubeManager {
             .await;
 
         let server_observed_addr = self.direct_endpoint.observed_addr();
+
+        if let Some(addr) = stun_observed_addr {
+            let direct_endpoint = self.direct_endpoint.clone();
+            tokio::spawn(async move {
+                match direct_endpoint.send_probe(addr).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            %addr,
+                            "Sent hole-punch probe to devbox client before issuing config"
+                        )
+                    }
+                    Err(err) => {
+                        tracing::warn!(%addr, error = %err, "Failed to send probe to devbox client");
+                    }
+                }
+            });
+        }
+
         Ok(Some(DirectTunnelConfig {
             credential: DirectTunnelCredential { token, expires_at },
             server_certificate: Some(self.direct_endpoint.server_certificate().to_vec()),

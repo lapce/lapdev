@@ -24,6 +24,8 @@ use super::{
 const DIRECT_SERVER_NAME: &str = "lapdev.devbox";
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_STUN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const MAX_PROBES: usize = 8;
+const PROBE_INTERVAL_MS: u64 = 200;
 
 /// Options controlling direct QUIC server behavior.
 #[derive(Debug, Clone)]
@@ -200,11 +202,22 @@ impl DirectEndpoint {
             .local_addr()
             .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
         let payload = probe::build_probe_payload(local_addr, addr);
-        self.hole_punch_socket
-            .send_to(&payload, addr)
-            .await
-            .map(|_| ())
-            .map_err(|err| TunnelError::Transport(io::Error::other(err)))
+
+        let mut probes_sent = 0usize;
+        loop {
+            self.hole_punch_socket
+                .send_to(&payload, addr)
+                .await
+                .map(|_| ())
+                .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+            probes_sent += 1;
+            if probes_sent >= MAX_PROBES {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(PROBE_INTERVAL_MS)).await;
+        }
+
+        Ok(())
     }
 
     pub async fn connect_tunnel(

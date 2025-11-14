@@ -109,15 +109,26 @@ async fn direct_endpoint_can_send_probe() {
 
     let (len, addr, buf) = recv_handle.await.expect("recv join").expect("recv result");
     assert_eq!(addr.port(), endpoint_addr.port());
-    assert!(len > 5);
-    assert_eq!(buf[0], 0x17);
-    assert_eq!(&buf[1..3], &[0x03, 0x03]);
-    let declared_len = u16::from_be_bytes([buf[3], buf[4]]) as usize;
-    assert_eq!(declared_len, len - 5);
-    assert!(
-        buf[5..len].iter().any(|byte| *byte != 0),
-        "probe body should not be empty noise"
+    assert!(len >= super::stun::STUN_HEADER_SIZE);
+    assert_eq!(
+        u16::from_be_bytes([buf[0], buf[1]]),
+        super::stun::STUN_BINDING_SUCCESS
     );
+    let declared_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+    assert_eq!(declared_len, len - super::stun::STUN_HEADER_SIZE);
+    assert_eq!(
+        &buf[4..8],
+        &super::stun::STUN_MAGIC_COOKIE.to_be_bytes(),
+        "STUN magic cookie mismatch"
+    );
+    assert_eq!(
+        u16::from_be_bytes([buf[20], buf[21]]),
+        0x0020,
+        "Expected XOR-MAPPED-ADDRESS attribute"
+    );
+    assert!(buf[super::stun::STUN_HEADER_SIZE..len]
+        .iter()
+        .any(|byte| *byte != 0));
 
     endpoint.close();
 }

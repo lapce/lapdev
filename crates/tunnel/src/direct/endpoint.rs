@@ -193,7 +193,7 @@ impl DirectEndpoint {
         &self.credential
     }
 
-    /// Send a TLS-like UDP probe to the provided address to prime NAT state.
+    /// Send a STUN-like UDP probe to the provided address to prime NAT state.
     pub async fn send_probe(&self, addr: SocketAddr) -> Result<(), TunnelError> {
         let local_addr = self
             .hole_punch_socket

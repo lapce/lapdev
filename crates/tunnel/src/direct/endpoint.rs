@@ -196,15 +196,14 @@ impl DirectEndpoint {
     }
 
     /// Send a STUN-like UDP probe to the provided address to prime NAT state.
-    pub async fn send_probe(&self, addr: SocketAddr) -> Result<(), TunnelError> {
-        let local_addr = self
-            .hole_punch_socket
-            .local_addr()
-            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
-
+    pub async fn send_probe(&self, addr: SocketAddr, client: bool) -> Result<(), TunnelError> {
         let mut probes_sent = 0usize;
         loop {
-            let payload = probe::build_probe_payload(local_addr, addr);
+            let payload = if client {
+                probe::build_request_probe_payload()
+            } else {
+                probe::build_response_probe_payload(addr)
+            };
             self.hole_punch_socket
                 .send_to(&payload, addr)
                 .await
@@ -248,6 +247,13 @@ impl DirectEndpoint {
         let target_addr = config
             .stun_observed_addr
             .ok_or_else(|| TunnelError::Remote("direct server STUN address unavailable".into()))?;
+
+        {
+            let endpoint = self.clone();
+            tokio::spawn(async move {
+                let _ = endpoint.send_probe(target_addr, true).await;
+            });
+        }
 
         debug!(candidate = %target_addr, "Attempting direct QUIC connect via STUN address");
         let connecting = self

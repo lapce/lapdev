@@ -2,12 +2,14 @@ use std::net::{IpAddr, SocketAddr};
 
 use rand::{rng, RngCore};
 
-use super::stun::{STUN_BINDING_SUCCESS, STUN_HEADER_SIZE, STUN_MAGIC_COOKIE};
+use super::stun::{
+    STUN_BINDING_REQUEST, STUN_BINDING_SUCCESS, STUN_HEADER_SIZE, STUN_MAGIC_COOKIE,
+};
 
 const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
 
 /// Build a STUN Binding Success response carrying an XOR-MAPPED-ADDRESS payload.
-pub(super) fn build_probe_payload(_sender: SocketAddr, target: SocketAddr) -> Vec<u8> {
+pub(super) fn build_response_probe_payload(target: SocketAddr) -> Vec<u8> {
     let mut rng = rng();
     let mut transaction_id = [0u8; 12];
     rng.fill_bytes(&mut transaction_id);
@@ -19,6 +21,20 @@ pub(super) fn build_probe_payload(_sender: SocketAddr, target: SocketAddr) -> Ve
     packet[4..8].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
     packet[8..20].copy_from_slice(&transaction_id);
     packet[STUN_HEADER_SIZE..].copy_from_slice(&attr);
+    packet
+}
+
+/// Build a STUN Binding Request payload.
+pub(super) fn build_request_probe_payload() -> Vec<u8> {
+    let mut rng = rng();
+    let mut transaction_id = [0u8; 12];
+    rng.fill_bytes(&mut transaction_id);
+
+    let mut packet = vec![0u8; STUN_HEADER_SIZE];
+    packet[..2].copy_from_slice(&STUN_BINDING_REQUEST.to_be_bytes());
+    // Message length remains zero
+    packet[4..8].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+    packet[8..20].copy_from_slice(&transaction_id);
     packet
 }
 

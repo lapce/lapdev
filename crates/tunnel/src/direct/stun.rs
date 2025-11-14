@@ -22,7 +22,7 @@ const DEFAULT_STUN_ENDPOINTS: &[&str] = &[
 ];
 pub(super) const STUN_MAGIC_COOKIE: u32 = 0x2112_A442;
 pub(super) const STUN_HEADER_SIZE: usize = 20;
-const STUN_BINDING_REQUEST: u16 = 0x0001;
+pub(super) const STUN_BINDING_REQUEST: u16 = 0x0001;
 pub(super) const STUN_BINDING_SUCCESS: u16 = 0x0101;
 const STUN_ATTR_MAPPED_ADDRESS: u16 = 0x0001;
 const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;

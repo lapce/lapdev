@@ -103,7 +103,7 @@ async fn direct_endpoint_can_send_probe() {
 
     let endpoint_addr = endpoint.local_addr().expect("endpoint addr");
     endpoint
-        .send_probe(target_addr)
+        .send_probe(target_addr, false)
         .await
         .expect("send probe succeeds");
 

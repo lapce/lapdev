@@ -1762,7 +1762,7 @@ impl KubeManager {
         if let Some(addr) = stun_observed_addr {
             let direct_endpoint = self.direct_endpoint.clone();
             tokio::spawn(async move {
-                match direct_endpoint.send_probe(addr).await {
+                match direct_endpoint.send_probe(addr, false).await {
                     Ok(()) => {
                         tracing::info!(
                             %addr,

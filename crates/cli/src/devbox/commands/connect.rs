@@ -1096,7 +1096,7 @@ impl DevboxTunnelManager {
         if let Some(addr) = stun_observed_addr {
             let direct_endpoint = self.direct_endpoint.clone();
             tokio::spawn(async move {
-                if let Err(err) = direct_endpoint.send_probe(addr).await {
+                if let Err(err) = direct_endpoint.send_probe(addr, false).await {
                     tracing::warn!(
                         %addr,
                         error = %err,

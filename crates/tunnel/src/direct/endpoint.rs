@@ -250,9 +250,9 @@ impl DirectEndpoint {
 
         {
             let endpoint = self.clone();
-            // tokio::spawn(async move {
-            let _ = endpoint.send_probe(target_addr, true).await;
-            // });
+            tokio::spawn(async move {
+                let _ = endpoint.send_probe(target_addr, true).await;
+            });
         }
 
         debug!(candidate = %target_addr, "Attempting direct QUIC connect via STUN address");

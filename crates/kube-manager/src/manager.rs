@@ -1753,7 +1753,7 @@ impl KubeManager {
         if let Some(addr) = stun_observed_addr {
             match self.direct_endpoint.send_probe(addr).await {
                 Ok(()) => {
-                    tracing::debug!(
+                    tracing::info!(
                         %addr,
                         "Sent hole-punch probe to devbox client before issuing config"
                     )

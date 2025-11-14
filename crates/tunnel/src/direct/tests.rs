@@ -95,7 +95,7 @@ async fn direct_endpoint_can_send_probe() {
         .expect("set timeout");
     let target_addr = listener.local_addr().expect("listener addr");
     let recv_handle = tokio::task::spawn_blocking(move || {
-        let mut buf = [0u8; 16];
+        let mut buf = [0u8; 512];
         listener
             .recv_from(&mut buf)
             .map(|(len, addr)| (len, addr, buf))
@@ -108,9 +108,16 @@ async fn direct_endpoint_can_send_probe() {
         .expect("send probe succeeds");
 
     let (len, addr, buf) = recv_handle.await.expect("recv join").expect("recv result");
-    assert_eq!(len, 1);
     assert_eq!(addr.port(), endpoint_addr.port());
-    assert_eq!(buf[0], 0);
+    assert!(len > 5);
+    assert_eq!(buf[0], 0x17);
+    assert_eq!(&buf[1..3], &[0x03, 0x03]);
+    let declared_len = u16::from_be_bytes([buf[3], buf[4]]) as usize;
+    assert_eq!(declared_len, len - 5);
+    assert!(
+        buf[5..len].iter().any(|byte| *byte != 0),
+        "probe body should not be empty noise"
+    );
 
     endpoint.close();
 }

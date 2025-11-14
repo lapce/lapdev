@@ -15,6 +15,7 @@ use crate::{client::TunnelClient, error::TunnelError, run_tunnel_server};
 use super::{
     credential::{start_credential_cleanup, CredentialCleanupHandle, DirectCredentialStore},
     handshake::{read_server_ack, read_token, write_server_ack, write_token},
+    probe,
     stun::{default_stun_servers, run_stun_probes, start_stun_keepalive, StunKeepaliveHandle},
     transport::{build_server_config, client_config_with_pinned_certificate},
     udp::DirectUdpSocket,
@@ -192,9 +193,13 @@ impl DirectEndpoint {
         &self.credential
     }
 
-    /// Send a one-byte UDP probe to the provided address to prime NAT state.
+    /// Send a TLS-like UDP probe to the provided address to prime NAT state.
     pub async fn send_probe(&self, addr: SocketAddr) -> Result<(), TunnelError> {
-        let payload = [0u8; 1];
+        let local_addr = self
+            .hole_punch_socket
+            .local_addr()
+            .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+        let payload = probe::build_probe_payload(local_addr, addr);
         self.hole_punch_socket
             .send_to(&payload, addr)
             .await

@@ -272,8 +272,8 @@ pub(super) fn start_stun_keepalive(
                         break;
                     }
                     _ = ticker.tick() => {
+                        info!("sending stun keepalive");
                         for server in &servers {
-                            info!("sending stun keepalive");
                             match send_async_stun_binding_request(Arc::clone(&socket), *server, timeout).await {
                                 Ok(Some(addr)) => {
                                     if update_observed_addr(&observed_addr, addr) {
@@ -288,6 +288,7 @@ pub(super) fn start_stun_keepalive(
                                 }
                             }
                         }
+                        info!("finish one round of sending stun keepalive");
                     }
                 }
             }

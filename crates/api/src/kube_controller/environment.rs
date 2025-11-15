@@ -1,10 +1,16 @@
 use chrono::Utc;
+use k8s_openapi::api::{
+    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
+    batch::v1::{CronJob, Job},
+    core::v1::{Pod, PodSpec, Service},
+};
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use lapdev_common::{
     kube::{
         KubeAppCatalogWorkload, KubeContainerImage, KubeEnvironment,
         KubeEnvironmentDashboardSummary, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
-        KubeServiceWithYaml, KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams,
-        PaginatedInfo, PaginatedResult,
+        KubeServicePort, KubeServiceWithYaml, KubeWorkloadDetails, KubeWorkloadKind,
+        PagePaginationParams, PaginatedInfo, PaginatedResult,
     },
     utils::rand_string,
 };
@@ -16,6 +22,7 @@ use sea_orm::{
     prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
     QueryFilter, TransactionTrait,
 };
+use serde_yaml;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -1195,8 +1202,9 @@ impl KubeController {
                 };
                 branch_name_map.insert(base_name.clone(), branch_name.clone());
 
-                let mut workload_yaml =
-                    Self::wrap_workload_yaml(kind.clone(), workload.workload_yaml.clone());
+                let sanitized_yaml =
+                    Self::strip_sidecar_proxy_from_yaml(&kind, &workload.workload_yaml)?;
+                let mut workload_yaml = Self::wrap_workload_yaml(kind.clone(), sanitized_yaml);
                 let selector = build_branch_service_selector(&branch_name);
                 rename_workload_yaml(&mut workload_yaml, &branch_name, &selector)?;
                 let workload_yaml_string = Self::workload_yaml_to_string(&workload_yaml);
@@ -1240,6 +1248,184 @@ impl KubeController {
         Ok((workloads, branch_name_map))
     }
 
+    fn strip_sidecar_proxy_from_yaml(
+        kind: &KubeWorkloadKind,
+        yaml: &str,
+    ) -> Result<String, ApiError> {
+        match kind {
+            KubeWorkloadKind::Deployment => {
+                let mut deployment: Deployment = serde_yaml::from_str(yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse deployment YAML while stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })?;
+                if let Some(spec) = deployment.spec.as_mut() {
+                    if let Some(pod_spec) = spec.template.spec.as_mut() {
+                        Self::strip_sidecar_proxy_from_pod_spec(pod_spec);
+                    }
+                }
+                serde_yaml::to_string(&deployment).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize deployment YAML after stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })
+            }
+            KubeWorkloadKind::StatefulSet => {
+                let mut statefulset: StatefulSet = serde_yaml::from_str(yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse statefulset YAML while stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })?;
+                if let Some(spec) = statefulset.spec.as_mut() {
+                    if let Some(pod_spec) = spec.template.spec.as_mut() {
+                        Self::strip_sidecar_proxy_from_pod_spec(pod_spec);
+                    }
+                }
+                serde_yaml::to_string(&statefulset).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize statefulset YAML after stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })
+            }
+            KubeWorkloadKind::DaemonSet => {
+                let mut daemonset: DaemonSet = serde_yaml::from_str(yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse daemonset YAML while stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })?;
+                if let Some(spec) = daemonset.spec.as_mut() {
+                    if let Some(pod_spec) = spec.template.spec.as_mut() {
+                        Self::strip_sidecar_proxy_from_pod_spec(pod_spec);
+                    }
+                }
+                serde_yaml::to_string(&daemonset).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize daemonset YAML after stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })
+            }
+            KubeWorkloadKind::ReplicaSet => {
+                let mut replicaset: ReplicaSet = serde_yaml::from_str(yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse replicaset YAML while stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })?;
+                if let Some(spec) = replicaset.spec.as_mut() {
+                    if let Some(template) = spec.template.as_mut() {
+                        if let Some(pod_spec) = template.spec.as_mut() {
+                            Self::strip_sidecar_proxy_from_pod_spec(pod_spec);
+                        }
+                    }
+                }
+                serde_yaml::to_string(&replicaset).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize replicaset YAML after stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })
+            }
+            KubeWorkloadKind::Pod => {
+                let mut pod: Pod = serde_yaml::from_str(yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse pod YAML while stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })?;
+                if let Some(pod_spec) = pod.spec.as_mut() {
+                    Self::strip_sidecar_proxy_from_pod_spec(pod_spec);
+                }
+                serde_yaml::to_string(&pod).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize pod YAML after stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })
+            }
+            KubeWorkloadKind::Job => {
+                let mut job: Job = serde_yaml::from_str(yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse job YAML while stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })?;
+                if let Some(spec) = job.spec.as_mut() {
+                    if let Some(pod_spec) = spec.template.spec.as_mut() {
+                        Self::strip_sidecar_proxy_from_pod_spec(pod_spec);
+                    }
+                }
+                serde_yaml::to_string(&job).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize job YAML after stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })
+            }
+            KubeWorkloadKind::CronJob => {
+                let mut cronjob: CronJob = serde_yaml::from_str(yaml).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to parse cronjob YAML while stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })?;
+                if let Some(spec) = cronjob.spec.as_mut() {
+                    if let Some(job_spec) = spec.job_template.spec.as_mut() {
+                        if let Some(pod_spec) = job_spec.template.spec.as_mut() {
+                            Self::strip_sidecar_proxy_from_pod_spec(pod_spec);
+                        }
+                    }
+                }
+                serde_yaml::to_string(&cronjob).map_err(|err| {
+                    ApiError::InvalidRequest(format!(
+                        "Failed to serialize cronjob YAML after stripping lapdev-sidecar-proxy: {err}"
+                    ))
+                })
+            }
+        }
+    }
+
+    fn strip_sidecar_proxy_from_pod_spec(pod_spec: &mut PodSpec) {
+        const SIDECAR_NAME: &str = "lapdev-sidecar-proxy";
+        pod_spec
+            .containers
+            .retain(|container| container.name != SIDECAR_NAME);
+        if let Some(init_containers) = pod_spec.init_containers.as_mut() {
+            init_containers.retain(|container| container.name != SIDECAR_NAME);
+        }
+    }
+
+    fn restore_service_target_ports(
+        service_yaml: String,
+        ports: &mut [KubeServicePort],
+    ) -> Result<String, ApiError> {
+        let mut service: Service = serde_yaml::from_str(&service_yaml).map_err(|err| {
+            ApiError::InvalidRequest(format!(
+                "Failed to parse service YAML while restoring lapdev-sidecar proxy targets: {err}"
+            ))
+        })?;
+
+        let mut target_map: HashMap<(Option<String>, i32), i32> = HashMap::new();
+        for port in ports.iter_mut() {
+            if let Some(original_target) = port.original_target_port {
+                port.target_port = Some(original_target);
+                target_map.insert((port.name.clone(), port.port), original_target);
+            }
+        }
+
+        if let Some(spec) = service.spec.as_mut() {
+            if let Some(spec_ports) = spec.ports.as_mut() {
+                for spec_port in spec_ports.iter_mut() {
+                    let key = (spec_port.name.clone(), spec_port.port);
+                    if let Some(original) = target_map
+                        .get(&key)
+                        .or_else(|| target_map.get(&(None, spec_port.port)))
+                    {
+                        spec_port.target_port = Some(IntOrString::Int(*original));
+                    }
+                }
+            }
+        }
+
+        serde_yaml::to_string(&service).map_err(|err| {
+            ApiError::InvalidRequest(format!(
+                "Failed to serialize service YAML after restoring lapdev-sidecar proxy targets: {err}"
+            ))
+        })
+    }
+
     fn prepare_branch_services(
         base_services: Vec<lapdev_common::kube::KubeEnvironmentService>,
         workload_name_map: &HashMap<String, String>,
@@ -1252,7 +1438,7 @@ impl KubeController {
             let lapdev_common::kube::KubeEnvironmentService {
                 name: base_service_name,
                 yaml,
-                ports,
+                mut ports,
                 selector,
                 ..
             } = service;
@@ -1277,10 +1463,11 @@ impl KubeController {
                 let branch_selector = build_branch_service_selector(&branch_workload_name);
                 let renamed_yaml =
                     rename_service_yaml(&yaml, &branch_service_name, &branch_selector)?;
+                let restored_yaml = Self::restore_service_target_ports(renamed_yaml, &mut ports)?;
                 services.insert(
                     base_service_name.clone(),
                     lapdev_common::kube::KubeServiceWithYaml {
-                        yaml: renamed_yaml,
+                        yaml: restored_yaml,
                         details: lapdev_common::kube::KubeServiceDetails {
                             name: base_service_name,
                             ports,

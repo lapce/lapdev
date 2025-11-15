@@ -253,7 +253,7 @@ impl DirectEndpoint {
         {
             let endpoint = self.clone();
             // tokio::spawn(async move {
-            let _ = endpoint.send_probe(target_addr, true).await;
+            // let _ = endpoint.send_probe(target_addr, true).await;
             // });
         }
 

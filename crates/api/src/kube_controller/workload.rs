@@ -143,16 +143,6 @@ impl KubeController {
         workload_id: Uuid,
         environment: lapdev_db_entities::kube_environment::Model,
     ) -> Result<(), ApiError> {
-        // Verify the environment belongs to the organization
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        // For personal/branch environments, verify ownership
-        if !environment.is_shared && environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
-
         // Delete the workload
         self.db
             .delete_environment_workload(workload_id)
@@ -168,16 +158,6 @@ impl KubeController {
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
         environment: lapdev_db_entities::kube_environment::Model,
     ) -> Result<Uuid, ApiError> {
-        // Verify the environment belongs to the organization
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        // For personal/branch environments, verify ownership
-        if !environment.is_shared && environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
-
         let existing_workload = self
             .db
             .get_environment_workload(workload_id)

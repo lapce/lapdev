@@ -956,6 +956,10 @@ impl DevboxInterceptRpc for DevboxInterceptRpcImpl {
             .map_err(|e| format!("Failed to fetch environment: {}", e))?
             .ok_or_else(|| "Environment not found".to_string())?;
 
+        if environment.is_shared {
+            return Err("Shared environments cannot start Devbox intercepts".to_string());
+        }
+
         // Verify user has access to this environment
         if environment.user_id != self.user_id {
             return Err("Unauthorized: You don't have access to this environment".to_string());

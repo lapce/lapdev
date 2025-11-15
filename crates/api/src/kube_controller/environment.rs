@@ -376,48 +376,6 @@ impl KubeController {
         }
     }
 
-    /// Authorize environment deletion
-    async fn authorize_environment_deletion(
-        &self,
-        org_id: Uuid,
-        user_id: Uuid,
-        environment_id: Uuid,
-    ) -> Result<lapdev_db_entities::kube_environment::Model, ApiError> {
-        // Get the environment to check ownership
-        let environment = self
-            .db
-            .get_kube_environment(environment_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
-
-        // Check authorization
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        // If it's a personal environment, check ownership
-        if !environment.is_shared && environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        // If it's a shared environment, check for depending branch environments
-        if environment.is_shared {
-            let has_branches = self
-                .db
-                .check_environment_has_branches(environment_id)
-                .await
-                .map_err(ApiError::from)?;
-
-            if has_branches {
-                return Err(ApiError::InvalidRequest(
-                    "Cannot delete shared environment: it has active branch environments. Please delete them first.".to_string()
-                ));
-            }
-        }
-
-        Ok(environment)
-    }
 
     /// Notify devbox-proxy about branch environment deletion
     async fn notify_branch_environment_deletion(
@@ -578,10 +536,31 @@ impl KubeController {
         user_id: Uuid,
         environment_id: Uuid,
     ) -> Result<(), ApiError> {
-        // Authorize deletion
+        // Authorize deletion (HRPC already enforced ownership/role, so we just ensure the environment exists and belongs to the org)
         let environment = self
-            .authorize_environment_deletion(org_id, user_id, environment_id)
-            .await?;
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        if environment.is_shared {
+            let has_branches = self
+                .db
+                .check_environment_has_branches(environment_id)
+                .await
+                .map_err(ApiError::from)?;
+
+            if has_branches {
+                return Err(ApiError::InvalidRequest(
+                    "Cannot delete shared environment: it has active branch environments. Please delete them first.".to_string()
+                ));
+            }
+        }
 
         // Get RPC client for cluster operations
         let rpc_client = self
@@ -718,20 +697,6 @@ impl KubeController {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
 
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        if environment.is_shared {
-            return Err(ApiError::InvalidRequest(
-                "Pause is not yet supported for shared environments".to_string(),
-            ));
-        }
-
-        if environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
-
         let status = KubeEnvironmentStatus::from_str(&environment.status)
             .unwrap_or(KubeEnvironmentStatus::Creating);
 
@@ -787,20 +752,6 @@ impl KubeController {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
-
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        if environment.is_shared {
-            return Err(ApiError::InvalidRequest(
-                "Resume is not yet supported for shared environments".to_string(),
-            ));
-        }
-
-        if environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
 
         let status = KubeEnvironmentStatus::from_str(&environment.status)
             .unwrap_or(KubeEnvironmentStatus::Creating);

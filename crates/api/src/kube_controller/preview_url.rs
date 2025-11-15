@@ -8,28 +8,10 @@ use super::KubeController;
 impl KubeController {
     pub async fn create_environment_preview_url(
         &self,
-        org_id: Uuid,
         user_id: Uuid,
-        environment_id: Uuid,
+        environment: lapdev_db_entities::kube_environment::Model,
         request: lapdev_common::kube::CreateKubeEnvironmentPreviewUrlRequest,
     ) -> Result<KubeEnvironmentPreviewUrl, ApiError> {
-        // Verify environment belongs to the organization and check ownership
-        let environment = self
-            .db
-            .get_kube_environment(environment_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
-
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        // If it's a personal environment, check ownership
-        if !environment.is_shared && environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
-
         // Verify service exists and belongs to the environment (or its base environment)
         let service = self
             .db
@@ -78,7 +60,7 @@ impl KubeController {
         let preview_url = match self
             .db
             .create_environment_preview_url(
-                environment_id,
+                environment.id,
                 request.service_id,
                 user_id,
                 auto_name,
@@ -185,36 +167,9 @@ impl KubeController {
 
     pub async fn update_environment_preview_url(
         &self,
-        org_id: Uuid,
-        user_id: Uuid,
         preview_url_id: Uuid,
         request: lapdev_common::kube::UpdateKubeEnvironmentPreviewUrlRequest,
     ) -> Result<KubeEnvironmentPreviewUrl, ApiError> {
-        // Get the preview URL and verify ownership
-        let preview_url = self
-            .db
-            .get_environment_preview_url(preview_url_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Preview URL not found".to_string()))?;
-
-        // Verify environment belongs to the organization and check ownership
-        let environment = self
-            .db
-            .get_kube_environment(preview_url.environment_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
-
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        // If it's a personal environment, check ownership
-        if !environment.is_shared && environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
-
         // Update the preview URL
         let updated_preview_url = self
             .db
@@ -250,35 +205,8 @@ impl KubeController {
 
     pub async fn delete_environment_preview_url(
         &self,
-        org_id: Uuid,
-        user_id: Uuid,
         preview_url_id: Uuid,
     ) -> Result<(), ApiError> {
-        // Get the preview URL and verify ownership
-        let preview_url = self
-            .db
-            .get_environment_preview_url(preview_url_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Preview URL not found".to_string()))?;
-
-        // Verify environment belongs to the organization and check ownership
-        let environment = self
-            .db
-            .get_kube_environment(preview_url.environment_id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
-
-        if environment.organization_id != org_id {
-            return Err(ApiError::Unauthorized);
-        }
-
-        // If it's a personal environment, check ownership
-        if !environment.is_shared && environment.user_id != user_id {
-            return Err(ApiError::Unauthorized);
-        }
-
         self.db
             .delete_environment_preview_url(preview_url_id)
             .await

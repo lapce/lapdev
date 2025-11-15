@@ -732,13 +732,22 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                 />
             </Show>
 
-            // Devbox Session Banner
-            <DevboxSessionBanner active_session environment_id />
+            // Devbox info
+            <Show when=move || environment_info.get().map(|env| env.is_shared).unwrap_or(false)>
+                <SharedEnvironmentDevboxCard />
+            </Show>
+            <Show when=move || environment_info.get().map(|env| !env.is_shared).unwrap_or(false)>
+                <DevboxSessionBanner active_session environment_id />
+            </Show>
 
             // Environment Resources (Workloads & Services)
             <Show when=move || environment_info.get().is_some()>
                 <EnvironmentResourcesTabs
                     environment_id
+                    environment_is_shared=environment_info
+                        .get()
+                        .map(|env| env.is_shared)
+                        .unwrap_or(false)
                     filtered_workloads
                     search_query
                     debounced_search
@@ -1265,6 +1274,7 @@ impl std::fmt::Display for ResourceTab {
 #[component]
 pub fn EnvironmentResourcesTabs(
     environment_id: Uuid,
+    environment_is_shared: bool,
     filtered_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
     search_query: RwSignal<String>,
     debounced_search: RwSignal<String>,
@@ -1309,6 +1319,7 @@ pub fn EnvironmentResourcesTabs(
             <TabsContent value=ResourceTab::Workloads>
                 <EnvironmentWorkloadsContent
                     environment_id
+                    environment_is_shared
                     filtered_workloads
                     search_query
                     debounced_search
@@ -1347,6 +1358,7 @@ pub fn EnvironmentResourcesTabs(
 #[component]
 pub fn EnvironmentWorkloadsContent(
     environment_id: Uuid,
+    environment_is_shared: bool,
     filtered_workloads: Signal<Vec<KubeEnvironmentWorkload>>,
     search_query: RwSignal<String>,
     debounced_search: RwSignal<String>,
@@ -1384,7 +1396,11 @@ pub fn EnvironmentWorkloadsContent(
                                 <TableHead>Name</TableHead>
                                 <TableHead>Kind</TableHead>
                                 <TableHead>Ready</TableHead>
-                                <TableHead>Intercepts</TableHead>
+                                {if environment_is_shared {
+                                    view! { <></> }.into_any()
+                                } else {
+                                    view! { <TableHead>Intercepts</TableHead> }.into_any()
+                                }}
                                 <TableHead>Containers</TableHead>
                                 <TableHead>Actions</TableHead>
                             </TableRow>
@@ -1411,6 +1427,7 @@ pub fn EnvironmentWorkloadsContent(
                                 view! {
                                     <EnvironmentWorkloadItem
                                         environment_id
+                                        environment_is_shared
                                         workload=workload.clone()
                                         all_intercepts
                                         active_session
@@ -1476,6 +1493,7 @@ pub fn EnvironmentWorkloadsContent(
 #[component]
 pub fn EnvironmentWorkloadItem(
     environment_id: Uuid,
+    environment_is_shared: bool,
     workload: KubeEnvironmentWorkload,
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     active_session: LocalResource<Option<DevboxSessionSummary>>,
@@ -1588,60 +1606,66 @@ pub fn EnvironmentWorkloadItem(
                         format!("{ready}/1")
                     }}
                 </TableCell>
-                <TableCell>
-                    {move || {
-                        let intercepts = workload_intercepts.get();
-                        let (has_active_session, is_active_environment) =
-                            match active_session.get().flatten() {
-                                Some(session) => {
-                                    let is_active_env =
-                                        session.active_environment_id == Some(environment_id);
-                                    (true, is_active_env)
-                                }
-                                None => (false, false),
-                            };
-
-                        if intercepts.is_empty() {
-                            view! {
-                                <div class="flex flex-col gap-2">
-                                    <Button
-                                        variant=ButtonVariant::Outline
-                                        size=ButtonSize::Sm
-                                        class="self-start w-auto"
-                                        on:click=move |_| { start_action.dispatch(()); }
-                                        disabled=Signal::derive(move || start_pending.get())
-                                    >
-                                        <lucide_leptos::Cable />
-                                        {move || if start_pending.get() { "Starting..." } else { "Start Intercept" }}
-                                    </Button>
-                                    <Show when=move || start_error.get().is_some()>
-                                        <P class="text-xs text-destructive">
-                                            {move || start_error.get().unwrap_or_default()}
-                                        </P>
-                                    </Show>
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! {
-                                <div class="flex flex-col gap-2">
-                                    {intercepts.into_iter().map(|intercept| {
-                                        view! {
-                                            <WorkloadInterceptCard
-                                                intercept=intercept
-                                                has_active_session=has_active_session
-                                                is_active_environment=is_active_environment
-                                                update_counter
-                                                workload_ports=workload_ports.clone()
-                                                workload_id
-                                                workload_name=workload_name.clone()
-                                            />
+                {if !environment_is_shared {
+                    view! {
+                        <TableCell>
+                            {move || {
+                                let intercepts = workload_intercepts.get();
+                                let (has_active_session, is_active_environment) =
+                                    match active_session.get().flatten() {
+                                        Some(session) => {
+                                            let is_active_env =
+                                                session.active_environment_id == Some(environment_id);
+                                            (true, is_active_env)
                                         }
-                                    }).collect::<Vec<_>>()}
-                                </div>
-                            }.into_any()
-                        }
-                    }}
-                </TableCell>
+                                        None => (false, false),
+                                    };
+
+                                if intercepts.is_empty() {
+                                    view! {
+                                        <div class="flex flex-col gap-2">
+                                            <Button
+                                                variant=ButtonVariant::Outline
+                                                size=ButtonSize::Sm
+                                                class="self-start w-auto"
+                                                on:click=move |_| { start_action.dispatch(()); }
+                                                disabled=Signal::derive(move || start_pending.get())
+                                            >
+                                                <lucide_leptos::Cable />
+                                                {move || if start_pending.get() { "Starting..." } else { "Start Intercept" }}
+                                            </Button>
+                                            <Show when=move || start_error.get().is_some()>
+                                                <P class="text-xs text-destructive">
+                                                    {move || start_error.get().unwrap_or_default()}
+                                                </P>
+                                            </Show>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="flex flex-col gap-2">
+                                            {intercepts.into_iter().map(|intercept| {
+                                                view! {
+                                                    <WorkloadInterceptCard
+                                                        intercept=intercept
+                                                        has_active_session=has_active_session
+                                                        is_active_environment=is_active_environment
+                                                        update_counter
+                                                        workload_ports=workload_ports.clone()
+                                                        workload_id
+                                                        workload_name=workload_name.clone()
+                                                    />
+                                                }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    }.into_any()
+                                }
+                            }}
+                        </TableCell>
+                    }.into_any()
+                } else {
+                    view! { <></> }.into_any()
+                }}
                 <TableCell>
                     <div class="text-sm flex flex-col gap-2">
                         {
@@ -2298,6 +2322,42 @@ pub fn EditInterceptModal(
                 </Show>
             </div>
         </Modal>
+    }
+}
+
+#[component]
+pub fn SharedEnvironmentDevboxCard() -> impl IntoView {
+    view! {
+        <Card class="border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/30">
+            <div class="p-4 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div class="flex gap-3">
+                    <div class="rounded-full bg-amber-100 dark:bg-amber-900/40 p-2">
+                        <lucide_leptos::ShieldAlert attr:class="h-5 w-5 text-amber-700 dark:text-amber-300" />
+                    </div>
+                    <div class="flex flex-col gap-1">
+                        <span class="font-semibold text-amber-900 dark:text-amber-100">
+                            "Devbox isn't available on shared environments"
+                        </span>
+                        <p class="text-sm text-amber-800 dark:text-amber-300">
+                            "Branch this shared baseline to unlock Devbox intercepts. Personal and branch environments can be selected as your active Devbox namespace."
+                        </p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <a href=docs_url(DOCS_DEVBOX_PATH) target="_blank" rel="noopener noreferrer">
+                        <Button
+                            variant=ButtonVariant::Outline
+                            size=ButtonSize::Sm
+                            class="border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-100"
+                        >
+                            <lucide_leptos::BookOpen attr:class="h-4 w-4" />
+                            "Devbox Docs"
+                            <lucide_leptos::ExternalLink attr:class="h-3 w-3" />
+                        </Button>
+                    </a>
+                </div>
+            </div>
+        </Card>
     }
 }
 

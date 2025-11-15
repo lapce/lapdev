@@ -347,6 +347,12 @@ impl HrpcService for CoreState {
             .map_err(hrpc_from_db_err)?
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
+        if environment.is_shared {
+            return Err(hrpc_error(
+                "Shared environments cannot start Devbox intercepts",
+            ));
+        }
+
         self.ensure_environment_access(&user, &environment).await?;
 
         let mappings = port_mappings
@@ -730,7 +736,24 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         environment_id: Uuid,
     ) -> Result<(), HrpcError> {
-        let user = self.authorize(headers, org_id, None).await?;
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        if environment.organization_id != org_id {
+            return Err(hrpc_error("Environment does not belong to the organization"));
+        }
+
+        let required_role = environment.is_shared.then_some(UserRole::Admin);
+        let user = self.authorize(headers, org_id, required_role).await?;
+
+        if !environment.is_shared && environment.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
+
         self.kube_controller
             .delete_kube_environment(org_id, user.id, environment_id)
             .await
@@ -743,7 +766,26 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         environment_id: Uuid,
     ) -> Result<(), HrpcError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        if environment.organization_id != org_id {
+            return Err(hrpc_error("Environment does not belong to the organization"));
+        }
+
+        if environment.is_shared {
+            return Err(hrpc_error("Pause is not yet supported for shared environments"));
+        }
+
         let user = self.authorize(headers, org_id, None).await?;
+
+        if environment.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
         self.kube_controller
             .pause_kube_environment(org_id, user.id, environment_id)
             .await
@@ -756,7 +798,26 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         environment_id: Uuid,
     ) -> Result<(), HrpcError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        if environment.organization_id != org_id {
+            return Err(hrpc_error("Environment does not belong to the organization"));
+        }
+
+        if environment.is_shared {
+            return Err(hrpc_error("Resume is not yet supported for shared environments"));
+        }
+
         let user = self.authorize(headers, org_id, None).await?;
+
+        if environment.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
         self.kube_controller
             .resume_kube_environment(org_id, user.id, environment_id)
             .await
@@ -851,7 +912,8 @@ impl HrpcService for CoreState {
         name: String,
         is_shared: bool,
     ) -> Result<KubeEnvironment, HrpcError> {
-        let user = self.authorize(headers, org_id, None).await?;
+        let required_role = is_shared.then_some(UserRole::Admin);
+        let user = self.authorize(headers, org_id, required_role).await?;
 
         self.kube_controller
             .create_kube_environment(org_id, user.id, app_catalog_id, cluster_id, name, is_shared)
@@ -955,9 +1017,14 @@ impl HrpcService for CoreState {
                 ))
             })?;
 
+        if target_environment.organization_id != org_id {
+            return Err(HrpcError::from(ApiError::Unauthorized));
+        }
+
         // Ensure the workload belongs to this environment or its base
         if workload.environment_id != target_environment.id {
             let base_env = target_environment.base_environment_id.ok_or_else(|| {
+                // Branch workloads reference their base shared environment; if there's no base we can't continue
                 HrpcError::from(ApiError::InvalidRequest(
                     "Workload does not belong to the target environment".to_string(),
                 ))
@@ -969,14 +1036,17 @@ impl HrpcService for CoreState {
             }
         }
 
-        // Determine required role based on environment type
-        let required_role = if target_environment.is_shared {
-            Some(UserRole::Admin)
-        } else {
-            None
-        };
+        // Determine required role based on the target environment. Branch workloads inherit permissions from their branch.
+        let required_role = target_environment
+            .is_shared
+            .then_some(UserRole::Admin);
 
         let user = self.authorize(headers, org_id, required_role).await?;
+
+        if !target_environment.is_shared && target_environment.user_id != user.id {
+            return Err(HrpcError::from(ApiError::Unauthorized));
+        }
+
         self.kube_controller
             .update_environment_workload(
                 org_id,
@@ -1073,9 +1143,26 @@ impl HrpcService for CoreState {
         environment_id: Uuid,
         request: lapdev_common::kube::CreateKubeEnvironmentPreviewUrlRequest,
     ) -> Result<lapdev_common::kube::KubeEnvironmentPreviewUrl, HrpcError> {
-        let user = self.authorize(headers, org_id, None).await?;
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        if environment.organization_id != org_id {
+            return Err(hrpc_error("Environment does not belong to the organization"));
+        }
+
+        let required_role = environment.is_shared.then_some(UserRole::Admin);
+        let user = self.authorize(headers, org_id, required_role).await?;
+
+        if !environment.is_shared && environment.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
+
         self.kube_controller
-            .create_environment_preview_url(org_id, user.id, environment_id, request)
+            .create_environment_preview_url(user.id, environment, request)
             .await
             .map_err(HrpcError::from)
     }
@@ -1100,9 +1187,33 @@ impl HrpcService for CoreState {
         preview_url_id: Uuid,
         request: lapdev_common::kube::UpdateKubeEnvironmentPreviewUrlRequest,
     ) -> Result<lapdev_common::kube::KubeEnvironmentPreviewUrl, HrpcError> {
-        let user = self.authorize(headers, org_id, None).await?;
+        let preview_url = self
+            .db
+            .get_environment_preview_url(preview_url_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Preview URL not found"))?;
+
+        let environment = self
+            .db
+            .get_kube_environment(preview_url.environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        if environment.organization_id != org_id {
+            return Err(hrpc_error("Environment does not belong to the organization"));
+        }
+
+        let required_role = environment.is_shared.then_some(UserRole::Admin);
+        let user = self.authorize(headers, org_id, required_role).await?;
+
+        if !environment.is_shared && environment.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
+
         self.kube_controller
-            .update_environment_preview_url(org_id, user.id, preview_url_id, request)
+            .update_environment_preview_url(preview_url_id, request)
             .await
             .map_err(HrpcError::from)
     }
@@ -1113,9 +1224,33 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         preview_url_id: Uuid,
     ) -> Result<(), HrpcError> {
-        let user = self.authorize(headers, org_id, None).await?;
+        let preview_url = self
+            .db
+            .get_environment_preview_url(preview_url_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Preview URL not found"))?;
+
+        let environment = self
+            .db
+            .get_kube_environment(preview_url.environment_id)
+            .await
+            .map_err(hrpc_from_db_err)?
+            .ok_or_else(|| hrpc_error("Environment not found"))?;
+
+        if environment.organization_id != org_id {
+            return Err(hrpc_error("Environment does not belong to the organization"));
+        }
+
+        let required_role = environment.is_shared.then_some(UserRole::Admin);
+        let user = self.authorize(headers, org_id, required_role).await?;
+
+        if !environment.is_shared && environment.user_id != user.id {
+            return Err(hrpc_error("Unauthorized"));
+        }
+
         self.kube_controller
-            .delete_environment_preview_url(org_id, user.id, preview_url_id)
+            .delete_environment_preview_url(preview_url_id)
             .await
             .map_err(HrpcError::from)
     }

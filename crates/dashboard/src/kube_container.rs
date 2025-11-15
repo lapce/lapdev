@@ -21,7 +21,7 @@ pub fn ContainersCard(
     workload_id: Uuid,
     update_counter: RwSignal<usize>,
     config: ContainerEditorConfig,
-    update_action: Action<Vec<KubeContainerInfo>, Result<(), ErrorResponse>>,
+    update_action: Action<Vec<KubeContainerInfo>, Result<Uuid, ErrorResponse>>,
 ) -> impl IntoView {
     view! {
         <Card class="p-6">
@@ -96,7 +96,7 @@ fn ContainerEditor(
     all_containers: Vec<KubeContainerInfo>,
     update_counter: RwSignal<usize>,
     config: ContainerEditorConfig,
-    update_action: Action<Vec<KubeContainerInfo>, Result<(), ErrorResponse>>,
+    update_action: Action<Vec<KubeContainerInfo>, Result<Uuid, ErrorResponse>>,
 ) -> impl IntoView {
     let is_editing = RwSignal::new(false);
     let error_message = RwSignal::new(None::<String>);

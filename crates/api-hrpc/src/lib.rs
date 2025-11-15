@@ -7,9 +7,9 @@ use lapdev_common::{
     kube::{
         CreateKubeClusterResponse, CreateKubeEnvironmentPreviewUrlRequest, KubeAppCatalogWorkload,
         KubeAppCatalogWorkloadCreate, KubeCluster, KubeContainerInfo, KubeEnvironmentPreviewUrl,
-        KubeEnvironmentService, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo,
-        KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult,
-        PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
+        KubeEnvironmentService, KubeEnvironmentWorkload, KubeEnvironmentWorkloadDetail,
+        KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
+        PagePaginationParams, PaginatedResult, PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
     },
 };
 use uuid::Uuid;
@@ -243,12 +243,20 @@ pub trait HrpcService {
         workload_id: Uuid,
     ) -> Result<Option<KubeEnvironmentWorkload>, HrpcError>;
 
+    async fn get_environment_workload_detail(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<KubeEnvironmentWorkloadDetail, HrpcError>;
+
     async fn update_environment_workload(
         &self,
         org_id: Uuid,
+        environment_id: Uuid,
         workload_id: Uuid,
         containers: Vec<KubeContainerInfo>,
-    ) -> Result<(), HrpcError>;
+    ) -> Result<Uuid, HrpcError>;
 
     // Kube Namespace operations
     async fn create_kube_namespace(

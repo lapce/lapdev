@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
 };
 
@@ -11,7 +11,10 @@ use k8s_openapi::api::{
     core::v1::{Pod, Service},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
-use lapdev_common::kube::{KubeServiceDetails, KubeServiceWithYaml, KubeWorkloadKind};
+use lapdev_common::kube::{
+    KubeEnvironment, KubeEnvironmentWorkload, KubeEnvironmentWorkloadDetail, KubeServiceDetails,
+    KubeServiceWithYaml, KubeWorkloadKind,
+};
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{
     KubeWorkloadWithResources, KubeWorkloadYamlOnly, KubeWorkloadsWithResources,
@@ -46,10 +49,63 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
-        self.db
+        let mut workloads = self
+            .db
             .get_environment_workloads(environment_id)
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        if let Some(base_environment_id) = environment.base_environment_id {
+            let base_workloads = self
+                .db
+                .get_environment_workloads(base_environment_id)
+                .await
+                .map_err(ApiError::from)?;
+            let overridden: HashSet<Uuid> = workloads
+                .iter()
+                .filter_map(|w| w.base_workload_id)
+                .collect();
+
+            for base_workload in base_workloads {
+                if overridden.contains(&base_workload.id) {
+                    continue;
+                }
+                let mut inherited = base_workload.clone();
+                inherited.environment_id = environment.id;
+                if inherited.base_workload_id.is_none() {
+                    inherited.base_workload_id = Some(base_workload.id);
+                }
+                workloads.push(inherited);
+            }
+        }
+
+        Ok(workloads)
+    }
+
+    pub async fn get_environment_workload_detail(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<KubeEnvironmentWorkloadDetail, ApiError> {
+        let environment = self
+            .get_kube_environment(org_id, user_id, environment_id)
+            .await?;
+
+        let workload = self
+            .db
+            .get_environment_workload(workload_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
+
+        let workload = Self::map_workload_to_environment(&environment, workload)?;
+
+        Ok(KubeEnvironmentWorkloadDetail {
+            environment,
+            workload,
+        })
     }
 
     pub async fn get_environment_workload(
@@ -111,7 +167,7 @@ impl KubeController {
         workload_id: Uuid,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
         environment: lapdev_db_entities::kube_environment::Model,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Uuid, ApiError> {
         // Verify the environment belongs to the organization
         if environment.organization_id != org_id {
             return Err(ApiError::Unauthorized);
@@ -129,19 +185,30 @@ impl KubeController {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
 
-        let kind = KubeWorkloadKind::from_str(&existing_workload.kind).map_err(|_| {
+        let mut workload_record = existing_workload;
+        if let Some(base_environment_id) = environment.base_environment_id {
+            if workload_record.environment_id == base_environment_id {
+                workload_record = self
+                    .ensure_branch_workload_override(&environment, &workload_record)
+                    .await?;
+            }
+        }
+
+        let kind = KubeWorkloadKind::from_str(&workload_record.kind).map_err(|_| {
             ApiError::InvalidRequest(format!(
                 "Invalid workload kind {} for environment {}",
-                existing_workload.kind, existing_workload.environment_id
+                workload_record.kind, workload_record.environment_id
             ))
         })?;
+
+        let target_workload_id = workload_record.id;
 
         let (workload_with_resources, persisted_yaml, extra_labels) =
             if environment.base_environment_id.is_some() {
                 let (manifest, yaml, labels) = self
                     .build_branch_workload_manifest(
                         &environment,
-                        &existing_workload,
+                        &workload_record,
                         kind.clone(),
                         &containers,
                     )
@@ -150,17 +217,17 @@ impl KubeController {
             } else {
                 let (manifest, yaml) = Self::build_standard_workload_manifest(
                     kind,
-                    &existing_workload.workload_yaml,
+                    &workload_record.workload_yaml,
                     &containers,
                 )?;
                 let mut labels = HashMap::new();
                 labels.insert(
                     "lapdev.base-workload".to_string(),
-                    existing_workload.name.clone(),
+                    workload_record.name.clone(),
                 );
                 labels.insert(
                     "lapdev.base-workload-id".to_string(),
-                    existing_workload.id.to_string(),
+                    workload_record.id.to_string(),
                 );
                 (manifest, yaml, Some(labels))
             };
@@ -186,7 +253,7 @@ impl KubeController {
         .await?;
 
         if let Some(base_environment_id) = environment.base_environment_id {
-            match existing_workload.base_workload_id {
+            match workload_record.base_workload_id {
                 Some(base_workload_id) => {
                     let base_environment = self
                         .db
@@ -259,11 +326,11 @@ impl KubeController {
         }
 
         self.db
-            .update_environment_workload(workload_id, containers, persisted_yaml)
+            .update_environment_workload(target_workload_id, containers, persisted_yaml)
             .await
             .map_err(ApiError::from)?;
 
-        Ok(())
+        Ok(target_workload_id)
     }
 
     async fn send_branch_service_route_update(
@@ -484,6 +551,29 @@ impl KubeController {
                 secrets: HashMap::new(),
             },
             rebuilt_yaml,
+        ))
+    }
+
+    fn map_workload_to_environment(
+        environment: &KubeEnvironment,
+        mut workload: KubeEnvironmentWorkload,
+    ) -> Result<KubeEnvironmentWorkload, ApiError> {
+        if workload.environment_id == environment.id {
+            return Ok(workload);
+        }
+
+        if let Some(base_environment_id) = environment.base_environment_id {
+            if workload.environment_id == base_environment_id {
+                if workload.base_workload_id.is_none() {
+                    workload.base_workload_id = Some(workload.id);
+                }
+                workload.environment_id = environment.id;
+                return Ok(workload);
+            }
+        }
+
+        Err(ApiError::InvalidRequest(
+            "Workload does not belong to this environment".to_string(),
         ))
     }
 }

@@ -5,8 +5,8 @@ use lapdev_common::{
 };
 use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpcClient, KubeManagerRpc, KubeRawWorkloadYaml,
-    KubeWorkloadsWithResources, NamespacedResourceRequest, NamespacedResourceResponse,
-    ProxyBranchRouteConfig, WorkloadIdentifier,
+    KubeWorkloadsWithResources, NamespacedResourceKind, NamespacedResourceRequest,
+    NamespacedResourceResponse, ProxyBranchRouteConfig, WorkloadIdentifier,
 };
 use std::{collections::HashMap, net::SocketAddr};
 use uuid::Uuid;
@@ -321,6 +321,30 @@ impl KubeManagerRpc for KubeManagerRpcServer {
                 Err(format!("Failed to destroy environment: {}", e))
             }
         }
+    }
+
+    async fn delete_namespaced_resources(
+        self,
+        _context: ::tarpc::context::Context,
+        namespace: String,
+        resources: Vec<(NamespacedResourceKind, String)>,
+    ) -> Result<(), String> {
+        for (kind, name) in resources {
+            if let Err(err) = self
+                .manager
+                .delete_namespaced_resource(kind, &namespace, &name)
+                .await
+            {
+                tracing::warn!(
+                    namespace = %namespace,
+                    resource_kind = ?kind,
+                    resource = %name,
+                    error = ?err,
+                    "Failed to delete namespaced resource"
+                );
+            }
+        }
+        Ok(())
     }
 
     async fn configure_watches(

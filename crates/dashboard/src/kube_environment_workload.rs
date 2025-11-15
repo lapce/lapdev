@@ -6,7 +6,7 @@ use lapdev_common::{
     kube::{KubeContainerInfo, KubeEnvironment, KubeEnvironmentWorkload},
 };
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_navigate, use_params_map};
 use uuid::Uuid;
 
 use crate::{
@@ -27,16 +27,21 @@ use crate::{
 #[component]
 pub fn KubeEnvironmentWorkload() -> impl IntoView {
     let params = use_params_map();
-    let (environment_id, workload_id) = params.with_untracked(|params| {
-        let environment_id = params
-            .get("environment_id")
-            .and_then(|id| Uuid::from_str(id.as_str()).ok())
-            .unwrap_or_default();
-        let workload_id = params
-            .get("workload_id")
-            .and_then(|id| Uuid::from_str(id.as_str()).ok())
-            .unwrap_or_default();
-        (environment_id, workload_id)
+    let environment_id = Memo::new(move |_| {
+        params.with(|params| {
+            params
+                .get("environment_id")
+                .and_then(|id| Uuid::from_str(id.as_str()).ok())
+                .unwrap_or_default()
+        })
+    });
+    let workload_id = Memo::new(move |_| {
+        params.with(|params| {
+            params
+                .get("workload_id")
+                .and_then(|id| Uuid::from_str(id.as_str()).ok())
+                .unwrap_or_default()
+        })
     });
 
     view! {
@@ -66,46 +71,41 @@ async fn get_environment_workload_detail(
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = get_hrpc_client();
 
-    // Get environment info
-    let environment = client
-        .get_kube_environment(org.id, environment_id)
+    let detail = client
+        .get_environment_workload_detail(org.id, environment_id, workload_id)
         .await??;
 
-    // Get all workloads and find the specific one
-    let workloads = client
-        .get_environment_workloads(org.id, environment_id)
-        .await??;
-    let workload = workloads
-        .into_iter()
-        .find(|w| w.id == workload_id)
-        .ok_or_else(|| anyhow!("Workload not found"))?;
-
-    Ok((environment, workload))
+    Ok((detail.environment, detail.workload))
 }
 
 async fn update_environment_workload_containers(
     org: Signal<Option<Organization>>,
+    environment_id: Uuid,
     workload_id: Uuid,
     containers: Vec<KubeContainerInfo>,
     update_counter: RwSignal<usize>,
-) -> Result<(), ErrorResponse> {
+) -> Result<Uuid, ErrorResponse> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = get_hrpc_client();
 
-    client
-        .update_environment_workload(org.id, workload_id, containers)
+    let new_id = client
+        .update_environment_workload(org.id, environment_id, workload_id, containers)
         .await??;
 
     update_counter.update(|c| *c += 1);
 
-    Ok(())
+    Ok(new_id)
 }
 
 #[component]
-pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> impl IntoView {
+pub fn EnvironmentWorkloadDetail(
+    environment_id: Memo<Uuid>,
+    workload_id: Memo<Uuid>,
+) -> impl IntoView {
     let org = get_current_org();
     let is_loading = RwSignal::new(false);
     let update_counter = RwSignal::new(0usize);
+    let navigate = StoredValue::new_local(use_navigate());
 
     let config = use_context::<AppConfig>().unwrap();
 
@@ -113,6 +113,8 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
         update_counter.track(); // Make reactive to updates
         async move {
             is_loading.set(true);
+            let environment_id = environment_id.get_untracked();
+            let workload_id = workload_id.get_untracked();
             let result = get_environment_workload_detail(org, environment_id, workload_id)
                 .await
                 .ok();
@@ -168,10 +170,32 @@ pub fn EnvironmentWorkloadDetail(environment_id: Uuid, workload_id: Uuid) -> imp
                     if let Some((_, workload)) = workload_info.get() {
                         let workload_id = workload.id;
                         let all_containers = workload.containers.clone();
+                        let navigate_for_action = navigate.get_value();
                         let update_action = Action::new_local(move |containers: &Vec<KubeContainerInfo>| {
                             let containers = containers.clone();
+                            let current_workload_id = workload_id;
+                            let navigate = navigate_for_action.clone();
                             async move {
-                                update_environment_workload_containers(org, workload_id, containers, update_counter).await
+                                let result = update_environment_workload_containers(
+                                    org,
+                                    environment_id.get_untracked(),
+                                    current_workload_id,
+                                    containers,
+                                    update_counter,
+                                )
+                                .await;
+
+                                if let Ok(new_id) = &result {
+                                    if *new_id != current_workload_id {
+                                        let url = format!(
+                                            "/kubernetes/environments/{}/workloads/{}",
+                                            environment_id.get_untracked(), new_id
+                                        );
+                                        let _ = navigate(&url, Default::default());
+                                    }
+                                }
+
+                                result
                             }
                         });
 

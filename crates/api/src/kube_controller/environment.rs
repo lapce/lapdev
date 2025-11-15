@@ -9,14 +9,14 @@ use lapdev_common::{
     kube::{
         KubeAppCatalogWorkload, KubeContainerImage, KubeEnvironment,
         KubeEnvironmentDashboardSummary, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
-        KubeServicePort, KubeServiceWithYaml, KubeWorkloadDetails, KubeWorkloadKind,
-        PagePaginationParams, PaginatedInfo, PaginatedResult,
+        KubeServiceDetails, KubeServicePort, KubeServiceWithYaml, KubeWorkloadDetails,
+        KubeWorkloadKind, PagePaginationParams, PaginatedInfo, PaginatedResult,
     },
     utils::rand_string,
 };
 use lapdev_db::api::NewEnvironmentWorkload;
 use lapdev_kube::server::KubeClusterServer;
-use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources};
+use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources, NamespacedResourceKind};
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
     prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
@@ -513,6 +513,65 @@ impl KubeController {
         }
     }
 
+    async fn destroy_branch_environment_resources(
+        &self,
+        rpc_client: &lapdev_kube_rpc::KubeManagerRpcClient,
+        environment: &lapdev_db_entities::kube_environment::Model,
+    ) -> Result<(), ApiError> {
+        let mut resources: Vec<(NamespacedResourceKind, String)> = Vec::new();
+
+        let branch_namespace = environment.namespace.clone();
+
+        let branch_workloads = self
+            .db
+            .get_environment_workloads(environment.id)
+            .await
+            .map_err(ApiError::from)?;
+        for workload in branch_workloads {
+            let kind = KubeWorkloadKind::from_str(&workload.kind).map_err(|_| {
+                ApiError::InvalidRequest(format!(
+                    "Invalid workload kind {} in branch environment",
+                    workload.kind
+                ))
+            })?;
+            resources.push((Self::workload_kind_to_resource_kind(&kind), workload.name));
+        }
+
+        let branch_services = self
+            .db
+            .get_environment_services(environment.id)
+            .await
+            .map_err(ApiError::from)?;
+        for service in branch_services {
+            resources.push((NamespacedResourceKind::Service, service.name));
+        }
+
+        let mut ctx = tarpc::context::current();
+        ctx.deadline = Instant::now() + Duration::from_secs(300);
+        match rpc_client
+            .delete_namespaced_resources(ctx, branch_namespace.clone(), resources)
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    environment_id = %environment.id,
+                    error = %err,
+                    "KubeManager refused to delete some branch resources"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    environment_id = %environment.id,
+                    error = ?err,
+                    "RPC error while deleting branch resources"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn delete_kube_environment(
         &self,
         org_id: Uuid,
@@ -554,10 +613,17 @@ impl KubeController {
 
         tokio::spawn(async move {
             let env_id = environment_clone.id;
-            match controller
-                .destroy_environment_resources(&rpc_client_clone, &environment_clone)
-                .await
-            {
+            let destroy_result = if environment_clone.base_environment_id.is_some() {
+                controller
+                    .destroy_branch_environment_resources(&rpc_client_clone, &environment_clone)
+                    .await
+            } else {
+                controller
+                    .destroy_environment_resources(&rpc_client_clone, &environment_clone)
+                    .await
+            };
+
+            match destroy_result {
                 Ok(_) => {
                     match controller
                         .db
@@ -1163,91 +1229,6 @@ impl KubeController {
         Ok((base_environment, cluster, app_catalog))
     }
 
-    /// Prepare workload details from base environment workloads
-    fn prepare_workload_details_from_base(
-        base_workloads: Vec<lapdev_common::kube::KubeEnvironmentWorkload>,
-        namespace: &str,
-        branch_environment_id: Uuid,
-    ) -> Result<
-        (
-            Vec<NewEnvironmentWorkload>,
-            HashMap<String, String>, // base workload name -> branch workload name
-        ),
-        ApiError,
-    > {
-        let env_suffix = branch_environment_id.to_string();
-        let mut branch_name_map = HashMap::new();
-
-        let workloads = base_workloads
-            .into_iter()
-            .map(|workload| {
-                let kind: KubeWorkloadKind = workload.kind.parse().map_err(|_| {
-                    ApiError::InvalidRequest(format!(
-                        "Invalid workload kind {} in base environment",
-                        workload.kind
-                    ))
-                })?;
-                if workload.workload_yaml.trim().is_empty() {
-                    return Err(ApiError::InvalidRequest(format!(
-                        "Base workload {} is missing YAML",
-                        workload.name
-                    )));
-                }
-
-                let base_name = workload.name.clone();
-                let branch_name = if base_name.ends_with(&env_suffix) {
-                    base_name.clone()
-                } else {
-                    format!("{}-{}", base_name, branch_environment_id)
-                };
-                branch_name_map.insert(base_name.clone(), branch_name.clone());
-
-                let sanitized_yaml =
-                    Self::strip_sidecar_proxy_from_yaml(&kind, &workload.workload_yaml)?;
-                let mut workload_yaml = Self::wrap_workload_yaml(kind.clone(), sanitized_yaml);
-                let selector = build_branch_service_selector(&branch_name);
-                rename_workload_yaml(&mut workload_yaml, &branch_name, &selector)?;
-                let workload_yaml_string = Self::workload_yaml_to_string(&workload_yaml);
-
-                let mut containers = workload.containers;
-                for container in &mut containers {
-                    // Preserve the original environment variables
-                    container.original_env_vars = container.env_vars.clone();
-                    container.env_vars.clear();
-
-                    // If the base environment has a customized image, use it as the original_image
-                    // for the new branch environment (so the branch starts from the customized state)
-                    match &container.image {
-                        KubeContainerImage::Custom(custom_image) => {
-                            container.original_image = custom_image.clone();
-                            container.image = KubeContainerImage::FollowOriginal;
-                        }
-                        KubeContainerImage::FollowOriginal => {
-                            // Keep the current original_image and FollowOriginal setting
-                        }
-                    }
-                }
-
-                let env_workload_id = Uuid::new_v4();
-
-                Ok(NewEnvironmentWorkload {
-                    id: env_workload_id,
-                    details: KubeWorkloadDetails {
-                        name: base_name,
-                        namespace: namespace.to_string(),
-                        kind,
-                        containers,
-                        ports: workload.ports,
-                        workload_yaml: workload_yaml_string,
-                        base_workload_id: Some(workload.id),
-                    },
-                })
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
-
-        Ok((workloads, branch_name_map))
-    }
-
     fn strip_sidecar_proxy_from_yaml(
         kind: &KubeWorkloadKind,
         yaml: &str,
@@ -1426,71 +1407,235 @@ impl KubeController {
         })
     }
 
-    fn prepare_branch_services(
-        base_services: Vec<lapdev_common::kube::KubeEnvironmentService>,
-        workload_name_map: &HashMap<String, String>,
-        branch_environment_id: Uuid,
-    ) -> Result<HashMap<String, lapdev_common::kube::KubeServiceWithYaml>, ApiError> {
+    fn branch_resource_name(name: &str, branch_environment_id: Uuid) -> String {
         let env_suffix = branch_environment_id.to_string();
-        let mut services = HashMap::new();
+        if name.ends_with(&env_suffix) {
+            name.to_string()
+        } else {
+            format!("{}-{}", name, branch_environment_id)
+        }
+    }
 
-        for service in base_services {
-            let lapdev_common::kube::KubeEnvironmentService {
-                name: base_service_name,
-                yaml,
-                mut ports,
-                selector,
-                ..
-            } = service;
+    fn strip_branch_suffix(name: &str, branch_environment_id: Uuid) -> String {
+        let suffix = format!("-{}", branch_environment_id);
+        if name.ends_with(&suffix) {
+            name[..name.len() - suffix.len()].to_string()
+        } else {
+            name.to_string()
+        }
+    }
 
-            let branch_service_name = if base_service_name.ends_with(&env_suffix) {
-                base_service_name.clone()
-            } else {
-                format!("{}-{}", base_service_name, branch_environment_id)
-            };
+    fn build_branch_workload_details(
+        workload: &lapdev_common::kube::KubeEnvironmentWorkload,
+        namespace: &str,
+        branch_environment_id: Uuid,
+    ) -> Result<(NewEnvironmentWorkload, String), ApiError> {
+        let kind: KubeWorkloadKind = workload.kind.parse().map_err(|_| {
+            ApiError::InvalidRequest(format!(
+                "Invalid workload kind {} in base environment",
+                workload.kind
+            ))
+        })?;
 
-            let branch_workload_name =
-                workload_name_map
-                    .get(&base_service_name)
-                    .cloned()
-                    .or_else(|| {
-                        selector
-                            .values()
-                            .find_map(|value| workload_name_map.get(value).cloned())
-                    });
+        if workload.workload_yaml.trim().is_empty() {
+            return Err(ApiError::InvalidRequest(format!(
+                "Base workload {} is missing YAML",
+                workload.name
+            )));
+        }
 
-            if let Some(branch_workload_name) = branch_workload_name {
-                let branch_selector = build_branch_service_selector(&branch_workload_name);
-                let renamed_yaml =
-                    rename_service_yaml(&yaml, &branch_service_name, &branch_selector)?;
-                let restored_yaml = Self::restore_service_target_ports(renamed_yaml, &mut ports)?;
-                services.insert(
-                    base_service_name.clone(),
-                    lapdev_common::kube::KubeServiceWithYaml {
-                        yaml: restored_yaml,
-                        details: lapdev_common::kube::KubeServiceDetails {
-                            name: base_service_name,
-                            ports,
-                            selector: branch_selector,
-                        },
-                    },
-                );
-            } else {
-                services.insert(
-                    base_service_name.clone(),
-                    lapdev_common::kube::KubeServiceWithYaml {
-                        yaml,
-                        details: lapdev_common::kube::KubeServiceDetails {
-                            name: base_service_name,
-                            ports,
-                            selector,
-                        },
-                    },
-                );
+        let branch_name = Self::branch_resource_name(&workload.name, branch_environment_id);
+        let sanitized_yaml = Self::strip_sidecar_proxy_from_yaml(&kind, &workload.workload_yaml)?;
+        let mut workload_yaml = Self::wrap_workload_yaml(kind.clone(), sanitized_yaml);
+        let selector = build_branch_service_selector(&branch_name);
+        rename_workload_yaml(&mut workload_yaml, &branch_name, &selector)?;
+        let workload_yaml_string = Self::workload_yaml_to_string(&workload_yaml);
+
+        let mut containers = workload.containers.clone();
+        for container in &mut containers {
+            container.original_env_vars = container.env_vars.clone();
+            container.env_vars.clear();
+
+            match &container.image {
+                KubeContainerImage::Custom(custom_image) => {
+                    container.original_image = custom_image.clone();
+                    container.image = KubeContainerImage::FollowOriginal;
+                }
+                KubeContainerImage::FollowOriginal => {}
             }
         }
 
-        Ok(services)
+        let env_workload_id = Uuid::new_v4();
+        let details = KubeWorkloadDetails {
+            name: branch_name.clone(),
+            namespace: namespace.to_string(),
+            kind,
+            containers,
+            ports: workload.ports.clone(),
+            workload_yaml: workload_yaml_string,
+            base_workload_id: Some(workload.id),
+        };
+
+        Ok((
+            NewEnvironmentWorkload {
+                id: env_workload_id,
+                details,
+            },
+            branch_name,
+        ))
+    }
+
+    fn service_targets_workload(
+        service: &lapdev_common::kube::KubeEnvironmentService,
+        base_workload_name: &str,
+        branch_workload_name: &str,
+    ) -> bool {
+        if service.name == base_workload_name || service.name == branch_workload_name {
+            return true;
+        }
+        service
+            .selector
+            .values()
+            .any(|value| value == base_workload_name || value == branch_workload_name)
+    }
+
+    fn build_branch_service_entry(
+        service: &lapdev_common::kube::KubeEnvironmentService,
+        branch_environment_id: Uuid,
+        branch_workload_name: &str,
+    ) -> Result<lapdev_common::kube::KubeServiceWithYaml, ApiError> {
+        let branch_service_name = Self::branch_resource_name(&service.name, branch_environment_id);
+        let branch_selector = build_branch_service_selector(branch_workload_name);
+        let renamed_yaml =
+            rename_service_yaml(&service.yaml, &branch_service_name, &branch_selector)?;
+        let mut ports = service.ports.clone();
+        let restored_yaml = Self::restore_service_target_ports(renamed_yaml, &mut ports)?;
+        Ok(lapdev_common::kube::KubeServiceWithYaml {
+            yaml: restored_yaml,
+            details: KubeServiceDetails {
+                name: branch_service_name,
+                ports,
+                selector: branch_selector,
+            },
+        })
+    }
+
+    pub(super) async fn ensure_branch_workload_override(
+        &self,
+        environment: &lapdev_db_entities::kube_environment::Model,
+        base_workload: &lapdev_common::kube::KubeEnvironmentWorkload,
+    ) -> Result<lapdev_common::kube::KubeEnvironmentWorkload, ApiError> {
+        environment.base_environment_id.ok_or_else(|| {
+            ApiError::InvalidRequest("Branch environment missing base environment".to_string())
+        })?;
+
+        if let Some(existing) = self
+            .db
+            .get_branch_workload_override(base_workload.id, environment.id)
+            .await
+            .map_err(ApiError::from)?
+        {
+            return Ok(existing);
+        }
+
+        let (new_workload, branch_workload_name) = Self::build_branch_workload_details(
+            base_workload,
+            &environment.namespace,
+            environment.id,
+        )?;
+
+        let inserted = self
+            .db
+            .insert_environment_workload(
+                environment.id,
+                new_workload,
+                environment.catalog_sync_version,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        self.ensure_branch_services_for_workload(
+            environment,
+            &base_workload.name,
+            &branch_workload_name,
+        )
+        .await?;
+
+        self.db
+            .get_environment_workload(inserted.id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| {
+                ApiError::InternalError(
+                    "Failed to load newly created branch workload from database".to_string(),
+                )
+            })
+    }
+
+    async fn ensure_branch_services_for_workload(
+        &self,
+        environment: &lapdev_db_entities::kube_environment::Model,
+        base_workload_name: &str,
+        branch_workload_name: &str,
+    ) -> Result<(), ApiError> {
+        let base_environment_id = environment.base_environment_id.ok_or_else(|| {
+            ApiError::InvalidRequest("Branch environment missing base environment".to_string())
+        })?;
+
+        let base_services = self
+            .db
+            .get_environment_services(base_environment_id)
+            .await
+            .map_err(ApiError::from)?;
+        let existing_services = self
+            .db
+            .get_environment_services(environment.id)
+            .await
+            .map_err(ApiError::from)?;
+        let mut existing_names: HashSet<String> = HashSet::new();
+        for svc in existing_services {
+            existing_names.insert(svc.name.clone());
+            existing_names.insert(Self::strip_branch_suffix(&svc.name, environment.id));
+        }
+
+        for service in base_services {
+            if !Self::service_targets_workload(&service, base_workload_name, branch_workload_name) {
+                continue;
+            }
+
+            let base_service_name = service.name.clone();
+            let branch_service_name =
+                Self::branch_resource_name(&base_service_name, environment.id);
+            if existing_names.contains(&base_service_name)
+                || existing_names.contains(&branch_service_name)
+            {
+                continue;
+            }
+
+            let branch_entry =
+                Self::build_branch_service_entry(&service, environment.id, branch_workload_name)?;
+            let inserted_name = branch_entry.details.name.clone();
+            self.db
+                .insert_environment_service(environment.id, &environment.namespace, branch_entry)
+                .await
+                .map_err(ApiError::from)?;
+            existing_names.insert(base_service_name);
+            existing_names.insert(inserted_name);
+        }
+
+        Ok(())
+    }
+
+    fn workload_kind_to_resource_kind(kind: &KubeWorkloadKind) -> NamespacedResourceKind {
+        match kind {
+            KubeWorkloadKind::Deployment => NamespacedResourceKind::Deployment,
+            KubeWorkloadKind::StatefulSet => NamespacedResourceKind::StatefulSet,
+            KubeWorkloadKind::DaemonSet => NamespacedResourceKind::DaemonSet,
+            KubeWorkloadKind::ReplicaSet => NamespacedResourceKind::ReplicaSet,
+            KubeWorkloadKind::Pod => NamespacedResourceKind::Pod,
+            KubeWorkloadKind::Job => NamespacedResourceKind::Job,
+            KubeWorkloadKind::CronJob => NamespacedResourceKind::CronJob,
+        }
     }
 
     fn workload_yaml_to_string(workload: &KubeWorkloadYamlOnly) -> String {
@@ -1574,36 +1719,9 @@ impl KubeController {
             .validate_base_environment(org_id, base_environment_id)
             .await?;
 
-        // Get workloads and services from the base environment
-        let base_workloads = self
-            .db
-            .get_environment_workloads(base_environment_id)
-            .await
-            .map_err(ApiError::from)?;
-
-        let base_services = self
-            .db
-            .get_environment_services(base_environment_id)
-            .await
-            .map_err(ApiError::from)?;
-
         let branch_environment_id = Uuid::new_v4();
         let auth_token = rand_string(32);
         let namespace = base_environment.namespace.clone();
-
-        // Prepare workload details and branch workload name mapping
-        let (workload_details, workload_name_map) = Self::prepare_workload_details_from_base(
-            base_workloads,
-            &namespace,
-            branch_environment_id,
-        )?;
-
-        // Prepare services map with branch-specific YAML while keeping base names for UI
-        let services_map = Self::prepare_branch_services(
-            base_services,
-            &workload_name_map,
-            branch_environment_id,
-        )?;
 
         // Create environment in database
         let mut created_env = match self
@@ -1620,8 +1738,8 @@ impl KubeController {
                 false, // Branch environments are always personal (not shared)
                 base_environment.catalog_sync_version,
                 Some(base_environment_id), // Set the base environment reference
-                workload_details,
-                services_map,
+                Vec::new(),
+                HashMap::new(),
                 auth_token.clone(),
             )
             .await

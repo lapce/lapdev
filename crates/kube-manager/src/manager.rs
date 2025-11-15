@@ -11,7 +11,10 @@ use k8s_openapi::{
     },
     NamespaceResourceScope,
 };
-use kube::api::{DeleteParams, ListParams};
+use kube::{
+    api::{DeleteParams, ListParams},
+    Resource,
+};
 use lapdev_common::{
     devbox::{DirectTunnelConfig, DirectTunnelCredential},
     kube::{
@@ -23,11 +26,12 @@ use lapdev_common::{
 };
 use lapdev_kube_rpc::{
     DevboxRouteConfig, KubeClusterRpcClient, KubeManagerRpc, KubeWorkloadYamlOnly,
-    KubeWorkloadsWithResources, NamespacedResourceRequest, NamespacedResourceResponse,
-    ProxyBranchRouteConfig,
+    KubeWorkloadsWithResources, NamespacedResourceKind, NamespacedResourceRequest,
+    NamespacedResourceResponse, ProxyBranchRouteConfig,
 };
 use lapdev_rpc::spawn_twoway;
 use lapdev_tunnel::{direct::DirectEndpoint, websocket_serde_transport};
+use serde::de::DeserializeOwned;
 use tarpc::server::{BaseChannel, Channel};
 use tokio::{
     task::JoinHandle,
@@ -1349,6 +1353,52 @@ impl KubeManager {
             namespace
         );
         self.delete_namespace(namespace).await
+    }
+
+    pub(crate) async fn delete_namespaced_resource(
+        &self,
+        kind: NamespacedResourceKind,
+        namespace: &str,
+        name: &str,
+    ) -> Result<()> {
+        match kind {
+            NamespacedResourceKind::Deployment => {
+                self.delete_single::<Deployment>(namespace, name).await
+            }
+            NamespacedResourceKind::StatefulSet => {
+                self.delete_single::<StatefulSet>(namespace, name).await
+            }
+            NamespacedResourceKind::DaemonSet => {
+                self.delete_single::<DaemonSet>(namespace, name).await
+            }
+            NamespacedResourceKind::ReplicaSet => {
+                self.delete_single::<ReplicaSet>(namespace, name).await
+            }
+            NamespacedResourceKind::Pod => self.delete_single::<Pod>(namespace, name).await,
+            NamespacedResourceKind::Job => self.delete_single::<Job>(namespace, name).await,
+            NamespacedResourceKind::CronJob => self.delete_single::<CronJob>(namespace, name).await,
+            NamespacedResourceKind::Service => self.delete_single::<Service>(namespace, name).await,
+            NamespacedResourceKind::ConfigMap => {
+                self.delete_single::<ConfigMap>(namespace, name).await
+            }
+            NamespacedResourceKind::Secret => self.delete_single::<Secret>(namespace, name).await,
+        }
+    }
+
+    async fn delete_single<T>(&self, namespace: &str, name: &str) -> Result<()>
+    where
+        T: Clone
+            + DeserializeOwned
+            + std::fmt::Debug
+            + Resource<DynamicType = (), Scope = NamespaceResourceScope>,
+    {
+        let api: kube::Api<T> = kube::Api::namespaced((*self.kube_client).clone(), namespace);
+        match api.delete(name, &DeleteParams::background()).await {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow!(
+                "failed to delete resource {name} in {namespace}: {err}"
+            )),
+        }
     }
 
     async fn delete_namespace(&self, namespace: &str) -> Result<()> {

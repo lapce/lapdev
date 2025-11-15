@@ -475,6 +475,11 @@ pub trait KubeManagerRpc {
 
     async fn destroy_environment(environment_id: Uuid, namespace: String) -> Result<(), String>;
 
+    async fn delete_namespaced_resources(
+        namespace: String,
+        resources: Vec<(NamespacedResourceKind, String)>,
+    ) -> Result<(), String>;
+
     async fn configure_watches(namespaces: Vec<String>) -> Result<(), String>;
 
     async fn add_namespace_watch(namespace: String) -> Result<(), String>;
@@ -593,6 +598,20 @@ pub struct BranchEnvironmentInfo {
     pub environment_id: Uuid,
     pub auth_token: String,
     pub namespace: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum NamespacedResourceKind {
+    Deployment,
+    StatefulSet,
+    DaemonSet,
+    ReplicaSet,
+    Pod,
+    Job,
+    CronJob,
+    Service,
+    ConfigMap,
+    Secret,
 }
 
 #[tarpc::service]

@@ -12,9 +12,9 @@ use lapdev_common::{
     kube::{
         CreateKubeClusterResponse, KubeAppCatalog, KubeAppCatalogWorkload,
         KubeAppCatalogWorkloadCreate, KubeCluster, KubeEnvironment,
-        KubeEnvironmentDashboardSummary, KubeEnvironmentWorkload, KubeNamespace, KubeNamespaceInfo,
-        KubeWorkload, KubeWorkloadKind, KubeWorkloadList, PagePaginationParams, PaginatedResult,
-        PaginationParams,
+        KubeEnvironmentDashboardSummary, KubeEnvironmentWorkload, KubeEnvironmentWorkloadDetail,
+        KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
+        PagePaginationParams, PaginatedResult, PaginationParams,
     },
     UserRole,
 };
@@ -907,14 +907,28 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn get_environment_workload_detail(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<KubeEnvironmentWorkloadDetail, HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .get_environment_workload_detail(org_id, user.id, environment_id, workload_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn update_environment_workload(
         &self,
         headers: &axum::http::HeaderMap,
         org_id: Uuid,
+        environment_id: Uuid,
         workload_id: Uuid,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
-    ) -> Result<(), HrpcError> {
-        // Get the workload and environment to determine required role
+    ) -> Result<Uuid, HrpcError> {
         let workload = self
             .db
             .get_environment_workload(workload_id)
@@ -924,9 +938,9 @@ impl HrpcService for CoreState {
                 HrpcError::from(ApiError::InvalidRequest("Workload not found".to_string()))
             })?;
 
-        let environment = self
+        let target_environment = self
             .db
-            .get_kube_environment(workload.environment_id)
+            .get_kube_environment(environment_id)
             .await
             .map_err(|e| HrpcError::from(ApiError::from(e)))?
             .ok_or_else(|| {
@@ -935,16 +949,36 @@ impl HrpcService for CoreState {
                 ))
             })?;
 
+        // Ensure the workload belongs to this environment or its base
+        if workload.environment_id != target_environment.id {
+            let base_env = target_environment.base_environment_id.ok_or_else(|| {
+                HrpcError::from(ApiError::InvalidRequest(
+                    "Workload does not belong to the target environment".to_string(),
+                ))
+            })?;
+            if workload.environment_id != base_env {
+                return Err(HrpcError::from(ApiError::InvalidRequest(
+                    "Workload does not belong to the target environment".to_string(),
+                )));
+            }
+        }
+
         // Determine required role based on environment type
-        let required_role = if environment.is_shared {
-            Some(UserRole::Admin) // Shared environments require admin
+        let required_role = if target_environment.is_shared {
+            Some(UserRole::Admin)
         } else {
-            None // Personal/branch environments allow any authenticated user (owner check in controller)
+            None
         };
 
         let user = self.authorize(headers, org_id, required_role).await?;
         self.kube_controller
-            .update_environment_workload(org_id, user.id, workload_id, containers, environment)
+            .update_environment_workload(
+                org_id,
+                user.id,
+                workload_id,
+                containers,
+                target_environment,
+            )
             .await
             .map_err(HrpcError::from)
     }

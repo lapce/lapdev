@@ -1369,6 +1369,9 @@ pub fn EnvironmentWorkloadsContent(
                     <Table>
                         <TableHeader class="bg-muted">
                             <TableRow>
+                                <TableHead class="w-0">
+                                    <span class="sr-only">Branch</span>
+                                </TableHead>
                                 <TableHead>Name</TableHead>
                                 <TableHead>Kind</TableHead>
                                 <TableHead>Ready</TableHead>
@@ -1476,6 +1479,10 @@ pub fn EnvironmentWorkloadItem(
     let workload_containers = workload.containers.clone();
     let workload_ports = workload.ports.clone();
     let workload_catalog_version = workload.catalog_sync_version;
+    let is_branch_workload = workload
+        .base_workload_id
+        .map(|base_id| base_id != workload_id)
+        .unwrap_or(false);
     let row_class = Signal::derive(move || {
         if env_catalog_version.get() < workload_catalog_version {
             "bg-amber-50/70 dark:bg-amber-900/20 border-l-4 border-amber-500".to_string()
@@ -1538,6 +1545,13 @@ pub fn EnvironmentWorkloadItem(
     view! {
         <>
             <TableRow class=row_class>
+                <TableCell class="w-0">
+                    {if is_branch_workload {
+                        view! { <lucide_leptos::GitBranch attr:class="h-4 w-4 text-muted-foreground" /> }.into_any()
+                    } else {
+                        view! { <></> }.into_any()
+                    }}
+                </TableCell>
                 <TableCell>
                     <a href=format!("/kubernetes/environments/{}/workloads/{}", environment_id, workload.id)>
                         <Button variant=ButtonVariant::Link class="p-0">

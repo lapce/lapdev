@@ -402,6 +402,12 @@ pub struct KubeEnvironment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubeEnvironmentWorkloadDetail {
+    pub environment: KubeEnvironment,
+    pub workload: KubeEnvironmentWorkload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubeServicePort {
     pub name: Option<String>,
     pub port: i32,

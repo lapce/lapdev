@@ -87,7 +87,7 @@ async fn update_workload_containers(
     workload_id: Uuid,
     containers: Vec<KubeContainerInfo>,
     update_counter: RwSignal<usize>,
-) -> Result<(), ErrorResponse> {
+) -> Result<Uuid, ErrorResponse> {
     let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
     let client = HrpcServiceClient::new("/api/rpc".to_string());
 
@@ -97,7 +97,7 @@ async fn update_workload_containers(
 
     update_counter.update(|c| *c += 1);
 
-    Ok(())
+    Ok(workload_id)
 }
 
 async fn delete_workload(

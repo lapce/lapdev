@@ -3084,6 +3084,49 @@ impl DbApi {
         Ok(result)
     }
 
+    pub async fn get_branch_workload_override(
+        &self,
+        base_workload_id: Uuid,
+        branch_environment_id: Uuid,
+    ) -> Result<Option<KubeEnvironmentWorkload>> {
+        let workload = lapdev_db_entities::kube_environment_workload::Entity::find()
+            .filter(
+                lapdev_db_entities::kube_environment_workload::Column::BaseWorkloadId
+                    .eq(base_workload_id),
+            )
+            .filter(
+                lapdev_db_entities::kube_environment_workload::Column::EnvironmentId
+                    .eq(branch_environment_id),
+            )
+            .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
+            .one(&self.conn)
+            .await?;
+
+        if let Some(workload) = workload {
+            let containers: Vec<KubeContainerInfo> =
+                serde_json::from_value(workload.containers.clone()).unwrap_or_default();
+            let ports: Vec<lapdev_common::kube::KubeServicePort> =
+                serde_json::from_value(workload.ports.clone()).unwrap_or_default();
+
+            Ok(Some(KubeEnvironmentWorkload {
+                id: workload.id,
+                created_at: workload.created_at,
+                environment_id: workload.environment_id,
+                base_workload_id: workload.base_workload_id,
+                name: workload.name,
+                namespace: workload.namespace,
+                kind: workload.kind,
+                containers,
+                ports,
+                workload_yaml: workload.workload_yaml,
+                catalog_sync_version: workload.catalog_sync_version,
+                ready_replicas: workload.ready_replicas,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub async fn delete_environment_workload(&self, workload_id: Uuid) -> Result<()> {
         let timestamp = Utc::now().into();
 
@@ -3138,6 +3181,92 @@ impl DbApi {
         }
 
         Ok(updated_model)
+    }
+
+    pub async fn insert_environment_workload(
+        &self,
+        environment_id: Uuid,
+        workload: NewEnvironmentWorkload,
+        catalog_sync_version: i64,
+    ) -> Result<lapdev_db_entities::kube_environment_workload::Model, sea_orm::DbErr> {
+        let created_at = Utc::now().into();
+        let NewEnvironmentWorkload { id, details } = workload;
+        let KubeWorkloadDetails {
+            name,
+            namespace,
+            kind,
+            containers,
+            ports,
+            workload_yaml,
+            base_workload_id,
+        } = details;
+
+        let containers_json = serde_json::to_value(&containers)
+            .map(Json::from)
+            .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+        let ports_json = serde_json::to_value(&ports)
+            .map(Json::from)
+            .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+
+        let labels = labels_from_workload_yaml(&kind, &workload_yaml);
+
+        let model = lapdev_db_entities::kube_environment_workload::ActiveModel {
+            id: ActiveValue::Set(id),
+            created_at: ActiveValue::Set(created_at),
+            deleted_at: ActiveValue::Set(None),
+            environment_id: ActiveValue::Set(environment_id),
+            base_workload_id: ActiveValue::Set(base_workload_id.or(Some(id))),
+            name: ActiveValue::Set(name),
+            namespace: ActiveValue::Set(namespace),
+            kind: ActiveValue::Set(kind.to_string()),
+            containers: ActiveValue::Set(containers_json),
+            ports: ActiveValue::Set(ports_json),
+            workload_yaml: ActiveValue::Set(workload_yaml.clone()),
+            catalog_sync_version: ActiveValue::Set(catalog_sync_version),
+            ready_replicas: ActiveValue::Set(None),
+        }
+        .insert(&self.conn)
+        .await?;
+
+        replace_environment_workload_labels_with_conn(
+            &self.conn,
+            id,
+            environment_id,
+            &labels,
+            created_at,
+        )
+        .await?;
+
+        Ok(model)
+    }
+
+    pub async fn insert_environment_service(
+        &self,
+        environment_id: Uuid,
+        namespace: &str,
+        service: lapdev_common::kube::KubeServiceWithYaml,
+    ) -> Result<lapdev_db_entities::kube_environment_service::Model, sea_orm::DbErr> {
+        let created_at = Utc::now().into();
+        let ports_json = serde_json::to_value(&service.details.ports)
+            .map(Json::from)
+            .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+        let selector_json = serde_json::to_value(&service.details.selector)
+            .map(Json::from)
+            .unwrap_or_else(|_| Json::from(serde_json::json!({})));
+
+        lapdev_db_entities::kube_environment_service::ActiveModel {
+            id: ActiveValue::Set(Uuid::new_v4()),
+            created_at: ActiveValue::Set(created_at),
+            deleted_at: ActiveValue::Set(None),
+            environment_id: ActiveValue::Set(environment_id),
+            name: ActiveValue::Set(service.details.name.clone()),
+            namespace: ActiveValue::Set(namespace.to_string()),
+            yaml: ActiveValue::Set(service.yaml),
+            ports: ActiveValue::Set(ports_json),
+            selector: ActiveValue::Set(selector_json),
+        }
+        .insert(&self.conn)
+        .await
     }
 
     /// Creates a kube environment and its associated workloads within a single database transaction.

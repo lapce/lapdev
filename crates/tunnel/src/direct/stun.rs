@@ -268,6 +268,7 @@ pub(super) fn start_stun_keepalive(
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => {
+                        info!("shutdown stun keepalive");
                         break;
                     }
                     _ = ticker.tick() => {

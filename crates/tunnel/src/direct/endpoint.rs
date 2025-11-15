@@ -198,6 +198,7 @@ impl DirectEndpoint {
     /// Send a STUN-like UDP probe to the provided address to prime NAT state.
     pub async fn send_probe(&self, addr: SocketAddr, client: bool) -> Result<(), TunnelError> {
         let mut probes_sent = 0usize;
+        let source_addr = self.observed_addr();
         loop {
             let payload = if client {
                 probe::build_request_probe_payload()
@@ -209,7 +210,7 @@ impl DirectEndpoint {
                 .await
                 .map(|_| ())
                 .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
-            tracing::info!("Sending hole-punch probe to {addr}");
+            tracing::info!("Sending hole-punch probe from {source_addr:?} to {addr}");
             probes_sent += 1;
             if probes_sent >= MAX_PROBES {
                 break;

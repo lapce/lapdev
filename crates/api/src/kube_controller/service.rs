@@ -1,7 +1,6 @@
 use uuid::Uuid;
 
 use lapdev_rpc::error::ApiError;
-use std::collections::HashSet;
 
 use super::KubeController;
 
@@ -30,42 +29,39 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
-        let mut services = self
+        if let Some(base_environment_id) = environment.base_environment_id {
+            // Branch environments inherit service definitions from their base environment.
+            // We return the base services but rewrite the environment_id so downstream callers
+            // keep treating them as belonging to the branch (important for preview URLs).
+            let base_environment = self
+                .db
+                .get_kube_environment(base_environment_id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::InvalidRequest("Base environment not found".to_string()))?;
+
+            if base_environment.organization_id != org_id {
+                return Err(ApiError::Unauthorized);
+            }
+
+            let mut base_services = self
+                .db
+                .get_environment_services(base_environment_id)
+                .await
+                .map_err(ApiError::from)?;
+            for service in &mut base_services {
+                service.environment_id = environment.id;
+            }
+
+            return Ok(base_services);
+        }
+
+        let services = self
             .db
             .get_environment_services(environment_id)
             .await
             .map_err(ApiError::from)?;
 
-        if let Some(base_environment_id) = environment.base_environment_id {
-            let base_services = self
-                .db
-                .get_environment_services(base_environment_id)
-                .await
-                .map_err(ApiError::from)?;
-            let mut existing: HashSet<String> = HashSet::new();
-            for service in &services {
-                existing.insert(service.name.clone());
-                existing.insert(normalize_service_name(&service.name, environment.id));
-            }
-
-            for mut base_service in base_services {
-                if existing.contains(&base_service.name) {
-                    continue;
-                }
-                base_service.environment_id = environment.id;
-                services.push(base_service);
-            }
-        }
-
         Ok(services)
-    }
-}
-
-fn normalize_service_name(name: &str, branch_environment_id: Uuid) -> String {
-    let suffix = format!("-{}", branch_environment_id);
-    if name.ends_with(&suffix) {
-        name[..name.len() - suffix.len()].to_string()
-    } else {
-        name.to_string()
     }
 }

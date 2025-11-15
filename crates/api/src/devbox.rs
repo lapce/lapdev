@@ -680,13 +680,6 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             .map_err(|e| format!("Failed to fetch session: {}", e))?
             .and_then(|session| session.active_environment_id);
 
-        self.state
-            .db
-            .update_devbox_session_active_environment(self.user_id, Some(environment_id))
-            .await
-            .map_err(|e| format!("Failed to update active environment: {}", e))?;
-
-        // Fetch environment details to notify client
         let environment = self
             .state
             .db
@@ -694,6 +687,16 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
             .await
             .map_err(|e| format!("Failed to fetch environment: {}", e))?
             .ok_or_else(|| "Environment not found".to_string())?;
+
+        if environment.is_shared {
+            return Err("Shared environments cannot be used as active devbox environments".into());
+        }
+
+        self.state
+            .db
+            .update_devbox_session_active_environment(self.user_id, Some(environment_id))
+            .await
+            .map_err(|e| format!("Failed to update active environment: {}", e))?;
 
         let cluster = self
             .state

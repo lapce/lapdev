@@ -30,7 +30,7 @@ impl KubeController {
             return Err(ApiError::Unauthorized);
         }
 
-        // Verify service exists and belongs to the environment
+        // Verify service exists and belongs to the environment (or its base environment)
         let service = self
             .db
             .get_kube_environment_service_by_id(request.service_id)
@@ -38,8 +38,14 @@ impl KubeController {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::InvalidRequest("Service not found".to_string()))?;
 
-        // Verify service belongs to the environment
-        if service.environment_id != environment_id {
+        if let Some(base_environment_id) = environment.base_environment_id {
+            // Branch environment: service must belong to the base environment
+            if service.environment_id != base_environment_id {
+                return Err(ApiError::InvalidRequest(
+                    "Service not found in base environment".to_string(),
+                ));
+            }
+        } else if service.environment_id != environment_id {
             return Err(ApiError::InvalidRequest(
                 "Service not found in environment".to_string(),
             ));

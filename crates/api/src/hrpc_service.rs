@@ -162,6 +162,12 @@ impl HrpcService for CoreState {
             .map_err(hrpc_from_db_err)?
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
+        if environment.is_shared {
+            return Err(hrpc_error(
+                "Shared environments cannot be used as active devbox environments",
+            ));
+        }
+
         self.ensure_environment_access(&ctx.user, &environment)
             .await?;
 

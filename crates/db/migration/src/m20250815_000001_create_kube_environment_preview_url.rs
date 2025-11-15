@@ -150,6 +150,7 @@ impl MigrationTrait for Migration {
                 Index::create()
                     .name("kube_environment_preview_url_service_port_unique_idx")
                     .table(KubeEnvironmentPreviewUrl::Table)
+                    .col(KubeEnvironmentPreviewUrl::EnvironmentId)
                     .col(KubeEnvironmentPreviewUrl::ServiceId)
                     .col(KubeEnvironmentPreviewUrl::Port)
                     .col(KubeEnvironmentPreviewUrl::DeletedAt)

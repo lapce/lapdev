@@ -109,7 +109,12 @@ impl PreviewUrlResolver {
             .await?
             .ok_or(PreviewUrlError::ServiceNotFound)?;
 
-        if service.environment_id != environment.id || service.name != info.service_name {
+        let expected_service_environment_id =
+            environment.base_environment_id.unwrap_or(environment.id);
+
+        if service.environment_id != expected_service_environment_id
+            || service.name != info.service_name
+        {
             return Err(PreviewUrlError::ServiceNotFound);
         }
 

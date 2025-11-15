@@ -268,11 +268,9 @@ pub(super) fn start_stun_keepalive(
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => {
-                        info!("shutdown stun keepalive");
                         break;
                     }
                     _ = ticker.tick() => {
-                        info!("sending stun keepalive");
                         for server in &servers {
                             match send_async_stun_binding_request(Arc::clone(&socket), *server, timeout).await {
                                 Ok(Some(addr)) => {
@@ -288,7 +286,6 @@ pub(super) fn start_stun_keepalive(
                                 }
                             }
                         }
-                        info!("finish one round of sending stun keepalive");
                     }
                 }
             }
@@ -321,6 +318,7 @@ pub(super) struct StunKeepaliveHandle {
 
 impl StunKeepaliveHandle {
     pub(super) fn stop(mut self) {
+        info!("StunKeepaliveHandle stop");
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }

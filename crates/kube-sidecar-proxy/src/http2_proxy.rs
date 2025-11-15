@@ -314,7 +314,6 @@ async fn establish_upstream_connection(
                 Ok(res) => spawn_upstream_driver(res, plan),
                 Err(err) => {
                     warn!("HTTP/2 handshake with {} failed: {}", label, err);
-                    connection.clear_client().await;
                     Err(map_h2_err(err))
                 }
             },
@@ -323,7 +322,6 @@ async fn establish_upstream_connection(
                     "Failed to connect to {} target_port={}: {}",
                     label, target_port, err
                 );
-                connection.clear_client().await;
                 Err(err)
             }
         },

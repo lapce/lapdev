@@ -1764,7 +1764,7 @@ impl KubeManager {
             tokio::spawn(async move {
                 match direct_endpoint.send_probe(addr, false).await {
                     Ok(()) => {
-                        tracing::info!(
+                        tracing::debug!(
                             %addr,
                             "Sent hole-punch probe to devbox client before issuing config"
                         )

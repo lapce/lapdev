@@ -25,7 +25,7 @@ const DIRECT_SERVER_NAME: &str = "lapdev.devbox";
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_STUN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const MAX_PROBES: usize = 6;
-const PROBE_INTERVAL_MS: u64 = 200;
+const PROBE_INTERVAL_MS: u64 = 500;
 
 /// Options controlling direct QUIC server behavior.
 #[derive(Debug, Clone)]
@@ -209,6 +209,7 @@ impl DirectEndpoint {
                 .await
                 .map(|_| ())
                 .map_err(|err| TunnelError::Transport(io::Error::other(err)))?;
+            tracing::info!("Sending hole-punch probe to {addr}");
             probes_sent += 1;
             if probes_sent >= MAX_PROBES {
                 break;
@@ -249,9 +250,9 @@ impl DirectEndpoint {
             .ok_or_else(|| TunnelError::Remote("direct server STUN address unavailable".into()))?;
 
         {
-            // let endpoint = self.clone();
+            let endpoint = self.clone();
             // tokio::spawn(async move {
-            // let _ = endpoint.send_probe(target_addr, true).await;
+            let _ = endpoint.send_probe(target_addr, true).await;
             // });
         }
 

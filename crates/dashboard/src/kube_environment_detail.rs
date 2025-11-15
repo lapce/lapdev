@@ -1944,7 +1944,7 @@ pub fn EnvironmentServiceItem(
                                         .find(|url| url.service_id == service_id && url.port == port_number)
                                 });
                                 view! {
-                                    <div class="flex flex-row gap-2">
+                                    <div class="flex flex-row items-center gap-2">
                                         <Badge variant=BadgeVariant::Outline class="text-xs w-fit">
                                             {port_text.clone()}
                                         </Badge>
@@ -1960,7 +1960,7 @@ pub fn EnvironmentServiceItem(
                                                         href=preview.url.clone()
                                                         target="_blank"
                                                         rel="noopener noreferrer"
-                                                        class="text-primary inline-flex items-center gap-1"
+                                                        class="text-primary text-xs inline-flex items-center gap-1"
                                                     >
                                                         <Button variant=ButtonVariant::Link>
                                                             <span class="text-xs">{preview_url}</span>

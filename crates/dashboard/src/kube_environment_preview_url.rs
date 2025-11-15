@@ -59,6 +59,7 @@ pub fn PreviewUrlsContent(
                             <TableHeader class="bg-muted">
                                 <TableRow>
                                     <TableHead class="px-4">"URL"</TableHead>
+                                    <TableHead>"Description"</TableHead>
                                     <TableHead>"Service"</TableHead>
                                     <TableHead>"Port"</TableHead>
                                     <TableHead>"Access"</TableHead>
@@ -192,6 +193,14 @@ fn PreviewUrlRow(
                     <lucide_leptos::ExternalLink />
                     </Button>
                 </a>
+            </TableCell>
+            <TableCell>
+                {preview_url_for_view
+                    .description
+                    .clone()
+                    .filter(|desc| !desc.trim().is_empty())
+                    .map(|desc| desc)
+                    .unwrap_or_else(|| "No description".to_string())}
             </TableCell>
             <TableCell>{service_name}</TableCell>
             <TableCell>

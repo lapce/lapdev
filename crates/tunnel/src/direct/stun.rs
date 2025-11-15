@@ -246,7 +246,7 @@ fn parse_xor_mapped_address(value: &[u8], transaction_id: &[u8; 12]) -> Option<S
 pub(super) fn default_stun_servers() -> Vec<SocketAddr> {
     DEFAULT_STUN_ENDPOINTS
         .iter()
-        .filter_map(|endpoint| endpoint.to_socket_addrs().ok()?.next())
+        .filter_map(|endpoint| endpoint.to_socket_addrs().ok()?.find(|a| a.is_ipv4()))
         .collect()
 }
 

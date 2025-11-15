@@ -12,8 +12,8 @@ use lapdev_common::{
     },
     kube::{
         EnvironmentWorkloadStatusEvent, KubeCluster, KubeContainerInfo, KubeEnvironment,
-        KubeEnvironmentService, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
-        KubeEnvironmentWorkload,
+        KubeEnvironmentPreviewUrl, KubeEnvironmentService, KubeEnvironmentStatus,
+        KubeEnvironmentSyncStatus, KubeEnvironmentWorkload,
     },
 };
 use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
@@ -1277,8 +1277,14 @@ pub fn EnvironmentResourcesTabs(
     environment_catalog_version: Signal<i64>,
     readiness_map: RwSignal<HashMap<Uuid, Option<i32>>>,
 ) -> impl IntoView {
+    let active_tab = RwSignal::new(ResourceTab::Workloads);
+    let focus_preview_tab = Callback::new({
+        let active_tab = active_tab.clone();
+        move |_| active_tab.set(ResourceTab::PreviewUrls)
+    });
+
     view! {
-        <Tabs default_value=RwSignal::new(ResourceTab::Workloads) class="gap-4">
+        <Tabs default_value=active_tab class="gap-4">
             <TabsList>
                 <TabsTrigger value=ResourceTab::Workloads>
                     "Workloads"
@@ -1320,6 +1326,8 @@ pub fn EnvironmentResourcesTabs(
                     environment_id
                     all_services
                     update_counter
+                    focus_preview_tab=focus_preview_tab.clone()
+                    preview_urls=all_preview_urls.clone()
                 />
             </TabsContent>
 
@@ -1329,6 +1337,7 @@ pub fn EnvironmentResourcesTabs(
                     services=all_services
                     preview_urls=all_preview_urls
                     update_counter
+                    focus_preview_tab=focus_preview_tab.clone()
                 />
             </TabsContent>
         </Tabs>
@@ -1834,6 +1843,8 @@ pub fn EnvironmentServicesContent(
     environment_id: Uuid,
     all_services: Signal<Vec<KubeEnvironmentService>>,
     update_counter: RwSignal<usize>,
+    focus_preview_tab: Callback<()>,
+    preview_urls: Signal<Vec<KubeEnvironmentPreviewUrl>>,
 ) -> impl IntoView {
     view! {
                 // Services table
@@ -1856,8 +1867,9 @@ pub fn EnvironmentServicesContent(
                                         <EnvironmentServiceItem
                                             environment_id
                                             service=service.clone()
-                                            all_services
                                             update_counter
+                                            focus_preview_tab=focus_preview_tab.clone()
+                                            preview_urls=preview_urls.clone()
                                         />
                                     }
                                 }
@@ -1893,8 +1905,9 @@ pub fn EnvironmentServicesContent(
 pub fn EnvironmentServiceItem(
     environment_id: Uuid,
     service: KubeEnvironmentService,
-    all_services: Signal<Vec<KubeEnvironmentService>>,
     update_counter: RwSignal<usize>,
+    focus_preview_tab: Callback<()>,
+    preview_urls: Signal<Vec<KubeEnvironmentPreviewUrl>>,
 ) -> impl IntoView {
     let create_preview_url_modal_open = RwSignal::new(false);
     let ports = service.ports.clone();
@@ -1912,19 +1925,56 @@ pub fn EnvironmentServiceItem(
                     {if ports.is_empty() {
                         view! { <span class="text-muted-foreground">"No ports"</span> }.into_any()
                     } else {
-                        ports.into_iter().map(|port| {
-                            let target_port = port
-                                .original_target_port
-                                .map(|tp| format!(":{tp}"))
-                                .unwrap_or_default();
-                            let protocol = port.protocol.as_deref().unwrap_or("TCP");
-                            let port_text = format!("{}{} ({protocol})", port.port, target_port);
-                            view! {
-                                <Badge variant=BadgeVariant::Outline class="text-xs">
-                                    {port_text}
-                                </Badge>
-                            }
-                        }).collect::<Vec<_>>().into_any()
+                        ports
+                            .into_iter()
+                            .map(|port| {
+                                let target_port = port
+                                    .original_target_port
+                                    .map(|tp| format!(":{tp}"))
+                                    .unwrap_or_default();
+                                let protocol = port.protocol.as_deref().unwrap_or("TCP");
+                                let port_text = format!("{}{} ({protocol})", port.port, target_port);
+                                let port_number = port.port;
+                                let service_id = service.id;
+                                let preview_urls = preview_urls.clone();
+                                let preview_for_port = Signal::derive(move || {
+                                    preview_urls
+                                        .get()
+                                        .into_iter()
+                                        .find(|url| url.service_id == service_id && url.port == port_number)
+                                });
+                                view! {
+                                    <div class="flex flex-row gap-2">
+                                        <Badge variant=BadgeVariant::Outline class="text-xs w-fit">
+                                            {port_text.clone()}
+                                        </Badge>
+                                        <Show
+                                            when=move || preview_for_port.get().is_some()
+                                            fallback=|| view! { <></> }
+                                        >
+                                            {move || {
+                                                let preview = preview_for_port.get().unwrap();
+                                                let preview_url = preview.url.clone();
+                                                view! {
+                                                    <a
+                                                        href=preview.url.clone()
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        class="text-primary inline-flex items-center gap-1"
+                                                    >
+                                                        <Button variant=ButtonVariant::Link>
+                                                            <span class="text-xs">{preview_url}</span>
+                                                            <lucide_leptos::ExternalLink attr:class="h-3 w-3" />
+                                                        </Button>
+                                                    </a>
+                                                }
+                                            }}
+                                        </Show>
+                                    </div>
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .into_any()
                     }}
                 </div>
             </TableCell>
@@ -1961,6 +2011,7 @@ pub fn EnvironmentServiceItem(
                     environment_id
                     service=service_for_modal.clone()
                     update_counter
+                    on_created=focus_preview_tab.clone()
                 />
             </TableCell>
         </TableRow>

@@ -31,6 +31,7 @@ pub fn PreviewUrlsContent(
     services: Signal<Vec<KubeEnvironmentService>>,
     preview_urls: Signal<Vec<KubeEnvironmentPreviewUrl>>,
     update_counter: RwSignal<usize>,
+    focus_preview_tab: Callback<()>,
 ) -> impl IntoView {
     let create_modal_open = RwSignal::new(false);
     let edit_modal_open = RwSignal::new(false);
@@ -121,6 +122,7 @@ pub fn PreviewUrlsContent(
                             environment_id=environment_id
                             service=services_list[0].clone()
                             update_counter=update_counter
+                            on_created=focus_preview_tab.clone()
                         />
                     }.into_any()
                 } else {
@@ -251,6 +253,7 @@ pub fn CreatePreviewUrlModal(
     environment_id: Uuid,
     service: KubeEnvironmentService,
     update_counter: RwSignal<usize>,
+    on_created: Callback<()>,
 ) -> impl IntoView {
     let org = get_current_org();
 
@@ -284,28 +287,32 @@ pub fn CreatePreviewUrlModal(
         }
     });
 
-    let create_action = Action::new_local(move |_| async move {
-        let port = selected_port
-            .get()
-            .ok_or_else(|| anyhow!("Please select a port"))?;
+    let create_action = Action::new_local(move |_| {
+        let on_created = on_created.clone();
+        async move {
+            let port = selected_port
+                .get()
+                .ok_or_else(|| anyhow!("Please select a port"))?;
 
-        let request = CreateKubeEnvironmentPreviewUrlRequest {
-            description: if description.get().trim().is_empty() {
-                None
-            } else {
-                Some(description.get())
-            },
-            service_id: service.id,
-            port,
-            port_name: selected_port_name.get(),
-            protocol: Some("HTTP".to_string()),
-            access_level: Some(access_level.get_untracked()),
-        };
+            let request = CreateKubeEnvironmentPreviewUrlRequest {
+                description: if description.get().trim().is_empty() {
+                    None
+                } else {
+                    Some(description.get())
+                },
+                service_id: service.id,
+                port,
+                port_name: selected_port_name.get(),
+                protocol: Some("HTTP".to_string()),
+                access_level: Some(access_level.get_untracked()),
+            };
 
-        create_environment_preview_url(org, environment_id, request).await?;
-        open.set(false);
-        update_counter.update(|c| *c += 1);
-        Ok(())
+            create_environment_preview_url(org, environment_id, request).await?;
+            open.set(false);
+            update_counter.update(|c| *c += 1);
+            on_created.run(());
+            Ok(())
+        }
     });
 
     view! {

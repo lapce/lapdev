@@ -136,12 +136,13 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Unique index for port within service (prevent duplicate ports per service)
+        // Unique index for port within environment/service tuple
         manager
             .create_index(
                 Index::create()
                     .name("kube_environment_preview_url_service_port_unique_idx")
                     .table(KubeEnvironmentPreviewUrl::Table)
+                    .col(KubeEnvironmentPreviewUrl::EnvironmentId)
                     .col(KubeEnvironmentPreviewUrl::ServiceId)
                     .col(KubeEnvironmentPreviewUrl::Port)
                     .col(KubeEnvironmentPreviewUrl::DeletedAt)

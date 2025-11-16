@@ -668,7 +668,7 @@ async fn handle_http_proxy(
                 );
 
                 let shutdown_rx = connection_registry.subscribe(branch_id).await;
-                if let Err(err) = proxy_branch_stream(
+                match proxy_branch_stream(
                     &mut inbound_stream,
                     service_name,
                     service_port,
@@ -677,21 +677,30 @@ async fn handle_http_proxy(
                 )
                 .await
                 {
-                    if is_route_update_error(&err) {
+                    Ok(()) => return Ok(()),
+                    Err(err) => {
+                        if is_route_update_error(&err) {
+                            return Err(err);
+                        }
+                        warn!(
+                            "Branch route {} for env {:?} failed: {}; returning error",
+                            service_name, branch_id, err
+                        );
                         return Err(err);
                     }
-                    warn!(
-                        "Branch route {} for env {:?} failed: {}; falling back to shared target",
-                        service_name, branch_id, err
-                    );
-                } else {
-                    return Ok(());
                 }
             } else {
                 warn!(
-                    "Missing branch service mapping for port {} in env {:?}; falling back to shared target",
+                    "Missing branch service mapping for port {} in env {:?}",
                     service_port, branch_id
                 );
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "missing branch service mapping for port {} in env {:?}",
+                        service_port, branch_id
+                    ),
+                ));
             }
         }
         RouteDecision::BranchDevbox {

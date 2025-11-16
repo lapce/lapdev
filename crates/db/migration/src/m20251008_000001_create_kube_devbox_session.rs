@@ -95,28 +95,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create index for active environment lookups
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_session_active_environment_idx")
-                    .table(KubeDevboxSession::Table)
-                    .col(KubeDevboxSession::ActiveEnvironmentId)
-                    .to_owned(),
-            )
-            .await?;
-
-        // Create index for expires_at to support cleanup jobs
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_session_expires_at_idx")
-                    .table(KubeDevboxSession::Table)
-                    .col(KubeDevboxSession::ExpiresAt)
-                    .to_owned(),
-            )
-            .await?;
-
         // Create composite index for active sessions by user
         manager
             .create_index(

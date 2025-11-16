@@ -49,7 +49,7 @@ pub fn KubeResource() -> impl IntoView {
             <div class="flex flex-col gap-2 items-start">
                 <H3>Kubernetes Resources</H3>
                 <P>
-                    View and manage workloads, services, and configurations in your Kubernetes clusters.
+                    {"Use this page to see every workload currently running in the connected cluster and turn those production manifests into new App Catalogs."}
                 </P>
                 <a href=docs_url(DOCS_CLUSTER_PATH) target="_blank" rel="noopener noreferrer">
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>

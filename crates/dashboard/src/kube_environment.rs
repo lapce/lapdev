@@ -59,9 +59,7 @@ pub fn KubeEnvironment() -> impl IntoView {
         EnvironmentType::Shared => {
             "View and manage shared Kubernetes development environments accessible to your team."
         }
-        EnvironmentType::Branch => {
-            "View and manage branch-based Kubernetes development environments."
-        }
+        EnvironmentType::Branch => "View and manage branch Kubernetes development environments.",
     };
 
     view! {

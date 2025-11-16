@@ -36,7 +36,9 @@ pub fn KubeCluster() -> impl IntoView {
         <div class="flex flex-col gap-6">
             <div class="flex flex-col gap-2 items-start">
                 <H3>Kubernetes Clusters</H3>
-                <P>View and manage your Kubernetes clusters discovered from your configured providers.</P>
+                <P>
+                    {"Clusters are Lapdev’s bridge into your infrastructure. Connect them here, check their health, and decide which ones supply App Catalog manifests or host development environments."}
+                </P>
                 <a href=docs_url(DOCS_CLUSTER_PATH) target="_blank" rel="noopener noreferrer">
                     <Badge variant=BadgeVariant::Secondary>Docs <lucide_leptos::ExternalLink /></Badge>
                 </a>

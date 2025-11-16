@@ -632,12 +632,29 @@ impl DevboxTunnelManager {
                     if intercept.device_name != session_info.device_name {
                         continue;
                     }
+                    let port_details = if intercept.port_mappings.is_empty() {
+                        "no port mappings".to_string()
+                    } else {
+                        intercept
+                            .port_mappings
+                            .iter()
+                            .map(|mapping| {
+                                format!(
+                                    "{} {} -> localhost:{}",
+                                    mapping.protocol.to_uppercase(),
+                                    mapping.workload_port,
+                                    mapping.local_port
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
                     println!(
-                        "  {} Intercept active for {}/{} ({} port(s))",
+                        "  {} Intercept active for {}/{} ({})",
                         "↻".green(),
                         intercept.namespace.bright_white(),
                         intercept.workload_name.cyan(),
-                        intercept.port_mappings.len()
+                        port_details
                     );
                 }
             }

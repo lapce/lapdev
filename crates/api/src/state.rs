@@ -483,11 +483,18 @@ impl CoreState {
         let base = self.websocket_base_url().await;
         let base_trimmed = base.trim_end_matches('/').to_string();
 
-        match Self::build_devbox_route_config_from_intercept(
-            base_trimmed.as_str(),
-            &environment,
-            &intercept,
-        ) {
+        match self
+            .route_workload_id_for_intercept(&intercept)
+            .await
+            .and_then(|route_workload_id| {
+                Self::build_devbox_route_config_from_intercept(
+                    base_trimmed.as_str(),
+                    &environment,
+                    &intercept,
+                    route_workload_id,
+                )
+            })
+        {
             Ok(route) => {
                 let (target_environment_id, _) = Self::route_environment_targets(&environment);
                 if let Err(err) = self
@@ -523,12 +530,29 @@ impl CoreState {
         let (target_environment_id, branch_environment_id) =
             Self::route_environment_targets(&environment);
 
+        let route_workload_id = match self
+            .route_workload_id_for_intercept(&intercept)
+            .await
+        {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!(
+                    environment_id = %environment.id,
+                    intercept_id = %intercept.id,
+                    workload_id = %intercept.workload_id,
+                    error = %err,
+                    "Failed to resolve workload for devbox route removal"
+                );
+                return;
+            }
+        };
+
         if let Err(err) = self
             .kube_controller
             .remove_devbox_route(
                 environment.cluster_id,
                 target_environment_id,
-                intercept.workload_id,
+                route_workload_id,
                 branch_environment_id,
             )
             .await
@@ -611,13 +635,18 @@ impl CoreState {
                 continue;
             }
 
+            let route_workload_id = self
+                .route_workload_id_for_intercept(&intercept)
+                .await?;
+
             let route = Self::build_devbox_route_config_from_intercept(
                 base_trimmed,
                 &environment,
                 &intercept,
+                route_workload_id,
             )?;
 
-            routes.insert(intercept.workload_id, route);
+            routes.insert(route_workload_id, route);
         }
 
         Ok((
@@ -631,6 +660,7 @@ impl CoreState {
         base_trimmed: &str,
         environment: &lapdev_db_entities::kube_environment::Model,
         intercept: &lapdev_db_entities::kube_devbox_workload_intercept::Model,
+        route_workload_id: Uuid,
     ) -> Result<DevboxRouteConfig, String> {
         let port_mappings = Self::intercept_port_map(intercept)?;
         let websocket_url = format!(
@@ -640,7 +670,7 @@ impl CoreState {
 
         Ok(DevboxRouteConfig {
             intercept_id: intercept.id,
-            workload_id: intercept.workload_id,
+            workload_id: route_workload_id,
             auth_token: environment.auth_token.clone(),
             websocket_url,
             path_pattern: "/*".to_string(),
@@ -668,6 +698,30 @@ impl CoreState {
         }
 
         Ok(port_map)
+    }
+
+    async fn route_workload_id_for_intercept(
+        &self,
+        intercept: &lapdev_db_entities::kube_devbox_workload_intercept::Model,
+    ) -> Result<Uuid, String> {
+        let workload = self
+            .db
+            .get_environment_workload(intercept.workload_id)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to load workload {} for intercept {}: {e}",
+                    intercept.workload_id, intercept.id
+                )
+            })?
+            .ok_or_else(|| {
+                format!(
+                    "Workload {} not found for intercept {}",
+                    intercept.workload_id, intercept.id
+                )
+            })?;
+
+        Ok(workload.base_workload_id.unwrap_or(workload.id))
     }
 
     fn route_environment_targets(

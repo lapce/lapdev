@@ -1,6 +1,6 @@
 use lapdev_common::{
     devbox::{
-        DevboxEnvironmentSelection, DevboxPortMappingOverride, DevboxSessionListResponse,
+        DevboxEnvironmentSelection, DevboxPortMappingOverride, DevboxSessionSummary,
         DevboxSessionWhoAmI, DevboxStartWorkloadInterceptResponse,
         DevboxWorkloadInterceptListResponse,
     },
@@ -9,7 +9,8 @@ use lapdev_common::{
         KubeAppCatalogWorkloadCreate, KubeCluster, KubeContainerInfo, KubeEnvironmentPreviewUrl,
         KubeEnvironmentService, KubeEnvironmentWorkload, KubeEnvironmentWorkloadDetail,
         KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-        PagePaginationParams, PaginatedResult, PaginationParams, UpdateKubeEnvironmentPreviewUrlRequest,
+        PagePaginationParams, PaginatedResult, PaginationParams,
+        UpdateKubeEnvironmentPreviewUrlRequest,
     },
 };
 use uuid::Uuid;
@@ -23,7 +24,7 @@ pub use lapdev_common::kube::KubeAppCatalog as AppCatalog;
 
 #[lapdev_hrpc::service]
 pub trait HrpcService {
-    async fn devbox_session_list_sessions(&self) -> Result<DevboxSessionListResponse, HrpcError>;
+    async fn devbox_session_get_session(&self) -> Result<Option<DevboxSessionSummary>, HrpcError>;
 
     async fn devbox_session_revoke_session(&self, session_id: Uuid) -> Result<(), HrpcError>;
 

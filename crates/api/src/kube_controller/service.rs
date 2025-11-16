@@ -38,7 +38,9 @@ impl KubeController {
                 .get_kube_environment(base_environment_id)
                 .await
                 .map_err(ApiError::from)?
-                .ok_or_else(|| ApiError::InvalidRequest("Base environment not found".to_string()))?;
+                .ok_or_else(|| {
+                    ApiError::InvalidRequest("Base environment not found".to_string())
+                })?;
 
             if base_environment.organization_id != org_id {
                 return Err(ApiError::Unauthorized);

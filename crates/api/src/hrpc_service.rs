@@ -4,9 +4,8 @@ use lapdev_api_hrpc::HrpcService;
 use lapdev_common::{
     devbox::{
         DevboxEnvironmentSelection, DevboxPortMapping, DevboxPortMappingOverride,
-        DevboxSessionListResponse, DevboxSessionSummary, DevboxSessionWhoAmI,
-        DevboxStartWorkloadInterceptResponse, DevboxWorkloadInterceptListResponse,
-        DevboxWorkloadInterceptSummary,
+        DevboxSessionSummary, DevboxSessionWhoAmI, DevboxStartWorkloadInterceptResponse,
+        DevboxWorkloadInterceptListResponse, DevboxWorkloadInterceptSummary,
     },
     hrpc::HrpcError,
     kube::{
@@ -27,32 +26,29 @@ use uuid::Uuid;
 use crate::state::CoreState;
 
 impl HrpcService for CoreState {
-    async fn devbox_session_list_sessions(
+    async fn devbox_session_get_session(
         &self,
         headers: &axum::http::HeaderMap,
-    ) -> Result<DevboxSessionListResponse, HrpcError> {
+    ) -> Result<Option<DevboxSessionSummary>, HrpcError> {
         let user = self.hrpc_authenticate_user(headers).await?;
-        let sessions = self
+        let session = self
             .db
-            .list_devbox_sessions(user.id)
+            .get_active_devbox_session(user.id)
             .await
             .map_err(hrpc_from_anyhow)?;
 
-        let sessions = sessions
-            .into_iter()
-            .map(|session| DevboxSessionSummary {
-                id: session.id,
-                device_name: session.device_name,
-                token_prefix: session.token_prefix,
-                active_environment_id: session.active_environment_id,
-                created_at: session.created_at.with_timezone(&Utc),
-                expires_at: session.expires_at.with_timezone(&Utc),
-                last_used_at: session.last_used_at.with_timezone(&Utc),
-                revoked_at: session.revoked_at.map(|ts| ts.with_timezone(&Utc)),
-            })
-            .collect();
+        let session = session.map(|session| DevboxSessionSummary {
+            id: session.id,
+            device_name: session.device_name,
+            token_prefix: session.token_prefix,
+            active_environment_id: session.active_environment_id,
+            created_at: session.created_at.with_timezone(&Utc),
+            expires_at: session.expires_at.with_timezone(&Utc),
+            last_used_at: session.last_used_at.with_timezone(&Utc),
+            revoked_at: session.revoked_at.map(|ts| ts.with_timezone(&Utc)),
+        });
 
-        Ok(DevboxSessionListResponse { sessions })
+        Ok(session)
     }
 
     async fn devbox_session_revoke_session(
@@ -744,7 +740,9 @@ impl HrpcService for CoreState {
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
         if environment.organization_id != org_id {
-            return Err(hrpc_error("Environment does not belong to the organization"));
+            return Err(hrpc_error(
+                "Environment does not belong to the organization",
+            ));
         }
 
         let required_role = environment.is_shared.then_some(UserRole::Admin);
@@ -774,11 +772,15 @@ impl HrpcService for CoreState {
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
         if environment.organization_id != org_id {
-            return Err(hrpc_error("Environment does not belong to the organization"));
+            return Err(hrpc_error(
+                "Environment does not belong to the organization",
+            ));
         }
 
         if environment.is_shared {
-            return Err(hrpc_error("Pause is not yet supported for shared environments"));
+            return Err(hrpc_error(
+                "Pause is not yet supported for shared environments",
+            ));
         }
 
         let user = self.authorize(headers, org_id, None).await?;
@@ -806,11 +808,15 @@ impl HrpcService for CoreState {
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
         if environment.organization_id != org_id {
-            return Err(hrpc_error("Environment does not belong to the organization"));
+            return Err(hrpc_error(
+                "Environment does not belong to the organization",
+            ));
         }
 
         if environment.is_shared {
-            return Err(hrpc_error("Resume is not yet supported for shared environments"));
+            return Err(hrpc_error(
+                "Resume is not yet supported for shared environments",
+            ));
         }
 
         let user = self.authorize(headers, org_id, None).await?;
@@ -1037,9 +1043,7 @@ impl HrpcService for CoreState {
         }
 
         // Determine required role based on the target environment. Branch workloads inherit permissions from their branch.
-        let required_role = target_environment
-            .is_shared
-            .then_some(UserRole::Admin);
+        let required_role = target_environment.is_shared.then_some(UserRole::Admin);
 
         let user = self.authorize(headers, org_id, required_role).await?;
 
@@ -1151,7 +1155,9 @@ impl HrpcService for CoreState {
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
         if environment.organization_id != org_id {
-            return Err(hrpc_error("Environment does not belong to the organization"));
+            return Err(hrpc_error(
+                "Environment does not belong to the organization",
+            ));
         }
 
         let required_role = environment.is_shared.then_some(UserRole::Admin);
@@ -1202,7 +1208,9 @@ impl HrpcService for CoreState {
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
         if environment.organization_id != org_id {
-            return Err(hrpc_error("Environment does not belong to the organization"));
+            return Err(hrpc_error(
+                "Environment does not belong to the organization",
+            ));
         }
 
         let required_role = environment.is_shared.then_some(UserRole::Admin);
@@ -1239,7 +1247,9 @@ impl HrpcService for CoreState {
             .ok_or_else(|| hrpc_error("Environment not found"))?;
 
         if environment.organization_id != org_id {
-            return Err(hrpc_error("Environment does not belong to the organization"));
+            return Err(hrpc_error(
+                "Environment does not belong to the organization",
+            ));
         }
 
         let required_role = environment.is_shared.then_some(UserRole::Admin);

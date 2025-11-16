@@ -376,7 +376,6 @@ impl KubeController {
         }
     }
 
-
     /// Notify devbox-proxy about branch environment deletion
     async fn notify_branch_environment_deletion(
         &self,

@@ -249,13 +249,7 @@ async fn sync_environment_from_catalog(
 
 async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
     let client = HrpcServiceClient::new("/api/rpc".to_string());
-    let response = client.devbox_session_list_sessions().await??;
-
-    // Find the active session (not revoked)
-    Ok(response
-        .sessions
-        .into_iter()
-        .find(|s| s.revoked_at.is_none()))
+    client.devbox_session_get_session().await?
 }
 
 fn build_port_overrides_from_workload_ports(

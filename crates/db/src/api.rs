@@ -3858,20 +3858,6 @@ impl DbApi {
         Ok(session)
     }
 
-    /// List devbox sessions for a user (active + historical)
-    pub async fn list_devbox_sessions(
-        &self,
-        user_id: Uuid,
-    ) -> Result<Vec<lapdev_db_entities::kube_devbox_session::Model>> {
-        let sessions = lapdev_db_entities::kube_devbox_session::Entity::find()
-            .filter(lapdev_db_entities::kube_devbox_session::Column::UserId.eq(user_id))
-            .order_by_desc(lapdev_db_entities::kube_devbox_session::Column::CreatedAt)
-            .all(&self.conn)
-            .await?;
-
-        Ok(sessions)
-    }
-
     // Devbox Workload Intercept Methods
 
     /// Create a new workload intercept

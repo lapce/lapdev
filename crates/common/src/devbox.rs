@@ -16,11 +16,6 @@ pub struct DevboxSessionSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DevboxSessionListResponse {
-    pub sessions: Vec<DevboxSessionSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevboxSessionWhoAmI {
     pub user_id: Uuid,
     pub email: Option<String>,

@@ -79,51 +79,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create index for user + environment lookups
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_workload_intercept_user_env_idx")
-                    .table(KubeDevboxWorkloadIntercept::Table)
-                    .col(KubeDevboxWorkloadIntercept::UserId)
-                    .col(KubeDevboxWorkloadIntercept::EnvironmentId)
-                    .to_owned(),
-            )
-            .await?;
-
-        // Create index for environment lookups
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_workload_intercept_environment_idx")
-                    .table(KubeDevboxWorkloadIntercept::Table)
-                    .col(KubeDevboxWorkloadIntercept::EnvironmentId)
-                    .to_owned(),
-            )
-            .await?;
-
-        // Create index for workload lookups
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_workload_intercept_workload_idx")
-                    .table(KubeDevboxWorkloadIntercept::Table)
-                    .col(KubeDevboxWorkloadIntercept::WorkloadId)
-                    .to_owned(),
-            )
-            .await?;
-
-        // Create index for active intercepts (where stopped_at IS NULL)
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_workload_intercept_active_idx")
-                    .table(KubeDevboxWorkloadIntercept::Table)
-                    .col(KubeDevboxWorkloadIntercept::StoppedAt)
-                    .to_owned(),
-            )
-            .await?;
-
         // Create partial unique index to prevent duplicate active intercepts per workload
         manager
             .get_connection()
@@ -134,13 +89,40 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create index for workload lookups scoped by user
+        // Composite index to cover active + historical intercept lookups
         manager
             .create_index(
                 Index::create()
-                    .name("kube_devbox_workload_intercept_user_idx")
+                    .name("kube_devbox_workload_intercept_user_workload_stopped_idx")
                     .table(KubeDevboxWorkloadIntercept::Table)
                     .col(KubeDevboxWorkloadIntercept::UserId)
+                    .col(KubeDevboxWorkloadIntercept::WorkloadId)
+                    .col(KubeDevboxWorkloadIntercept::StoppedAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Composite index for environment-scoped active intercept lookups
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_devbox_workload_intercept_environment_stopped_idx")
+                    .table(KubeDevboxWorkloadIntercept::Table)
+                    .col(KubeDevboxWorkloadIntercept::EnvironmentId)
+                    .col(KubeDevboxWorkloadIntercept::StoppedAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Composite index for environment-scoped ordering by created_at
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_devbox_workload_intercept_environment_created_idx")
+                    .table(KubeDevboxWorkloadIntercept::Table)
+                    .col(KubeDevboxWorkloadIntercept::EnvironmentId)
+                    .col(KubeDevboxWorkloadIntercept::CreatedAt)
+                    .col_order_by_desc(KubeDevboxWorkloadIntercept::CreatedAt)
                     .to_owned(),
             )
             .await?;

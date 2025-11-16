@@ -133,7 +133,6 @@ pub struct KubeWorkload {
     pub kind: KubeWorkloadKind,
     pub replicas: Option<i32>,
     pub ready_replicas: Option<i32>,
-    pub status: KubeWorkloadStatus,
     pub created_at: Option<String>,
     pub labels: std::collections::HashMap<String, String>,
 }
@@ -149,17 +148,6 @@ pub enum KubeWorkloadKind {
     Pod,
     Job,
     CronJob,
-}
-
-#[derive(
-    Debug, Clone, Serialize, Deserialize, PartialEq, strum_macros::EnumString, strum_macros::Display,
-)]
-pub enum KubeWorkloadStatus {
-    Running,
-    Pending,
-    Failed,
-    Succeeded,
-    Unknown,
 }
 
 #[derive(

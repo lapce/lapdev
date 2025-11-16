@@ -578,19 +578,6 @@ pub fn KubeEnvironmentItem(
                         open=dropdown_expanded.read_only()
                         class="min-w-48 -translate-x-2"
                     >
-                        {if needs_catalog_sync {
-                            view! {
-                                <DropdownMenuItem class="p-0">
-                                    <button class="flex items-center gap-2 px-2 py-1.5 w-full text-amber-600 dark:text-amber-300 cursor-not-allowed" disabled>
-                                        <lucide_leptos::RefreshCcw />
-                                        "Sync From Catalog"
-                                    </button>
-                                </DropdownMenuItem>
-                            }.into_any()
-                        } else {
-                            view! { <></> }.into_any()
-                        }}
-
                         <DropdownMenuItem class="p-0">
                             <a href=format!("/kubernetes/environments/{}", environment_id) class="flex items-center gap-2 px-2 py-1.5 w-full">
                                 <lucide_leptos::Eye />

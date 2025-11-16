@@ -601,7 +601,8 @@ fn compute_catalog_workload_update_detects_label_change() {
     assert!(!update.ports_changed);
     assert!(!update.spec_changed);
     assert!(!update.dependencies_changed);
-    assert!(!update.has_model_updates());
+    assert!(update.workload_yaml.is_some());
+    assert!(update.has_model_updates());
 }
 
 #[test]

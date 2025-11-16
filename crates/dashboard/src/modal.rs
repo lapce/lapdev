@@ -192,7 +192,7 @@ pub fn DeleteModal(
             </AlertDialogHeader>
             <div class="pb-4 gap-4 flex flex-col">
                 <AlertDialogDescription>
-                    This action cannot be undone. It will permanently delete your resource.
+                    {"This action cannot be undone. It will permanently delete your resource."}
                 </AlertDialogDescription>
                 {move || {
                     if let Some(error) = error.get() {

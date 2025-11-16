@@ -313,14 +313,14 @@ pub fn OrgSettings() -> impl IntoView {
             <div class="w-full p-8 border rounded-xl shadow">
                 <UpdateNameView />
             </div>
-            <div
-                class="mt-8 w-full p-8 border rounded-xl shadow"
-                class:hidden=move || {
-                    !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
-                }
-            >
-                <AutoStartStopView />
-            </div>
+            // <div
+            //     class="mt-8 w-full p-8 border rounded-xl shadow"
+            //     class:hidden=move || {
+            //         !cluster_info.with(|i| i.as_ref().map(|i| i.has_enterprise)).unwrap_or(false)
+            //     }
+            // >
+            //     <AutoStartStopView />
+            // </div>
 
             <div
                 class="mt-8 w-full p-8 border rounded-xl shadow"

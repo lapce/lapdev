@@ -19,9 +19,9 @@ use lapdev_common::{
     devbox::{DirectTunnelConfig, DirectTunnelCredential},
     kube::{
         KubeClusterInfo, KubeClusterStatus, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind,
-        KubeWorkloadList, KubeWorkloadStatus, PaginationCursor, PaginationParams,
-        DEFAULT_KUBE_CLUSTER_TUNNEL_URL, DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR,
-        KUBE_CLUSTER_TOKEN_HEADER, KUBE_CLUSTER_TUNNEL_URL_ENV_VAR, KUBE_CLUSTER_URL_ENV_VAR,
+        KubeWorkloadList, PaginationCursor, PaginationParams, DEFAULT_KUBE_CLUSTER_TUNNEL_URL,
+        DEFAULT_KUBE_CLUSTER_URL, KUBE_CLUSTER_TOKEN_ENV_VAR, KUBE_CLUSTER_TOKEN_HEADER,
+        KUBE_CLUSTER_TUNNEL_URL_ENV_VAR, KUBE_CLUSTER_URL_ENV_VAR,
     },
 };
 use lapdev_kube_rpc::{
@@ -763,25 +763,12 @@ impl KubeManager {
     }
 
     fn deployment_to_workload(deployment: Deployment) -> KubeWorkload {
-        let status = if deployment
-            .status
-            .as_ref()
-            .and_then(|s| s.ready_replicas)
-            .unwrap_or(0)
-            > 0
-        {
-            KubeWorkloadStatus::Running
-        } else {
-            KubeWorkloadStatus::Pending
-        };
-
         KubeWorkload {
             name: deployment.metadata.name.unwrap_or_default(),
             namespace: deployment.metadata.namespace.unwrap_or_default(),
             kind: KubeWorkloadKind::Deployment,
             replicas: deployment.spec.as_ref().and_then(|s| s.replicas),
             ready_replicas: deployment.status.as_ref().and_then(|s| s.ready_replicas),
-            status,
             created_at: deployment
                 .metadata
                 .creation_timestamp
@@ -796,25 +783,12 @@ impl KubeManager {
     }
 
     fn statefulset_to_workload(statefulset: StatefulSet) -> KubeWorkload {
-        let status = if statefulset
-            .status
-            .as_ref()
-            .and_then(|s| s.ready_replicas)
-            .unwrap_or(0)
-            > 0
-        {
-            KubeWorkloadStatus::Running
-        } else {
-            KubeWorkloadStatus::Pending
-        };
-
         KubeWorkload {
             name: statefulset.metadata.name.unwrap_or_default(),
             namespace: statefulset.metadata.namespace.unwrap_or_default(),
             kind: KubeWorkloadKind::StatefulSet,
             replicas: statefulset.spec.as_ref().and_then(|s| s.replicas),
             ready_replicas: statefulset.status.as_ref().and_then(|s| s.ready_replicas),
-            status,
             created_at: statefulset
                 .metadata
                 .creation_timestamp
@@ -829,18 +803,6 @@ impl KubeManager {
     }
 
     fn daemonset_to_workload(daemonset: DaemonSet) -> KubeWorkload {
-        let status = if daemonset
-            .status
-            .as_ref()
-            .map(|s| s.number_ready)
-            .unwrap_or(0)
-            > 0
-        {
-            KubeWorkloadStatus::Running
-        } else {
-            KubeWorkloadStatus::Pending
-        };
-
         KubeWorkload {
             name: daemonset.metadata.name.unwrap_or_default(),
             namespace: daemonset.metadata.namespace.unwrap_or_default(),
@@ -850,7 +812,6 @@ impl KubeManager {
                 .as_ref()
                 .map(|s| s.desired_number_scheduled),
             ready_replicas: daemonset.status.as_ref().map(|s| s.number_ready),
-            status,
             created_at: daemonset
                 .metadata
                 .creation_timestamp
@@ -865,12 +826,10 @@ impl KubeManager {
     }
 
     fn pod_to_workload(pod: Pod) -> KubeWorkload {
-        let status = match pod.status.as_ref().and_then(|s| s.phase.as_deref()) {
-            Some("Running") => KubeWorkloadStatus::Running,
-            Some("Pending") => KubeWorkloadStatus::Pending,
-            Some("Failed") => KubeWorkloadStatus::Failed,
-            Some("Succeeded") => KubeWorkloadStatus::Succeeded,
-            _ => KubeWorkloadStatus::Unknown,
+        let ready_replicas = match pod.status.as_ref().and_then(|s| s.phase.as_deref()) {
+            Some("Running") | Some("Succeeded") => Some(1),
+            Some("Pending") | Some("Failed") => Some(0),
+            _ => None,
         };
 
         KubeWorkload {
@@ -878,12 +837,7 @@ impl KubeManager {
             namespace: pod.metadata.namespace.unwrap_or_default(),
             kind: KubeWorkloadKind::Pod,
             replicas: Some(1),
-            ready_replicas: if status == KubeWorkloadStatus::Running {
-                Some(1)
-            } else {
-                Some(0)
-            },
-            status,
+            ready_replicas,
             created_at: pod.metadata.creation_timestamp.map(|t| format!("{:?}", t)),
             labels: pod
                 .metadata
@@ -922,21 +876,12 @@ impl KubeManager {
     }
 
     fn job_to_workload(job: Job) -> KubeWorkload {
-        let status = if job.status.as_ref().and_then(|s| s.succeeded).unwrap_or(0) > 0 {
-            KubeWorkloadStatus::Succeeded
-        } else if job.status.as_ref().and_then(|s| s.failed).unwrap_or(0) > 0 {
-            KubeWorkloadStatus::Failed
-        } else {
-            KubeWorkloadStatus::Running
-        };
-
         KubeWorkload {
             name: job.metadata.name.unwrap_or_default(),
             namespace: job.metadata.namespace.unwrap_or_default(),
             kind: KubeWorkloadKind::Job,
             replicas: job.spec.as_ref().and_then(|s| s.parallelism),
             ready_replicas: job.status.as_ref().and_then(|s| s.succeeded),
-            status,
             created_at: job.metadata.creation_timestamp.map(|t| format!("{t:?}")),
             labels: job
                 .metadata
@@ -948,25 +893,12 @@ impl KubeManager {
     }
 
     fn replicaset_to_workload(replicaset: ReplicaSet) -> KubeWorkload {
-        let status = if replicaset
-            .status
-            .as_ref()
-            .and_then(|s| s.ready_replicas)
-            .unwrap_or(0)
-            > 0
-        {
-            KubeWorkloadStatus::Running
-        } else {
-            KubeWorkloadStatus::Pending
-        };
-
         KubeWorkload {
             name: replicaset.metadata.name.unwrap_or_default(),
             namespace: replicaset.metadata.namespace.unwrap_or_default(),
             kind: KubeWorkloadKind::ReplicaSet,
             replicas: replicaset.spec.as_ref().and_then(|s| s.replicas),
             ready_replicas: replicaset.status.as_ref().and_then(|s| s.ready_replicas),
-            status,
             created_at: replicaset
                 .metadata
                 .creation_timestamp
@@ -981,19 +913,12 @@ impl KubeManager {
     }
 
     fn cronjob_to_workload(cronjob: CronJob) -> KubeWorkload {
-        let status = if cronjob.status.as_ref().is_some() {
-            KubeWorkloadStatus::Running
-        } else {
-            KubeWorkloadStatus::Pending
-        };
-
         KubeWorkload {
             name: cronjob.metadata.name.unwrap_or_default(),
             namespace: cronjob.metadata.namespace.unwrap_or_default(),
             kind: KubeWorkloadKind::CronJob,
             replicas: Some(1), // CronJobs don't have replicas concept
             ready_replicas: Some(1),
-            status,
             created_at: cronjob
                 .metadata
                 .creation_timestamp

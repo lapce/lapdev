@@ -6,7 +6,7 @@ use lapdev_common::{
     kube::{
         KubeAppCatalogWorkloadCreate, KubeCluster, KubeClusterInfo, KubeClusterStatus,
         KubeNamespace, KubeNamespaceInfo, KubeWorkload, KubeWorkloadKind, KubeWorkloadList,
-        KubeWorkloadStatus, PaginationCursor, PaginationParams,
+        PaginationCursor, PaginationParams,
     },
 };
 use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
@@ -418,10 +418,6 @@ pub fn KubeResourceList(
                 filtered_workloads
                 is_loading=is_loading.read_only().into()
                 cluster_status
-                on_view_details=Callback::new(move |w| {
-                    selected_workload.set(Some(w));
-                    detail_modal_open.set(true);
-                })
             />
 
             <WorkloadDetailModal modal_open=detail_modal_open workload=selected_workload />
@@ -433,28 +429,13 @@ pub fn KubeResourceList(
 pub fn KubeResourceItem(
     workload: KubeWorkload,
     selected_workloads: RwSignal<std::collections::HashSet<WorkloadKey>>,
-    on_view_details: impl Fn(KubeWorkload) + 'static,
 ) -> impl IntoView {
-    let status_variant = match workload.status {
-        KubeWorkloadStatus::Running => BadgeVariant::Secondary,
-        KubeWorkloadStatus::Succeeded => BadgeVariant::Secondary,
-        KubeWorkloadStatus::Pending => BadgeVariant::Secondary,
-        KubeWorkloadStatus::Failed | KubeWorkloadStatus::Unknown => BadgeVariant::Destructive,
-    };
-
-    let status_text = workload.status.to_string();
     let replica_text = match (workload.ready_replicas, workload.replicas) {
         (Some(ready), Some(total)) => format!("{}/{}", ready, total),
         (Some(ready), None) => ready.to_string(),
         (None, Some(total)) => format!("?/{}", total),
         (None, None) => "-".to_string(),
     };
-
-    let age_text = workload
-        .created_at
-        .as_ref()
-        .map(|_| "TODO: calculate age".to_string())
-        .unwrap_or_else(|| "-".to_string());
 
     let workload_key = WorkloadKey::from_workload(&workload);
     let workload_key_clone = workload_key.clone();
@@ -488,18 +469,7 @@ pub fn KubeResourceItem(
                 <Badge variant=BadgeVariant::Outline>{workload.namespace.clone()}</Badge>
             </TableCell>
             <TableCell>{format!("{:?}", workload.kind)}</TableCell>
-            <TableCell>
-                <Badge variant=status_variant>{status_text}</Badge>
-            </TableCell>
             <TableCell>{replica_text}</TableCell>
-            <TableCell>{age_text}</TableCell>
-            <TableCell class="pr-4">
-                <Button variant=ButtonVariant::Outline size=ButtonSize::Sm>
-                    // on:click=view_details
-                    <lucide_leptos::Eye />
-                    Details
-                </Button>
-            </TableCell>
         </TableRow>
     }
 }
@@ -532,10 +502,6 @@ pub fn WorkloadDetailModal(
                                 <div>
                                     <Label>Kind</Label>
                                     <P class="font-mono text-sm">{format!("{:?}", w.kind)}</P>
-                                </div>
-                                <div>
-                                    <Label>Status</Label>
-                                    <P class="font-mono text-sm">{w.status.to_string()}</P>
                                 </div>
                                 {if let (Some(ready), Some(total)) = (
                                     w.ready_replicas,
@@ -1091,7 +1057,6 @@ pub fn WorkloadTable(
     filtered_workloads: Signal<Vec<KubeWorkload>>,
     is_loading: Signal<bool>,
     cluster_status: Signal<KubeClusterStatus>,
-    #[prop(into)] on_view_details: Callback<KubeWorkload>,
 ) -> impl IntoView {
     let all_selected = Signal::derive(move || {
         let workloads = filtered_workloads.get();
@@ -1160,10 +1125,7 @@ pub fn WorkloadTable(
                         <TableHead>Name</TableHead>
                         <TableHead>Namespace</TableHead>
                         <TableHead>Kind</TableHead>
-                        <TableHead>Status</TableHead>
                         <TableHead>Replicas</TableHead>
-                        <TableHead>Age</TableHead>
-                        <TableHead class="pr-4">Actions</TableHead>
                     </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1175,9 +1137,6 @@ pub fn WorkloadTable(
                                 <KubeResourceItem
                                     workload=workload.clone()
                                     selected_workloads
-                                    on_view_details=move |w| {
-                                        on_view_details.run(w);
-                                    }
                                 />
                             }
                         }

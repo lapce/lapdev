@@ -1084,7 +1084,7 @@ impl KubeClusterServer {
             } else {
                 None
             },
-            workload_yaml: if spec_changed {
+            workload_yaml: if spec_changed || labels_changed {
                 Some(yaml.to_owned())
             } else {
                 None

@@ -161,7 +161,7 @@ status:
 }
 
 #[test]
-fn spec_section_from_yaml_detects_replica_changes() {
+fn spec_section_from_yaml_ignores_replica_changes() {
     let base_yaml = r#"
 apiVersion: apps/v1
 kind: Deployment
@@ -211,7 +211,7 @@ spec:
         .expect("scaled spec parsing should succeed")
         .expect("scaled spec should be present");
 
-    assert_ne!(base_spec, scaled_spec);
+    assert_eq!(base_spec, scaled_spec);
 }
 
 #[test]
@@ -452,11 +452,11 @@ fn compute_catalog_workload_update_detects_spec_change() {
     );
 
     let mut spec_snapshot = fixture.base_spec_snapshot.clone();
-    spec_snapshot["replicas"] = json!(3);
+    spec_snapshot["revisionHistoryLimit"] = json!(5);
 
     let new_yaml = fixture
         .base_yaml
-        .replace("replicas: 2", "replicas: 3")
+        .replace("replicas: 2", "replicas: 2\n  revisionHistoryLimit: 5")
         .to_string();
 
     let update = compute_update(

@@ -26,6 +26,7 @@ use lapdev_kube_rpc::{
 use lapdev_rpc::error::ApiError;
 use sea_orm::prelude::{DateTimeWithTimeZone, Json};
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
+use serde::Serialize;
 use serde_json::json;
 use std::convert::TryFrom;
 use std::sync::{
@@ -1581,7 +1582,7 @@ fn extract_workload_from_yaml(
             let spec_snapshot = deployment
                 .spec
                 .as_ref()
-                .map(|spec| serde_json::to_value(spec))
+                .map(|spec| serialize_spec_for_catalog(spec))
                 .transpose()
                 .context("failed to serialize deployment spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
@@ -1617,7 +1618,7 @@ fn extract_workload_from_yaml(
             let spec_snapshot = statefulset
                 .spec
                 .as_ref()
-                .map(|spec| serde_json::to_value(spec))
+                .map(|spec| serialize_spec_for_catalog(spec))
                 .transpose()
                 .context("failed to serialize statefulset spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
@@ -1650,7 +1651,7 @@ fn extract_workload_from_yaml(
             let spec_snapshot = daemonset
                 .spec
                 .as_ref()
-                .map(|spec| serde_json::to_value(spec))
+                .map(|spec| serialize_spec_for_catalog(spec))
                 .transpose()
                 .context("failed to serialize daemonset spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
@@ -1688,7 +1689,7 @@ fn extract_workload_from_yaml(
             let spec_snapshot = replicaset
                 .spec
                 .as_ref()
-                .map(|spec| serde_json::to_value(spec))
+                .map(|spec| serialize_spec_for_catalog(spec))
                 .transpose()
                 .context("failed to serialize replicaset spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
@@ -1721,7 +1722,7 @@ fn extract_workload_from_yaml(
             let spec_snapshot = job
                 .spec
                 .as_ref()
-                .map(|spec| serde_json::to_value(spec))
+                .map(|spec| serialize_spec_for_catalog(spec))
                 .transpose()
                 .context("failed to serialize job spec")?;
             let containers = extract_pod_spec_containers(pod_spec)?;
@@ -1756,7 +1757,7 @@ fn extract_workload_from_yaml(
             let spec_snapshot = cron_job
                 .spec
                 .as_ref()
-                .map(|spec| serde_json::to_value(spec))
+                .map(|spec| serialize_spec_for_catalog(spec))
                 .transpose()
                 .context("failed to serialize cronjob spec")?;
             Ok(ExtractedWorkload {
@@ -1931,11 +1932,26 @@ fn extract_pod_spec_dependencies(pod_spec: &PodSpec) -> (BTreeSet<String>, BTree
     (configmaps, secrets)
 }
 
+fn normalize_spec_for_catalog(spec: &mut serde_json::Value) {
+    if let Some(obj) = spec.as_object_mut() {
+        obj.remove("replicas");
+    }
+}
+
+fn serialize_spec_for_catalog<T>(spec: &T) -> AnyResult<serde_json::Value>
+where
+    T: Serialize + ?Sized,
+{
+    let mut value = serde_json::to_value(spec)?;
+    normalize_spec_for_catalog(&mut value);
+    Ok(value)
+}
+
 fn spec_section_from_yaml(yaml: &str) -> AnyResult<Option<serde_json::Value>> {
     let document: serde_yaml::Value = serde_yaml::from_str(yaml)?;
 
     match document.get("spec") {
-        Some(spec_value) => Ok(Some(serde_json::to_value(spec_value)?)),
+        Some(spec_value) => Ok(Some(serialize_spec_for_catalog(spec_value)?)),
         None => Ok(None),
     }
 }

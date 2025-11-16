@@ -124,6 +124,16 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Partial index to support namespace aggregation by cluster while skipping deleted rows
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX kube_app_catalog_workload_cluster_namespace_active_idx \
+                 ON kube_app_catalog_workload (cluster_id, namespace) \
+                 WHERE deleted_at IS NULL;",
+            )
+            .await?;
+
         // Create unique index to prevent duplicate workloads per app catalog
         manager
             .create_index(

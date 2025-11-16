@@ -121,10 +121,7 @@ impl MigrationTrait for Migration {
                     .name("kube_devbox_workload_intercept_environment_created_idx")
                     .table(KubeDevboxWorkloadIntercept::Table)
                     .col(KubeDevboxWorkloadIntercept::EnvironmentId)
-                    .col((
-                        KubeDevboxWorkloadIntercept::CreatedAt,
-                        IndexOrder::Desc,
-                    ))
+                    .col((KubeDevboxWorkloadIntercept::CreatedAt, IndexOrder::Desc))
                     .to_owned(),
             )
             .await?;

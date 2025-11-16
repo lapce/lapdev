@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Result};
 use chrono::DateTime;
-use futures::StreamExt;
-use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
 use lapdev_common::kube::{
@@ -9,6 +7,7 @@ use lapdev_common::kube::{
 };
 use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use leptos_router::hooks::use_location;
+use uuid::Uuid;
 
 use crate::{
     component::{
@@ -23,8 +22,9 @@ use crate::{
         typography::{H3, H4, P},
     },
     docs_url,
-    modal::DatetimeModal,
+    modal::{DatetimeModal, DeleteModal, ErrorResponse},
     organization::get_current_org,
+    sse::run_sse_with_retry,
     DOCS_ENVIRONMENT_PATH,
 };
 
@@ -91,6 +91,25 @@ async fn all_kube_environments(
     Ok(client
         .all_kube_environments(org.id, search, is_shared, is_branch, pagination)
         .await??)
+}
+
+async fn delete_environment(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+    delete_modal_open: RwSignal<bool>,
+    update_counter: RwSignal<usize, LocalStorage>,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .delete_kube_environment(org.id, environment_id)
+        .await??;
+
+    delete_modal_open.set(false);
+    update_counter.update(|c| *c += 1);
+
+    Ok(())
 }
 
 #[derive(Clone, PartialEq)]
@@ -214,35 +233,11 @@ pub fn KubeEnvironmentList(
             let update_counter = update_counter;
             spawn_local_scoped_with_cancellation(async move {
                 let url = format!("/api/v1/organizations/{}/kube/environments/events", org_id);
-
-                match EventSource::new(&url) {
-                    Ok(mut event_source) => {
-                        match event_source.subscribe("environment") {
-                            Ok(mut stream) => {
-                                while let Some(event) = stream.next().await {
-                                    if event.is_ok() {
-                                        update_counter.update(|c| *c += 1);
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                web_sys::console::error_1(
-                                    &format!(
-                                        "Failed to subscribe to organization environment events: {err}"
-                                    )
-                                    .into(),
-                                );
-                            }
-                        }
-                        event_source.close();
-                    }
-                    Err(err) => {
-                        web_sys::console::error_1(
-                            &format!("Failed to connect to organization environment events: {err}")
-                                .into(),
-                        );
-                    }
-                }
+                let listener_name = format!("organization {} environments", org_id);
+                run_sse_with_retry(url, "environment", listener_name, move |_message| {
+                    update_counter.update(|c| *c += 1);
+                })
+                .await;
             });
         }
     });
@@ -278,6 +273,7 @@ pub fn KubeEnvironmentList(
             current_page
             is_loading
             page_size
+            update_counter
         />
     }
 }
@@ -293,6 +289,7 @@ pub fn EnvironmentContent(
     current_page: RwSignal<usize>,
     is_loading: RwSignal<bool>,
     page_size: RwSignal<usize>,
+    update_counter: RwSignal<usize, LocalStorage>,
 ) -> impl IntoView {
     view! {
         <div class="flex flex-col gap-4">
@@ -365,6 +362,7 @@ pub fn EnvironmentContent(
                                     <KubeEnvironmentItem
                                         environment=environment.clone()
                                         status=status_signal
+                                        update_counter
                                     />
                                 }
                             }
@@ -419,8 +417,8 @@ pub fn EnvironmentContent(
 pub fn KubeEnvironmentItem(
     environment: KubeEnvironment,
     status: Signal<KubeEnvironmentStatus>,
+    update_counter: RwSignal<usize, LocalStorage>,
 ) -> impl IntoView {
-    let env_name = environment.name.clone();
     let env_name_for_delete = environment.name.clone();
 
     let navigate = leptos_router::hooks::use_navigate();
@@ -452,7 +450,17 @@ pub fn KubeEnvironmentItem(
     });
 
     let dropdown_expanded = RwSignal::new(false);
-    let env_name_for_delete_clone = env_name_for_delete.clone();
+    let delete_modal_open = RwSignal::new(false);
+    let org = get_current_org();
+    let environment_id_for_delete = environment_id;
+    let delete_action = Action::new_local(move |_| {
+        delete_environment(
+            org,
+            environment_id_for_delete,
+            delete_modal_open,
+            update_counter,
+        )
+    });
     let details_url = format!("/kubernetes/environments/{}", environment_id);
     let catalog_url = format!("/kubernetes/catalogs/{}", environment.app_catalog_id);
     let cluster_url = format!("/kubernetes/clusters/{}", environment.cluster_id);
@@ -604,8 +612,7 @@ pub fn KubeEnvironmentItem(
                         <DropdownMenuItem
                             on:click=move |_| {
                                 dropdown_expanded.set(false);
-                                // TODO: Implement delete functionality
-                                // leptos::logging::log!("Delete environment: {}", env_name_for_delete_clone);
+                                delete_modal_open.set(true);
                             }
                             class="cursor-pointer text-destructive focus:text-destructive"
                         >
@@ -614,6 +621,11 @@ pub fn KubeEnvironmentItem(
                         </DropdownMenuItem>
                     </DropdownMenuContent>
                 </DropdownMenu>
+                <DeleteModal
+                    resource=env_name_for_delete
+                    open=delete_modal_open
+                    delete_action
+                />
             </TableCell>
         </TableRow>
     }

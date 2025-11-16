@@ -34,7 +34,10 @@ use pasetors::{
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Deserialize;
 use sqlx::postgres::PgNotification;
-use tokio::sync::{broadcast, RwLock};
+use tokio::{
+    sync::{broadcast, RwLock},
+    time::{sleep, Duration},
+};
 use tokio_rustls::rustls::sign::CertifiedKey;
 use uuid::Uuid;
 
@@ -173,8 +176,14 @@ impl CoreState {
             app_catalog_events,
         };
 
+        state.spawn_background_tasks();
+
+        state
+    }
+
+    fn spawn_background_tasks(&self) {
         {
-            let state = state.clone();
+            let state = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = state.monitor_config_updates().await {
                     tracing::error!("api monitor config updates error: {e}");
@@ -183,49 +192,46 @@ impl CoreState {
         }
 
         {
-            let state = state.clone();
+            let state = self.clone();
             tokio::spawn(async move {
                 state.cleanup_pending_cli_auth_loop().await;
             });
         }
 
-        {
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = state.monitor_environment_events().await {
-                    tracing::error!("api monitor environment events error: {e:#}");
-                }
-            });
-        }
+        Self::spawn_listener("environment", self.clone(), |s| async move {
+            s.monitor_environment_events().await
+        });
+        Self::spawn_listener("environment_workload", self.clone(), |s| async move {
+            s.monitor_environment_workload_events().await
+        });
+        Self::spawn_listener("cluster", self.clone(), |s| async move {
+            s.monitor_cluster_events().await
+        });
+        Self::spawn_listener("app_catalog", self.clone(), |s| async move {
+            s.monitor_app_catalog_events().await
+        });
+    }
 
-        {
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = state.monitor_environment_workload_events().await {
-                    tracing::error!("api monitor environment workload events error: {e:#}");
+    fn spawn_listener<F, Fut>(name: &'static str, state: CoreState, factory: F)
+    where
+        F: Fn(CoreState) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send,
+    {
+        tokio::spawn(async move {
+            loop {
+                match factory(state.clone()).await {
+                    Ok(_) => break,
+                    Err(e) => {
+                        tracing::error!(
+                            listener = name,
+                            error = %e,
+                            "listener error; retrying in 5s"
+                        );
+                        sleep(Duration::from_secs(5)).await;
+                    }
                 }
-            });
-        }
-
-        {
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = state.monitor_cluster_events().await {
-                    tracing::error!("api monitor cluster events error: {e:#}");
-                }
-            });
-        }
-
-        {
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = state.monitor_app_catalog_events().await {
-                    tracing::error!("api monitor app catalog events error: {e:#}");
-                }
-            });
-        }
-
-        state
+            }
+        });
     }
 
     async fn monitor_config_updates(&self) -> Result<()> {
@@ -297,6 +303,7 @@ impl CoreState {
             .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
         let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
         listener.listen("environment_lifecycle").await?;
+        tracing::info!("environment lifecycle listener started");
         loop {
             let notification = listener.recv().await?;
             match serde_json::from_str::<EnvironmentLifecycleEvent>(notification.payload()) {
@@ -322,6 +329,7 @@ impl CoreState {
             .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
         let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
         listener.listen("environment_workload_status").await?;
+        tracing::info!("environment workload listener started");
         loop {
             let notification = listener.recv().await?;
             match serde_json::from_str::<EnvironmentWorkloadStatusEvent>(notification.payload()) {
@@ -347,6 +355,7 @@ impl CoreState {
             .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
         let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
         listener.listen("cluster_status").await?;
+        tracing::info!("cluster status listener started");
         loop {
             let notification = listener.recv().await?;
             match serde_json::from_str::<ClusterStatusEvent>(notification.payload()) {
@@ -372,6 +381,7 @@ impl CoreState {
             .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
         let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
         listener.listen("app_catalog_status").await?;
+        tracing::info!("app catalog status listener started");
         loop {
             let notification = listener.recv().await?;
             match serde_json::from_str::<AppCatalogStatusEvent>(notification.payload()) {

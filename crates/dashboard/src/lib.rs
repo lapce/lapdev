@@ -24,6 +24,7 @@ pub mod nav;
 pub mod organization;
 pub mod project;
 pub mod quota;
+pub mod sse;
 pub mod ssh_key;
 pub mod usage;
 pub mod workspace;

@@ -1,6 +1,4 @@
 use anyhow::{anyhow, Result};
-use futures::StreamExt;
-use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::console::Organization;
 use lapdev_common::kube::{
@@ -30,6 +28,7 @@ use crate::{
     docs_url,
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
+    sse::run_sse_with_retry,
     DOCS_APP_CATALOG_PATH,
 };
 
@@ -187,35 +186,11 @@ pub fn AppCatalogList(update_counter: RwSignal<usize>) -> impl IntoView {
             let update_counter = update_counter;
             spawn_local_scoped_with_cancellation(async move {
                 let url = format!("/api/v1/organizations/{}/kube/catalogs/events", org_id);
-
-                match EventSource::new(&url) {
-                    Ok(mut event_source) => {
-                        match event_source.subscribe("catalog") {
-                            Ok(mut stream) => {
-                                while let Some(event) = stream.next().await {
-                                    if event.is_ok() {
-                                        update_counter.update(|c| *c += 1);
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                web_sys::console::error_1(
-                                    &format!(
-                                        "Failed to subscribe to organization catalog events: {err}"
-                                    )
-                                    .into(),
-                                );
-                            }
-                        }
-                        event_source.close();
-                    }
-                    Err(err) => {
-                        web_sys::console::error_1(
-                            &format!("Failed to connect to organization catalog events: {err}")
-                                .into(),
-                        );
-                    }
-                }
+                let listener_name = format!("organization {} catalogs", org_id);
+                run_sse_with_retry(url, "catalog", listener_name, move |_message| {
+                    update_counter.update(|c| *c += 1);
+                })
+                .await;
             });
         }
     });

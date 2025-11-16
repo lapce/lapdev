@@ -1,8 +1,6 @@
 use std::{collections::HashSet, str::FromStr};
 
 use anyhow::{anyhow, Result};
-use futures::StreamExt;
-use gloo_net::eventsource::futures::EventSource;
 use lapdev_common::{
     console::Organization,
     kube::{
@@ -35,6 +33,7 @@ use crate::{
     kube_app_catalog_detail::get_app_catalog,
     modal::{ErrorResponse, Modal},
     organization::get_current_org,
+    sse::run_sse_with_retry,
     DOCS_CLUSTER_PATH,
 };
 
@@ -162,36 +161,12 @@ pub fn ClusterInfo(
                         "/api/v1/organizations/{}/kube/clusters/{}/events",
                         org_id, cluster_id
                     );
-
-                    match EventSource::new(&url) {
-                        Ok(mut event_source) => {
-                            match event_source.subscribe("cluster") {
-                                Ok(mut stream) => {
-                                    while let Some(event) = stream.next().await {
-                                        if event.is_ok() {
-                                            cluster_info_for_sse.refetch();
-                                            update_counter.update(|c| *c += 1);
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    web_sys::console::error_1(
-                                        &format!(
-                                            "Failed to subscribe to cluster status events: {err}"
-                                        )
-                                        .into(),
-                                    );
-                                }
-                            }
-                            event_source.close();
-                        }
-                        Err(err) => {
-                            web_sys::console::error_1(
-                                &format!("Failed to connect to cluster status events: {err}")
-                                    .into(),
-                            );
-                        }
-                    }
+                    let listener_name = format!("cluster {} detail", cluster_id);
+                    run_sse_with_retry(url, "cluster", listener_name, move |_message| {
+                        cluster_info_for_sse.refetch();
+                        update_counter.update(|c| *c += 1);
+                    })
+                    .await;
                 }
             });
         }

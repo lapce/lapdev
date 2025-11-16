@@ -1,8 +1,6 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
-use futures::StreamExt;
-use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
@@ -30,6 +28,7 @@ use crate::{
     kube_app_catalog::CreateEnvironmentModal,
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
+    sse::run_sse_with_retry,
     DOCS_APP_CATALOG_PATH,
 };
 
@@ -196,35 +195,12 @@ pub fn WorkloadsList(catalog_id: Uuid) -> impl IntoView {
                         "/api/v1/organizations/{}/kube/catalogs/{}/events",
                         org_id, catalog_id
                     );
-
-                    match EventSource::new(&url) {
-                        Ok(mut event_source) => {
-                            match event_source.subscribe("catalog") {
-                                Ok(mut stream) => {
-                                    while let Some(event) = stream.next().await {
-                                        if event.is_ok() {
-                                            catalog_result_for_sse.refetch();
-                                            update_counter.update(|c| *c += 1);
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    web_sys::console::error_1(
-                                        &format!(
-                                            "Failed to subscribe to app catalog events: {err}"
-                                        )
-                                        .into(),
-                                    );
-                                }
-                            }
-                            event_source.close();
-                        }
-                        Err(err) => {
-                            web_sys::console::error_1(
-                                &format!("Failed to connect to app catalog events: {err}").into(),
-                            );
-                        }
-                    }
+                    let listener_name = format!("catalog {} detail", catalog_id);
+                    run_sse_with_retry(url, "catalog", listener_name, move |_message| {
+                        catalog_result_for_sse.refetch();
+                        update_counter.update(|c| *c += 1);
+                    })
+                    .await;
                 }
             });
         }

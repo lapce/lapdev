@@ -116,6 +116,7 @@ impl MigrationTrait for Migration {
                     .col(KubeEnvironment::BaseEnvironmentId)
                     .col(KubeEnvironment::DeletedAt)
                     .col(KubeEnvironment::UserId)
+                    .col((KubeEnvironment::CreatedAt, IndexOrder::Desc))
                     .to_owned(),
             )
             .await?;
@@ -124,9 +125,18 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(
-                "CREATE INDEX kube_environment_gin_search_idx ON kube_environment 
-                 USING gin (organization_id, user_id, LOWER(name) gin_trgm_ops)
-                 WHERE deleted_at IS NULL;",
+                "CREATE INDEX kube_environment_shared_gin_search_idx ON kube_environment 
+                 USING gin (LOWER(name) gin_trgm_ops)
+                 WHERE deleted_at IS NULL AND is_shared = true;",
+            )
+            .await?;
+
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX kube_environment_personal_gin_search_idx ON kube_environment 
+                 USING gin (LOWER(name) gin_trgm_ops)
+                 WHERE deleted_at IS NULL AND is_shared = false;",
             )
             .await?;
 
@@ -139,6 +149,16 @@ impl MigrationTrait for Migration {
                     .col(KubeEnvironment::ClusterId)
                     .col(KubeEnvironment::DeletedAt)
                     .to_owned(),
+            )
+            .await?;
+
+        // Cover high-volume ready replica updates that probe by cluster + namespace
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX kube_environment_cluster_namespace_active_idx
+                 ON kube_environment (cluster_id, namespace)
+                 WHERE deleted_at IS NULL;",
             )
             .await?;
 

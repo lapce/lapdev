@@ -1,6 +1,4 @@
 use anyhow::{anyhow, Result};
-use futures::StreamExt;
-use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
@@ -27,6 +25,7 @@ use crate::{
     docs_url,
     modal::{DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
+    sse::run_sse_with_retry,
     DOCS_CLUSTER_PATH,
 };
 
@@ -94,35 +93,11 @@ pub fn KubeClusterList(update_counter: RwSignal<usize, LocalStorage>) -> impl In
             let update_counter = update_counter;
             spawn_local_scoped_with_cancellation(async move {
                 let url = format!("/api/v1/organizations/{}/kube/clusters/events", org_id);
-
-                match EventSource::new(&url) {
-                    Ok(mut event_source) => {
-                        match event_source.subscribe("cluster") {
-                            Ok(mut stream) => {
-                                while let Some(event) = stream.next().await {
-                                    if event.is_ok() {
-                                        update_counter.update(|c| *c += 1);
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                web_sys::console::error_1(
-                                    &format!(
-                                        "Failed to subscribe to organization cluster events: {err}"
-                                    )
-                                    .into(),
-                                );
-                            }
-                        }
-                        event_source.close();
-                    }
-                    Err(err) => {
-                        web_sys::console::error_1(
-                            &format!("Failed to connect to organization cluster events: {err}")
-                                .into(),
-                        );
-                    }
-                }
+                let listener_name = format!("organization {} clusters", org_id);
+                run_sse_with_retry(url, "cluster", listener_name, move |_message| {
+                    update_counter.update(|c| *c += 1);
+                })
+                .await;
             });
         }
     });

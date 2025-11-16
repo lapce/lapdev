@@ -106,6 +106,16 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Accelerate ready-replica updates that probe by (environment_id, base_workload_id)
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX kube_environment_workload_env_base_active_idx
+                 ON kube_environment_workload (environment_id, base_workload_id)
+                 WHERE deleted_at IS NULL;",
+            )
+            .await?;
+
         // Create unique index to prevent duplicate workloads per environment
         manager
             .create_index(

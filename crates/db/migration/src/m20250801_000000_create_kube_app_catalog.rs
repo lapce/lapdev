@@ -72,25 +72,22 @@ impl MigrationTrait for Migration {
             .execute_unprepared("CREATE EXTENSION IF NOT EXISTS btree_gin;")
             .await?;
 
-        // Create B-tree index for exact lookups without name search
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_app_catalog_org_deleted_created_idx")
-                    .table(KubeAppCatalog::Table)
-                    .col(KubeAppCatalog::OrganizationId)
-                    .col(KubeAppCatalog::DeletedAt)
-                    .col(KubeAppCatalog::CreatedAt)
-                    .to_owned(),
-            )
-            .await?;
-
-        // Create GIN index for case-insensitive wildcard name searches
+        // Create partial B-tree index for active catalog pagination without name search
         manager
             .get_connection()
             .execute_unprepared(
-                "CREATE INDEX kube_app_catalog_gin_search_idx ON kube_app_catalog 
-                 USING gin (organization_id, LOWER(name) gin_trgm_ops)
+                "CREATE INDEX kube_app_catalog_org_deleted_created_idx ON kube_app_catalog \
+                 (organization_id, deleted_at DESC, created_at DESC) \
+                 WHERE deleted_at IS NULL;",
+            )
+            .await?;
+
+        // Create composite GIN index for case-insensitive wildcard name searches scoped by org
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX kube_app_catalog_gin_search_idx ON kube_app_catalog \
+                 USING gin (LOWER(name) gin_trgm_ops, organization_id gin_btree_ops) \
                  WHERE deleted_at IS NULL;",
             )
             .await?;

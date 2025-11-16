@@ -90,19 +90,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Cover cluster+namespace filtered scans used by get_matching_cluster_services
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_cluster_service_selector_namespace_deleted_idx")
-                    .table(KubeClusterServiceSelector::Table)
-                    .col(KubeClusterServiceSelector::ClusterId)
-                    .col(KubeClusterServiceSelector::Namespace)
-                    .col(KubeClusterServiceSelector::DeletedAt)
-                    .to_owned(),
-            )
-            .await?;
-
         Ok(())
     }
 

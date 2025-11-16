@@ -95,18 +95,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create composite index for active sessions by user
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_devbox_session_user_revoked_idx")
-                    .table(KubeDevboxSession::Table)
-                    .col(KubeDevboxSession::UserId)
-                    .col(KubeDevboxSession::RevokedAt)
-                    .to_owned(),
-            )
-            .await?;
-
         Ok(())
     }
 }

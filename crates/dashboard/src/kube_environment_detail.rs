@@ -2,7 +2,6 @@ use std::{collections::HashMap, str::FromStr};
 
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
-use gloo_net::eventsource::futures::EventSource;
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
@@ -37,6 +36,7 @@ use crate::{
     docs_url,
     modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
     organization::get_current_org,
+    sse::run_sse_with_retry,
     DOCS_DEVBOX_PATH, DOCS_ENVIRONMENT_PATH,
 };
 
@@ -426,62 +426,26 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                         org_id, environment_id
                     );
 
-                    match EventSource::new(&url) {
-                        Ok(mut event_source) => {
-                            match event_source.subscribe("environment") {
-                                Ok(mut stream) => {
-                                    while let Some(event) = stream.next().await {
-                                        match event {
-                                            Ok((_, message)) => {
-                                                if let Some(data) = message.data().as_string() {
-                                                    match serde_json::from_str::<
-                                                        EnvironmentLifecycleEvent,
-                                                    >(
-                                                        &data
-                                                    ) {
-                                                        Ok(payload) => {
-                                                            environment_status.set(payload.status);
-                                                            update_counter.update(|c| *c += 1);
-                                                        }
-                                                        Err(err) => {
-                                                            web_sys::console::error_1(
-                                                                &format!(
-                                                                    "Failed to parse environment event payload: {err}"
-                                                                )
-                                                                .into(),
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Err(err) => {
-                                                web_sys::console::error_1(
-                                                    &format!(
-                                                        "Environment event stream error: {err}"
-                                                    )
-                                                    .into(),
-                                                );
-                                            }
-                                        }
-                                    }
+                    let listener_name = format!("environment {} status", environment_id);
+                    run_sse_with_retry(url, "environment", listener_name, move |message| {
+                        if let Some(data) = message.data().as_string() {
+                            match serde_json::from_str::<EnvironmentLifecycleEvent>(&data) {
+                                Ok(payload) => {
+                                    environment_status.set(payload.status);
+                                    update_counter.update(|c| *c += 1);
                                 }
                                 Err(err) => {
                                     web_sys::console::error_1(
                                         &format!(
-                                            "Failed to subscribe to environment events: {err}"
+                                            "Failed to parse environment event payload: {err}"
                                         )
                                         .into(),
                                     );
                                 }
                             }
-                            event_source.close();
                         }
-                        Err(err) => {
-                            web_sys::console::error_1(
-                                &format!("Failed to connect to environment events: {err}").into(),
-                            );
-                        }
-                    }
+                    })
+                    .await;
                 }
             });
         }
@@ -503,67 +467,33 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                         org_id, environment_id
                     );
 
-                    match EventSource::new(&url) {
-                        Ok(mut event_source) => {
-                            match event_source.subscribe("environment_workload") {
-                                Ok(mut stream) => {
-                                    while let Some(event) = stream.next().await {
-                                        match event {
-                                            Ok((_, message)) => {
-                                                if let Some(data) = message.data().as_string() {
-                                                    match serde_json::from_str::<
-                                                        EnvironmentWorkloadStatusEvent,
-                                                    >(
-                                                        &data
-                                                    ) {
-                                                        Ok(payload) => {
-                                                            readiness_map.update(|map| {
-                                                                map.insert(
-                                                                    payload.workload_id,
-                                                                    payload.ready_replicas,
-                                                                );
-                                                            });
-                                                        }
-                                                        Err(err) => {
-                                                            web_sys::console::error_1(
-                                                                &format!(
-                                                                    "Failed to parse environment workload event payload: {err}"
-                                                                )
-                                                                .into(),
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Err(err) => {
-                                                web_sys::console::error_1(
-                                                    &format!(
-                                                        "Environment workload event stream error: {err}"
-                                                    )
-                                                    .into(),
-                                                );
-                                            }
-                                        }
+                    let listener_name = format!("environment {} workloads", environment_id);
+                    run_sse_with_retry(
+                        url,
+                        "environment_workload",
+                        listener_name,
+                        move |message| {
+                            if let Some(data) = message.data().as_string() {
+                                match serde_json::from_str::<EnvironmentWorkloadStatusEvent>(&data)
+                                {
+                                    Ok(payload) => {
+                                        readiness_map.update(|map| {
+                                            map.insert(payload.workload_id, payload.ready_replicas);
+                                        });
+                                    }
+                                    Err(err) => {
+                                        web_sys::console::error_1(
+                                            &format!(
+                                                "Failed to parse environment workload event payload: {err}"
+                                            )
+                                            .into(),
+                                        );
                                     }
                                 }
-                                Err(err) => {
-                                    web_sys::console::error_1(
-                                        &format!(
-                                            "Failed to subscribe to environment workload events: {err}"
-                                        )
-                                        .into(),
-                                    );
-                                }
                             }
-                            event_source.close();
-                        }
-                        Err(err) => {
-                            web_sys::console::error_1(
-                                &format!("Failed to connect to environment workload events: {err}")
-                                    .into(),
-                            );
-                        }
-                    }
+                        },
+                    )
+                    .await;
                 }
             });
         }

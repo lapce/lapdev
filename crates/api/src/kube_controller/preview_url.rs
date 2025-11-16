@@ -27,7 +27,7 @@ impl KubeController {
                     "Service not found in base environment".to_string(),
                 ));
             }
-        } else if service.environment_id != environment_id {
+        } else if service.environment_id != environment.id {
             return Err(ApiError::InvalidRequest(
                 "Service not found in environment".to_string(),
             ));

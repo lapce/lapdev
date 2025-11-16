@@ -974,9 +974,9 @@ impl HrpcService for CoreState {
         org_id: Uuid,
         workload_id: Uuid,
     ) -> Result<Option<KubeEnvironmentWorkload>, HrpcError> {
-        let _ = self.authorize(headers, org_id, None).await?;
+        let user = self.authorize(headers, org_id, None).await?;
         self.kube_controller
-            .get_environment_workload(org_id, workload_id)
+            .get_environment_workload(org_id, user.id, workload_id)
             .await
             .map_err(HrpcError::from)
     }

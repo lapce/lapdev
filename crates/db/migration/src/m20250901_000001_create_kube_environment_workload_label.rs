@@ -83,19 +83,6 @@ impl MigrationTrait for Migration {
         manager
             .create_index(
                 Index::create()
-                    .name("kube_env_workload_label_env_key_value_idx")
-                    .table(KubeEnvironmentWorkloadLabel::Table)
-                    .col(KubeEnvironmentWorkloadLabel::EnvironmentId)
-                    .col(KubeEnvironmentWorkloadLabel::LabelKey)
-                    .col(KubeEnvironmentWorkloadLabel::LabelValue)
-                    .col(KubeEnvironmentWorkloadLabel::DeletedAt)
-                    .to_owned(),
-            )
-            .await?;
-
-        manager
-            .create_index(
-                Index::create()
                     .name("kube_env_workload_label_unique_idx")
                     .table(KubeEnvironmentWorkloadLabel::Table)
                     .col(KubeEnvironmentWorkloadLabel::WorkloadId)

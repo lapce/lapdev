@@ -111,6 +111,7 @@ impl KubeController {
     pub async fn get_environment_workload(
         &self,
         org_id: Uuid,
+        user_id: Uuid,
         workload_id: Uuid,
     ) -> Result<Option<lapdev_common::kube::KubeEnvironmentWorkload>, ApiError> {
         // First get the workload to find its environment
@@ -128,6 +129,9 @@ impl KubeController {
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
             if environment.organization_id != org_id {
+                return Err(ApiError::Unauthorized);
+            }
+            if !environment.is_shared && environment.user_id != user_id {
                 return Err(ApiError::Unauthorized);
             }
             Ok(Some(workload))

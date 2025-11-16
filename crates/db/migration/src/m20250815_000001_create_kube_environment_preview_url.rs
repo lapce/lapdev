@@ -118,18 +118,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Index for efficient lookups by service
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_environment_preview_url_service_idx")
-                    .table(KubeEnvironmentPreviewUrl::Table)
-                    .col(KubeEnvironmentPreviewUrl::ServiceId)
-                    .col(KubeEnvironmentPreviewUrl::DeletedAt)
-                    .to_owned(),
-            )
-            .await?;
-
         // Unique index to prevent duplicate names (globally unique)
         manager
             .create_index(

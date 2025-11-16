@@ -41,18 +41,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create index for organization lookups
-        manager
-            .create_index(
-                Index::create()
-                    .name("kube_namespace_org_deleted_idx")
-                    .table(KubeNamespace::Table)
-                    .col(KubeNamespace::OrganizationId)
-                    .col(KubeNamespace::DeletedAt)
-                    .to_owned(),
-            )
-            .await?;
-
         // Create unique index to prevent duplicate namespace names within organization
         manager
             .create_index(

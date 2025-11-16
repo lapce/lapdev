@@ -154,6 +154,18 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Create index for branch lookups (check_environment_has_branches / get_branch_environments)
+        manager
+            .create_index(
+                Index::create()
+                    .name("kube_environment_base_env_deleted_idx")
+                    .table(KubeEnvironment::Table)
+                    .col(KubeEnvironment::BaseEnvironmentId)
+                    .col(KubeEnvironment::DeletedAt)
+                    .to_owned(),
+            )
+            .await?;
+
         // Create unique index to ensure same app catalog can only be deployed once per (cluster_id, namespace)
         // for base environments (base_environment_id IS NULL), but allow multiple branch environments
         manager

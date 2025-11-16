@@ -249,7 +249,13 @@ async fn sync_environment_from_catalog(
 
 async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
     let client = HrpcServiceClient::new("/api/rpc".to_string());
-    client.devbox_session_get_session().await?
+    let session = client
+        .devbox_session_get_session()
+        .await
+        .map_err(|err| anyhow!("failed to fetch devbox session: {err:?}"))?
+        .map_err(|err| anyhow!("failed to fetch devbox session: {err:?}"))?;
+
+    Ok(session)
 }
 
 fn build_port_overrides_from_workload_ports(

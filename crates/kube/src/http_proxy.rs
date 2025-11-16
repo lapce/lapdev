@@ -133,7 +133,7 @@ impl PreviewUrlProxy {
                     );
 
                     // Modify the initial request data to add environment ID to tracestate header
-                    let initial_request_data = self.add_environment_id_to_headers(
+                    let initial_request_data = Self::add_environment_id_to_headers(
                         &buffer,
                         headers_len,
                         target.environment_id,
@@ -694,7 +694,6 @@ impl PreviewUrlProxy {
 
     /// Add environment ID to the tracestate header in HTTP request using parsed header info
     fn add_environment_id_to_headers(
-        &self,
         request_data: &[u8],
         headers_len: usize,
         environment_id: Uuid,
@@ -710,9 +709,13 @@ impl PreviewUrlProxy {
         let environment_tracestate = format!("lapdev-env-id={}", environment_id);
         let mut modified_headers = String::new();
         let mut tracestate_added = false;
+        let mut connection_header_written = false;
+        let mut is_upgrade_request = false;
 
         for line in headers_str.lines() {
-            if line.to_lowercase().starts_with("tracestate:") {
+            let lower = line.to_lowercase();
+
+            if lower.starts_with("tracestate:") {
                 // Existing tracestate header - append our environment ID
                 let existing_value = line[11..].trim(); // Skip "tracestate:"
                 if existing_value.is_empty() {
@@ -725,11 +728,33 @@ impl PreviewUrlProxy {
                     ));
                 }
                 tracestate_added = true;
-            } else if line.is_empty() && !tracestate_added {
-                // Add tracestate before the empty line that separates headers from body
-                modified_headers.push_str(&format!("tracestate: {}\r\n", environment_tracestate));
+            } else if lower.starts_with("connection:") {
+                connection_header_written = true;
+                if lower.contains("upgrade") {
+                    is_upgrade_request = true;
+                    modified_headers.push_str(line);
+                    modified_headers.push_str("\r\n");
+                } else {
+                    // Force HTTP/1.1 keep-alive clients to close after the response
+                    modified_headers.push_str("connection: close\r\n");
+                }
+            } else if lower.starts_with("upgrade:") {
+                is_upgrade_request = true;
+                modified_headers.push_str(line);
                 modified_headers.push_str("\r\n");
-                tracestate_added = true;
+            } else if line.is_empty() {
+                if !tracestate_added {
+                    modified_headers.push_str(&format!(
+                        "tracestate: {}\r\n",
+                        environment_tracestate
+                    ));
+                    tracestate_added = true;
+                }
+                if !connection_header_written && !is_upgrade_request {
+                    modified_headers.push_str("connection: close\r\n");
+                    connection_header_written = true;
+                }
+                modified_headers.push_str("\r\n");
             } else {
                 modified_headers.push_str(line);
                 modified_headers.push_str("\r\n");
@@ -739,6 +764,10 @@ impl PreviewUrlProxy {
         // If we didn't add tracestate yet (no empty line found), add it at the end
         if !tracestate_added {
             modified_headers.push_str(&format!("tracestate: {}\r\n", environment_tracestate));
+        }
+        // Ensure keep-alive traffic doesn't get multiplexed across previews
+        if !connection_header_written && !is_upgrade_request {
+            modified_headers.push_str("connection: close\r\n");
         }
 
         // Reconstruct the complete request
@@ -802,7 +831,7 @@ mod tests {
         // For now, we can test the URL parsing logic
         use crate::preview_url::PreviewUrlResolver;
 
-        let result = PreviewUrlResolver::parse_preview_url("webapp-8080-abc123");
+        let result = PreviewUrlResolver::parse_preview_url("8080-webapp-abc123");
         assert!(result.is_ok());
 
         let info = result.unwrap();
@@ -829,6 +858,37 @@ mod tests {
         assert!(timeout_error.to_string().contains("Timeout"));
         assert!(network_error.to_string().contains("Network error"));
         assert!(internal_error.to_string().contains("Internal error"));
+    }
+
+    #[test]
+    fn test_add_environment_headers_force_connection_close() {
+        let request = b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n";
+        let env_id = Uuid::new_v4();
+        let modified = PreviewUrlProxy::add_environment_id_to_headers(
+            request,
+            request.len(),
+            env_id,
+        )
+        .expect("request rewrite should succeed");
+        let modified_str = String::from_utf8(modified).unwrap();
+        assert!(modified_str.contains(&format!("lapdev-env-id={env_id}")));
+        assert!(modified_str.to_lowercase().contains("connection: close"));
+    }
+
+    #[test]
+    fn test_add_environment_headers_respect_upgrades() {
+        let request = b"GET /chat HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        let env_id = Uuid::new_v4();
+        let modified = PreviewUrlProxy::add_environment_id_to_headers(
+            request,
+            request.len(),
+            env_id,
+        )
+        .expect("request rewrite should succeed");
+        let modified_str = String::from_utf8(modified).unwrap();
+        assert!(modified_str.contains("Connection: Upgrade"));
+        assert!(modified_str.contains("Upgrade: websocket"));
+        assert!(!modified_str.to_lowercase().contains("connection: close"));
     }
 
     #[test]

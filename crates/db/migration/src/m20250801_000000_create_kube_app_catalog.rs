@@ -82,12 +82,14 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Create composite GIN index for case-insensitive wildcard name searches scoped by org
+        // Create trigram GIN index for case-insensitive wildcard name searches.
+        // We rely on the B-tree indexes above for organization / deleted filters to avoid
+        // the unsupported gin_btree_ops operator class on some Postgres installations.
         manager
             .get_connection()
             .execute_unprepared(
                 "CREATE INDEX kube_app_catalog_gin_search_idx ON kube_app_catalog \
-                 USING gin (LOWER(name) gin_trgm_ops, organization_id gin_btree_ops) \
+                 USING gin (LOWER(name) gin_trgm_ops) \
                  WHERE deleted_at IS NULL;",
             )
             .await?;

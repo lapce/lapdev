@@ -561,9 +561,7 @@ async fn handle_connection(
                     connection,
                     target_port,
                 } => {
-                    let shutdown_rx = connection_registry
-                        .subscribe(Some(branch_env_id))
-                        .await;
+                    let shutdown_rx = connection_registry.subscribe(Some(branch_env_id)).await;
                     let metadata = connection.metadata();
                     info!(
                         "TCP {} via proxy port {} (service {}) intercepted by Devbox (intercept_id={}, workload_id={}, target_port={})",
@@ -743,9 +741,7 @@ async fn handle_http_proxy(
                 metadata.workload_id,
                 target_port
             );
-            let shutdown_rx = connection_registry
-                .subscribe(Some(branch_env_id))
-                .await;
+            let shutdown_rx = connection_registry.subscribe(Some(branch_env_id)).await;
             return handle_devbox_tunnel(
                 inbound_stream,
                 client_addr,

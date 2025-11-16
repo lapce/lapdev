@@ -166,9 +166,10 @@ impl DevboxClientRpc for DevboxClientRpcServer {
 
         if let Some(ref env) = environment {
             println!(
-                "\n{} Environment changed to: {} / {}",
+                "\n{} Environment changed to: {} ({} / {})",
                 "🔄".cyan(),
-                env.cluster_name.bright_white(),
+                env.environment_name.bright_white(),
+                env.cluster_name.cyan(),
                 env.namespace.cyan()
             );
             tracing::info!(
@@ -574,8 +575,9 @@ impl DevboxTunnelManager {
         session_info: &lapdev_devbox_rpc::DevboxSessionInfo,
     ) {
         println!(
-            "  Active environment: {} / {}",
-            env.cluster_name.bright_white(),
+            "  Active environment: {} ({} / {})",
+            env.environment_name.bright_white(),
+            env.cluster_name.cyan(),
             env.namespace.cyan()
         );
 

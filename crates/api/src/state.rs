@@ -493,8 +493,7 @@ impl CoreState {
                     &intercept,
                     route_workload_id,
                 )
-            })
-        {
+            }) {
             Ok(route) => {
                 let (target_environment_id, _) = Self::route_environment_targets(&environment);
                 if let Err(err) = self
@@ -530,10 +529,7 @@ impl CoreState {
         let (target_environment_id, branch_environment_id) =
             Self::route_environment_targets(&environment);
 
-        let route_workload_id = match self
-            .route_workload_id_for_intercept(&intercept)
-            .await
-        {
+        let route_workload_id = match self.route_workload_id_for_intercept(&intercept).await {
             Ok(id) => id,
             Err(err) => {
                 tracing::warn!(
@@ -635,9 +631,7 @@ impl CoreState {
                 continue;
             }
 
-            let route_workload_id = self
-                .route_workload_id_for_intercept(&intercept)
-                .await?;
+            let route_workload_id = self.route_workload_id_for_intercept(&intercept).await?;
 
             let route = Self::build_devbox_route_config_from_intercept(
                 base_trimmed,

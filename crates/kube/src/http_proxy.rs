@@ -744,10 +744,8 @@ impl PreviewUrlProxy {
                 modified_headers.push_str("\r\n");
             } else if line.is_empty() {
                 if !tracestate_added {
-                    modified_headers.push_str(&format!(
-                        "tracestate: {}\r\n",
-                        environment_tracestate
-                    ));
+                    modified_headers
+                        .push_str(&format!("tracestate: {}\r\n", environment_tracestate));
                     tracestate_added = true;
                 }
                 if !connection_header_written && !is_upgrade_request {
@@ -864,12 +862,9 @@ mod tests {
     fn test_add_environment_headers_force_connection_close() {
         let request = b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n";
         let env_id = Uuid::new_v4();
-        let modified = PreviewUrlProxy::add_environment_id_to_headers(
-            request,
-            request.len(),
-            env_id,
-        )
-        .expect("request rewrite should succeed");
+        let modified =
+            PreviewUrlProxy::add_environment_id_to_headers(request, request.len(), env_id)
+                .expect("request rewrite should succeed");
         let modified_str = String::from_utf8(modified).unwrap();
         assert!(modified_str.contains(&format!("lapdev-env-id={env_id}")));
         assert!(modified_str.to_lowercase().contains("connection: close"));
@@ -879,12 +874,9 @@ mod tests {
     fn test_add_environment_headers_respect_upgrades() {
         let request = b"GET /chat HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
         let env_id = Uuid::new_v4();
-        let modified = PreviewUrlProxy::add_environment_id_to_headers(
-            request,
-            request.len(),
-            env_id,
-        )
-        .expect("request rewrite should succeed");
+        let modified =
+            PreviewUrlProxy::add_environment_id_to_headers(request, request.len(), env_id)
+                .expect("request rewrite should succeed");
         let modified_str = String::from_utf8(modified).unwrap();
         assert!(modified_str.contains("Connection: Upgrade"));
         assert!(modified_str.contains("Upgrade: websocket"));

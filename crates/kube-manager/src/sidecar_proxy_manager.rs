@@ -218,9 +218,9 @@ impl SidecarProxyManager {
         environment_id: Uuid,
         mut routes: HashMap<Uuid, DevboxRouteConfig>,
     ) -> Result<(), String> {
-        let previous_routes =
-            self.snapshot_devbox_routes_for_environment(environment_id, routes.clone())
-                .await;
+        let previous_routes = self
+            .snapshot_devbox_routes_for_environment(environment_id, routes.clone())
+            .await;
 
         let Some(connections) = self.latest_clients_for_environment(environment_id).await else {
             warn!(
@@ -243,8 +243,9 @@ impl SidecarProxyManager {
                     ));
                 }
             } else {
-                let prior_branch =
-                    previous_routes.get(&workload_id).and_then(|route| route.branch_environment_id);
+                let prior_branch = previous_routes
+                    .get(&workload_id)
+                    .and_then(|route| route.branch_environment_id);
                 if let Err(e) = client
                     .stop_devbox(tarpc::context::current(), prior_branch)
                     .await

@@ -114,10 +114,7 @@ impl MigrationTrait for Migration {
                     .table(KubeEnvironmentPreviewUrl::Table)
                     .col(KubeEnvironmentPreviewUrl::EnvironmentId)
                     .col(KubeEnvironmentPreviewUrl::DeletedAt)
-                    .col((
-                        KubeEnvironmentPreviewUrl::CreatedAt,
-                        IndexOrder::Desc,
-                    ))
+                    .col((KubeEnvironmentPreviewUrl::CreatedAt, IndexOrder::Desc))
                     .to_owned(),
             )
             .await?;

@@ -614,6 +614,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
 
             Ok(Some(lapdev_devbox_rpc::DevboxEnvironmentInfo {
                 environment_id: env_id,
+                environment_name: environment.name.clone(),
                 cluster_name: cluster.name,
                 namespace: environment.namespace,
             }))
@@ -709,6 +710,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
         // Notify client about the environment change
         let env_info = lapdev_devbox_rpc::DevboxEnvironmentInfo {
             environment_id: environment.id,
+            environment_name: environment.name.clone(),
             cluster_name: cluster.name,
             namespace: environment.namespace.clone(),
         };

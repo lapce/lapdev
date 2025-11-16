@@ -66,6 +66,7 @@ pub struct DevboxSessionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevboxEnvironmentInfo {
     pub environment_id: Uuid,
+    pub environment_name: String,
     pub cluster_name: String,
     pub namespace: String,
 }

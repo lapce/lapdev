@@ -182,6 +182,7 @@ impl HrpcService for CoreState {
 
         let env_info = lapdev_devbox_rpc::DevboxEnvironmentInfo {
             environment_id: environment.id,
+            environment_name: environment.name.clone(),
             cluster_name: cluster.name.clone(),
             namespace: environment.namespace.clone(),
         };

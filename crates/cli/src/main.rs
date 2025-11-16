@@ -84,11 +84,6 @@ async fn main() -> anyhow::Result<()> {
         .add_directive("tarpc=warn".parse().unwrap())
         .add_directive("tarpc::client=warn".parse().unwrap()); // Only show tarpc warnings/errors
 
-    let console_layer = fmt::layer()
-        .with_target(false)
-        .without_time()
-        .with_writer(std::io::stderr);
-
     let file_layer = fmt::layer()
         .with_target(true)
         .with_ansi(false)
@@ -96,7 +91,6 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(console_layer)
         .with(file_layer)
         .init();
 

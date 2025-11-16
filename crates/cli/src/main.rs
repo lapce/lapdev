@@ -1,3 +1,6 @@
+use std::{fs, path::PathBuf};
+
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 mod api;
@@ -16,6 +19,10 @@ struct Cli {
     /// Enable verbose logging
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Directory for lapdev-cli log files
+    #[arg(long = "log-dir", env = "LAPDEV_LOG_DIR", value_name = "PATH")]
+    log_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -56,6 +63,12 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    let log_dir = resolve_log_dir(cli.log_dir.clone())?;
+    fs::create_dir_all(&log_dir)
+        .with_context(|| format!("failed to create log directory at {}", log_dir.display()))?;
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "lapdev-cli.log");
+    let (file_writer, _file_guard) = tracing_appender::non_blocking(file_appender);
+
     // Setup logging
     let log_level = if cli.verbose {
         tracing::Level::DEBUG
@@ -71,10 +84,23 @@ async fn main() -> anyhow::Result<()> {
         .add_directive("tarpc=warn".parse().unwrap())
         .add_directive("tarpc::client=warn".parse().unwrap()); // Only show tarpc warnings/errors
 
+    let console_layer = fmt::layer()
+        .with_target(false)
+        .without_time()
+        .with_writer(std::io::stderr);
+
+    let file_layer = fmt::layer()
+        .with_target(true)
+        .with_ansi(false)
+        .with_writer(file_writer);
+
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::layer().with_target(false).without_time())
+        .with(console_layer)
+        .with(file_layer)
         .init();
+
+    tracing::debug!("writing logs to {}", log_dir.display());
 
     // Handle commands
     match cli.command {
@@ -99,4 +125,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_log_dir(override_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    override_dir
+        .or_else(default_log_dir)
+        .ok_or_else(|| anyhow::anyhow!("unable to determine log directory"))
+}
+
+#[cfg(target_os = "macos")]
+fn default_log_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join("Library").join("Logs").join("Lapdev"))
+}
+
+#[cfg(target_os = "windows")]
+fn default_log_dir() -> Option<PathBuf> {
+    dirs::data_local_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("AppData").join("Local")))
+        .map(|base| base.join("Lapdev").join("logs"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn default_log_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("state")))
+        .map(|base| base.join("lapdev").join("logs"))
 }

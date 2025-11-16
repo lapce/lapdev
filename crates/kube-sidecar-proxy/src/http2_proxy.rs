@@ -239,13 +239,14 @@ async fn determine_connection_route(
             )
         }
         RouteDecision::BranchDevbox {
+            branch_id: branch_env_id,
             connection,
             target_port,
         } => {
             let metadata = connection.metadata().clone();
             let description = format!(
                 "branch devbox intercept_id={} workload_id={} target_port={} (branch {:?})",
-                metadata.intercept_id, metadata.workload_id, target_port, branch_id
+                metadata.intercept_id, metadata.workload_id, target_port, branch_env_id
             );
             (
                 UpstreamConnector::Devbox {

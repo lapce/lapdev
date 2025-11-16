@@ -218,8 +218,9 @@ impl SidecarProxyManager {
         environment_id: Uuid,
         mut routes: HashMap<Uuid, DevboxRouteConfig>,
     ) -> Result<(), String> {
-        self.snapshot_devbox_routes_for_environment(environment_id, routes.clone())
-            .await;
+        let previous_routes =
+            self.snapshot_devbox_routes_for_environment(environment_id, routes.clone())
+                .await;
 
         let Some(connections) = self.latest_clients_for_environment(environment_id).await else {
             warn!(
@@ -241,11 +242,18 @@ impl SidecarProxyManager {
                         workload_id, e
                     ));
                 }
-            } else if let Err(e) = client.stop_devbox(tarpc::context::current(), None).await {
-                return Err(format!(
-                    "Failed to clear devbox routes for workload {}: {}",
-                    workload_id, e
-                ));
+            } else {
+                let prior_branch =
+                    previous_routes.get(&workload_id).and_then(|route| route.branch_environment_id);
+                if let Err(e) = client
+                    .stop_devbox(tarpc::context::current(), prior_branch)
+                    .await
+                {
+                    return Err(format!(
+                        "Failed to clear devbox routes for workload {}: {}",
+                        workload_id, e
+                    ));
+                }
             }
         }
 
@@ -479,9 +487,9 @@ impl SidecarProxyManager {
         &self,
         environment_id: Uuid,
         routes: HashMap<Uuid, DevboxRouteConfig>,
-    ) {
+    ) -> HashMap<Uuid, DevboxRouteConfig> {
         let mut guard = self.devbox_route_snapshots.write().await;
-        guard.insert(environment_id, routes);
+        guard.insert(environment_id, routes).unwrap_or_default()
     }
 
     async fn upsert_devbox_route_snapshot(&self, environment_id: Uuid, route: DevboxRouteConfig) {

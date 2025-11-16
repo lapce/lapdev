@@ -556,11 +556,36 @@ async fn handle_connection(
             };
 
             match decision {
-                RouteDecision::DefaultDevbox {
+                RouteDecision::BranchDevbox {
+                    branch_id: branch_env_id,
                     connection,
                     target_port,
+                } => {
+                    let shutdown_rx = connection_registry
+                        .subscribe(Some(branch_env_id))
+                        .await;
+                    let metadata = connection.metadata();
+                    info!(
+                        "TCP {} via proxy port {} (service {}) intercepted by Devbox (intercept_id={}, workload_id={}, target_port={})",
+                        client_addr,
+                        proxy_port,
+                        service_port,
+                        metadata.intercept_id,
+                        metadata.workload_id,
+                        target_port
+                    );
+                    handle_devbox_tunnel(
+                        inbound_stream,
+                        client_addr,
+                        service_port,
+                        initial_data,
+                        connection,
+                        target_port,
+                        shutdown_rx,
+                    )
+                    .await
                 }
-                | RouteDecision::BranchDevbox {
+                RouteDecision::DefaultDevbox {
                     connection,
                     target_port,
                 } => {
@@ -704,6 +729,7 @@ async fn handle_http_proxy(
             }
         }
         RouteDecision::BranchDevbox {
+            branch_id: branch_env_id,
             connection,
             target_port,
         } => {
@@ -712,12 +738,14 @@ async fn handle_http_proxy(
                 "HTTP {} {} intercepted by branch devbox (env {:?}, intercept_id={}, workload_id={}, target_port={})",
                 http_request.method,
                 http_request.path,
-                branch_id,
+                branch_env_id,
                 metadata.intercept_id,
                 metadata.workload_id,
                 target_port
             );
-            let shutdown_rx = connection_registry.subscribe(branch_id).await;
+            let shutdown_rx = connection_registry
+                .subscribe(Some(branch_env_id))
+                .await;
             return handle_devbox_tunnel(
                 inbound_stream,
                 client_addr,

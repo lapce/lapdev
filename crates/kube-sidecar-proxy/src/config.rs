@@ -79,6 +79,7 @@ impl RoutingTable {
                 match &route.mode {
                     BranchMode::Devbox(connection) => {
                         return RouteDecision::BranchDevbox {
+                            branch_id,
                             connection: connection.clone(),
                             target_port: connection.resolve_target_port(port),
                         };
@@ -585,6 +586,7 @@ pub enum RouteDecision {
         service: BranchServiceRoute,
     },
     BranchDevbox {
+        branch_id: Uuid,
         connection: Arc<DevboxConnection>,
         target_port: u16,
     },

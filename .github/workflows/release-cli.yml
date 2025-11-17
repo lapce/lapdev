@@ -41,11 +41,11 @@ jobs:
       - name: Verify Cargo version matches release version
         run: |
           FILE_VERSION=$(python - <<'PY'
-import pathlib, tomllib
-data = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
-print(data["workspace"]["package"]["version"])
-PY
-)
+          import pathlib, tomllib
+          data = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
+          print(data["workspace"]["package"]["version"])
+          PY
+          )
           if [[ "$FILE_VERSION" != "${{ steps.vars.outputs.version }}" ]]; then
             echo "Cargo workspace version ${FILE_VERSION} does not match requested version ${{ steps.vars.outputs.version }}" >&2
             exit 1

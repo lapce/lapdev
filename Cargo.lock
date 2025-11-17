@@ -3029,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dotenvy",
@@ -3050,7 +3050,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-api-hrpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lapdev-common",
  "lapdev-hrpc",
@@ -3121,7 +3121,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base16ct",
@@ -3176,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-conductor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3205,7 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-dashboard"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3230,7 +3230,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3254,7 +3254,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-db-entities"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sea-orm",
  "sea-orm-cli",
@@ -3263,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-db-migration"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lapdev-common",
  "lapdev-db-entities",
@@ -3275,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-devbox-rpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "lapdev-common",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-enterprise"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3307,7 +3307,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-guest-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "tracing",
@@ -3315,7 +3315,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-hrpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "gloo-net",
@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-hrpc-proc-macro"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lapdev-hrpc",
  "proc-macro2",
@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-kube"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3372,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-kube-manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3400,7 +3400,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-kube-rpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "httparse",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-kube-sidecar-proxy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3459,7 +3459,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-proxy-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3474,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-proxy-ssh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3492,7 +3492,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-rpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3511,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-tunnel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -3534,7 +3534,7 @@ dependencies = [
 
 [[package]]
 name = "lapdev-ws"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-compression",

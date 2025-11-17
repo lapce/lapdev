@@ -45,6 +45,29 @@ struct EnvironmentLifecycleEvent {
     status: KubeEnvironmentStatus,
 }
 
+const DEVBOX_INSTALL_UNIX_CMD: &str = "curl -fsSL https://get.lap.dev/lapdev-cli.sh | bash";
+const DEVBOX_INSTALL_WINDOWS_CMD: &str = "irm https://get.lap.dev/lapdev-cli.ps1 | iex";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DevboxInstallTab {
+    LinuxMac,
+    Windows,
+}
+
+fn detect_devbox_install_tab() -> DevboxInstallTab {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Ok(user_agent) = window().navigator().user_agent() {
+            let ua = user_agent.to_lowercase();
+            if ua.contains("windows") {
+                return DevboxInstallTab::Windows;
+            }
+        }
+    }
+
+    DevboxInstallTab::LinuxMac
+}
+
 #[component]
 pub fn KubeEnvironmentDetail() -> impl IntoView {
     let params = use_params_map();
@@ -2421,11 +2444,11 @@ pub fn DevboxSessionBanner(
                                                     <h4 class="font-semibold text-amber-900 dark:text-amber-200 mb-1">
                                                         "You Can Connect Your Local Development Machine"
                                                     </h4>
-                                                    <Show when=move || !is_expanded.get() fallback=|| view! {
-                                                        <p class="text-sm text-amber-800 dark:text-amber-300">
-                                                            "To intercept workloads and develop locally, you can connect your machine using the Lapdev CLI."
-                                                        </p>
-                                                    }>
+                                        <Show when=move || !is_expanded.get() fallback=|| view! {
+                                            <p class="text-sm text-amber-800 dark:text-amber-300">
+                                                "To intercept workloads and develop locally, you can connect your machine using the Lapdev CLI."
+                                            </p>
+                                        }>
                                                         <p class="text-sm text-amber-800 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-200">
                                                             "Click to view setup instructions"
                                                         </p>
@@ -2447,45 +2470,7 @@ pub fn DevboxSessionBanner(
                                         </div>
 
                                         <Show when=move || is_expanded.get()>
-                                            <div class="mt-3 ml-14 flex flex-col gap-3">
-                                                <div class="flex flex-col gap-2 text-sm">
-                                                    <div class="flex items-start gap-2">
-                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
-                                                            "1."
-                                                        </span>
-                                                        <div class="flex-1">
-                                                            <span class="text-amber-800 dark:text-amber-300">
-                                                                "Install the CLI: "
-                                                            </span>
-                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
-                                                                "curl -fsSL https://get.lap.dev | sh"
-                                                            </code>
-                                                        </div>
-                                                    </div>
-                                                    <div class="flex items-start gap-2">
-                                                        <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
-                                                            "2."
-                                                        </span>
-                                                        <div class="flex-1">
-                                                            <span class="text-amber-800 dark:text-amber-300">
-                                                                "Connect: "
-                                                            </span>
-                                                            <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
-                                                                "lapdev connect"
-                                                            </code>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <div class="flex gap-2">
-                                                    <a href=docs_url(DOCS_DEVBOX_PATH) target="_blank" rel="noopener noreferrer">
-                                                        <Button variant=ButtonVariant::Outline size=ButtonSize::Sm class="text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30">
-                                                            <lucide_leptos::BookOpen attr:class="h-4 w-4" />
-                                                            "View Documentation"
-                                                            <lucide_leptos::ExternalLink attr:class="h-3 w-3" />
-                                                        </Button>
-                                                    </a>
-                                                </div>
-                                            </div>
+                                            <DevboxInstallInstructions />
                                         </Show>
                                     </div>
                                 </div>
@@ -2495,5 +2480,73 @@ pub fn DevboxSessionBanner(
                     })
             }}
         </Suspense>
+    }
+}
+
+#[component]
+fn DevboxInstallInstructions() -> impl IntoView {
+    let default_tab = RwSignal::new(detect_devbox_install_tab());
+
+    view! {
+        <div class="mt-3 ml-14 flex flex-col gap-3">
+            <div class="flex flex-col gap-2 text-sm">
+                <div class="flex items-start gap-2">
+                    <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
+                        "1."
+                    </span>
+                    <div class="flex-1 flex flex-col gap-2">
+                        <span class="text-amber-800 dark:text-amber-300">
+                            "Install the CLI:"
+                        </span>
+                        <Tabs default_value=default_tab class="gap-2">
+                            <TabsList class="w-full gap-2">
+                                <TabsTrigger value=DevboxInstallTab::LinuxMac class="flex-1">
+                                    "Linux / macOS"
+                                </TabsTrigger>
+                                <TabsTrigger value=DevboxInstallTab::Windows class="flex-1">
+                                    "Windows PowerShell"
+                                </TabsTrigger>
+                            </TabsList>
+                            <TabsContent value=DevboxInstallTab::LinuxMac class="mt-2">
+                                <code class="block px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs break-all">
+                                    {DEVBOX_INSTALL_UNIX_CMD}
+                                </code>
+                            </TabsContent>
+                            <TabsContent value=DevboxInstallTab::Windows class="mt-2">
+                                <code class="block px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs break-all">
+                                    {DEVBOX_INSTALL_WINDOWS_CMD}
+                                </code>
+                            </TabsContent>
+                        </Tabs>
+                    </div>
+                </div>
+                <div class="flex items-start gap-2">
+                    <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
+                        "2."
+                    </span>
+                    <div class="flex-1">
+                        <span class="text-amber-800 dark:text-amber-300">
+                            "Connect: "
+                        </span>
+                        <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
+                            "lapdev connect"
+                        </code>
+                    </div>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <a href=docs_url(DOCS_DEVBOX_PATH) target="_blank" rel="noopener noreferrer">
+                    <Button
+                        variant=ButtonVariant::Outline
+                        size=ButtonSize::Sm
+                        class="text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30"
+                    >
+                        <lucide_leptos::BookOpen attr:class="h-4 w-4" />
+                        "View Documentation"
+                        <lucide_leptos::ExternalLink attr:class="h-3 w-3" />
+                    </Button>
+                </a>
+            </div>
+        </div>
     }
 }

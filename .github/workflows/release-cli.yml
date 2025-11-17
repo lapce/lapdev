@@ -1,0 +1,246 @@
+name: Release Lapdev CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Lapdev CLI version (e.g. 0.1.0). Must match Cargo.toml."
+        required: true
+  push:
+    tags:
+      - "lapdev-cli-v*"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      tag_name: ${{ steps.vars.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: vars
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#lapdev-cli-v}"
+          fi
+
+          VERSION="${VERSION#v}"
+          if [[ -z "$VERSION" ]]; then
+            echo "Unable to determine version" >&2
+            exit 1
+          fi
+
+          TAG_NAME="lapdev-cli-v${VERSION}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Cargo version matches release version
+        run: |
+          FILE_VERSION=$(python - <<'PY'
+import pathlib, tomllib
+data = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
+print(data["workspace"]["package"]["version"])
+PY
+)
+          if [[ "$FILE_VERSION" != "${{ steps.vars.outputs.version }}" ]]; then
+            echo "Cargo workspace version ${FILE_VERSION} does not match requested version ${{ steps.vars.outputs.version }}" >&2
+            exit 1
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCHIVE_NAME: lapdev-cli-${{ matrix.target }}.${{ matrix.archive }}
+      ARTIFACT_NAME: lapdev-cli-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: "clippy,rustfmt"
+
+      - name: Install Linux cross toolchain
+        if: runner.os == 'Linux' && contains(matrix.target, 'aarch64-unknown-linux-gnu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-aarch64-linux-gnu
+
+      - name: Cargo fetch
+        run: cargo fetch --locked
+        if: runner.os != 'Windows'
+
+      - name: Cargo fetch (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo fetch --locked
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: cargo build -p lapdev-cli --release --locked --target "${TARGET}"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo build -p lapdev-cli --release --locked --target $env:TARGET
+
+      - name: Import Apple code signing cert
+        if: runner.os == 'macOS'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CODESIGN_CERT_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CODESIGN_CERT_PASSWORD }}
+
+      - name: Codesign binary (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+        run: |
+          codesign --force --timestamp --options runtime --sign "${APPLE_CODESIGN_IDENTITY}" "target/${TARGET}/release/lapdev-cli"
+
+      - name: Notarize macOS binary
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_NOTARIZE_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_NOTARIZE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          mkdir -p notarize
+          cp "target/${TARGET}/release/lapdev-cli" notarize/lapdev
+          ditto -c -k --keepParent notarize/lapdev notarize.zip
+          xcrun notarytool submit notarize.zip --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" --password "${APPLE_PASSWORD}" --wait
+          xcrun stapler staple "target/${TARGET}/release/lapdev-cli"
+          rm -rf notarize notarize.zip
+
+      - name: Sign Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_SIGNING_CERT) {
+            throw "WINDOWS_SIGNING_CERT_BASE64 secret is required"
+          }
+          if (-not $env:WINDOWS_SIGNING_CERT_PASSWORD) {
+            throw "WINDOWS_SIGNING_CERT_PASSWORD secret is required"
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) {
+            throw "signtool.exe not found"
+          }
+          & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfxPath /p $env:WINDOWS_SIGNING_CERT_PASSWORD "target\${env:TARGET}\release\lapdev-cli.exe"
+          Remove-Item $pfxPath -Force
+
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          BIN="target/${TARGET}/release/lapdev-cli"
+          install -Dm755 "${BIN}" pack/lapdev
+          tar -C pack -czf "${ARCHIVE_NAME}" lapdev
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target\${env:TARGET}\release\lapdev-cli.exe"
+          New-Item -ItemType Directory -Path pack -Force | Out-Null
+          Copy-Item $bin "pack\lapdev.exe" -Force
+          Compress-Archive -Path "pack\lapdev.exe" -DestinationPath $env:ARCHIVE_NAME -Force
+
+      - uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Sign artifact (Unix)
+        if: runner.os != 'Windows'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign-blob --yes --output-signature "${ARCHIVE_NAME}.sig" --output-certificate "${ARCHIVE_NAME}.pem" "${ARCHIVE_NAME}"
+
+      - name: Sign artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign-blob --yes --output-signature "$env:ARCHIVE_NAME.sig" --output-certificate "$env:ARCHIVE_NAME.pem" "$env:ARCHIVE_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sig
+            ${{ env.ARCHIVE_NAME }}.pem
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+
+      - name: List artifacts
+        run: ls -R release
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          FILES=()
+          while IFS= read -r -d '' file; do
+            FILES+=("$file")
+          done < <(find release -type f -print0)
+
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No artifacts found to upload" >&2
+            exit 1
+          fi
+
+          FILES+=("pkg/installers/lapdev-cli.sh" "pkg/installers/lapdev-cli.ps1")
+
+          gh release create "${TAG_NAME}" "${FILES[@]}" \
+            --title "Lapdev CLI v${VERSION}" \
+            --notes "Prebuilt Lapdev CLI binaries for version v${VERSION}."

@@ -11,6 +11,32 @@ Before using Devbox, you need:
 * **Lapdev CLI installed** - Devbox is built into the `lapdev` command
 * **An active Lapdev environment** - Personal, shared, or branch environment
 
+### Install the Lapdev CLI
+
+Run one of the following commands based on your operating system.
+
+#### Linux or macOS
+
+```bash
+curl -fsSL https://get.lap.dev/lapdev-cli.sh | bash
+```
+
+This script detects your architecture, downloads the latest release, and places the `lapdev` binary in `/usr/local/bin` (or `~/.local/bin` if needed). Re-run it at any time to upgrade or pass `--version <x.y.z>` to pin a specific build.
+
+#### Windows PowerShell
+
+```powershell
+irm https://get.lap.dev/lapdev-cli.ps1 | iex
+```
+
+Run the command in an elevated PowerShell window if your execution policy requires it. The installer copies `lapdev.exe` into `%LOCALAPPDATA%\Lapdev\bin` and appends that directory to your user `PATH`. Restart your shell (or VS Code terminal) after installation so the new path is picked up.
+
+After installing, verify everything is ready with:
+
+```bash
+lapdev --version
+```
+
 ### Connect to Lapdev
 
 First, connect your Devbox CLI to Lapdev:

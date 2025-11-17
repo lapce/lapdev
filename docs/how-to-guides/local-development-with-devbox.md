@@ -61,13 +61,14 @@ _Placeholder screenshot:_
 
 ### Intercept a Service
 
-Once connected, you can intercept traffic for a specific service through the Lapdev dashboard:
+Once connected, you can intercept traffic for a specific workload through the Lapdev dashboard:
 
 1. Open your environment in the Lapdev dashboard
-2. Navigate to the **Services** section
-3. Find the service you want to intercept (e.g., `checkout-service`)
-4. Click **Enable Intercept**
-5. Specify the local port where your service is running (e.g., `localhost:8080`)
+2. Stay on (or switch to) the **Workloads** tab
+3. Locate the workload that owns the service you want to intercept (e.g., `checkout-service`)
+4. Click **Start Intercept** inside that workload’s row
+
+Lapdev automatically mirrors each container port, reusing any overrides from your most recent intercept. If you need custom local ports after starting the intercept, use the **Edit Ports** button on the intercept card and update the mappings there.
 
 After enabling interception:
 

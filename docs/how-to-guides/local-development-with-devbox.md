@@ -57,8 +57,6 @@ After connecting, set which environment you want to work with in the Lapdev dash
 
 Once set, all traffic interception and service access will route through this active environment.
 
-_Placeholder screenshot:_
-
 ### Intercept a Service
 
 Once connected, you can intercept traffic for a specific workload through the Lapdev dashboard:

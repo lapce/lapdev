@@ -23,7 +23,7 @@ Before creating an environment:
 2. Select the catalog you want to use as the base for your environment.
 3. Click **Create Environment**.
 
-_Example screenshot:_
+<figure><img src="../.gitbook/assets/Screenshot 2025-11-19 at 20-28-39 Lapdev Dashboard.png" alt=""><figcaption></figcaption></figure>
 
 ### Select Environment Type (Personal or Shared)
 

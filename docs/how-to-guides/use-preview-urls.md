@@ -23,13 +23,14 @@ Before you begin:
 4. In the environment details page, scroll to the **Preview URLs** section.
 5.  Click **Create Preview URL**.
 
-    _Example screenshot:_\
-
+    _Example screenshot:_\\
 6. In the **Create Preview URL** dialog:
    * Choose the **Service** you want this URL to point to (for example, `frontend`, `api-gateway`, or `admin`).
    * Optionally, enter a **Description** (e.g., “Frontend QA demo”).
    * Select the **Access Level** (`Organization` by default, or `Public`).
 7. Click **Create**.
+
+<figure><img src="../.gitbook/assets/Screenshot 2025-11-19 at 20-30-23 Lapdev Dashboard.png" alt=""><figcaption></figcaption></figure>
 
 Lapdev will:
 
@@ -48,8 +49,6 @@ Once created:
   * The **Access level** (`Organization` or `Public`)
 
 Click the URL to open it in your browser.
-
-_Example screenshot:_
 
 ### Share the Preview URL
 

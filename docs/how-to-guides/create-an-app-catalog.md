@@ -32,9 +32,11 @@ Once inside the cluster details page:
 2. You can:
    * Filter workloads by **Namespace** or **Workload Type**.
    * Optionally check **Show System Workloads** to include system components.
-3.  Select the workloads that make up your app.
+3. Select the workloads that make up your app.
 
-    _Example screenshot:_
+<figure><img src="../.gitbook/assets/Screenshot 2025-11-19 at 20-27-19 Lapdev Dashboard.png" alt=""><figcaption></figcaption></figure>
+
+
 
 ### Create the App Catalog
 
@@ -43,10 +45,9 @@ Once inside the cluster details page:
    * Enter a **Name** for the catalog (e.g. `checkout-service`, `internal-tools`).
    * Optionally add a **Description**.
    * Review the list of selected workloads.
-3.  Click **Create**.
+3. Click **Create**.
 
-    _Example screenshot:_\
-
+<figure><img src="../.gitbook/assets/Screenshot 2025-11-19 at 20-30-01 Lapdev Dashboard.png" alt=""><figcaption></figcaption></figure>
 
 Lapdev will create the catalog and register it in the **App Catalogs** section of your dashboard.
 
@@ -71,4 +72,3 @@ Once your App Catalog is ready, you can:
 * Create a [Lapdev Environment](create-lapdev-environment.md) from it
 * Learn about [Environment types](../core-concepts/environment.md)
 * Understand [Cluster roles](../core-concepts/cluster.md) for multi-cluster setups
-

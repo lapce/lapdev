@@ -270,6 +270,20 @@ async fn sync_environment_from_catalog(
     Ok(())
 }
 
+async fn rebase_branch_environment(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| anyhow!("can't get org"))?;
+    let client = HrpcServiceClient::new("/api/rpc".to_string());
+
+    client
+        .rebase_branch_environment(org.id, environment_id)
+        .await??;
+
+    Ok(())
+}
+
 async fn get_active_devbox_session() -> Result<Option<DevboxSessionSummary>> {
     let client = HrpcServiceClient::new("/api/rpc".to_string());
     let session = client
@@ -623,15 +637,29 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
         }
     });
 
-    let sync_action = Action::new_local(move |_| async move {
-        match sync_environment_from_catalog(org, environment_id).await {
-            Ok(_) => {
-                // Refresh environment data and resources
-                environment_result.refetch();
-                update_counter.update(|c| *c += 1);
-                Ok(())
+    let environment_info_for_sync = environment_info.clone();
+    let sync_action = Action::new_local(move |_| {
+        let env_signal = environment_info_for_sync.clone();
+        async move {
+            let should_rebase = env_signal
+                .get_untracked()
+                .map(|env| env.base_environment_id.is_some())
+                .unwrap_or(false);
+
+            let result = if should_rebase {
+                rebase_branch_environment(org, environment_id).await
+            } else {
+                sync_environment_from_catalog(org, environment_id).await
+            };
+
+            match result {
+                Ok(_) => {
+                    environment_result.refetch();
+                    update_counter.update(|c| *c += 1);
+                    Ok(())
+                }
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
         }
     });
 
@@ -710,7 +738,6 @@ pub fn EnvironmentDetailView(environment_id: Uuid) -> impl IntoView {
                     all_intercepts
                     active_session
                     update_counter
-                    environment_catalog_version
                     readiness_map=readiness_map.clone()
                 />
             </Show>
@@ -836,6 +863,9 @@ pub fn EnvironmentInfoCard(
                 let catalog_update_available = environment.catalog_update_available;
                 let catalog_last_sync_actor_id = environment.catalog_last_sync_actor_id;
                 let last_catalog_synced_at = environment.last_catalog_synced_at.clone();
+                let base_environment_last_synced_at = environment
+                    .base_environment_last_catalog_synced_at
+                    .clone();
                 let sync_status = environment.sync_status;
                 let last_sync_message = last_catalog_synced_at
                     .clone()
@@ -844,9 +874,26 @@ pub fn EnvironmentInfoCard(
 
                 // Determine if this is a cluster auto-update or admin edit
                 let is_cluster_update = catalog_last_sync_actor_id.is_none();
-                let sync_source = if is_cluster_update { "cluster" } else { "catalog" };
-                let sync_button_text = if is_cluster_update { "Sync From Cluster" } else { "Sync From Catalog" };
-                let sync_description = if is_cluster_update {
+                let sync_source = if is_branch {
+                    environment
+                        .base_environment_name
+                        .clone()
+                        .unwrap_or_else(|| "shared environment".to_string())
+                } else if is_cluster_update {
+                    "cluster".to_string()
+                } else {
+                    "catalog".to_string()
+                };
+                let sync_button_text = if is_branch {
+                    "Rebase from Shared"
+                } else if is_cluster_update {
+                    "Sync From Cluster"
+                } else {
+                    "Sync From Catalog"
+                };
+                let sync_description = if is_branch {
+                    "New changes are available in the shared environment. Rebase to align this branch with the shared workloads before continuing your edits."
+                } else if is_cluster_update {
                     "New cluster changes are ready to apply. Sync the environment to pull the latest workloads from the production cluster."
                 } else {
                     "New catalog changes are ready to apply. Sync the environment to pull the latest workloads."
@@ -886,7 +933,16 @@ pub fn EnvironmentInfoCard(
                                             }
                                         }</span>
                                         <Show when=move || !is_syncing>
-                                            <span class="text-xs text-amber-800 dark:text-amber-300">{last_sync_message.clone()}</span>
+                                            <span class="text-xs text-amber-800 dark:text-amber-300">{
+                                                if is_branch {
+                                                    base_environment_last_synced_at
+                                                        .clone()
+                                                        .map(|ts| format!("Shared environment last synced at {ts}"))
+                                                        .unwrap_or_else(|| last_sync_message.clone())
+                                                } else {
+                                                    last_sync_message.clone()
+                                                }
+                                            }</span>
                                         </Show>
                                         <Button
                                             variant=ButtonVariant::Outline
@@ -1237,7 +1293,6 @@ pub fn EnvironmentResourcesTabs(
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
-    environment_catalog_version: Signal<i64>,
     readiness_map: RwSignal<HashMap<Uuid, Option<i32>>>,
 ) -> impl IntoView {
     let active_tab = RwSignal::new(ResourceTab::Workloads);
@@ -1280,7 +1335,6 @@ pub fn EnvironmentResourcesTabs(
                     all_intercepts
                     active_session
                     update_counter
-                    environment_catalog_version=environment_catalog_version.clone()
                     readiness_map=readiness_map.clone()
                 />
             </TabsContent>
@@ -1319,11 +1373,8 @@ pub fn EnvironmentWorkloadsContent(
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
-    environment_catalog_version: Signal<i64>,
     readiness_map: RwSignal<HashMap<Uuid, Option<i32>>>,
 ) -> impl IntoView {
-    let env_catalog_version_signal = environment_catalog_version.clone();
-
     view! {
             <div class="flex flex-col gap-4">
                 <div class="relative max-w-sm">
@@ -1363,7 +1414,6 @@ pub fn EnvironmentWorkloadsContent(
                                 each=move || filtered_workloads.get()
                                 key=|workload| format!("{}-{}-{}", workload.name, workload.namespace, workload.kind)
                             children=move |workload| {
-                                let env_catalog_version = env_catalog_version_signal.clone();
                                 let ready_signal = {
                                     let readiness_map = readiness_map.clone();
                                     let workload_id = workload.id;
@@ -1385,7 +1435,6 @@ pub fn EnvironmentWorkloadsContent(
                                         all_intercepts
                                         active_session
                                         update_counter
-                                        env_catalog_version=env_catalog_version
                                         ready_signal
                                     />
                                 }
@@ -1451,25 +1500,15 @@ pub fn EnvironmentWorkloadItem(
     all_intercepts: Signal<Vec<DevboxWorkloadInterceptSummary>>,
     active_session: LocalResource<Option<DevboxSessionSummary>>,
     update_counter: RwSignal<usize>,
-    env_catalog_version: Signal<i64>,
     ready_signal: Signal<Option<i32>>,
 ) -> impl IntoView {
     let workload_id = workload.id;
     let workload_name = workload.name.clone();
-    let workload_containers = workload.containers.clone();
     let workload_ports = workload.ports.clone();
-    let workload_catalog_version = workload.catalog_sync_version;
     let is_branch_workload = workload
         .base_workload_id
         .map(|base_id| base_id != workload_id)
         .unwrap_or(false);
-    let row_class = Signal::derive(move || {
-        if env_catalog_version.get() < workload_catalog_version {
-            "bg-amber-50/70 dark:bg-amber-900/20 border-l-4 border-amber-500".to_string()
-        } else {
-            String::new()
-        }
-    });
 
     // Find intercepts for this workload
     let workload_intercepts = Signal::derive(move || {
@@ -1524,7 +1563,7 @@ pub fn EnvironmentWorkloadItem(
 
     view! {
         <>
-            <TableRow class=row_class>
+            <TableRow>
                 <TableCell class="w-0">
                     {if is_branch_workload {
                         view! { <lucide_leptos::GitBranch attr:class="h-4 w-4 text-muted-foreground" /> }.into_any()
@@ -1536,15 +1575,6 @@ pub fn EnvironmentWorkloadItem(
                     <a href=format!("/kubernetes/environments/{}/workloads/{}", environment_id, workload.id)>
                         <Button variant=ButtonVariant::Link class="p-0">
                             <span class="font-medium">{workload.name}</span>
-                            {if workload.catalog_sync_version > env_catalog_version.get_untracked() {
-                                view! {
-                                    <Badge variant=BadgeVariant::Destructive class="ml-2 text-[10px] uppercase tracking-wide">
-                                        "Update"
-                                    </Badge>
-                                }.into_any()
-                            } else {
-                                view! { <></> }.into_any()
-                            }}
                         </Button>
                     </a>
                 </TableCell>

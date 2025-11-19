@@ -82,6 +82,8 @@ struct KubeEnvironmentWithRelated {
 
     // Base environment fields
     pub base_environment_name: Option<String>,
+    pub base_environment_catalog_sync_version: Option<i64>,
+    pub base_environment_last_synced_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(FromQueryResult)]
@@ -1695,7 +1697,9 @@ impl DbApi {
             lapdev_db_entities::kube_environment::Model,
             Option<lapdev_db_entities::kube_app_catalog::Model>,
             Option<lapdev_db_entities::kube_cluster::Model>,
-            Option<String>, // base_environment_name
+            Option<String>,               // base_environment_name
+            Option<i64>,                  // base_environment_catalog_sync_version
+            Option<DateTimeWithTimeZone>, // base_environment_last_synced_at
         )>,
         usize,
     )> {
@@ -1873,6 +1877,48 @@ impl DbApi {
                 )),
                 "base_environment_name",
             )
+            .expr_as(
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::CatalogSyncVersion,
+                )),
+                "base_environment_catalog_sync_version",
+            )
+            .expr_as(
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::LastCatalogSyncedAt,
+                )),
+                "base_environment_last_synced_at",
+            )
+            .expr_as(
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::CatalogSyncVersion,
+                )),
+                "base_environment_catalog_sync_version",
+            )
+            .expr_as(
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::LastCatalogSyncedAt,
+                )),
+                "base_environment_last_synced_at",
+            )
+            .expr_as(
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::CatalogSyncVersion,
+                )),
+                "base_environment_catalog_sync_version",
+            )
+            .expr_as(
+                Expr::col((
+                    Alias::new("base_env"),
+                    lapdev_db_entities::kube_environment::Column::LastCatalogSyncedAt,
+                )),
+                "base_environment_last_synced_at",
+            )
             .into_model::<KubeEnvironmentWithRelated>()
             .all(&self.conn)
             .await?;
@@ -1940,7 +1986,14 @@ impl DbApi {
                             can_deploy_shared: true,
                         });
 
-                (env, catalog, cluster, related.base_environment_name)
+                (
+                    env,
+                    catalog,
+                    cluster,
+                    related.base_environment_name,
+                    related.base_environment_catalog_sync_version,
+                    related.base_environment_last_synced_at,
+                )
             })
             .collect();
 
@@ -2182,10 +2235,17 @@ impl DbApi {
                 let sync_status = KubeEnvironmentSyncStatus::from_str(&related.env_sync_status)
                     .unwrap_or(KubeEnvironmentSyncStatus::Idle);
 
-                let catalog_update_available = related
-                    .catalog_sync_version
-                    .map(|catalog_version| catalog_version > related.env_catalog_sync_version)
-                    .unwrap_or(false);
+                let catalog_update_available = if related.env_base_environment_id.is_some() {
+                    related
+                        .base_environment_catalog_sync_version
+                        .map(|version| version > related.env_catalog_sync_version)
+                        .unwrap_or(false)
+                } else {
+                    related
+                        .catalog_sync_version
+                        .map(|catalog_version| catalog_version > related.env_catalog_sync_version)
+                        .unwrap_or(false)
+                };
 
                 Some(KubeEnvironment {
                     id: related.env_id,
@@ -2200,7 +2260,12 @@ impl DbApi {
                     created_at: related.env_created_at.to_string(),
                     is_shared: related.env_is_shared,
                     base_environment_id: related.env_base_environment_id,
-                    base_environment_name: related.base_environment_name,
+                    base_environment_name: related.base_environment_name.clone(),
+                    base_environment_catalog_sync_version: related
+                        .base_environment_catalog_sync_version,
+                    base_environment_last_catalog_synced_at: related
+                        .base_environment_last_synced_at
+                        .map(|dt| dt.to_string()),
                     catalog_sync_version: related.env_catalog_sync_version,
                     last_catalog_synced_at: related
                         .env_last_catalog_synced_at
@@ -3240,6 +3305,23 @@ impl DbApi {
         Ok(model)
     }
 
+    pub async fn update_branch_workload_link(
+        &self,
+        workload_id: Uuid,
+        base_workload_id: Uuid,
+        catalog_sync_version: i64,
+    ) -> Result<()> {
+        lapdev_db_entities::kube_environment_workload::ActiveModel {
+            id: ActiveValue::Set(workload_id),
+            base_workload_id: ActiveValue::Set(Some(base_workload_id)),
+            catalog_sync_version: ActiveValue::Set(catalog_sync_version),
+            ..Default::default()
+        }
+        .update(&self.conn)
+        .await?;
+        Ok(())
+    }
+
     pub async fn insert_environment_service(
         &self,
         environment_id: Uuid,
@@ -3267,6 +3349,31 @@ impl DbApi {
         }
         .insert(&self.conn)
         .await
+    }
+
+    pub async fn soft_delete_environment_service(
+        &self,
+        environment_id: Uuid,
+        service_name: &str,
+    ) -> Result<()> {
+        let now: DateTimeWithTimeZone = Utc::now().into();
+        lapdev_db_entities::kube_environment_service::Entity::update_many()
+            .filter(
+                lapdev_db_entities::kube_environment_service::Column::EnvironmentId
+                    .eq(environment_id),
+            )
+            .filter(
+                lapdev_db_entities::kube_environment_service::Column::Name
+                    .eq(service_name.to_string()),
+            )
+            .filter(lapdev_db_entities::kube_environment_service::Column::DeletedAt.is_null())
+            .col_expr(
+                lapdev_db_entities::kube_environment_service::Column::DeletedAt,
+                Expr::value(now),
+            )
+            .exec(&self.conn)
+            .await?;
+        Ok(())
     }
 
     /// Creates a kube environment and its associated workloads within a single database transaction.

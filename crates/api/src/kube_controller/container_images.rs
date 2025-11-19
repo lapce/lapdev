@@ -1,5 +1,5 @@
 /// Shared image tag for Lapdev Kubernetes components.
-pub const CONTAINER_IMAGE_TAG: &str = "0.1.0";
+pub const CONTAINER_IMAGE_TAG: &str = "0.2.0";
 
 /// Registry/repository for the Lapdev API image.
 pub(crate) const API_IMAGE_REPO: &str = "ghcr.io/lapce/lapdev-api";

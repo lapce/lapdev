@@ -97,6 +97,23 @@ async fn update_environment_workload_containers(
     Ok(new_id)
 }
 
+async fn delete_environment_workload_api(
+    org: Signal<Option<Organization>>,
+    environment_id: Uuid,
+    workload_id: Uuid,
+) -> Result<(), ErrorResponse> {
+    let org = org.get().ok_or_else(|| ErrorResponse {
+        error: "Organization not found".to_string(),
+    })?;
+    let client = get_hrpc_client();
+
+    client
+        .delete_environment_workload(org.id, environment_id, workload_id)
+        .await??;
+
+    Ok(())
+}
+
 #[component]
 pub fn EnvironmentWorkloadDetail(
     environment_id: Memo<Uuid>,
@@ -167,7 +184,7 @@ pub fn EnvironmentWorkloadDetail(
             // Containers Card
             <Show when=move || workload_info.get().is_some()>
                 {move || {
-                    if let Some((_, workload)) = workload_info.get() {
+                    if let Some((environment, workload)) = workload_info.get() {
                         let workload_id = workload.id;
                         let all_containers = workload.containers.clone();
                         let navigate_for_action = navigate.get_value();
@@ -199,9 +216,42 @@ pub fn EnvironmentWorkloadDetail(
                             }
                         });
 
+                        let branch_reset_action = if environment
+                            .base_environment_id
+                            .is_some()
+                        {
+                            let org_signal = org;
+                            let environment_id_value = environment_id.get_untracked();
+                            let workload_id_value = workload.id;
+                            let update_counter = update_counter.clone();
+                            let navigate_for_reset = navigate.get_value();
+                            Some(Action::new_local(move |_| {
+                                let org_signal = org_signal;
+                                let navigate_for_reset = navigate_for_reset.clone();
+                                async move {
+                                    delete_environment_workload_api(
+                                        org_signal,
+                                        environment_id_value,
+                                        workload_id_value,
+                                    )
+                                    .await?;
+                                    update_counter.update(|c| *c += 1);
+                                    let _ = navigate_for_reset(
+                                        &format!("/kubernetes/environments/{}", environment_id_value),
+                                        Default::default(),
+                                    );
+                                    Ok(())
+                                }
+                            }))
+                        } else {
+                            None
+                        };
+
                         let config = ContainerEditorConfig {
                             enable_resource_limits: false,
                             show_customization_badge: true,
+                            is_branch_environment: environment.base_environment_id.is_some(),
+                            branch_reset_action,
                         };
                         view! {
                             <ContainersCard

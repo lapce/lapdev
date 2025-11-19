@@ -380,6 +380,8 @@ pub struct KubeEnvironment {
     pub is_shared: bool,
     pub base_environment_id: Option<Uuid>,
     pub base_environment_name: Option<String>,
+    pub base_environment_catalog_sync_version: Option<i64>,
+    pub base_environment_last_catalog_synced_at: Option<String>,
     pub catalog_sync_version: i64,
     pub last_catalog_synced_at: Option<String>,
     pub paused_at: Option<String>,

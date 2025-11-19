@@ -844,6 +844,19 @@ impl HrpcService for CoreState {
             .map_err(HrpcError::from)
     }
 
+    async fn rebase_branch_environment(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .rebase_branch_environment(org_id, user.id, environment_id)
+            .await
+            .map_err(HrpcError::from)
+    }
+
     async fn delete_app_catalog(
         &self,
         headers: &axum::http::HeaderMap,
@@ -1060,6 +1073,20 @@ impl HrpcService for CoreState {
                 containers,
                 target_environment,
             )
+            .await
+            .map_err(HrpcError::from)
+    }
+
+    async fn delete_environment_workload(
+        &self,
+        headers: &axum::http::HeaderMap,
+        org_id: Uuid,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), HrpcError> {
+        let user = self.authorize(headers, org_id, None).await?;
+        self.kube_controller
+            .delete_environment_workload(org_id, user.id, environment_id, workload_id)
             .await
             .map_err(HrpcError::from)
     }

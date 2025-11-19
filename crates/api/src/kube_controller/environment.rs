@@ -8,9 +8,10 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use lapdev_common::{
     kube::{
         KubeAppCatalogWorkload, KubeContainerImage, KubeEnvironment,
-        KubeEnvironmentDashboardSummary, KubeEnvironmentStatus, KubeEnvironmentSyncStatus,
-        KubeServiceDetails, KubeServicePort, KubeServiceWithYaml, KubeWorkloadDetails,
-        KubeWorkloadKind, PagePaginationParams, PaginatedInfo, PaginatedResult,
+        KubeEnvironmentDashboardSummary, KubeEnvironmentService, KubeEnvironmentStatus,
+        KubeEnvironmentSyncStatus, KubeServiceDetails, KubeServicePort, KubeServiceWithYaml,
+        KubeWorkloadDetails, KubeWorkloadKind, PagePaginationParams, PaginatedInfo,
+        PaginatedResult,
     },
     utils::rand_string,
 };
@@ -19,8 +20,9 @@ use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{KubeWorkloadYamlOnly, KubeWorkloadsWithResources, NamespacedResourceKind};
 use lapdev_rpc::error::ApiError;
 use sea_orm::{
-    prelude::Json, sea_query::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait,
-    QueryFilter, TransactionTrait,
+    prelude::{DateTimeWithTimeZone, Json},
+    sea_query::Expr,
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, TransactionTrait,
 };
 use serde_yaml;
 use std::{
@@ -81,41 +83,59 @@ impl KubeController {
 
         let kube_environments = environments_with_catalogs_and_clusters
             .into_iter()
-            .filter_map(|(env, catalog, cluster, base_environment_name)| {
-                let catalog = catalog?;
-                let cluster = cluster?;
-                let catalog_sync_version = env.catalog_sync_version;
-                let status = KubeEnvironmentStatus::from_str(&env.status)
-                    .unwrap_or(KubeEnvironmentStatus::Creating);
-                let last_catalog_synced_at = env.last_catalog_synced_at.map(|dt| dt.to_string());
-                let paused_at = env.paused_at.map(|dt| dt.to_string());
-                let resumed_at = env.resumed_at.map(|dt| dt.to_string());
-                let catalog_update_available = catalog.sync_version > catalog_sync_version;
-
-                Some(KubeEnvironment {
-                    id: env.id,
-                    name: env.name,
-                    namespace: env.namespace,
-                    app_catalog_id: env.app_catalog_id,
-                    app_catalog_name: catalog.name,
-                    cluster_id: env.cluster_id,
-                    cluster_name: cluster.name,
-                    status,
-                    created_at: env.created_at.to_string(),
-                    user_id: env.user_id,
-                    is_shared: env.is_shared,
-                    base_environment_id: env.base_environment_id,
+            .filter_map(
+                |(
+                    env,
+                    catalog,
+                    cluster,
                     base_environment_name,
-                    catalog_sync_version,
-                    last_catalog_synced_at,
-                    paused_at,
-                    resumed_at,
-                    catalog_update_available,
-                    catalog_last_sync_actor_id: catalog.last_sync_actor_id,
-                    sync_status: KubeEnvironmentSyncStatus::from_str(&env.sync_status)
-                        .unwrap_or(KubeEnvironmentSyncStatus::Idle),
-                })
-            })
+                    base_environment_catalog_sync_version,
+                    base_environment_last_synced_at,
+                )| {
+                    let catalog = catalog?;
+                    let cluster = cluster?;
+                    let catalog_sync_version = env.catalog_sync_version;
+                    let status = KubeEnvironmentStatus::from_str(&env.status)
+                        .unwrap_or(KubeEnvironmentStatus::Creating);
+                    let last_catalog_synced_at =
+                        env.last_catalog_synced_at.map(|dt| dt.to_string());
+                    let paused_at = env.paused_at.map(|dt| dt.to_string());
+                    let resumed_at = env.resumed_at.map(|dt| dt.to_string());
+                    let catalog_update_available = match env.base_environment_id {
+                        Some(_) => base_environment_catalog_sync_version
+                            .map(|version| version > catalog_sync_version)
+                            .unwrap_or(false),
+                        None => catalog.sync_version > catalog_sync_version,
+                    };
+
+                    Some(KubeEnvironment {
+                        id: env.id,
+                        name: env.name,
+                        namespace: env.namespace,
+                        app_catalog_id: env.app_catalog_id,
+                        app_catalog_name: catalog.name,
+                        cluster_id: env.cluster_id,
+                        cluster_name: cluster.name,
+                        status,
+                        created_at: env.created_at.to_string(),
+                        user_id: env.user_id,
+                        is_shared: env.is_shared,
+                        base_environment_id: env.base_environment_id,
+                        base_environment_name,
+                        base_environment_catalog_sync_version,
+                        base_environment_last_catalog_synced_at: base_environment_last_synced_at
+                            .map(|dt| dt.to_string()),
+                        catalog_sync_version,
+                        last_catalog_synced_at,
+                        paused_at,
+                        resumed_at,
+                        catalog_update_available,
+                        catalog_last_sync_actor_id: catalog.last_sync_actor_id,
+                        sync_status: KubeEnvironmentSyncStatus::from_str(&env.sync_status)
+                            .unwrap_or(KubeEnvironmentSyncStatus::Idle),
+                    })
+                },
+            )
             .collect();
 
         let total_pages = (total_count + pagination.page_size - 1) / pagination.page_size;
@@ -184,17 +204,29 @@ impl KubeController {
             .ok_or_else(|| ApiError::InvalidRequest("Cluster not found".to_string()))?;
 
         // Get base environment name if this is a branch environment
-        let base_environment_name = if let Some(base_env_id) = environment.base_environment_id {
+        let base_environment = if let Some(base_env_id) = environment.base_environment_id {
             self.db
                 .get_kube_environment(base_env_id)
                 .await
                 .map_err(ApiError::from)?
-                .map(|base_env| base_env.name)
         } else {
             None
         };
 
-        let catalog_update_available = catalog.sync_version > environment.catalog_sync_version;
+        let base_environment_name = base_environment.as_ref().map(|env| env.name.clone());
+        let base_environment_catalog_sync_version = base_environment
+            .as_ref()
+            .map(|env| env.catalog_sync_version);
+        let base_environment_last_synced_at =
+            base_environment.and_then(|env| env.last_catalog_synced_at);
+
+        let catalog_update_available = if base_environment_catalog_sync_version.is_some() {
+            base_environment_catalog_sync_version
+                .map(|version| version > environment.catalog_sync_version)
+                .unwrap_or(false)
+        } else {
+            catalog.sync_version > environment.catalog_sync_version
+        };
 
         let status = KubeEnvironmentStatus::from_str(&environment.status)
             .unwrap_or(KubeEnvironmentStatus::Creating);
@@ -216,6 +248,9 @@ impl KubeController {
             is_shared: environment.is_shared,
             base_environment_id: environment.base_environment_id,
             base_environment_name,
+            base_environment_catalog_sync_version,
+            base_environment_last_catalog_synced_at: base_environment_last_synced_at
+                .map(|dt| dt.to_string()),
             catalog_sync_version: environment.catalog_sync_version,
             last_catalog_synced_at: environment.last_catalog_synced_at.map(|dt| dt.to_string()),
             paused_at: environment.paused_at.map(|dt| dt.to_string()),
@@ -336,9 +371,16 @@ impl KubeController {
         app_catalog_name: String,
         cluster_name: String,
         base_environment_name: Option<String>,
+        base_environment_catalog_sync_version: Option<i64>,
+        base_environment_last_synced_at: Option<DateTimeWithTimeZone>,
     ) -> lapdev_common::kube::KubeEnvironment {
         let status = KubeEnvironmentStatus::from_str(&created_env.status)
             .unwrap_or(KubeEnvironmentStatus::Creating);
+        let base_version = base_environment_catalog_sync_version;
+        let catalog_update_available = match (created_env.base_environment_id, base_version) {
+            (Some(_), Some(base)) => base > created_env.catalog_sync_version,
+            _ => false,
+        };
         lapdev_common::kube::KubeEnvironment {
             id: created_env.id,
             user_id: created_env.user_id,
@@ -353,11 +395,14 @@ impl KubeController {
             created_at: created_env.created_at.to_string(),
             base_environment_id: created_env.base_environment_id,
             base_environment_name,
+            base_environment_catalog_sync_version: base_version,
+            base_environment_last_catalog_synced_at: base_environment_last_synced_at
+                .map(|dt| dt.to_string()),
             catalog_sync_version: created_env.catalog_sync_version,
             last_catalog_synced_at: created_env.last_catalog_synced_at.map(|dt| dt.to_string()),
             paused_at: created_env.paused_at.map(|dt| dt.to_string()),
             resumed_at: created_env.resumed_at.map(|dt| dt.to_string()),
-            catalog_update_available: false,
+            catalog_update_available,
             catalog_last_sync_actor_id: None,
             sync_status: KubeEnvironmentSyncStatus::from_str(&created_env.sync_status)
                 .unwrap_or(KubeEnvironmentSyncStatus::Idle),
@@ -923,6 +968,8 @@ impl KubeController {
             created_env,
             app_catalog.name,
             cluster.name,
+            None,
+            None,
             None,
         ))
     }
@@ -1522,6 +1569,302 @@ impl KubeController {
             })
     }
 
+    async fn reapply_branch_overrides_from_base(
+        &self,
+        branch_environment: &lapdev_db_entities::kube_environment::Model,
+        base_environment: &lapdev_db_entities::kube_environment::Model,
+    ) -> Result<(), ApiError> {
+        let branch_workloads = self
+            .db
+            .get_environment_workloads(branch_environment.id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if branch_workloads.is_empty() {
+            return Ok(());
+        }
+
+        let base_workloads = self
+            .db
+            .get_environment_workloads(base_environment.id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let mut base_workloads_by_name = HashMap::with_capacity(base_workloads.len());
+        for workload in base_workloads {
+            base_workloads_by_name.insert(workload.name.clone(), workload);
+        }
+
+        let base_services = self
+            .db
+            .get_environment_services(base_environment.id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let Some(base_environment_id) = branch_environment.base_environment_id else {
+            return Err(ApiError::InvalidRequest(
+                "Branch environment missing base environment".to_string(),
+            ));
+        };
+
+        let cluster_server = self
+            .get_random_kube_cluster_server(branch_environment.cluster_id)
+            .await
+            .ok_or_else(|| {
+                ApiError::InvalidRequest(
+                    "No connected KubeManager for the environment target cluster".to_string(),
+                )
+            })?;
+
+        for branch_workload in branch_workloads {
+            let branch_workload_name = branch_workload.name.clone();
+            let base_name = Self::strip_branch_suffix(&branch_workload_name, branch_environment.id);
+
+            let Some(base_workload) = base_workloads_by_name.get(&base_name) else {
+                tracing::warn!(
+                    environment_id = %branch_environment.id,
+                    workload = %branch_workload_name,
+                    "Skipping branch workload rebase because base workload no longer exists"
+                );
+                continue;
+            };
+
+            self.refresh_branch_services_for_workload(
+                branch_environment,
+                &base_name,
+                &branch_workload_name,
+                &base_services,
+            )
+            .await?;
+
+            let (template_workload, _) = Self::build_branch_workload_details(
+                base_workload,
+                &branch_environment.namespace,
+                branch_environment.id,
+            )?;
+
+            let KubeWorkloadDetails {
+                workload_yaml: template_yaml,
+                containers: template_containers,
+                ..
+            } = template_workload.details;
+
+            let merged_containers =
+                Self::merge_branch_containers(&template_containers, &branch_workload.containers);
+
+            let mut updated_workload = branch_workload.clone();
+            updated_workload.workload_yaml = template_yaml;
+            updated_workload.base_workload_id = Some(base_workload.id);
+
+            let kind = KubeWorkloadKind::from_str(&updated_workload.kind).map_err(|_| {
+                ApiError::InvalidRequest(format!(
+                    "Invalid workload kind {} when rebasing branch workload",
+                    updated_workload.kind
+                ))
+            })?;
+
+            let (workload_with_resources, persisted_yaml, extra_labels) = self
+                .build_branch_workload_manifest(
+                    branch_environment,
+                    &updated_workload,
+                    kind,
+                    &merged_containers,
+                )
+                .await?;
+
+            self.deploy_environment_resources(
+                &cluster_server,
+                branch_environment,
+                KubeWorkloadsWithResources {
+                    workloads: vec![workload_with_resources.workload],
+                    services: workload_with_resources.services,
+                    configmaps: workload_with_resources.configmaps,
+                    secrets: workload_with_resources.secrets,
+                },
+                Some(extra_labels),
+            )
+            .await?;
+
+            match cluster_server
+                .build_branch_service_route_config(
+                    base_environment,
+                    base_workload.id,
+                    branch_environment.id,
+                )
+                .await
+            {
+                Ok(Some(route)) => {
+                    Self::send_branch_service_route_update(
+                        &cluster_server,
+                        base_environment_id,
+                        base_workload.id,
+                        branch_environment.id,
+                        route,
+                    )
+                    .await;
+                }
+                Ok(None) => {
+                    Self::send_branch_service_route_removal(
+                        &cluster_server,
+                        base_environment_id,
+                        base_workload.id,
+                        branch_environment.id,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        base_environment_id = %base_environment_id,
+                        branch_environment_id = %branch_environment.id,
+                        workload_id = %base_workload.id,
+                        error = ?err,
+                        "Failed to build branch service route config during rebase; falling back to refresh"
+                    );
+                    Self::refresh_branch_service_routes_with_logging(
+                        &cluster_server,
+                        base_environment_id,
+                    )
+                    .await;
+                }
+            }
+
+            self.db
+                .update_environment_workload(branch_workload.id, merged_containers, persisted_yaml)
+                .await
+                .map_err(ApiError::from)?;
+
+            self.db
+                .update_branch_workload_link(
+                    branch_workload.id,
+                    base_workload.id,
+                    base_environment.catalog_sync_version,
+                )
+                .await
+                .map_err(ApiError::from)?;
+        }
+
+        Ok(())
+    }
+
+    async fn refresh_branch_services_for_workload(
+        &self,
+        branch_environment: &lapdev_db_entities::kube_environment::Model,
+        base_workload_name: &str,
+        branch_workload_name: &str,
+        base_services: &[KubeEnvironmentService],
+    ) -> Result<(), ApiError> {
+        let mut desired_services = Vec::new();
+        for service in base_services {
+            if Self::service_targets_workload(service, base_workload_name, branch_workload_name) {
+                desired_services.push(Self::build_branch_service_entry(
+                    service,
+                    branch_environment.id,
+                    branch_workload_name,
+                )?);
+            }
+        }
+
+        let desired_names: HashSet<String> = desired_services
+            .iter()
+            .map(|svc| svc.details.name.clone())
+            .collect();
+
+        let existing_services = self
+            .db
+            .get_environment_services(branch_environment.id)
+            .await
+            .map_err(ApiError::from)?;
+
+        for service in existing_services {
+            if Self::service_targets_workload(&service, base_workload_name, branch_workload_name)
+                && !desired_names.contains(&service.name)
+            {
+                self.db
+                    .soft_delete_environment_service(branch_environment.id, &service.name)
+                    .await
+                    .map_err(ApiError::from)?;
+            }
+        }
+
+        for entry in desired_services {
+            self.db
+                .soft_delete_environment_service(branch_environment.id, &entry.details.name)
+                .await
+                .map_err(ApiError::from)?;
+            self.db
+                .insert_environment_service(
+                    branch_environment.id,
+                    &branch_environment.namespace,
+                    entry,
+                )
+                .await
+                .map_err(ApiError::from)?;
+        }
+
+        Ok(())
+    }
+
+    fn merge_branch_containers(
+        template_containers: &[lapdev_common::kube::KubeContainerInfo],
+        branch_containers: &[lapdev_common::kube::KubeContainerInfo],
+    ) -> Vec<lapdev_common::kube::KubeContainerInfo> {
+        template_containers
+            .iter()
+            .map(|template| {
+                let mut merged = template.clone();
+                if let Some(branch) = branch_containers
+                    .iter()
+                    .find(|container| container.name == template.name)
+                {
+                    merged.image = branch.image.clone();
+                    merged.cpu_request = branch.cpu_request.clone();
+                    merged.cpu_limit = branch.cpu_limit.clone();
+                    merged.memory_request = branch.memory_request.clone();
+                    merged.memory_limit = branch.memory_limit.clone();
+                    merged.env_vars = branch.env_vars.clone();
+                    merged.ports = branch.ports.clone();
+                }
+                merged
+            })
+            .collect()
+    }
+
+    async fn relink_branch_overrides(
+        &self,
+        base_environment: &lapdev_db_entities::kube_environment::Model,
+        replacements: &[(Uuid, Uuid)],
+        new_catalog_sync_version: i64,
+    ) -> Result<(), ApiError> {
+        if replacements.is_empty() {
+            return Ok(());
+        }
+
+        for (old_base_id, new_base_id) in replacements {
+            let branch_workloads = self
+                .db
+                .get_workloads_by_base_workload_id(*old_base_id)
+                .await
+                .map_err(ApiError::from)?;
+
+            for branch_workload in branch_workloads {
+                if branch_workload.environment_id == base_environment.id {
+                    continue;
+                }
+
+                self.db
+                    .update_branch_workload_link(
+                        branch_workload.id,
+                        *new_base_id,
+                        new_catalog_sync_version,
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn ensure_branch_services_for_workload(
         &self,
         environment: &lapdev_db_entities::kube_environment::Model,
@@ -1727,6 +2070,8 @@ impl KubeController {
             app_catalog.name,
             cluster.name,
             Some(base_environment.name),
+            Some(base_environment.catalog_sync_version),
+            base_environment.last_catalog_synced_at,
         ))
     }
 
@@ -1756,6 +2101,12 @@ impl KubeController {
 
         if !environment.is_shared && environment.user_id != user_id {
             return Err(ApiError::Unauthorized);
+        }
+
+        if environment.base_environment_id.is_some() {
+            return Err(ApiError::InvalidRequest(
+                "Branch environments must be rebased from their shared environment".to_string(),
+            ));
         }
 
         let catalog = self
@@ -1908,9 +2259,10 @@ impl KubeController {
         workloads_to_deploy: &[NewEnvironmentWorkload],
         service_names: HashSet<String>,
         new_catalog_sync_version: i64,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Vec<(Uuid, Uuid)>, ApiError> {
         let now = Utc::now().into();
         let txn = self.db.conn.begin().await.map_err(ApiError::from)?;
+        let mut replaced_workloads: Vec<(Uuid, Uuid)> = Vec::new();
 
         // Build a set of catalog workload names for efficient lookup
         let catalog_workload_names: HashSet<String> =
@@ -1977,6 +2329,20 @@ impl KubeController {
                 .unwrap_or_else(|_| Json::from(serde_json::json!([])));
             let workload_yaml = details.workload_yaml.clone();
 
+            let existing_workload = lapdev_db_entities::kube_environment_workload::Entity::find()
+                .filter(
+                    lapdev_db_entities::kube_environment_workload::Column::EnvironmentId
+                        .eq(environment_id),
+                )
+                .filter(
+                    lapdev_db_entities::kube_environment_workload::Column::Name
+                        .eq(details.name.clone()),
+                )
+                .filter(lapdev_db_entities::kube_environment_workload::Column::DeletedAt.is_null())
+                .one(&txn)
+                .await
+                .map_err(ApiError::from)?;
+
             // First, soft-delete any existing workload with the same name
             lapdev_db_entities::kube_environment_workload::Entity::update_many()
                 .filter(
@@ -2015,6 +2381,10 @@ impl KubeController {
             .insert(&txn)
             .await
             .map_err(ApiError::from)?;
+
+            if let Some(existing) = existing_workload {
+                replaced_workloads.push((existing.id, workload.id));
+            }
         }
 
         // Update environment's catalog sync version and timestamp
@@ -2031,7 +2401,7 @@ impl KubeController {
 
         txn.commit().await.map_err(ApiError::from)?;
 
-        Ok(())
+        Ok(replaced_workloads)
     }
 
     pub async fn sync_environment_from_catalog(
@@ -2100,15 +2470,96 @@ impl KubeController {
         };
 
         // Update database with synced workloads
-        self.update_environment_workloads_in_db(
-            environment.id,
-            &environment.namespace,
-            &catalog_workloads,
-            &workload_details,
-            service_names,
-            catalog.sync_version,
-        )
-        .await?;
+        let replaced_workloads = self
+            .update_environment_workloads_in_db(
+                environment.id,
+                &environment.namespace,
+                &catalog_workloads,
+                &workload_details,
+                service_names,
+                catalog.sync_version,
+            )
+            .await?;
+
+        self.relink_branch_overrides(&environment, &replaced_workloads, catalog.sync_version)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn rebase_branch_environment(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), ApiError> {
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        if environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        let base_environment_id = environment.base_environment_id.ok_or_else(|| {
+            ApiError::InvalidRequest(
+                "Only branch environments can be rebased from a shared environment".to_string(),
+            )
+        })?;
+
+        let base_environment = self
+            .db
+            .get_kube_environment(base_environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Base environment not found".to_string()))?;
+
+        if base_environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        lapdev_db_entities::kube_environment::ActiveModel {
+            id: ActiveValue::Set(environment.id),
+            sync_status: ActiveValue::Set(KubeEnvironmentSyncStatus::Syncing.to_string()),
+            ..Default::default()
+        }
+        .update(&self.db.conn)
+        .await
+        .map_err(ApiError::from)?;
+
+        let rebase_result = self
+            .reapply_branch_overrides_from_base(&environment, &base_environment)
+            .await;
+
+        if let Err(err) = rebase_result {
+            let _ = lapdev_db_entities::kube_environment::ActiveModel {
+                id: ActiveValue::Set(environment.id),
+                sync_status: ActiveValue::Set(KubeEnvironmentSyncStatus::Idle.to_string()),
+                ..Default::default()
+            }
+            .update(&self.db.conn)
+            .await;
+            return Err(err);
+        }
+
+        let now = Utc::now().into();
+        lapdev_db_entities::kube_environment::ActiveModel {
+            id: ActiveValue::Set(environment.id),
+            catalog_sync_version: ActiveValue::Set(base_environment.catalog_sync_version),
+            last_catalog_synced_at: ActiveValue::Set(Some(now)),
+            sync_status: ActiveValue::Set(KubeEnvironmentSyncStatus::Idle.to_string()),
+            ..Default::default()
+        }
+        .update(&self.db.conn)
+        .await
+        .map_err(ApiError::from)?;
 
         Ok(())
     }

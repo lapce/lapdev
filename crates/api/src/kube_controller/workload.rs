@@ -3,6 +3,7 @@ use uuid::Uuid;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
+    time::{Duration, Instant},
 };
 
 use k8s_openapi::api::{
@@ -12,13 +13,13 @@ use k8s_openapi::api::{
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use lapdev_common::kube::{
-    KubeEnvironment, KubeEnvironmentWorkload, KubeEnvironmentWorkloadDetail, KubeServiceDetails,
-    KubeServiceWithYaml, KubeWorkloadKind,
+    KubeEnvironment, KubeEnvironmentService, KubeEnvironmentWorkload,
+    KubeEnvironmentWorkloadDetail, KubeServiceDetails, KubeServiceWithYaml, KubeWorkloadKind,
 };
 use lapdev_kube::server::KubeClusterServer;
 use lapdev_kube_rpc::{
     KubeWorkloadWithResources, KubeWorkloadYamlOnly, KubeWorkloadsWithResources,
-    ProxyBranchRouteConfig,
+    NamespacedResourceKind, ProxyBranchRouteConfig,
 };
 use lapdev_rpc::error::ApiError;
 
@@ -144,14 +145,71 @@ impl KubeController {
         &self,
         org_id: Uuid,
         user_id: Uuid,
+        environment_id: Uuid,
         workload_id: Uuid,
-        environment: lapdev_db_entities::kube_environment::Model,
     ) -> Result<(), ApiError> {
-        // Delete the workload
+        let environment = self
+            .db
+            .get_kube_environment(environment_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+        if environment.organization_id != org_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        if !environment.is_shared && environment.user_id != user_id {
+            return Err(ApiError::Unauthorized);
+        }
+
+        let workload = self
+            .db
+            .get_environment_workload(workload_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::InvalidRequest("Workload not found".to_string()))?;
+
+        if workload.environment_id != environment.id {
+            return Err(ApiError::InvalidRequest(
+                "Workload does not belong to this environment".to_string(),
+            ));
+        }
+
+        if environment.base_environment_id.is_some() {
+            let cluster_server = self
+                .get_random_kube_cluster_server(environment.cluster_id)
+                .await
+                .ok_or_else(|| {
+                    ApiError::InvalidRequest(
+                        "No connected KubeManager for this cluster; cannot delete branch workload"
+                            .to_string(),
+                    )
+                })?;
+
+            self.delete_branch_workload_resources(&cluster_server, &environment, &workload)
+                .await?;
+
+            if let Some((base_env_id, base_workload_id)) = environment
+                .base_environment_id
+                .zip(workload.base_workload_id)
+            {
+                Self::send_branch_service_route_removal(
+                    &cluster_server,
+                    base_env_id,
+                    base_workload_id,
+                    environment.id,
+                )
+                .await;
+            }
+        }
+
         self.db
             .delete_environment_workload(workload_id)
             .await
-            .map_err(ApiError::from)
+            .map_err(ApiError::from)?;
+
+        Ok(())
     }
 
     pub async fn update_environment_workload(
@@ -317,7 +375,52 @@ impl KubeController {
         Ok(target_workload_id)
     }
 
-    async fn send_branch_service_route_update(
+    async fn delete_branch_workload_resources(
+        &self,
+        cluster_server: &KubeClusterServer,
+        environment: &lapdev_db_entities::kube_environment::Model,
+        workload: &lapdev_common::kube::KubeEnvironmentWorkload,
+    ) -> Result<(), ApiError> {
+        let kind = KubeWorkloadKind::from_str(&workload.kind).map_err(|_| {
+            ApiError::InvalidRequest(format!(
+                "Invalid workload kind {} in branch environment",
+                workload.kind
+            ))
+        })?;
+
+        let mut resources = vec![(workload_kind_to_resource_kind(&kind), workload.name.clone())];
+
+        let services = self
+            .db
+            .get_environment_services(environment.id)
+            .await
+            .map_err(ApiError::from)?;
+
+        for service in services {
+            if service_targets_branch_workload(&service, &workload.name) {
+                resources.push((NamespacedResourceKind::Service, service.name.clone()));
+            }
+        }
+
+        let mut ctx = tarpc::context::current();
+        ctx.deadline = Instant::now() + Duration::from_secs(120);
+
+        match cluster_server
+            .rpc_client
+            .delete_namespaced_resources(ctx, environment.namespace.clone(), resources)
+            .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(ApiError::InvalidRequest(format!(
+                "Failed to delete branch workload resources: {err}"
+            ))),
+            Err(err) => Err(ApiError::InvalidRequest(format!(
+                "Connection error while deleting branch workload resources: {err}"
+            ))),
+        }
+    }
+
+    pub(super) async fn send_branch_service_route_update(
         cluster_server: &KubeClusterServer,
         base_environment_id: Uuid,
         base_workload_id: Uuid,
@@ -356,7 +459,7 @@ impl KubeController {
         }
     }
 
-    async fn send_branch_service_route_removal(
+    pub(super) async fn send_branch_service_route_removal(
         cluster_server: &KubeClusterServer,
         base_environment_id: Uuid,
         base_workload_id: Uuid,
@@ -394,7 +497,7 @@ impl KubeController {
         }
     }
 
-    async fn refresh_branch_service_routes_with_logging(
+    pub(super) async fn refresh_branch_service_routes_with_logging(
         cluster_server: &KubeClusterServer,
         base_environment_id: Uuid,
     ) {
@@ -411,7 +514,7 @@ impl KubeController {
         }
     }
 
-    async fn build_branch_workload_manifest(
+    pub(super) async fn build_branch_workload_manifest(
         &self,
         environment: &lapdev_db_entities::kube_environment::Model,
         existing_workload: &lapdev_common::kube::KubeEnvironmentWorkload,
@@ -590,6 +693,31 @@ pub(super) fn build_branch_service_selector(workload_name: &str) -> BTreeMap<Str
     let mut selector = BTreeMap::new();
     selector.insert("app".to_string(), workload_name.to_string());
     selector
+}
+
+fn service_targets_branch_workload(
+    service: &KubeEnvironmentService,
+    branch_workload_name: &str,
+) -> bool {
+    if service.name == branch_workload_name {
+        return true;
+    }
+    service
+        .selector
+        .values()
+        .any(|value| value == branch_workload_name)
+}
+
+fn workload_kind_to_resource_kind(kind: &KubeWorkloadKind) -> NamespacedResourceKind {
+    match kind {
+        KubeWorkloadKind::Deployment => NamespacedResourceKind::Deployment,
+        KubeWorkloadKind::StatefulSet => NamespacedResourceKind::StatefulSet,
+        KubeWorkloadKind::DaemonSet => NamespacedResourceKind::DaemonSet,
+        KubeWorkloadKind::ReplicaSet => NamespacedResourceKind::ReplicaSet,
+        KubeWorkloadKind::Pod => NamespacedResourceKind::Pod,
+        KubeWorkloadKind::Job => NamespacedResourceKind::Job,
+        KubeWorkloadKind::CronJob => NamespacedResourceKind::CronJob,
+    }
 }
 
 pub(super) fn rename_service_yaml(

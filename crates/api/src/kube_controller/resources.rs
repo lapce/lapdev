@@ -429,7 +429,11 @@ fn merge_single_container(
     let mut new_container = container.clone();
 
     match &workload_container.image {
-        KubeContainerImage::FollowOriginal => {}
+        KubeContainerImage::FollowOriginal => {
+            if !workload_container.original_image.is_empty() {
+                new_container.image = Some(workload_container.original_image.clone());
+            }
+        }
         KubeContainerImage::Custom(custom_image) => {
             if !custom_image.is_empty() {
                 new_container.image = Some(custom_image.clone());
@@ -477,9 +481,9 @@ fn merge_single_container(
 
     let mut env_map: HashMap<String, (Option<String>, Option<EnvVarSource>)> = HashMap::new();
 
-    if let Some(original_env) = container.env {
-        for env_var in original_env {
-            env_map.insert(env_var.name.clone(), (env_var.value, env_var.value_from));
+    if !workload_container.original_env_vars.is_empty() {
+        for env_var in &workload_container.original_env_vars {
+            env_map.insert(env_var.name.clone(), (Some(env_var.value.clone()), None));
         }
     }
 
@@ -499,11 +503,7 @@ fn merge_single_container(
         })
         .collect();
 
-    new_container.env = if merged_env.is_empty() {
-        None
-    } else {
-        Some(merged_env)
-    };
+    new_container.env = Some(merged_env);
 
     if !workload_container.ports.is_empty() {
         let ports: Vec<ContainerPort> = workload_container
@@ -783,6 +783,8 @@ pub fn set_daemonset_paused(workload: &mut KubeWorkloadYamlOnly, paused: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
+    use lapdev_common::kube::KubeEnvVar;
     use serde_yaml::Value;
 
     fn base_container(name: &str) -> KubeContainerInfo {
@@ -881,5 +883,73 @@ spec:
           image: nginx
 "#;
         assert_replica_clamped(KubeWorkloadKind::ReplicaSet, replicaset);
+    }
+
+    #[test]
+    fn rebuild_workload_yaml_restores_follow_original_image_and_env() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: custom/image:2
+          env:
+            - name: CUSTOMIZED
+              value: stale
+"#;
+
+        let mut container = base_container("app");
+        container.original_image = "registry.example.com/app:v1".to_string();
+        container.original_env_vars = vec![KubeEnvVar {
+            name: "BASE".to_string(),
+            value: "original".to_string(),
+        }];
+        container.env_vars.clear();
+
+        let rebuilt =
+            rebuild_workload_yaml(&KubeWorkloadKind::Deployment, yaml, &[container], None)
+                .expect("rebuild should succeed");
+
+        let deployment: K8sDeployment = serde_yaml::from_str(&rebuilt).unwrap();
+        let pod_spec = deployment
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.spec.as_ref())
+            .expect("pod spec should exist");
+        let container_spec = pod_spec.containers.first().expect("container should exist");
+
+        assert_eq!(
+            container_spec.image.as_deref(),
+            Some("registry.example.com/app:v1"),
+            "reset should restore original image"
+        );
+
+        let env = container_spec
+            .env
+            .as_ref()
+            .expect("env vars should be restored");
+        assert!(
+            env.iter()
+                .any(|var| var.name == "BASE" && var.value.as_deref() == Some("original")),
+            "original env vars should be present: {:?}",
+            env
+        );
+        assert!(
+            env.iter().all(|var| var.name != "CUSTOMIZED"),
+            "stale env vars should be removed: {:?}",
+            env
+        );
     }
 }

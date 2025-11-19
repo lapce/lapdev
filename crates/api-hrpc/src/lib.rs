@@ -225,6 +225,12 @@ pub trait HrpcService {
         environment_id: Uuid,
     ) -> Result<(), HrpcError>;
 
+    async fn rebase_branch_environment(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+    ) -> Result<(), HrpcError>;
+
     // Kube Environment Workload operations
     async fn get_environment_workloads(
         &self,
@@ -258,6 +264,13 @@ pub trait HrpcService {
         workload_id: Uuid,
         containers: Vec<KubeContainerInfo>,
     ) -> Result<Uuid, HrpcError>;
+
+    async fn delete_environment_workload(
+        &self,
+        org_id: Uuid,
+        environment_id: Uuid,
+        workload_id: Uuid,
+    ) -> Result<(), HrpcError>;
 
     // Kube Namespace operations
     async fn create_kube_namespace(

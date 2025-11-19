@@ -199,6 +199,8 @@ pub fn WorkloadDetail(catalog_id: Uuid, workload_id: Uuid) -> impl IntoView {
                         let config = ContainerEditorConfig {
                             enable_resource_limits: true,
                             show_customization_badge: false,
+                            is_branch_environment: false,
+                            branch_reset_action: None,
                         };
                         view! {
                             <ContainersCard

@@ -4,6 +4,10 @@ use uuid::Uuid;
 
 use crate::{
     component::{
+        alert_dialog::{
+            AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+            AlertDialogTitle,
+        },
         badge::{Badge, BadgeVariant},
         button::{Button, ButtonVariant},
         card::Card,
@@ -77,6 +81,8 @@ pub fn ContainersCard(
 pub struct ContainerEditorConfig {
     pub enable_resource_limits: bool,
     pub show_customization_badge: bool,
+    pub is_branch_environment: bool,
+    pub branch_reset_action: Option<Action<(), Result<(), ErrorResponse>>>,
 }
 
 impl Default for ContainerEditorConfig {
@@ -84,6 +90,8 @@ impl Default for ContainerEditorConfig {
         Self {
             enable_resource_limits: true,
             show_customization_badge: true,
+            is_branch_environment: false,
+            branch_reset_action: None,
         }
     }
 }
@@ -98,14 +106,31 @@ fn ContainerEditor(
     config: ContainerEditorConfig,
     update_action: Action<Vec<KubeContainerInfo>, Result<Uuid, ErrorResponse>>,
 ) -> impl IntoView {
+    let _ = workload_id;
+    let _ = update_counter;
     let is_editing = RwSignal::new(false);
     let error_message = RwSignal::new(None::<String>);
+    let reset_dialog_open = RwSignal::new(false);
+    let has_customizations = config.show_customization_badge && container.is_customized();
 
     // Clone container fields to avoid move conflicts
     let container_image = container.image.clone();
     let container_env_vars = container.env_vars.clone();
     let container_original_image = container.original_image.clone();
     let name = container.name.clone();
+    let reset_title_text = StoredValue::new(format!("Reset {}?", name.clone()));
+    let containers_store = StoredValue::new(all_containers.clone());
+    let branch_reset_action = config.branch_reset_action.clone();
+    if let Some(action) = branch_reset_action.clone() {
+        let error_message = error_message.clone();
+        Effect::new(move |_| {
+            if let Some(result) = action.value().get() {
+                if let Err(err) = result {
+                    error_message.set(Some(err.error));
+                }
+            }
+        });
+    }
 
     // Clone resource values for display (since they need to be used in multiple places)
     let cpu_request_display = container.cpu_request.clone();
@@ -237,15 +262,25 @@ fn ContainerEditor(
                         </div>
                     </div>
                     <Show when=move || !is_editing.get()>
-                        <Button
-                            variant=ButtonVariant::Outline
-                            on:click=move |_| {
-                                is_editing.set(true);
-                                error_message.set(None);
-                            }
-                        >
-                            Edit
-                        </Button>
+                        <div class="flex gap-2">
+                            <Show when=move || has_customizations>
+                                <Button
+                                    variant=ButtonVariant::Destructive
+                                    on:click=move |_| reset_dialog_open.set(true)
+                                >
+                                    Reset
+                                </Button>
+                            </Show>
+                            <Button
+                                variant=ButtonVariant::Outline
+                                on:click=move |_| {
+                                    is_editing.set(true);
+                                    error_message.set(None);
+                                }
+                            >
+                                Edit
+                            </Button>
+                        </div>
                     </Show>
 
                     <Show when=move || is_editing.get()>
@@ -525,6 +560,50 @@ fn ContainerEditor(
                 </Show>
             </div>
         </div>
+        <AlertDialogContent open=reset_dialog_open>
+            <AlertDialogHeader>
+                <AlertDialogTitle>{reset_title_text.get_value()}</AlertDialogTitle>
+                <AlertDialogDescription>
+                    "This will remove all customizations for this container and restore the original configuration."
+                </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+                <Button variant=ButtonVariant::Outline on:click=move |_| reset_dialog_open.set(false)>
+                    Cancel
+                </Button>
+                <Button
+                    variant=ButtonVariant::Destructive
+                    on:click=move |_| {
+                        reset_dialog_open.set(false);
+                        if config.is_branch_environment {
+                            if let Some(action) = branch_reset_action.clone() {
+                                action.dispatch(());
+                            }
+                        } else {
+                            let mut containers_clone = containers_store.get_value();
+                            if let Some(target) = containers_clone.get_mut(container_index) {
+                                target.image = KubeContainerImage::FollowOriginal;
+                                target.cpu_request = None;
+                                target.cpu_limit = None;
+                                target.memory_request = None;
+                                target.memory_limit = None;
+                                target.env_vars.clear();
+                            }
+                            update_action.dispatch(containers_clone);
+                        }
+                    }
+                    disabled=Signal::derive(move || {
+                        let branch_pending = branch_reset_action
+                            .as_ref()
+                            .map(|action| action.pending().get())
+                            .unwrap_or(false);
+                        update_action.pending().get() || branch_pending
+                    })
+                >
+                    Reset Container
+                </Button>
+            </AlertDialogFooter>
+        </AlertDialogContent>
     }
 }
 

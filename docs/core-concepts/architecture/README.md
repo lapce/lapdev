@@ -1,7 +1,5 @@
 # Architecture
 
-
-
 This document explains how Lapdev works and how its components interact to provide seamless Kubernetes development environments.
 
 ### Overview
@@ -10,11 +8,11 @@ Lapdev consists of three main components:
 
 1. **Lapdev API Server** (SaaS) - Manages users, authentication, and orchestrates environment creation
 2. **Lapdev-Kube-Manager** (In your cluster) - Reads production manifests and manages dev environments
-3. **[Devbox](../devbox.md) CLI** (Developer's machine) - Enables local debugging with cluster connectivity
+3. [**Devbox**](../devbox.md) **CLI** (Developer's machine) - Enables local debugging with cluster connectivity
 
 ### Architecture Diagram
 
-<img src="../../.gitbook/assets/file.excalidraw.svg" alt="" class="gitbook-drawing" />
+<img src="../../images/architecture (1).svg" alt="" class="gitbook-drawing">
 
 ### Component Details
 
@@ -25,7 +23,7 @@ The Lapdev cloud service handles:
 * **User authentication and authorization** - GitHub/GitLab OAuth, team management
 * **Environment orchestration** - Receives environment creation requests from users
 * **Secure tunnel management** - Establishes websocket tunnels between your cluster and Lapdev
-* **[Preview URL](../preview-url.md) routing** - Routes traffic from automatically generated HTTPS URLs to your cluster
+* [**Preview URL**](../preview-url.md) **routing** - Routes traffic from automatically generated HTTPS URLs to your cluster
 
 **Security:**
 
@@ -40,7 +38,7 @@ The Lapdev cloud service handles:
 Deployed as a single Kubernetes deployment in your cluster, `lapdev-kube-manager`:
 
 * **Reads production manifests** - Discovers Deployments, StatefulSets, ConfigMaps, Secrets, and Services from your production namespace to build [App Catalogs](../app-catalog.md)
-* **Creates dev [environments](../environment.md)** - Replicates selected workloads into isolated or shared namespaces
+* **Creates dev** [**environments**](../environment.md) - Replicates selected workloads into isolated or shared namespaces
 * **Manages sync** - Monitors production manifests for changes and updates dev environments
 * **Handles traffic routing** - For [branch environments](branch-environment-architecture.md), routes traffic to the correct version of services (see [Traffic Routing Architecture](traffic-routing-architecture.md))
 * **Establishes secure tunnel** - Maintains websocket connection to Lapdev API Server for orchestration
@@ -72,16 +70,19 @@ Learn more: [Devbox Concept](../devbox.md) | [Local Development with Devbox](../
 ### Learn More
 
 **Specialized Architecture Documentation:**
+
 * [Traffic Routing Architecture](traffic-routing-architecture.md) - How Lapdev routes traffic between components
 * [Branch Environment Architecture](branch-environment-architecture.md) - Cost-effective environment model details
 
 **Core Concepts:**
+
 * [Cluster](../cluster.md) - How clusters connect to Lapdev
 * [App Catalog](../app-catalog.md) - Blueprint for your application
 * [Environment](../environment.md) - Running instances of your app
 * [Preview URL](../preview-url.md) - HTTPS access to your services
 
 **Getting Started:**
+
 * [Connect Your Kubernetes Cluster](../../how-to-guides/connect-your-kubernetes-cluster.md)
 * [Create an App Catalog](../../how-to-guides/create-an-app-catalog.md)
 * [Create Lapdev Environment](../../how-to-guides/create-lapdev-environment.md)

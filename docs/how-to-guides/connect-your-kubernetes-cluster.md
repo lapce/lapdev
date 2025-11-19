@@ -13,6 +13,8 @@ This guide walks you through connecting your Kubernetes cluster to **Lapdev**, s
 
 Keep this token handy — it’s used to securely register your cluster with Lapdev.
 
+<figure><img src="../.gitbook/assets/Screenshot 2025-11-19 at 20-29-35 Lapdev Dashboard.png" alt=""><figcaption></figcaption></figure>
+
 ### Install the Lapdev Kube Manager
 
 Run the install command shown in the dashboard, or apply the manifest manually:

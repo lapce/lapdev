@@ -2881,6 +2881,11 @@ impl DbApi {
                     .is_in(all_service_ids.iter().copied().collect::<Vec<_>>()),
             )
             .filter(kube_cluster_service::Column::DeletedAt.is_null())
+            .filter(
+                Condition::any()
+                    .add(kube_cluster_service::Column::ServiceType.eq("ClusterIP"))
+                    .add(kube_cluster_service::Column::ServiceType.is_null()),
+            )
             .all(&self.conn)
             .await?;
 

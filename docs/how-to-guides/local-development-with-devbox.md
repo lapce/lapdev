@@ -70,13 +70,13 @@ Once connected, you can intercept traffic for a specific workload through the La
 
 Lapdev automatically mirrors each container port, reusing any overrides from your most recent intercept. If you need custom local ports after starting the intercept, use the **Edit Ports** button on the intercept card and update the mappings there.
 
+<figure><img src="../.gitbook/assets/Screenshot 2025-11-19 at 20-31-07 Lapdev Dashboard.png" alt=""><figcaption></figcaption></figure>
+
 After enabling interception:
 
 * All cluster traffic for that service routes to your local machine
 * You can make edits, hot-reload, or debug directly in your IDE
 * Other services in the cluster remain unaffected
-
-_Placeholder screenshot:_
 
 ### Access In-Cluster Services
 

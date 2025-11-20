@@ -35,10 +35,6 @@ impl KubeController {
 
         // Prepare environment-specific labels
         let mut environment_labels = std::collections::HashMap::new();
-        environment_labels.insert(
-            "lapdev.environment".to_string(),
-            environment_name.to_string(),
-        );
         environment_labels.insert("lapdev.managed-by".to_string(), "lapdev".to_string());
         if environment.base_environment_id.is_some() {
             environment_labels.insert(

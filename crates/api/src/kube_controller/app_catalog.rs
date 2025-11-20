@@ -67,7 +67,7 @@ impl KubeController {
 
         let raw_workloads = cluster_server
             .rpc_client
-            .get_workloads_raw_yaml(tarpc::context::current(), workload_identifiers)
+            .get_workloads_raw_yaml(Self::kube_manager_rpc_context(), workload_identifiers)
             .await
             .map_err(|e| ApiError::InvalidRequest(format!("Failed to get workload YAML: {}", e)))?
             .map_err(|e| ApiError::InvalidRequest(format!("KubeManager error: {}", e)))?;
@@ -368,7 +368,7 @@ impl KubeController {
 
         let responses = match cluster_server
             .rpc_client
-            .get_namespaced_resources(tarpc::context::current(), requests)
+            .get_namespaced_resources(Self::kube_manager_rpc_context(), requests)
             .await
         {
             Ok(Ok(res)) => res,

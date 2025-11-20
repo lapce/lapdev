@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
     sync::{atomic::AtomicU64, Arc},
+    time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
@@ -51,6 +52,20 @@ pub struct KubeController {
 }
 
 impl KubeController {
+    const KUBE_MANAGER_RPC_TIMEOUT_SECS: u64 = 300;
+
+    fn kube_manager_rpc_context_with_timeout(timeout: Duration) -> tarpc::context::Context {
+        let mut ctx = tarpc::context::current();
+        ctx.deadline = Instant::now() + timeout;
+        ctx
+    }
+
+    fn kube_manager_rpc_context() -> tarpc::context::Context {
+        Self::kube_manager_rpc_context_with_timeout(Duration::from_secs(
+            Self::KUBE_MANAGER_RPC_TIMEOUT_SECS,
+        ))
+    }
+
     pub fn new(
         db: DbApi,
         environment_events: broadcast::Sender<EnvironmentLifecycleEvent>,
@@ -287,7 +302,7 @@ impl KubeController {
             match server
                 .rpc_client
                 .update_branch_service_route(
-                    tarpc::context::current(),
+                    Self::kube_manager_rpc_context(),
                     base_environment_id,
                     workload_id,
                     route.clone(),
@@ -326,7 +341,7 @@ impl KubeController {
             match server
                 .rpc_client
                 .remove_branch_service_route(
-                    tarpc::context::current(),
+                    Self::kube_manager_rpc_context(),
                     base_environment_id,
                     workload_id,
                     branch_environment_id,

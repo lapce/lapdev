@@ -36,6 +36,7 @@ use std::sync::{
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::SocketAddr,
+    time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -65,6 +66,18 @@ pub struct KubeClusterServer {
 }
 
 impl KubeClusterServer {
+    const RPC_TIMEOUT_SECS: u64 = 300;
+
+    fn rpc_context_with_timeout(timeout: Duration) -> tarpc::context::Context {
+        let mut ctx = tarpc::context::current();
+        ctx.deadline = Instant::now() + timeout;
+        ctx
+    }
+
+    fn rpc_context() -> tarpc::context::Context {
+        Self::rpc_context_with_timeout(Duration::from_secs(Self::RPC_TIMEOUT_SECS))
+    }
+
     pub fn new(
         cluster_id: Uuid,
         client: KubeManagerRpcClient,
@@ -157,7 +170,7 @@ impl KubeClusterServer {
 
         match self
             .rpc_client
-            .configure_watches(tarpc::context::current(), namespaces)
+            .configure_watches(Self::rpc_context(), namespaces)
             .await
         {
             Ok(Ok(())) => Ok(()),
@@ -196,7 +209,7 @@ impl KubeClusterServer {
         );
         match self
             .rpc_client
-            .add_namespace_watch(tarpc::context::current(), namespace)
+            .add_namespace_watch(Self::rpc_context(), namespace)
             .await
         {
             Ok(Ok(())) => Ok(()),
@@ -217,7 +230,7 @@ impl KubeClusterServer {
         );
         match self
             .rpc_client
-            .remove_namespace_watch(tarpc::context::current(), namespace)
+            .remove_namespace_watch(Self::rpc_context(), namespace)
             .await
         {
             Ok(Ok(())) => Ok(()),
@@ -235,7 +248,7 @@ impl KubeClusterServer {
     ) -> Result<(), String> {
         match self
             .rpc_client
-            .set_devbox_routes(tarpc::context::current(), environment_id, routes)
+            .set_devbox_routes(Self::rpc_context(), environment_id, routes)
             .await
         {
             Ok(result) => result,
@@ -253,7 +266,7 @@ impl KubeClusterServer {
     ) -> Result<(), String> {
         match self
             .rpc_client
-            .set_devbox_route(tarpc::context::current(), environment_id, route)
+            .set_devbox_route(Self::rpc_context(), environment_id, route)
             .await
         {
             Ok(result) => result,
@@ -273,7 +286,7 @@ impl KubeClusterServer {
         match self
             .rpc_client
             .remove_devbox_route(
-                tarpc::context::current(),
+                Self::rpc_context(),
                 environment_id,
                 workload_id,
                 branch_environment_id,
@@ -296,7 +309,7 @@ impl KubeClusterServer {
         match self
             .rpc_client
             .clear_devbox_routes(
-                tarpc::context::current(),
+                Self::rpc_context(),
                 environment_id,
                 branch_environment_id,
             )
@@ -320,7 +333,7 @@ impl KubeClusterServer {
         match self
             .rpc_client
             .get_devbox_direct_config(
-                tarpc::context::current(),
+                Self::rpc_context(),
                 user_id,
                 environment_id,
                 namespace,

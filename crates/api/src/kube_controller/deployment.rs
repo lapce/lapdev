@@ -58,10 +58,12 @@ impl KubeController {
                 "Environment auth token is required".to_string(),
             ));
         }
+        let mut ctx = Self::kube_manager_rpc_context();
+
         match target_server
             .rpc_client
             .deploy_workload_yaml(
-                tarpc::context::current(),
+                ctx,
                 namespace.to_string(),
                 workloads_with_resources,
                 environment_labels,

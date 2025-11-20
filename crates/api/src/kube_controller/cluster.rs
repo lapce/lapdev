@@ -255,7 +255,7 @@ impl KubeController {
         match server
             .rpc_client
             .get_workloads(
-                tarpc::context::current(),
+                Self::kube_manager_rpc_context(),
                 namespace,
                 workload_kind_filter,
                 include_system_workloads,
@@ -302,7 +302,7 @@ impl KubeController {
         // Call KubeManager to get workload details
         match server
             .rpc_client
-            .get_workload_details(tarpc::context::current(), name, namespace)
+            .get_workload_details(Self::kube_manager_rpc_context(), name, namespace)
             .await
         {
             Ok(Ok(workload_details)) => Ok(workload_details),
@@ -342,7 +342,7 @@ impl KubeController {
         // Call KubeManager to get namespaces
         match server
             .rpc_client
-            .get_namespaces(tarpc::context::current())
+            .get_namespaces(Self::kube_manager_rpc_context())
             .await
         {
             Ok(Ok(namespaces)) => Ok(namespaces),

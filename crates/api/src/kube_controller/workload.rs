@@ -402,8 +402,7 @@ impl KubeController {
             }
         }
 
-        let mut ctx = tarpc::context::current();
-        ctx.deadline = Instant::now() + Duration::from_secs(120);
+        let mut ctx = Self::kube_manager_rpc_context();
 
         match cluster_server
             .rpc_client
@@ -430,7 +429,7 @@ impl KubeController {
         match cluster_server
             .rpc_client
             .update_branch_service_route(
-                tarpc::context::current(),
+                Self::kube_manager_rpc_context(),
                 base_environment_id,
                 base_workload_id,
                 route,
@@ -468,7 +467,7 @@ impl KubeController {
         match cluster_server
             .rpc_client
             .remove_branch_service_route(
-                tarpc::context::current(),
+                Self::kube_manager_rpc_context(),
                 base_environment_id,
                 base_workload_id,
                 branch_environment_id,
@@ -503,7 +502,10 @@ impl KubeController {
     ) {
         if let Err(err) = cluster_server
             .rpc_client
-            .refresh_branch_service_routes(tarpc::context::current(), base_environment_id)
+            .refresh_branch_service_routes(
+                Self::kube_manager_rpc_context(),
+                base_environment_id,
+            )
             .await
         {
             tracing::warn!(

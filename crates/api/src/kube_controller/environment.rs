@@ -429,7 +429,11 @@ impl KubeController {
         environment_id: Uuid,
     ) -> Result<(), ApiError> {
         match rpc_client
-            .remove_branch_environment(tarpc::context::current(), base_env_id, environment_id)
+            .remove_branch_environment(
+                Self::kube_manager_rpc_context(),
+                base_env_id,
+                environment_id,
+            )
             .await
         {
             Ok(Ok(())) => {
@@ -477,8 +481,7 @@ impl KubeController {
         rpc_client: &lapdev_kube_rpc::KubeManagerRpcClient,
         environment: &lapdev_db_entities::kube_environment::Model,
     ) -> Result<(), ApiError> {
-        let mut ctx = tarpc::context::current();
-        ctx.deadline = Instant::now() + Duration::from_secs(300);
+        let mut ctx = Self::kube_manager_rpc_context();
 
         match rpc_client
             .destroy_environment(ctx, environment.id, environment.namespace.clone())
@@ -548,8 +551,7 @@ impl KubeController {
             resources.push((NamespacedResourceKind::Service, service.name));
         }
 
-        let mut ctx = tarpc::context::current();
-        ctx.deadline = Instant::now() + Duration::from_secs(300);
+        let mut ctx = Self::kube_manager_rpc_context();
         match rpc_client
             .delete_namespaced_resources(ctx, branch_namespace.clone(), resources)
             .await
@@ -658,7 +660,7 @@ impl KubeController {
                             if environment_clone.base_environment_id.is_none() {
                                 match rpc_client_clone
                                     .remove_namespace_watch(
-                                        tarpc::context::current(),
+                                        KubeController::kube_manager_rpc_context(),
                                         environment_clone.namespace.clone(),
                                     )
                                     .await
@@ -1959,7 +1961,11 @@ impl KubeController {
 
             match server
                 .rpc_client
-                .add_branch_environment(tarpc::context::current(), base_environment_id, branch_info)
+                .add_branch_environment(
+                    Self::kube_manager_rpc_context(),
+                    base_environment_id,
+                    branch_info,
+                )
                 .await
             {
                 Ok(Ok(())) => {

@@ -12,7 +12,6 @@ impl KubeController {
         workloads_with_resources: lapdev_kube_rpc::KubeWorkloadsWithResources,
         extra_labels: Option<HashMap<String, String>>,
     ) -> Result<(), ApiError> {
-        let workloads_with_resources = workloads_with_resources;
         let namespace = &environment.namespace;
         let environment_name = &environment.name;
 

@@ -299,7 +299,6 @@ mod tests {
     use std::collections::HashSet;
 
     use chrono::Utc;
-    use lapdev_common::{utils, PrebuildStatus, WorkspaceHostStatus, WorkspaceStatus};
     use lapdev_db::tests::prepare_db;
     use sea_orm::{ActiveModelTrait, ActiveValue, TransactionTrait};
     use uuid::Uuid;

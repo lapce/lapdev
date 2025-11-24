@@ -56,20 +56,11 @@ impl SidecarSettings {
 }
 
 /// Mutable routing state shared between RPC handlers and the proxy loop.
+#[derive(Default)]
 pub struct RoutingTable {
     pub branch_routes: HashMap<Uuid, BranchRoute>,
     pub default_route: DefaultRoute,
     pub port_routes: HashMap<u16, ProxyPortRoute>,
-}
-
-impl Default for RoutingTable {
-    fn default() -> Self {
-        Self {
-            branch_routes: HashMap::new(),
-            default_route: DefaultRoute::default(),
-            port_routes: HashMap::new(),
-        }
-    }
 }
 
 impl RoutingTable {

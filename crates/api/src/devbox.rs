@@ -793,7 +793,7 @@ impl DevboxSessionRpc for DevboxSessionRpcServer {
                 .ok_or_else(|| "Workload not found".to_string())?;
 
             let port_mappings: Vec<lapdev_devbox_rpc::PortMapping> =
-                serde_json::from_value(serde_json::Value::from(intercept.port_mappings.clone()))
+                serde_json::from_value(intercept.port_mappings.clone())
                     .map_err(|e| format!("Failed to parse port mappings: {}", e))?;
 
             result.push(lapdev_devbox_rpc::WorkloadInterceptInfo {

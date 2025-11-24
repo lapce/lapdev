@@ -4,9 +4,7 @@ use anyhow::{anyhow, Result};
 use lapdev_api_hrpc::HrpcServiceClient;
 use lapdev_common::{
     console::Organization,
-    kube::{
-        KubeAppCatalog, KubeAppCatalogWorkload, KubeCluster, KubeClusterStatus, KubeContainerInfo,
-    },
+    kube::{KubeAppCatalog, KubeAppCatalogWorkload, KubeContainerInfo},
 };
 use leptos::{prelude::*, task::spawn_local_scoped_with_cancellation};
 use leptos_router::hooks::use_params_map;
@@ -19,14 +17,12 @@ use crate::{
         button::{Button, ButtonVariant},
         card::Card,
         input::Input,
-        label::Label,
-        select::{Select, SelectContent, SelectItem, SelectTrigger},
         table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         typography::{H3, H4, P},
     },
     docs_url,
     kube_app_catalog::CreateEnvironmentModal,
-    modal::{DatetimeModal, DeleteModal, ErrorResponse, Modal},
+    modal::{DatetimeModal, DeleteModal, ErrorResponse},
     organization::get_current_org,
     sse::run_sse_with_retry,
     DOCS_APP_CATALOG_PATH,

@@ -332,12 +332,10 @@ impl Usage {
 pub mod tests {
     use anyhow::Result;
     use chrono::{DateTime, TimeZone, Utc};
-    use lapdev_common::{AuthProvider, ProviderUser, UsageResourceKind};
+    use lapdev_common::UsageResourceKind;
     use lapdev_db::api::DbApi;
     use sea_orm::{ActiveModelTrait, ActiveValue, TransactionTrait};
     use uuid::Uuid;
-
-    use crate::tests::prepare_enterprise;
 
     async fn insert_machine_type(db: &DbApi) -> Result<lapdev_db_entities::machine_type::Model> {
         Ok(lapdev_db_entities::machine_type::ActiveModel {

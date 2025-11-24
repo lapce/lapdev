@@ -16,9 +16,7 @@ use lapdev_common::{
 use lapdev_db::api::DbApi;
 use lapdev_db::api::LAPDEV_MAX_CPU_ERROR;
 use lapdev_enterprise::enterprise::Enterprise;
-use lapdev_rpc::{
-    error::ApiError, long_running_context, spawn_twoway, ConductorService, WorkspaceServiceClient,
-};
+use lapdev_rpc::{error::ApiError, long_running_context, WorkspaceServiceClient};
 use russh::keys::ssh_key::rand_core::OsRng;
 use russh::keys::{pkcs8, Algorithm, HashAlg, PrivateKey, PublicKeyBase64};
 use sea_orm::{
@@ -26,18 +24,11 @@ use sea_orm::{
     TransactionTrait,
 };
 use serde::Deserialize;
-use sqlx::postgres::PgNotification;
-use tarpc::{
-    context,
-    server::{BaseChannel, Channel},
-};
+use tarpc::context;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-use crate::{
-    rpc::ConductorRpc,
-    scheduler::{self, LAPDEV_CPU_OVERCOMMIT},
-};
+use crate::scheduler::{self, LAPDEV_CPU_OVERCOMMIT};
 
 #[derive(Clone, Default)]
 pub struct WorkspaceUpdate {
@@ -94,10 +85,10 @@ pub struct RepoDetails {
 
 #[derive(Clone)]
 pub struct Conductor {
-    version: String,
-    rpc_aborts: Arc<RwLock<HashMap<Uuid, AbortHandle>>>,
+    pub version: String,
+    pub rpc_aborts: Arc<RwLock<HashMap<Uuid, AbortHandle>>>,
     rpcs: Arc<RwLock<HashMap<Uuid, WorkspaceServiceClient>>>,
-    ws_hosts: Arc<RwLock<HashMap<Uuid, WorkspaceHostInfo>>>,
+    pub ws_hosts: Arc<RwLock<HashMap<Uuid, WorkspaceHostInfo>>>,
     region: Arc<RwLock<String>>,
     data_folder: PathBuf,
     pub hostnames: Arc<RwLock<HashMap<String, String>>>,
@@ -182,388 +173,388 @@ impl Conductor {
         Ok(conductor)
     }
 
-    async fn listen_table_update(&self) -> Result<()> {
-        let pool = self
-            .db
-            .pool
-            .clone()
-            .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
-        let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
-        listener.listen("table_update").await?;
-        loop {
-            let notification = listener.recv().await?;
-            let _ = self
-                .handle_workspace_host_update_notification(notification)
-                .await;
-        }
-    }
+    // async fn listen_table_update(&self) -> Result<()> {
+    //     let pool = self
+    //         .db
+    //         .pool
+    //         .clone()
+    //         .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
+    //     let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
+    //     listener.listen("table_update").await?;
+    //     loop {
+    //         let notification = listener.recv().await?;
+    //         let _ = self
+    //             .handle_workspace_host_update_notification(notification)
+    //             .await;
+    //     }
+    // }
 
-    async fn handle_workspace_host_update_notification(
-        &self,
-        notification: PgNotification,
-    ) -> Result<()> {
-        let payload: TableUpdatePayload = serde_json::from_str(notification.payload())?;
-        let workspace_host = self
-            .db
-            .get_workspace_host(payload.id)
-            .await?
-            .ok_or_else(|| anyhow!("can't find workspace host"))?;
+    // async fn handle_workspace_host_update_notification(
+    //     &self,
+    //     notification: PgNotification,
+    // ) -> Result<()> {
+    //     let payload: TableUpdatePayload = serde_json::from_str(notification.payload())?;
+    //     let workspace_host = self
+    //         .db
+    //         .get_workspace_host(payload.id)
+    //         .await?
+    //         .ok_or_else(|| anyhow!("can't find workspace host"))?;
 
-        if workspace_host.deleted_at.is_some() {
-            // the workspace host was deleted
-            self.ws_hosts.write().await.remove(&workspace_host.id);
-            self.rpcs.write().await.remove(&workspace_host.id);
-            if let Some(abort) = self.rpc_aborts.write().await.remove(&workspace_host.id) {
-                abort.abort();
-            }
-        } else {
-            let mut ws_hosts = self.ws_hosts.write().await;
-            if let Some(info) = ws_hosts.get_mut(&workspace_host.id) {
-                info.model = workspace_host;
-            } else {
-                let id = workspace_host.id;
-                let host = workspace_host.host.clone();
-                let port = workspace_host.port as u16;
-                ws_hosts.insert(
-                    id,
-                    WorkspaceHostInfo {
-                        model: workspace_host,
-                        latency: None,
-                    },
-                );
-                let conductor = self.clone();
-                tokio::spawn(async move {
-                    conductor.connect_workspace_host(id, host, port).await;
-                });
-            }
-        }
+    //     if workspace_host.deleted_at.is_some() {
+    //         // the workspace host was deleted
+    //         self.ws_hosts.write().await.remove(&workspace_host.id);
+    //         self.rpcs.write().await.remove(&workspace_host.id);
+    //         if let Some(abort) = self.rpc_aborts.write().await.remove(&workspace_host.id) {
+    //             abort.abort();
+    //         }
+    //     } else {
+    //         let mut ws_hosts = self.ws_hosts.write().await;
+    //         if let Some(info) = ws_hosts.get_mut(&workspace_host.id) {
+    //             info.model = workspace_host;
+    //         } else {
+    //             let id = workspace_host.id;
+    //             let host = workspace_host.host.clone();
+    //             let port = workspace_host.port as u16;
+    //             ws_hosts.insert(
+    //                 id,
+    //                 WorkspaceHostInfo {
+    //                     model: workspace_host,
+    //                     latency: None,
+    //                 },
+    //             );
+    //             let conductor = self.clone();
+    //             tokio::spawn(async move {
+    //                 conductor.connect_workspace_host(id, host, port).await;
+    //             });
+    //         }
+    //     }
 
-        self.decide_current_region().await;
+    //     self.decide_current_region().await;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    async fn monitor_workspace_hosts(&self) {
-        {
-            let conductor = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = conductor.listen_table_update().await {
-                    tracing::error!("listen table update error: {e}");
-                } else {
-                    tracing::info!("listen table update exited");
-                }
-            });
-        }
+    // async fn monitor_workspace_hosts(&self) {
+    //     {
+    //         let conductor = self.clone();
+    //         tokio::spawn(async move {
+    //             if let Err(e) = conductor.listen_table_update().await {
+    //                 tracing::error!("listen table update error: {e}");
+    //             } else {
+    //                 tracing::info!("listen table update exited");
+    //             }
+    //         });
+    //     }
 
-        {
-            let mut ws_hosts = self.ws_hosts.write().await;
-            let hosts = self.get_workspace_hosts().await;
+    //     {
+    //         let mut ws_hosts = self.ws_hosts.write().await;
+    //         let hosts = self.get_workspace_hosts().await;
 
-            for workspace_host in hosts {
-                if !ws_hosts.contains_key(&workspace_host.id) {
-                    let id = workspace_host.id;
-                    let host = workspace_host.host.clone();
-                    let port = workspace_host.port as u16;
-                    ws_hosts.insert(
-                        id,
-                        WorkspaceHostInfo {
-                            model: workspace_host,
-                            latency: None,
-                        },
-                    );
-                    let conductor = self.clone();
-                    tokio::spawn(async move {
-                        conductor.connect_workspace_host(id, host, port).await;
-                    });
-                }
-            }
-        }
+    //         for workspace_host in hosts {
+    //             if !ws_hosts.contains_key(&workspace_host.id) {
+    //                 let id = workspace_host.id;
+    //                 let host = workspace_host.host.clone();
+    //                 let port = workspace_host.port as u16;
+    //                 ws_hosts.insert(
+    //                     id,
+    //                     WorkspaceHostInfo {
+    //                         model: workspace_host,
+    //                         latency: None,
+    //                     },
+    //                 );
+    //                 let conductor = self.clone();
+    //                 tokio::spawn(async move {
+    //                     conductor.connect_workspace_host(id, host, port).await;
+    //                 });
+    //             }
+    //         }
+    //     }
 
-        {
-            let mut tick = tokio::time::interval(Duration::from_secs(6));
-            loop {
-                tick.tick().await;
-                let rpcs = { self.rpcs.read().await.clone() };
-                for (_, rpc) in rpcs {
-                    tokio::spawn(async move {
-                        let _ = rpc.ping(context::current()).await;
-                    });
-                }
-            }
-        }
-    }
+    //     {
+    //         let mut tick = tokio::time::interval(Duration::from_secs(6));
+    //         loop {
+    //             tick.tick().await;
+    //             let rpcs = { self.rpcs.read().await.clone() };
+    //             for (_, rpc) in rpcs {
+    //                 tokio::spawn(async move {
+    //                     let _ = rpc.ping(context::current()).await;
+    //                 });
+    //             }
+    //         }
+    //     }
+    // }
 
-    async fn monitor_status_updates(&self) -> Result<()> {
-        let pool = self
-            .db
-            .pool
-            .clone()
-            .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
-        let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
-        listener.listen("status_update").await?;
-        loop {
-            let notification = listener.recv().await?;
-            if let Err(e) = self.handle_status_update_notification(notification).await {
-                tracing::error!("handle status update notification error: {e:#}");
-            }
-        }
-    }
+    // async fn monitor_status_updates(&self) -> Result<()> {
+    //     let pool = self
+    //         .db
+    //         .pool
+    //         .clone()
+    //         .ok_or_else(|| anyhow!("db doesn't have pg pool"))?;
+    //     let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
+    //     listener.listen("status_update").await?;
+    //     loop {
+    //         let notification = listener.recv().await?;
+    //         if let Err(e) = self.handle_status_update_notification(notification).await {
+    //             tracing::error!("handle status update notification error: {e:#}");
+    //         }
+    //     }
+    // }
 
-    async fn handle_status_update_notification(&self, notification: PgNotification) -> Result<()> {
-        tracing::debug!(
-            "status update notification payload: {}",
-            notification.payload()
-        );
-        let payload: StatusUpdatePayload = serde_json::from_str(notification.payload())
-            .with_context(|| format!("trying to deserialize payload {}", notification.payload()))?;
-        match payload.table.as_str() {
-            "workspace" => {
-                let status = WorkspaceStatus::from_str(&payload.status).with_context(|| {
-                    format!("trying to deserialize workspace status {}", payload.status)
-                })?;
-                self.add_workspace_update_event(
-                    payload.user_id,
-                    payload.id,
-                    WorkspaceUpdateEvent::Status(status),
-                )
-                .await;
-            }
-            "prebuild" => {
-                let status = PrebuildStatus::from_str(&payload.status).with_context(|| {
-                    format!("trying to deserialize prebuild status {}", payload.status)
-                })?;
-                self.add_prebuild_update_event(payload.id, PrebuildUpdateEvent::Status(status))
-                    .await;
-            }
-            "prebuild_replica" => {
-                let status =
-                    PrebuildReplicaStatus::from_str(&payload.status).with_context(|| {
-                        format!(
-                            "trying to deserialize prebuild replica status {}",
-                            payload.status
-                        )
-                    })?;
-                self.add_prebuild_replica_update_event(payload.id, status)
-                    .await;
-            }
-            _ => {
-                return Err(anyhow!("status update table {} not handled", payload.table));
-            }
-        }
-        Ok(())
-    }
+    // async fn handle_status_update_notification(&self, notification: PgNotification) -> Result<()> {
+    //     tracing::debug!(
+    //         "status update notification payload: {}",
+    //         notification.payload()
+    //     );
+    //     let payload: StatusUpdatePayload = serde_json::from_str(notification.payload())
+    //         .with_context(|| format!("trying to deserialize payload {}", notification.payload()))?;
+    //     match payload.table.as_str() {
+    //         "workspace" => {
+    //             let status = WorkspaceStatus::from_str(&payload.status).with_context(|| {
+    //                 format!("trying to deserialize workspace status {}", payload.status)
+    //             })?;
+    //             self.add_workspace_update_event(
+    //                 payload.user_id,
+    //                 payload.id,
+    //                 WorkspaceUpdateEvent::Status(status),
+    //             )
+    //             .await;
+    //         }
+    //         "prebuild" => {
+    //             let status = PrebuildStatus::from_str(&payload.status).with_context(|| {
+    //                 format!("trying to deserialize prebuild status {}", payload.status)
+    //             })?;
+    //             self.add_prebuild_update_event(payload.id, PrebuildUpdateEvent::Status(status))
+    //                 .await;
+    //         }
+    //         "prebuild_replica" => {
+    //             let status =
+    //                 PrebuildReplicaStatus::from_str(&payload.status).with_context(|| {
+    //                     format!(
+    //                         "trying to deserialize prebuild replica status {}",
+    //                         payload.status
+    //                     )
+    //                 })?;
+    //             self.add_prebuild_replica_update_event(payload.id, status)
+    //                 .await;
+    //         }
+    //         _ => {
+    //             return Err(anyhow!("status update table {} not handled", payload.table));
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
-    async fn get_workspace_hosts(&self) -> Vec<lapdev_db_entities::workspace_host::Model> {
-        lapdev_db_entities::workspace_host::Entity::find()
-            .filter(lapdev_db_entities::workspace_host::Column::DeletedAt.is_null())
-            .all(&self.db.conn)
-            .await
-            .unwrap_or_default()
-    }
+    // async fn get_workspace_hosts(&self) -> Vec<lapdev_db_entities::workspace_host::Model> {
+    //     lapdev_db_entities::workspace_host::Entity::find()
+    //         .filter(lapdev_db_entities::workspace_host::Column::DeletedAt.is_null())
+    //         .all(&self.db.conn)
+    //         .await
+    //         .unwrap_or_default()
+    // }
 
-    async fn connect_workspace_host(&self, id: Uuid, host: String, port: u16) {
-        loop {
-            {
-                if !self.ws_hosts.read().await.contains_key(&id) {
-                    // this means the workspace host server is removed,
-                    // so we don't connect to it anymore.
-                    return;
-                }
-            }
+    // async fn connect_workspace_host(&self, id: Uuid, host: String, port: u16) {
+    //     loop {
+    //         {
+    //             if !self.ws_hosts.read().await.contains_key(&id) {
+    //                 // this means the workspace host server is removed,
+    //                 // so we don't connect to it anymore.
+    //                 return;
+    //             }
+    //         }
 
-            if let Err(e) = self.connect_workspace_host_once(id, &host, port).await {
-                tracing::error!("connect workspace host {host}:{port} failed: {e:?}");
-            }
+    //         if let Err(e) = self.connect_workspace_host_once(id, &host, port).await {
+    //             tracing::error!("connect workspace host {host}:{port} failed: {e:?}");
+    //         }
 
-            let _ = lapdev_db_entities::workspace_host::ActiveModel {
-                id: ActiveValue::Set(id),
-                status: ActiveValue::Set(WorkspaceHostStatus::Inactive.to_string()),
-                ..Default::default()
-            }
-            .update(&self.db.conn)
-            .await;
+    //         let _ = lapdev_db_entities::workspace_host::ActiveModel {
+    //             id: ActiveValue::Set(id),
+    //             status: ActiveValue::Set(WorkspaceHostStatus::Inactive.to_string()),
+    //             ..Default::default()
+    //         }
+    //         .update(&self.db.conn)
+    //         .await;
 
-            {
-                self.rpcs.write().await.remove(&id);
-                self.rpc_aborts.write().await.remove(&id);
-            }
+    //         {
+    //             self.rpcs.write().await.remove(&id);
+    //             self.rpc_aborts.write().await.remove(&id);
+    //         }
 
-            let _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        }
-    }
+    //         let _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    //     }
+    // }
 
-    async fn decide_current_region(&self) {
-        if !self.enterprise.has_valid_license().await {
-            return;
-        }
+    // async fn decide_current_region(&self) {
+    //     if !self.enterprise.has_valid_license().await {
+    //         return;
+    //     }
 
-        let mut region_latencies = HashMap::new();
-        for (_, ws_host) in self.ws_hosts.read().await.iter() {
-            if let Some(latency) = ws_host.latency {
-                if let Some(existing) = region_latencies.get_mut(&ws_host.model.region) {
-                    if latency < *existing {
-                        *existing = latency;
-                    }
-                } else {
-                    region_latencies.insert(ws_host.model.region.clone(), latency);
-                }
-            }
-        }
+    //     let mut region_latencies = HashMap::new();
+    //     for (_, ws_host) in self.ws_hosts.read().await.iter() {
+    //         if let Some(latency) = ws_host.latency {
+    //             if let Some(existing) = region_latencies.get_mut(&ws_host.model.region) {
+    //                 if latency < *existing {
+    //                     *existing = latency;
+    //                 }
+    //             } else {
+    //                 region_latencies.insert(ws_host.model.region.clone(), latency);
+    //             }
+    //         }
+    //     }
 
-        if let Some((region, _)) = region_latencies.iter().min_by_key(|(_, l)| **l) {
-            let mut current_region = self.region.write().await;
-            if &*current_region != region {
-                tracing::info!("change current region from {current_region:?} to {region:?}");
-                *current_region = region.to_owned();
-            }
-        }
-    }
+    //     if let Some((region, _)) = region_latencies.iter().min_by_key(|(_, l)| **l) {
+    //         let mut current_region = self.region.write().await;
+    //         if &*current_region != region {
+    //             tracing::info!("change current region from {current_region:?} to {region:?}");
+    //             *current_region = region.to_owned();
+    //         }
+    //     }
+    // }
 
-    async fn connect_workspace_host_once(&self, id: Uuid, host: &str, port: u16) -> Result<()> {
-        tracing::debug!("start to connect to workspace host {host}:{port}");
-        let conn = tarpc::serde_transport::tcp::connect(
-            (host, port),
-            tarpc::tokio_serde::formats::Json::default,
-        )
-        .await?;
-        let (server_chan, client_chan, abort_handle) = spawn_twoway(conn);
-        let ws_client =
-            WorkspaceServiceClient::new(tarpc::client::Config::default(), client_chan).spawn();
-        {
-            self.rpcs.write().await.insert(id, ws_client.clone());
-            self.rpc_aborts
-                .write()
-                .await
-                .insert(id, abort_handle.clone());
-        }
+    // async fn connect_workspace_host_once(&self, id: Uuid, host: &str, port: u16) -> Result<()> {
+    //     tracing::debug!("start to connect to workspace host {host}:{port}");
+    //     let conn = tarpc::serde_transport::tcp::connect(
+    //         (host, port),
+    //         tarpc::tokio_serde::formats::Json::default,
+    //     )
+    //     .await?;
+    //     let (server_chan, client_chan, abort_handle) = spawn_twoway(conn);
+    //     let ws_client =
+    //         WorkspaceServiceClient::new(tarpc::client::Config::default(), client_chan).spawn();
+    //     {
+    //         self.rpcs.write().await.insert(id, ws_client.clone());
+    //         self.rpc_aborts
+    //             .write()
+    //             .await
+    //             .insert(id, abort_handle.clone());
+    //     }
 
-        {
-            let ws_client = ws_client.clone();
-            let conductor = self.clone();
-            tokio::spawn(async move {
-                let start = std::time::Instant::now();
-                if let Ok(pong) = ws_client.ping(context::current()).await {
-                    if pong == "pong" {
-                        let latency = start.elapsed().as_millis();
-                        {
-                            if let Some(info) = conductor.ws_hosts.write().await.get_mut(&id) {
-                                info.latency = Some(latency);
-                            }
-                        }
+    //     {
+    //         let ws_client = ws_client.clone();
+    //         let conductor = self.clone();
+    //         tokio::spawn(async move {
+    //             let start = std::time::Instant::now();
+    //             if let Ok(pong) = ws_client.ping(context::current()).await {
+    //                 if pong == "pong" {
+    //                     let latency = start.elapsed().as_millis();
+    //                     {
+    //                         if let Some(info) = conductor.ws_hosts.write().await.get_mut(&id) {
+    //                             info.latency = Some(latency);
+    //                         }
+    //                     }
 
-                        conductor.decide_current_region().await;
-                    }
-                }
-            });
-        }
+    //                     conductor.decide_current_region().await;
+    //                 }
+    //             }
+    //         });
+    //     }
 
-        let rpc = ConductorRpc {
-            ws_host_id: id,
-            conductor: self.clone(),
-        };
+    //     let rpc = ConductorRpc {
+    //         ws_host_id: id,
+    //         conductor: self.clone(),
+    //     };
 
-        let rpc_future = tokio::spawn(
-            BaseChannel::with_defaults(server_chan)
-                .execute(rpc.serve())
-                .for_each(|resp| async move {
-                    tokio::spawn(resp);
-                }),
-        );
+    //     let rpc_future = tokio::spawn(
+    //         BaseChannel::with_defaults(server_chan)
+    //             .execute(rpc.serve())
+    //             .for_each(|resp| async move {
+    //                 tokio::spawn(resp);
+    //             }),
+    //     );
 
-        let ws_version = ws_client.version(context::current()).await;
-        if ws_version.as_deref().unwrap_or_default() != self.version {
-            abort_handle.abort();
-            let ws_host = self
-                .db
-                .get_workspace_host(id)
-                .await?
-                .ok_or_else(|| anyhow!("can't find workspace host in db"))?;
-            if ws_host.status != WorkspaceHostStatus::VersionMismatch.to_string() {
-                lapdev_db_entities::workspace_host::ActiveModel {
-                    id: ActiveValue::Set(id),
-                    status: ActiveValue::Set(WorkspaceHostStatus::VersionMismatch.to_string()),
-                    ..Default::default()
-                }
-                .update(&self.db.conn)
-                .await?;
-                tracing::error!(
-                    "version mismatch on lapdev ({}), and lapdev-ws ({ws_version:?})",
-                    self.version
-                );
-            }
-        } else {
-            lapdev_db_entities::workspace_host::ActiveModel {
-                id: ActiveValue::Set(id),
-                status: ActiveValue::Set(WorkspaceHostStatus::Active.to_string()),
-                ..Default::default()
-            }
-            .update(&self.db.conn)
-            .await?;
+    //     let ws_version = ws_client.version(context::current()).await;
+    //     if ws_version.as_deref().unwrap_or_default() != self.version {
+    //         abort_handle.abort();
+    //         let ws_host = self
+    //             .db
+    //             .get_workspace_host(id)
+    //             .await?
+    //             .ok_or_else(|| anyhow!("can't find workspace host in db"))?;
+    //         if ws_host.status != WorkspaceHostStatus::VersionMismatch.to_string() {
+    //             lapdev_db_entities::workspace_host::ActiveModel {
+    //                 id: ActiveValue::Set(id),
+    //                 status: ActiveValue::Set(WorkspaceHostStatus::VersionMismatch.to_string()),
+    //                 ..Default::default()
+    //             }
+    //             .update(&self.db.conn)
+    //             .await?;
+    //             tracing::error!(
+    //                 "version mismatch on lapdev ({}), and lapdev-ws ({ws_version:?})",
+    //                 self.version
+    //             );
+    //         }
+    //     } else {
+    //         lapdev_db_entities::workspace_host::ActiveModel {
+    //             id: ActiveValue::Set(id),
+    //             status: ActiveValue::Set(WorkspaceHostStatus::Active.to_string()),
+    //             ..Default::default()
+    //         }
+    //         .update(&self.db.conn)
+    //         .await?;
 
-            let _ = rpc_future.await;
-            tracing::debug!("workspace host connection ended");
-            abort_handle.abort();
-        }
+    //         let _ = rpc_future.await;
+    //         tracing::debug!("workspace host connection ended");
+    //         abort_handle.abort();
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    async fn monitor_auto_start_stop(&self) {
-        loop {
-            let orgs = if self.enterprise.license.has_valid().await {
-                self.enterprise
-                    .auto_start_stop
-                    .get_organization_auto_stop()
-                    .await
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            };
+    // async fn monitor_auto_start_stop(&self) {
+    //     loop {
+    //         let orgs = if self.enterprise.license.has_valid().await {
+    //             self.enterprise
+    //                 .auto_start_stop
+    //                 .get_organization_auto_stop()
+    //                 .await
+    //                 .unwrap_or_default()
+    //         } else {
+    //             vec![]
+    //         };
 
-            if orgs.is_empty() {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-            } else {
-                for org in orgs {
-                    {
-                        let workspaces = self
-                            .enterprise
-                            .auto_start_stop
-                            .organization_auto_stop_workspaces(&org)
-                            .await
-                            .unwrap_or_default();
-                        for workspace in workspaces {
-                            tracing::info!(
-                                "stop workspace {} because of auto stop timeout",
-                                workspace.name
-                            );
-                            let _ = self.stop_workspace(workspace, None, None).await;
-                        }
-                    }
+    //         if orgs.is_empty() {
+    //             tokio::time::sleep(Duration::from_secs(60)).await;
+    //         } else {
+    //             for org in orgs {
+    //                 {
+    //                     let workspaces = self
+    //                         .enterprise
+    //                         .auto_start_stop
+    //                         .organization_auto_stop_workspaces(&org)
+    //                         .await
+    //                         .unwrap_or_default();
+    //                     for workspace in workspaces {
+    //                         tracing::info!(
+    //                             "stop workspace {} because of auto stop timeout",
+    //                             workspace.name
+    //                         );
+    //                         let _ = self.stop_workspace(workspace, None, None).await;
+    //                     }
+    //                 }
 
-                    if org.running_workspace_limit > 0 {
-                        let usage = self
-                            .enterprise
-                            .usage
-                            .get_monthly_cost(org.id, None, None, Utc::now().into(), None)
-                            .await
-                            .unwrap_or(0);
-                        if usage as i64 >= org.usage_limit {
-                            if let Ok(workspaces) = self.db.get_org_running_workspaces(org.id).await
-                            {
-                                for workspace in workspaces {
-                                    tracing::info!(
-                                        "stop workspace {} because of usage limit",
-                                        workspace.name
-                                    );
-                                    let _ = self.stop_workspace(workspace, None, None).await;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    //                 if org.running_workspace_limit > 0 {
+    //                     let usage = self
+    //                         .enterprise
+    //                         .usage
+    //                         .get_monthly_cost(org.id, None, None, Utc::now().into(), None)
+    //                         .await
+    //                         .unwrap_or(0);
+    //                     if usage as i64 >= org.usage_limit {
+    //                         if let Ok(workspaces) = self.db.get_org_running_workspaces(org.id).await
+    //                         {
+    //                             for workspace in workspaces {
+    //                                 tracing::info!(
+    //                                     "stop workspace {} because of usage limit",
+    //                                     workspace.name
+    //                                 );
+    //                                 let _ = self.stop_workspace(workspace, None, None).await;
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     async fn get_raw_repo_details(
         &self,
@@ -635,7 +626,7 @@ impl Conductor {
 
         let path = repo_url
             .split('/')
-            .last()
+            .next_back()
             .ok_or_else(|| ApiError::RepositoryInvalid("invalid repo path".to_string()))?;
         let path = path
             .split('?')

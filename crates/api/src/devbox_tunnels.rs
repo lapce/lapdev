@@ -155,7 +155,7 @@ pub(crate) fn split_axum_websocket(
     let (sink, stream) = socket.split();
 
     let sink = sink
-        .sink_map_err(|err| io::Error::other(err))
+        .sink_map_err(io::Error::other)
         .with(|message: TungMessage| future::ready(map_tungstenite_to_axum(message)));
 
     let stream = stream.filter_map(|msg| {

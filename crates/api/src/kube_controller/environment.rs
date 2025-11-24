@@ -138,7 +138,7 @@ impl KubeController {
             )
             .collect();
 
-        let total_pages = (total_count + pagination.page_size - 1) / pagination.page_size;
+        let total_pages = total_count.div_ceil(pagination.page_size);
 
         Ok(PaginatedResult {
             data: kube_environments,
@@ -579,7 +579,7 @@ impl KubeController {
     pub async fn delete_kube_environment(
         &self,
         org_id: Uuid,
-        user_id: Uuid,
+        _user_id: Uuid,
         environment_id: Uuid,
     ) -> Result<(), ApiError> {
         // Authorize deletion (HRPC already enforced ownership/role, so we just ensure the environment exists and belongs to the org)
@@ -732,8 +732,8 @@ impl KubeController {
 
     pub async fn pause_kube_environment(
         &self,
-        org_id: Uuid,
-        user_id: Uuid,
+        _org_id: Uuid,
+        _user_id: Uuid,
         environment_id: Uuid,
     ) -> Result<(), ApiError> {
         let environment = self
@@ -2327,12 +2327,10 @@ impl KubeController {
         // Only insert/update workloads that were actually deployed
         for workload in workloads_to_deploy {
             let details = &workload.details;
-            let containers_json = serde_json::to_value(&details.containers)
-                .map(Json::from)
-                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
-            let ports_json = serde_json::to_value(&details.ports)
-                .map(Json::from)
-                .unwrap_or_else(|_| Json::from(serde_json::json!([])));
+            let containers_json =
+                serde_json::to_value(&details.containers).unwrap_or_else(|_| serde_json::json!([]));
+            let ports_json =
+                serde_json::to_value(&details.ports).unwrap_or_else(|_| serde_json::json!([]));
             let workload_yaml = details.workload_yaml.clone();
 
             let existing_workload = lapdev_db_entities::kube_environment_workload::Entity::find()

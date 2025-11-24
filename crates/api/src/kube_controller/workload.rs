@@ -214,8 +214,8 @@ impl KubeController {
 
     pub async fn update_environment_workload(
         &self,
-        org_id: Uuid,
-        user_id: Uuid,
+        _org_id: Uuid,
+        _user_id: Uuid,
         workload_id: Uuid,
         containers: Vec<lapdev_common::kube::KubeContainerInfo>,
         environment: lapdev_db_entities::kube_environment::Model,

@@ -22,7 +22,7 @@ use super::{
 };
 
 const DIRECT_SERVER_NAME: &str = "lapdev.devbox";
-const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_STUN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const MAX_PROBES: usize = 6;
 const PROBE_INTERVAL_MS: u64 = 500;

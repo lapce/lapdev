@@ -192,30 +192,11 @@ jobs:
           Copy-Item $bin "pack\lapdev.exe" -Force
           Compress-Archive -Path "pack\lapdev.exe" -DestinationPath $env:ARCHIVE_NAME -Force
 
-      - uses: sigstore/cosign-installer@v3.7.0
-
-      - name: Sign artifact (Unix)
-        if: runner.os != 'Windows'
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          cosign sign-blob --yes --output-signature "${ARCHIVE_NAME}.sig" --output-certificate "${ARCHIVE_NAME}.pem" "${ARCHIVE_NAME}"
-
-      - name: Sign artifact (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          cosign sign-blob --yes --output-signature "$env:ARCHIVE_NAME.sig" --output-certificate "$env:ARCHIVE_NAME.pem" "$env:ARCHIVE_NAME"
-
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: |
             ${{ env.ARCHIVE_NAME }}
-            ${{ env.ARCHIVE_NAME }}.sig
-            ${{ env.ARCHIVE_NAME }}.pem
 
   publish:
     needs: [prepare, build]

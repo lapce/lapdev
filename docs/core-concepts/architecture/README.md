@@ -12,7 +12,7 @@ Lapdev consists of three main components:
 
 ### Architecture Diagram
 
-<img src="../../images/architecture (1).svg" alt="" class="gitbook-drawing">
+<img src="../../images/architecture.svg" alt="" class="gitbook-drawing">
 
 ### Component Details
 

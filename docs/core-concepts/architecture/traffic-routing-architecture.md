@@ -22,7 +22,8 @@ Both patterns use secure tunnels through the Lapdev cloud service, eliminating t
 **Lapdev-Kube-Manager**
 
 * Orchestrates environment creation and management
-* Maintains connection to Lapdev cloud service
+* Maintains control-plane connection to Lapdev cloud service (route updates, heartbeats)
+* Pushes branch/service routing tables and Devbox intercept metadata to sidecars
 
 **Lapdev [Environment](../environment.md) (Namespace)**
 
@@ -40,17 +41,8 @@ Both patterns use secure tunnels through the Lapdev cloud service, eliminating t
 
 * Automatically injected into each pod in Lapdev environments
 * Routes traffic for branch environments based on tracestate headers
-* Handles traffic interception when Devbox is active
-* Routes traffic between local machine and cluster services
-
-#### In Lapdev Environment (Namespace-level)
-
-**Lapdev Devbox Proxy**
-
-* Deployed once per environment namespace
-* Manages all Devbox intercept connections for that environment
-* Routes traffic to the appropriate developer's local machine
-* Falls back to in-cluster service if no intercept is active
+* Handles Devbox intercepts directly (opens tunnels to Lapdev cloud and shuttles pod traffic over them)
+* Falls back to in-cluster service when no intercept is active
 
 #### External Components
 
@@ -89,11 +81,14 @@ The response flows back through the same path to the user's browser.
 When a developer intercepts a service with Devbox:
 
 1. **Developer runs** `lapdev devbox connect` and enables intercept in dashboard
-2. **Devbox CLI** → Establishes secure tunnel: `Local machine → Lapdev Cloud → Kube-Manager → Devbox Proxy`
-3. **Cluster traffic** for intercepted service → Routes to Devbox Proxy
-4. **Devbox Proxy** → Forwards to developer's local machine via tunnel
-5. **Local service** → Developer's code running on localhost processes the request
-6. **Response** flows back through tunnel to cluster
+2. **Devbox CLI** → Establishes secure tunnel: `Local machine → Lapdev Cloud → Sidecar Proxy`
+   - Kube-Manager stays on the control plane (publishing intercept metadata and optional direct-connect hints) but is **not** on the data path.
+3. **Sidecar Proxy** for the intercepted pod:
+   - Receives routing rules from Kube-Manager
+   - Opens the tunnel to Lapdev Cloud using the intercept token
+   - Forwards intercepted traffic to the developer’s local machine
+4. **Local service** → Developer's code running on localhost processes the request
+5. **Response** flows back through the same tunnel to the pod
 
 When no intercept is active, traffic routes normally to the in-cluster service.
 
@@ -118,8 +113,7 @@ This enables multiple developers to test different modifications simultaneously 
 | Component | Purpose | When Used |
 |-----------|---------|-----------|
 | **Sidecar Proxy** | Routes traffic based on environment type and headers | All environments |
-| **Devbox Proxy** | Manages intercept tunnels to developer machines | When Devbox is active |
-| **Kube-Manager** | Orchestrates environments and maintains cloud connection | Always running |
+| **Kube-Manager** | Orchestrates environments and pushes routing/intercept state to sidecars | Always running |
 | **Lapdev Cloud** | Routes external traffic and manages authentication | Preview URLs and Devbox |
 
 ### Learn More

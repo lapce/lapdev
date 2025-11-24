@@ -152,28 +152,6 @@ jobs:
           xcrun notarytool submit notarize.zip --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" --password "${APPLE_PASSWORD}" --wait
           rm -rf notarize notarize.zip
 
-      - name: Sign Windows binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
-          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
-        run: |
-          if (-not $env:WINDOWS_SIGNING_CERT) {
-            throw "WINDOWS_SIGNING_CERT_BASE64 secret is required"
-          }
-          if (-not $env:WINDOWS_SIGNING_CERT_PASSWORD) {
-            throw "WINDOWS_SIGNING_CERT_PASSWORD secret is required"
-          }
-          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT))
-          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $signtool) {
-            throw "signtool.exe not found"
-          }
-          & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfxPath /p $env:WINDOWS_SIGNING_CERT_PASSWORD "target\${env:TARGET}\release\lapdev-cli.exe"
-          Remove-Item $pfxPath -Force
-
       - name: Prepare artifact (Unix)
         if: runner.os != 'Windows'
         run: |

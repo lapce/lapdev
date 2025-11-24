@@ -1,0 +1,29 @@
+[package]
+name = "lapdev-kube-manager"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+uuid.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+tarpc.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-journald = "0.3.0"
+lapdev-rpc.workspace = true
+lapdev-common.workspace = true
+lapdev-kube-rpc.workspace = true
+lapdev-tunnel.workspace = true

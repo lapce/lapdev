@@ -1,0 +1,17 @@
+[package]
+name = "lapdev-kube-rpc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+uuid.workspace = true
+tarpc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+k8s-openapi.workspace = true
+lapdev-common.workspace = true
+tokio.workspace = true
+httparse = "1.8"
+tracing.workspace = true

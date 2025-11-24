@@ -1,6 +1,6 @@
 FROM debian:12
 
-RUN apt-get update && apt-mark hold iptables && \
+RUN apt-get update && \
     env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       dbus-x11 \
       psmisc \

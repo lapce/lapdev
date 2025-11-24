@@ -1,0 +1,29 @@
+[package]
+name = "lapdev-tunnel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+tokio.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tokio-util.workspace = true
+tokio-tungstenite.workspace = true
+lapdev-common.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rand.workspace = true
+serde.workspace = true
+tokio-serde.workspace = true
+pin-project.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true

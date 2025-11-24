@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lapdev-environment-example
+  namespace: lapdev-environments
+  labels:
+    app: lapdev-environment-example
+    lapdev.io/environment: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lapdev-environment-example
+  template:
+    metadata:
+      labels:
+        app: lapdev-environment-example
+      annotations:
+        # Proxy configuration via annotations
+        lapdev.io/proxy-target-service: "127.0.0.1:3000"
+        lapdev.io/proxy-target-port: "3000"
+        lapdev.io/proxy-access-level: "personal"
+        lapdev.io/proxy-require-auth: "true"
+        lapdev.io/proxy-custom-headers: '{"X-Environment": "lapdev", "X-Proxy-Version": "1.0"}'
+        lapdev.io/proxy-timeout-ms: "30000"
+    spec:
+      serviceAccountName: lapdev-sidecar-proxy
+      containers:
+        # Main application container
+        - name: app
+          image: node:18-alpine
+          ports:
+            - containerPort: 3000
+              name: http
+          command: ["node", "-e", "require('http').createServer((req,res) => res.end('Hello from app')).listen(3000)"]
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          
+        # Sidecar proxy container
+        - name: sidecar-proxy
+          image: ghcr.io/lapdev/lapdev-kube-sidecar-proxy:0.1.0
+          ports:
+            - containerPort: 25001
+              name: proxy
+          env:
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LAPDEV_ENVIRONMENT_ID
+              value: "550e8400-e29b-41d4-a716-446655440000"
+            - name: LAPDEV_SIDECAR_PROXY_BIND_ADDR
+              value: "0.0.0.0"
+            - name: LAPDEV_SIDECAR_PROXY_PORT
+              value: "25001"
+          args:
+            - "--log-level=info"
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "25m"
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 25001
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 25001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lapdev-environment-example
+  namespace: lapdev-environments
+  annotations:
+    # Service-level proxy configuration
+    lapdev.io/proxy-target-port: "8080"
+    lapdev.io/proxy-access-level: "shared"
+spec:
+  selector:
+    app: lapdev-environment-example
+  ports:
+    - name: http
+      port: 80
+      targetPort: 25001
+      protocol: TCP
+  type: ClusterIP

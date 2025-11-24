@@ -1,0 +1,20 @@
+[package]
+name = "lapdev-rpc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono.workspace = true
+uuid.workspace = true
+tarpc.workspace = true
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+futures.workspace = true
+lapdev-common.workspace = true
+tokio-util.workspace = true
+pin-project.workspace = true

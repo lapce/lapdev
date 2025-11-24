@@ -76,6 +76,8 @@ jobs:
             ./target/debian/lapdev-ws_${{ github.event.inputs.lapdev_version }}-1_amd64.deb
             ./pkg/common/install.sh
             ./pkg/common/install-ws.sh
+            ./pkg/installers/lapdev-cli.sh
+            ./pkg/installers/lapdev-cli.ps1
           retention-days: 1
   
   publish:
@@ -100,4 +102,6 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           gh release create $TAG_NAME --title "$TAG_NAME" --target $GITHUB_SHA \
-            lapdev-linux/*/*/*
+            lapdev-linux/*/*/* \
+            pkg/installers/lapdev-cli.sh \
+            pkg/installers/lapdev-cli.ps1

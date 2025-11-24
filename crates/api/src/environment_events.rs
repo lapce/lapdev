@@ -1,0 +1,181 @@
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use axum::{
+    extract::{Path, State},
+    response::sse::{Event, KeepAlive, Sse},
+};
+use axum_extra::{headers, TypedHeader};
+use chrono::{DateTime, Utc};
+use futures::{Stream, StreamExt};
+use lapdev_common::kube::{EnvironmentWorkloadStatusEvent, KubeEnvironmentStatus};
+use lapdev_rpc::error::ApiError;
+use serde::{Deserialize, Serialize};
+use tokio_stream::wrappers::BroadcastStream;
+use tracing::warn;
+use uuid::Uuid;
+
+use crate::state::CoreState;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentLifecycleEvent {
+    pub organization_id: Uuid,
+    pub environment_id: Uuid,
+    pub status: KubeEnvironmentStatus,
+    pub paused_at: Option<String>,
+    pub resumed_at: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub async fn stream_environment_events(
+    Path((org_id, environment_id)): Path<(Uuid, Uuid)>,
+    State(state): State<Arc<CoreState>>,
+    TypedHeader(cookies): TypedHeader<headers::Cookie>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let user = state.authenticate(&cookies).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+
+    let environment = state
+        .db
+        .get_kube_environment(environment_id)
+        .await?
+        .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+    if environment.organization_id != org_id {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let receiver = state.environment_events.subscribe();
+
+    let target_org = org_id;
+    let target_env = environment_id;
+
+    let event_stream = BroadcastStream::new(receiver).filter_map(move |result| {
+        let target_org = target_org;
+        let target_env = target_env;
+        async move {
+            match result {
+                Ok(event)
+                    if event.organization_id == target_org
+                        && event.environment_id == target_env =>
+                {
+                    build_sse_event(&event).map(Ok)
+                }
+                Ok(_) => None,
+                Err(err) => {
+                    warn!("environment event stream lagged: {err}");
+                    None
+                }
+            }
+        }
+    });
+
+    let keep_alive = KeepAlive::new()
+        .interval(Duration::from_secs(15))
+        .text("keep-alive");
+
+    Ok(Sse::new(event_stream).keep_alive(keep_alive))
+}
+
+pub async fn stream_organization_environment_events(
+    Path(org_id): Path<Uuid>,
+    State(state): State<Arc<CoreState>>,
+    TypedHeader(cookies): TypedHeader<headers::Cookie>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let user = state.authenticate(&cookies).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+
+    let receiver = state.environment_events.subscribe();
+    let target_org = org_id;
+
+    let event_stream = BroadcastStream::new(receiver).filter_map(move |result| {
+        let target_org = target_org;
+        async move {
+            match result {
+                Ok(event) if event.organization_id == target_org => build_sse_event(&event).map(Ok),
+                Ok(_) => None,
+                Err(err) => {
+                    warn!("environment event stream lagged: {err}");
+                    None
+                }
+            }
+        }
+    });
+
+    let keep_alive = KeepAlive::new()
+        .interval(Duration::from_secs(15))
+        .text("keep-alive");
+
+    Ok(Sse::new(event_stream).keep_alive(keep_alive))
+}
+
+pub async fn stream_environment_workload_events(
+    Path((org_id, environment_id)): Path<(Uuid, Uuid)>,
+    State(state): State<Arc<CoreState>>,
+    TypedHeader(cookies): TypedHeader<headers::Cookie>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let user = state.authenticate(&cookies).await?;
+    state
+        .db
+        .get_organization_member(user.id, org_id)
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+
+    let environment = state
+        .db
+        .get_kube_environment(environment_id)
+        .await?
+        .ok_or_else(|| ApiError::InvalidRequest("Environment not found".to_string()))?;
+
+    if environment.organization_id != org_id {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let receiver = state.environment_workload_events.subscribe();
+    let target_org = org_id;
+    let target_env = environment_id;
+
+    let event_stream = BroadcastStream::new(receiver).filter_map(move |result| {
+        let target_org = target_org;
+        let target_env = target_env;
+        async move {
+            match result {
+                Ok(event)
+                    if event.organization_id == target_org
+                        && event.environment_id == target_env =>
+                {
+                    build_workload_sse_event(&event).map(Ok)
+                }
+                Ok(_) => None,
+                Err(err) => {
+                    warn!("environment workload event stream lagged: {err}");
+                    None
+                }
+            }
+        }
+    });
+
+    let keep_alive = KeepAlive::new()
+        .interval(Duration::from_secs(15))
+        .text("keep-alive");
+
+    Ok(Sse::new(event_stream).keep_alive(keep_alive))
+}
+
+fn build_sse_event(event: &EnvironmentLifecycleEvent) -> Option<Event> {
+    Event::default().event("environment").json_data(event).ok()
+}
+
+fn build_workload_sse_event(event: &EnvironmentWorkloadStatusEvent) -> Option<Event> {
+    Event::default()
+        .event("environment_workload")
+        .json_data(event)
+        .ok()
+}

@@ -7,8 +7,9 @@ This document explains how Lapdev works and how its components interact to provi
 Lapdev consists of three main components:
 
 1. **Lapdev API Server** (SaaS) - Manages users, authentication, and orchestrates environment creation
-2. **Lapdev-Kube-Manager** (In your cluster) - Reads production manifests and manages dev environments
+2. **Lapdev-Kube-Manager** (In your cluster) - Reads production manifests, manages dev environments, and pushes routing/intercept state to sidecars
 3. [**Devbox**](../devbox.md) **CLI** (Developer's machine) - Enables local debugging with cluster connectivity
+   - Plus an auto-injected **Sidecar Proxy** per pod that enforces routing and intercepts at runtime
 
 ### Architecture Diagram
 
@@ -40,7 +41,7 @@ Deployed as a single Kubernetes deployment in your cluster, `lapdev-kube-manager
 * **Reads production manifests** - Discovers Deployments, StatefulSets, ConfigMaps, Secrets, and Services from your production namespace to build [App Catalogs](../app-catalog.md)
 * **Creates dev** [**environments**](../environment.md) - Replicates selected workloads into isolated or shared namespaces
 * **Manages sync** - Monitors production manifests for changes and updates dev environments
-* **Handles traffic routing** - For [branch environments](branch-environment-architecture.md), routes traffic to the correct version of services (see [Traffic Routing Architecture](traffic-routing-architecture.md))
+* **Publishes traffic routing** - For [branch environments](branch-environment-architecture.md), computes routing tables and distributes them to sidecars (sidecars enforce routing; see [Traffic Routing Architecture](traffic-routing-architecture.md))
 * **Establishes secure tunnel** - Maintains websocket connection to Lapdev API Server for orchestration
 
 **Permissions:**
@@ -60,10 +61,11 @@ The `lapdev devbox` command-line tool enables local development:
 **How it works:**
 
 1. Developer runs `lapdev devbox connect` and sets their active environment in the dashboard
-2. Devbox establishes secure tunnel: `Developer → Lapdev API → lapdev-kube-manager`
-3. Developer enables traffic interception for specific services in the Lapdev dashboard
-4. Traffic for intercepted services is routed to developer's localhost
-5. Developer's code can transparently access in-cluster services (e.g., `http://payment-service:8080`)
+2. Devbox establishes secure tunnel: `Developer → Lapdev API`
+   - Lapdev-Kube-Manager stays in the control plane, pushing intercept metadata and (optional) direct-connect hints to sidecars, but is not on the data path.
+3. Sidecar receives intercept config, opens its own tunnel to Lapdev API for that workload, and forwards intercepted pod traffic over the tunnel to the Devbox CLI
+4. Developer's code processes requests on localhost; responses flow back through the same tunnel to the pod
+5. Non-intercepted traffic continues to the in-cluster service transparently
 
 Learn more: [Devbox Concept](../devbox.md) | [Local Development with Devbox](../../how-to-guides/local-development-with-devbox.md)
 

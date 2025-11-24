@@ -150,7 +150,6 @@ jobs:
           cp "target/${TARGET}/release/lapdev-cli" notarize/lapdev
           ditto -c -k --keepParent notarize/lapdev notarize.zip
           xcrun notarytool submit notarize.zip --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" --password "${APPLE_PASSWORD}" --wait
-          xcrun stapler staple "target/${TARGET}/release/lapdev-cli"
           rm -rf notarize notarize.zip
 
       - name: Sign Windows binary

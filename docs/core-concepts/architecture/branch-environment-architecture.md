@@ -4,7 +4,7 @@ Branch environments are a cost-effective way to run development environments in 
 
 ### Architecture Diagram
 
-<img src="../../.gitbook/assets/file.excalidraw (3).svg" alt="" class="gitbook-drawing" />
+<img src="../../.gitbook/assets/file.excalidraw (2).svg" alt="" class="gitbook-drawing">
 
 ### Concept
 
@@ -86,13 +86,15 @@ const response = await axios.get('http://other-service:8080/api', {
 **Framework-specific approaches:**
 
 ✅ **Automatic with these frameworks:**
-- Spring Cloud Sleuth (auto-propagates OpenTelemetry headers)
-- OpenTelemetry-instrumented applications (SDK handles propagation)
+
+* Spring Cloud Sleuth (auto-propagates OpenTelemetry headers)
+* OpenTelemetry-instrumented applications (SDK handles propagation)
 
 ⚠️ **Manual forwarding required:**
-- Express.js, Fastify, Koa (pass `request.headers` to HTTP client)
-- Go HTTP clients (copy headers from incoming request)
-- Any custom HTTP client implementation
+
+* Express.js, Fastify, Koa (pass `request.headers` to HTTP client)
+* Go HTTP clients (copy headers from incoming request)
+* Any custom HTTP client implementation
 
 **3. Routing Decision**
 
@@ -142,8 +144,9 @@ Services with persistent state (databases, caches) are shared across branches:
 #### Traffic not routing correctly to my branch
 
 **Symptoms:**
-- Changes aren't visible when accessing your branch preview URL
-- Some requests use your branch version, others use the shared version (inconsistent routing)
+
+* Changes aren't visible when accessing your branch preview URL
+* Some requests use your branch version, others use the shared version (inconsistent routing)
 
 **Possible causes:**
 
@@ -171,14 +174,17 @@ This is **expected behavior**. Branch environments share databases and other sta
 ### Learn More
 
 **Related Architecture Documentation:**
+
 * [Traffic Routing Architecture](traffic-routing-architecture.md) - Detailed explanation of how routing works across all environment types
-* [Architecture Overview](README.md) - Overall system design and component interactions
+* [Architecture Overview](./) - Overall system design and component interactions
 
 **Core Concepts:**
+
 * [Environment](../environment.md) - Understanding Personal, Shared, and Branch environments
 * [Preview URL](../preview-url.md) - HTTPS access to your services
 * [App Catalog](../app-catalog.md) - Blueprint for your application
 
 **How-To Guides:**
+
 * [Create Lapdev Environment](../../how-to-guides/create-lapdev-environment.md) - How to create branch environments
 * [Use Preview URLs](../../how-to-guides/use-preview-urls.md) - Access and share your branch environment

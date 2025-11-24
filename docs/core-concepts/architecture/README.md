@@ -9,11 +9,11 @@ Lapdev consists of three main components:
 1. **Lapdev API Server** (SaaS) - Manages users, authentication, and orchestrates environment creation
 2. **Lapdev-Kube-Manager** (In your cluster) - Reads production manifests, manages dev environments, and pushes routing/intercept state to sidecars
 3. [**Devbox**](../devbox.md) **CLI** (Developer's machine) - Enables local debugging with cluster connectivity
-   - Plus an auto-injected **Sidecar Proxy** per pod that enforces routing and intercepts at runtime
+   * Plus an auto-injected **Sidecar Proxy** per pod that enforces routing and intercepts at runtime
 
 ### Architecture Diagram
 
-<img src="../../images/architecture.svg" alt="" class="gitbook-drawing">
+<img src="../../.gitbook/assets/architecture.svg" alt="" class="gitbook-drawing">
 
 ### Component Details
 
@@ -62,7 +62,7 @@ The `lapdev devbox` command-line tool enables local development:
 
 1. Developer runs `lapdev devbox connect` and sets their active environment in the dashboard
 2. Devbox establishes secure tunnel: `Developer → Lapdev API`
-   - Lapdev-Kube-Manager stays in the control plane, pushing intercept metadata and (optional) direct-connect hints to sidecars, but is not on the data path.
+   * Lapdev-Kube-Manager stays in the control plane, pushing intercept metadata and (optional) direct-connect hints to sidecars, but is not on the data path.
 3. Sidecar receives intercept config, opens its own tunnel to Lapdev API for that workload, and forwards intercepted pod traffic over the tunnel to the Devbox CLI
 4. Developer's code processes requests on localhost; responses flow back through the same tunnel to the pod
 5. Non-intercepted traffic continues to the in-cluster service transparently

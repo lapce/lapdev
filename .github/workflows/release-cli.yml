@@ -178,7 +178,9 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           BIN="target/${TARGET}/release/lapdev-cli"
-          install -Dm755 "${BIN}" pack/lapdev
+          mkdir -p pack
+          cp "${BIN}" pack/lapdev
+          chmod 755 pack/lapdev
           tar -C pack -czf "${ARCHIVE_NAME}" lapdev
 
       - name: Prepare artifact (Windows)

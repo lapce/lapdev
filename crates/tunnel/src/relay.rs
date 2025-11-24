@@ -368,7 +368,7 @@ where
 {
     let (sink, stream) = websocket.split();
 
-    let sink = sink.sink_map_err(|err| io::Error::other(err));
+    let sink = sink.sink_map_err(io::Error::other);
 
     let stream = stream.filter_map(|msg| {
         future::ready(match msg {

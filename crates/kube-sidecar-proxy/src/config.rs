@@ -19,7 +19,7 @@ use uuid::Uuid;
 /// Immutable settings for the sidecar proxy determined at boot time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarSettings {
-    /// Address the sidecar listens on for iptables redirected traffic.
+    /// Address the sidecar listens on for redirected service traffic.
     pub listen_addr: SocketAddr,
     /// Namespace the sidecar is running in.
     pub namespace: Option<String>,

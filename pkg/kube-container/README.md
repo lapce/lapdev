@@ -73,7 +73,7 @@ When cutting a new release, update `CONTAINER_IMAGE_TAG` in
 
 ### `lapdev-kube-sidecar-proxy`
 
-- Listens on port `8080` by default and expects iptables redirected traffic.
+- Listens on port `8080` by default; workloads should direct service traffic to it.
 - Requires `LAPDEV_ENVIRONMENT_ID`, `LAPDEV_ENVIRONMENT_AUTH_TOKEN`, and
   `LAPDEV_SIDECAR_PROXY_MANAGER_ADDR` to bootstrap (`crates/kube-sidecar-proxy`).
 - Runs as root because it needs low-level socket access for SO\_ORIGINAL\_DST.

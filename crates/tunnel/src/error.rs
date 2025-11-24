@@ -17,9 +17,7 @@ impl From<TunnelError> for io::Error {
             TunnelError::ConnectionClosed => {
                 io::Error::new(io::ErrorKind::BrokenPipe, TunnelError::ConnectionClosed)
             }
-            TunnelError::Remote(reason) => {
-                io::Error::new(io::ErrorKind::Other, TunnelError::Remote(reason))
-            }
+            TunnelError::Remote(reason) => io::Error::other(TunnelError::Remote(reason)),
         }
     }
 }

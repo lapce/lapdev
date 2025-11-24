@@ -139,11 +139,11 @@ impl KubeManager {
         tokio::select! {
             result = tunnel_task => {
                 tracing::error!("Tunnel task completed unexpectedly: {:?}", result);
-                return Err(anyhow!("Tunnel task completed unexpectedly"));
+                Err(anyhow!("Tunnel task completed unexpectedly"))
             }
             result = main_task => {
                 tracing::error!("Main task completed unexpectedly: {:?}", result);
-                return Err(anyhow!("Main task completed unexpectedly"));
+                Err(anyhow!("Main task completed unexpectedly"))
             }
         }
     }

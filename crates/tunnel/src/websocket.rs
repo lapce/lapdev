@@ -79,7 +79,7 @@ where
                 let buf = BytesMut::from(bytes.as_ref());
                 match this.codec.as_mut().deserialize(&buf) {
                     Ok(item) => Poll::Ready(Some(Ok(item))),
-                    Err(err) => Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::Other, err)))),
+                    Err(err) => Poll::Ready(Some(Err(io::Error::other(err)))),
                 }
             }
             Some(Err(err)) => Poll::Ready(Some(Err(err))),
@@ -110,7 +110,7 @@ where
             .codec
             .as_mut()
             .serialize(&item)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(|err| io::Error::other(err))?;
         this.inner.start_send(bytes)
     }
 
@@ -137,7 +137,7 @@ where
         loop {
             match futures::ready!(inner.0.poll_next_unpin(cx)) {
                 Some(Ok(Message::Binary(data))) => {
-                    return Poll::Ready(Some(Ok(Bytes::from(data))));
+                    return Poll::Ready(Some(Ok(data)));
                 }
                 Some(Ok(Message::Close(_))) => return Poll::Ready(None),
                 Some(Ok(_)) => continue,
@@ -157,30 +157,21 @@ where
     type Error = io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.project()
-            .0
-            .poll_ready(cx)
-            .map_err(|err| io::Error::other(err))
+        self.project().0.poll_ready(cx).map_err(io::Error::other)
     }
 
     fn start_send(self: Pin<&mut Self>, item: Bytes) -> io::Result<()> {
         self.project()
             .0
             .start_send(Message::Binary(item))
-            .map_err(|err| io::Error::other(err))
+            .map_err(io::Error::other)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.project()
-            .0
-            .poll_flush(cx)
-            .map_err(|err| io::Error::other(err))
+        self.project().0.poll_flush(cx).map_err(io::Error::other)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.project()
-            .0
-            .poll_close(cx)
-            .map_err(|err| io::Error::other(err))
+        self.project().0.poll_close(cx).map_err(io::Error::other)
     }
 }

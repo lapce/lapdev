@@ -96,14 +96,14 @@ const response = await axios.get('http://other-service:8080/api', {
 
 **3. Routing Decision**
 
-The Lapdev Sidecar Proxy (automatically injected by Lapdev into each pod in managed environments):
+The Lapdev Sidecar Proxy (automatically injected by Lapdev into each pod in managed environments) sits in front of your workload traffic:
 
-1. Intercepts outgoing HTTP requests from your service
+1. Intercepts incoming requests headed to your service
 2. Reads the `tracestate` header to identify the branch
 3. Checks if the target service has a branch override for this branch
-4. Routes to the branched version if it exists
-5. Routes to the shared environment if no override exists
-6. The header continues to propagate to the next service
+4. If a Devbox intercept is active for this branch/service, routes to the developer’s local process; otherwise routes to the branched service if present
+5. Falls back to the shared environment if no branch-specific target exists
+6. The header continues downstream, so the next hop can repeat the decision
 
 > **Note:** The sidecar proxy is automatically added when Lapdev creates your environment. No manual configuration needed. For more details, see [Traffic Routing Architecture](traffic-routing-architecture.md).
 

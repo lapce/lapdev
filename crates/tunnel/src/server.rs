@@ -64,7 +64,7 @@ impl TunnelConnector for TcpConnector {
 }
 
 pub async fn run_tunnel_server(connection: Connection) -> Result<(), TunnelError> {
-    run_tunnel_server_with_connector(connection, TcpConnector::default()).await
+    run_tunnel_server_with_connector(connection, TcpConnector).await
 }
 
 pub async fn run_tunnel_server_with_connector<C>(
@@ -145,7 +145,7 @@ async fn pipe_streams(
 
     tokio_io::copy_bidirectional(&mut quic_stream, &mut target)
         .await
-        .map_err(|err| TunnelError::Transport(err))?;
+        .map_err(TunnelError::Transport)?;
     Ok(())
 }
 

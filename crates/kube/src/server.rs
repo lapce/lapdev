@@ -1488,7 +1488,7 @@ impl KubeClusterServer {
         for (catalog_id, workload_ids) in workloads_by_catalog {
             let new_version = self
                 .db
-                .bump_app_catalog_sync_version(catalog_id, synced_at.clone())
+                .bump_app_catalog_sync_version(catalog_id, synced_at)
                 .await
                 .with_context(|| {
                     format!(

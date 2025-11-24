@@ -47,6 +47,7 @@ struct EnvironmentLifecycleEvent {
 
 const DEVBOX_INSTALL_UNIX_CMD: &str = "curl -fsSL https://get.lap.dev/lapdev-cli.sh | bash";
 const DEVBOX_INSTALL_WINDOWS_CMD: &str = "irm https://get.lap.dev/lapdev-cli.ps1 | iex";
+const DEVBOX_CONNECT_CMD: &str = "lapdev devbox connect";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DevboxInstallTab {
@@ -2516,6 +2517,42 @@ pub fn DevboxSessionBanner(
 #[component]
 fn DevboxInstallInstructions() -> impl IntoView {
     let default_tab = RwSignal::new(detect_devbox_install_tab());
+    let unix_copy_success = RwSignal::new(false);
+    let windows_copy_success = RwSignal::new(false);
+    let connect_copy_success = RwSignal::new(false);
+
+    let copy_unix_command = move |_| {
+        let navigator = window().navigator();
+        let clipboard = navigator.clipboard();
+        let _ = clipboard.write_text(DEVBOX_INSTALL_UNIX_CMD);
+        unix_copy_success.set(true);
+        set_timeout(
+            move || unix_copy_success.set(false),
+            std::time::Duration::from_secs(2),
+        );
+    };
+
+    let copy_windows_command = move |_| {
+        let navigator = window().navigator();
+        let clipboard = navigator.clipboard();
+        let _ = clipboard.write_text(DEVBOX_INSTALL_WINDOWS_CMD);
+        windows_copy_success.set(true);
+        set_timeout(
+            move || windows_copy_success.set(false),
+            std::time::Duration::from_secs(2),
+        );
+    };
+
+    let copy_connect_command = move |_| {
+        let navigator = window().navigator();
+        let clipboard = navigator.clipboard();
+        let _ = clipboard.write_text(DEVBOX_CONNECT_CMD);
+        connect_copy_success.set(true);
+        set_timeout(
+            move || connect_copy_success.set(false),
+            std::time::Duration::from_secs(2),
+        );
+    };
 
     view! {
         <div class="mt-3 ml-14 flex flex-col gap-3">
@@ -2529,7 +2566,7 @@ fn DevboxInstallInstructions() -> impl IntoView {
                             "Install the CLI:"
                         </span>
                         <Tabs default_value=default_tab class="gap-2">
-                            <TabsList class="w-full gap-2">
+                            <TabsList class="gap-2">
                                 <TabsTrigger value=DevboxInstallTab::LinuxMac class="flex-1">
                                     "Linux / macOS"
                                 </TabsTrigger>
@@ -2537,15 +2574,45 @@ fn DevboxInstallInstructions() -> impl IntoView {
                                     "Windows PowerShell"
                                 </TabsTrigger>
                             </TabsList>
-                            <TabsContent value=DevboxInstallTab::LinuxMac class="mt-2">
-                                <code class="block px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs break-all">
-                                    {DEVBOX_INSTALL_UNIX_CMD}
-                                </code>
+                            <TabsContent value=DevboxInstallTab::LinuxMac class="mt-2 flex">
+                                <div class="relative">
+                                    <code class="px-2 py-1 pr-12 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs break-all">
+                                        {DEVBOX_INSTALL_UNIX_CMD}
+                                    </code>
+                                    <Button
+                                        variant=ButtonVariant::Ghost
+                                        size=ButtonSize::Icon
+                                        class="absolute -top-1/4 right-1 h-8 w-8 p-0 text-amber-800 dark:text-amber-200"
+                                        on:click=copy_unix_command
+                                        attr:aria-label="Copy Linux or macOS install command"
+                                    >
+                                        {move || if unix_copy_success.get() {
+                                            view! { <lucide_leptos::Check attr:class="h-4 w-4" /> }.into_any()
+                                        } else {
+                                            view! { <lucide_leptos::Copy attr:class="h-4 w-4" /> }.into_any()
+                                        }}
+                                    </Button>
+                                </div>
                             </TabsContent>
-                            <TabsContent value=DevboxInstallTab::Windows class="mt-2">
-                                <code class="block px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs break-all">
-                                    {DEVBOX_INSTALL_WINDOWS_CMD}
-                                </code>
+                            <TabsContent value=DevboxInstallTab::Windows class="mt-2 flex">
+                                <div class="relative">
+                                    <code class="px-2 py-1 pr-12 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs break-all">
+                                        {DEVBOX_INSTALL_WINDOWS_CMD}
+                                    </code>
+                                    <Button
+                                        variant=ButtonVariant::Ghost
+                                        size=ButtonSize::Icon
+                                        class="absolute -top-1/4 right-1 h-8 w-8 p-0 text-amber-800 dark:text-amber-200"
+                                        on:click=copy_windows_command
+                                        attr:aria-label="Copy Windows PowerShell install command"
+                                    >
+                                        {move || if windows_copy_success.get() {
+                                            view! { <lucide_leptos::Check attr:class="h-4 w-4" /> }.into_any()
+                                        } else {
+                                            view! { <lucide_leptos::Copy attr:class="h-4 w-4" /> }.into_any()
+                                        }}
+                                    </Button>
+                                </div>
                             </TabsContent>
                         </Tabs>
                     </div>
@@ -2554,13 +2621,28 @@ fn DevboxInstallInstructions() -> impl IntoView {
                     <span class="font-medium text-amber-900 dark:text-amber-200 min-w-[2rem]">
                         "2."
                     </span>
-                    <div class="flex-1">
+                    <div class="flex-1 flex items-center gap-2 flex-wrap">
                         <span class="text-amber-800 dark:text-amber-300">
                             "Connect: "
                         </span>
-                        <code class="px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
-                            "lapdev connect"
-                        </code>
+                        <div class="relative">
+                            <code class="inline-flex items-center px-2 py-1 pr-12 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-mono text-xs">
+                                {DEVBOX_CONNECT_CMD}
+                            </code>
+                            <Button
+                                variant=ButtonVariant::Ghost
+                                size=ButtonSize::Icon
+                                class="absolute top-1/2 right-1 h-8 w-8 p-0 -translate-y-1/2 text-amber-800 dark:text-amber-200"
+                                on:click=copy_connect_command
+                                attr:aria-label="Copy connect command"
+                            >
+                                {move || if connect_copy_success.get() {
+                                    view! { <lucide_leptos::Check attr:class="h-4 w-4" /> }.into_any()
+                                } else {
+                                    view! { <lucide_leptos::Copy attr:class="h-4 w-4" /> }.into_any()
+                                }}
+                            </Button>
+                        </div>
                     </div>
                 </div>
             </div>

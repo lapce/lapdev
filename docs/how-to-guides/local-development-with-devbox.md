@@ -2,7 +2,7 @@
 
 This guide shows how to set up and use **Devbox** for local development with your Lapdev environments.
 
-> **New to Devbox?** Read [**Devbox**](../core-concepts/devbox.md) to understand what it does and when to use it.
+> Read [**Devbox**](../core-concepts/devbox.md) to understand what it does and when to use it.
 
 ### Prerequisites
 

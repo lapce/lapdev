@@ -5,7 +5,7 @@ Lapdev lets you create **Preview URLs** for your environments so you can securel
 Each Preview URL points to a specific **service** inside your environment (for example, your `frontend`, `api-gateway`, or `admin` service).\
 You can create multiple Preview URLs per environment, each targeting a different service.
 
-> **New to Preview URLs?** Read [**Preview URL**](../core-concepts/preview-url.md) to understand what they are and why they're useful.
+> Read [**Preview URL**](../core-concepts/preview-url.md) to understand what they are and why they're useful.
 
 ### Prerequisites
 

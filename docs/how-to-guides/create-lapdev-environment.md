@@ -6,7 +6,7 @@ It's created from an existing **App Catalog**, which defines which workloads mak
 
 This guide shows how to create **personal** and **shared** environments from an App Catalog, and how to create **branch** environments from a shared environment.
 
-> **New to Environments?** Read [**Environment**](../core-concepts/environment.md) to understand environment types and how they work.
+> Read [**Environment**](../core-concepts/environment.md) to understand environment types and how they work.
 
 ### Prerequisites
 

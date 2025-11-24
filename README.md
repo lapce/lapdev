@@ -23,7 +23,7 @@
 
 <br>
 
-![](https://lap.dev/images/screenshot.png) 
+![](https://new.lap.dev/images/screenshot.png) 
 
 <br>
 

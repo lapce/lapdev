@@ -2,7 +2,7 @@
 
 This guide walks you through connecting your Kubernetes cluster to **Lapdev**, so Lapdev can manage development environments inside your cluster.
 
-> **New to Clusters?** Read [**Cluster**](../core-concepts/cluster.md) to understand cluster roles, permissions, and how kube-manager works.
+> Read [**Cluster**](../core-concepts/cluster.md) to understand cluster roles, permissions, and how kube-manager works.
 
 ### Create a Cluster in the Lapdev Dashboard
 

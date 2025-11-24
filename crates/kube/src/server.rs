@@ -308,11 +308,7 @@ impl KubeClusterServer {
     ) -> Result<(), String> {
         match self
             .rpc_client
-            .clear_devbox_routes(
-                Self::rpc_context(),
-                environment_id,
-                branch_environment_id,
-            )
+            .clear_devbox_routes(Self::rpc_context(), environment_id, branch_environment_id)
             .await
         {
             Ok(result) => result,

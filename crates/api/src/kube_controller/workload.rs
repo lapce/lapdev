@@ -502,10 +502,7 @@ impl KubeController {
     ) {
         if let Err(err) = cluster_server
             .rpc_client
-            .refresh_branch_service_routes(
-                Self::kube_manager_rpc_context(),
-                base_environment_id,
-            )
+            .refresh_branch_service_routes(Self::kube_manager_rpc_context(), base_environment_id)
             .await
         {
             tracing::warn!(
